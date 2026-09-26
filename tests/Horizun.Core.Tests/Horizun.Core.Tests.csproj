@@ -51,6 +51,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPdf.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExportFileDiff.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncResumeGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\WorkflowPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanPreview.cs" />
