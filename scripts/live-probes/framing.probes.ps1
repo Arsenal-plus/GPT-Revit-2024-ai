@@ -137,7 +137,7 @@ $script:HzProbeModules += [pscustomobject]@{
             else { Case $catalog[3] $T 'fail' ('read: ' + (Short $r)) }
             $rm = & $Ctx.Apply $T @{ operation = 'remove'; target_document = $doc; element_ids = @($wall) } ($run + '-fr-remove')   # not $x: names are case-insensitive and $X is the staging origin the ceiling cases reuse
             $after = & $Ctx.Call $T @{ operation = 'read'; target_document = $doc; element_ids = @($wall) }
-            if ($rm.stage -eq 'apply' -and -not $rm.answer.isError -and $rm.answer.data.postconditions.all_verified -eq $true -and [int]$after.data.member_count -eq 0) { Case $catalog[4] $T 'pass' ("removed $(@($rm.answer.data.evidence.removed_ids).Count) element(s); read finds none") }
+            if ($rm.stage -eq 'apply' -and -not $rm.answer.isError -and $rm.answer.data.postconditions.all_verified -eq $true -and ([int]$after.data.member_count + [int]$after.data.work_plane_count) -eq 0) { Case $catalog[4] $T 'pass' ("removed $(@($rm.answer.data.evidence.removed_ids).Count) element(s); read finds none") }
             else { Case $catalog[4] $T 'fail' ('remove: ' + (Short $rm.answer) + ' / read after: ' + $after.data.member_count) }
         }
 

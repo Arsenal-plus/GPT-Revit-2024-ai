@@ -1809,7 +1809,7 @@ is compiled in.
 |---|---|---|
 | `wall` | yes | studs, tracks, kings, jacks, headers, sills, cripples and blocking inside one layer of each straight Basic wall in `element_ids` (or visible in `view_id`, where curtain, stacked and curved walls are listed in `plan.skipped` with their reason instead of refusing the call; named in `element_ids` they refuse) |
 | `ceiling` | yes | mains, cross (furring) channels, perimeter track and hangers for each Ceiling in `element_ids` (or visible in `view_id`, where sloped, multi-region and sketchless ceilings are listed in `plan.skipped` with their reason; named in `element_ids` they refuse), the hangers ray-cast to the structure above |
-| `read` | no | what a previous apply produced, per source, found by the marker on each member |
+| `read` | no | what a previous apply produced, per source, found by the marker on each member (`member_count` counts members; the reference planes created for line-based members are counted apart in `work_plane_count`) |
 | `remove` | yes | deletes the members (and their work planes) a previous apply produced for `element_ids`, verified |
 
 Every write rehearses first (`dry_run` defaults to true) and returns a

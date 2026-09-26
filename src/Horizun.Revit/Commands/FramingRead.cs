@@ -77,11 +77,15 @@ namespace Horizun.Revit.Commands
                     ["members"] = members
                 });
             }
+            // A work plane the tool created for a line-based member carries the marker too, but it
+            // is not a member: counted apart so member_count compares with the apply's plan.
+            int planes = found.Count(p => p.Value.Role == FramingMarker.WorkPlaneRole);
             var result = new JObject
             {
                 ["operation"] = "read",
                 ["sources"] = bySource,
-                ["member_count"] = found.Count,
+                ["member_count"] = found.Count - planes,
+                ["work_plane_count"] = planes,
                 ["members_listed"] = listed,
                 ["truncated"] = listed < found.Count,
                 ["note"] = "Members are found by the horizun_framing marker only; hand-modelled framing is never listed."

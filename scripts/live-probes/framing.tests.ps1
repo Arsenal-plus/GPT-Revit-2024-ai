@@ -78,8 +78,8 @@ $fakeCall = {
                         openings = @([pscustomobject]@{ id = '7004'; read_from = 'rough' }, [pscustomobject]@{ id = '7005'; read_from = 'nominal' }) }) } }) $false ''
             }
             'read' {
-                $n = 30; if ($script:removed) { $n = 0 }
-                return Reply ([pscustomobject]@{ operation = 'read'; member_count = $n; sources = @() }) $false ''
+                $n = 30; $planes = 30; if ($script:removed) { $n = 0; $planes = 0 }
+                return Reply ([pscustomobject]@{ operation = 'read'; member_count = $n; work_plane_count = $planes; sources = @() }) $false ''
             }
             'ceiling' {
                 $plan = if ([long]@($arguments.element_ids)[0] -eq $script:ceilings[0]) { & $script:ceilingPlanA } else { & $script:ceilingPlanB }
