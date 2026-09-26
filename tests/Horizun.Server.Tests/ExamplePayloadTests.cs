@@ -79,8 +79,18 @@ namespace Horizun.Server.Tests
         private static string Relative(string path) =>
             Path.GetRelativePath(ExamplesRoot(), path).Replace('\\', '/');
 
+        // A Power BI project (.pbip) keeps its report and model as Microsoft's own JSON
+        // (page.json, visual.json, themes) under <name>.Report / <name>.SemanticModel.
+        // Those are not payloads of this server and are validated by Power BI's schema,
+        // so they are skipped - and only they: any other folder is still checked.
+        private static bool InPowerBiProject(string path) =>
+            Relative(path).Split('/').Any(part =>
+                part.EndsWith(".Report", StringComparison.Ordinal) ||
+                part.EndsWith(".SemanticModel", StringComparison.Ordinal));
+
         private static List<string> JsonFiles() =>
             Directory.GetFiles(ExamplesRoot(), "*.json", SearchOption.AllDirectories)
+                     .Where(p => !InPowerBiProject(p))
                      .OrderBy(p => p, StringComparer.Ordinal).ToList();
 
         private static JObject Load(string path)
