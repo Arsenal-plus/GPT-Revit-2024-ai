@@ -325,7 +325,24 @@ namespace Horizun.Revit.Commands
                             }
                             trow["transition_check"] = check;
                             trow["members_after"] = MemberEnds(j);
-                            if (check.Value<bool>("fits")) checkedGroup.Keep();
+                            if (check.Value<bool>("fits"))
+                            {
+                                checkedGroup.Keep();
+                                // KEEP() IS FOLLOWED, NOT TRUSTED BLIND - see CheckedWriteGroup: Outcome is
+                                // "kept" only when the group's own Assimilate() returned Committed. `trow["state"]`
+                                // ("created"/"would_create") was set from DelegateFitting's own reply before this
+                                // check ran; without re-checking Outcome here, a Keep() that came back "uncertain"
+                                // still reported the fitting as created.
+                                if (!string.Equals(checkedGroup.Outcome, "kept", StringComparison.Ordinal))
+                                {
+                                    trow["state"] = "uncertain";
+                                    trow["refused"] = "group_assimilate_uncertain";
+                                    trow["says"] = "the fitting checked out (transition_check.fits) but the group's " +
+                                                   "own Keep() did not confirm a commit (outcome: " +
+                                                   checkedGroup.Outcome + "). Whether it landed is UNKNOWN, not " +
+                                                   "known to have failed.";
+                                }
+                            }
                             else
                             {
                                 checkedGroup.Undo();

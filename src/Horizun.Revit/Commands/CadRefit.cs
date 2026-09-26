@@ -92,11 +92,27 @@ namespace Horizun.Revit.Commands
                         if (why == null && check.Value<bool>("holds"))
                         {
                             group.Keep();
-                            row["state"] = dryRun ? "would_refit" : "refitted";
-                            row["new_fitting_id"] = check["new_fitting_id"];
-                            row["identity"] = "the fitting is replaced: " + u.Spec["fitting_id"] + " -> " + check["new_fitting_id"] +
-                                              " (a new element id; the runs keep theirs)";
-                            kept++;
+                            // KEEP() IS FOLLOWED, NOT TRUSTED BLIND. It sets Outcome to "kept" only when the
+                            // TransactionGroup's own Assimilate() returned Committed; anything else - including
+                            // a silent failure Revit reports as merely "uncertain" - must not be read as a landed
+                            // refit just because the code that ASKED for it ran without throwing.
+                            if (string.Equals(group.Outcome, "kept", StringComparison.Ordinal))
+                            {
+                                row["state"] = dryRun ? "would_refit" : "refitted";
+                                row["new_fitting_id"] = check["new_fitting_id"];
+                                row["identity"] = "the fitting is replaced: " + u.Spec["fitting_id"] + " -> " + check["new_fitting_id"] +
+                                                  " (a new element id; the runs keep theirs)";
+                                kept++;
+                            }
+                            else
+                            {
+                                row["state"] = "uncertain";
+                                row["failed_at"] = "group_assimilate";
+                                row["why"] = "every step and the post-write check passed, but the group's own Keep() did " +
+                                            "not confirm a commit (outcome: " + group.Outcome + "). Whether this refit " +
+                                            "landed is UNKNOWN, not known to have failed - it is not reported as refitted.";
+                                failed++;
+                            }
                         }
                         else
                         {
