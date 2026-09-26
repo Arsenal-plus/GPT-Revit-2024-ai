@@ -74,6 +74,10 @@ namespace Horizun.Revit.Commands
                 sinceUtc = parsedSince;
             }
             bool includeAnnotation = request.Value<bool?>("include_annotation") ?? false;
+            var ruleErrors = new List<string>();
+            List<ClearanceZoneRules.Rule> clearanceRules = request["clearance_rules"] is JArray rulesArr
+                ? ClearanceZoneRules.Parse(rulesArr, ruleErrors, ClearanceRulesSource.CanonicalCategory) : null;
+            if (ruleErrors.Count > 0) return CommandResult.Fail(string.Join(" ", ruleErrors));
             List<long> explicitViewIds = null;
             if (request["view_ids"] != null)
             {
@@ -166,8 +170,16 @@ namespace Horizun.Revit.Commands
 
             List<Element> subjects = SpatialCoherence.Subjects(doc, ids);
             scope["model_elements"] = subjects.Count;
-            SpatialCoherence.Outcome outcome = SpatialCoherence.Check(doc, subjects, 5000, budgetS * 1000);
+            // The explicit argument wins; without it, the same project/machine files the
+            // automatic after-write pass reads (ClearanceRulesSource.cs), so an on-demand
+            // look never judges less than the write it follows did.
+            string clearanceOrigin = clearanceRules != null ? "argument" : null;
+            List<string> fileRuleErrors = null;
+            if (clearanceRules == null) clearanceRules = ClearanceRulesSource.Load(doc, out clearanceOrigin, out fileRuleErrors);
+            SpatialCoherence.Outcome outcome = SpatialCoherence.Check(doc, subjects, 5000, budgetS * 1000, clearanceRules: clearanceRules);
+            if (fileRuleErrors != null) outcome.ClearanceRuleErrors.AddRange(fileRuleErrors);
             JObject check = SpatialCoherence.ToJson(outcome, maxFindings);
+            if (clearanceOrigin != null) check["clearance_rules_source"] = clearanceOrigin;
             string headline = SpatialCoherence.Headline(outcome);
 
             JObject annotationCheck = null;
@@ -208,6 +220,7 @@ namespace Horizun.Revit.Commands
             string next = outcome.Errors + outcome.Warnings > 0
                 ? "Fix each finding (move, delete the duplicate, reroute) or undo the write with horizun_undo; then call this again. Do not report the modelling as done while errors remain."
                 : outcome.Partial ? "Partial check - narrow element_ids or raise time_budget_seconds before calling the result clean."
+                : outcome.IsPartial ? "Partial check - " + outcome.IsPartialWhy + ". Fix those rules or check that equipment by hand before calling the result clean."
                 : "No spatial conflict among the changed elements. Still look at the image: this check sees solids, not intent (wrong level, wrong room, missing element).";
             if (annotationHeadline != null) next += " Also move or restyle the overlapping tags/text notes named in annotation_check.findings.";
             result["next"] = next;

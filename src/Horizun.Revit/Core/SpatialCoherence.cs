@@ -43,6 +43,21 @@ namespace Horizun.Revit.Core
             public bool Partial;
             public string PartialWhy;
             public long Ms;
+            /// <summary>The equipment clearance pass ran (some clearance rule was in force).</summary>
+            public bool ClearanceRan;
+            /// <summary>Ruled equipment that got its zone(s) built and searched.</summary>
+            public int ClearanceZoned;
+            /// <summary>Ruled equipment whose zone could not be built, with the reason: never
+            /// counted as clear (the way an unloaded link is listed in links_skipped).</summary>
+            public readonly List<(long Id, string Why)> ClearanceNotMeasured = new List<(long Id, string Why)>();
+            /// <summary>Rules that were declared but could not be read (a malformed file entry).</summary>
+            public readonly List<string> ClearanceRuleErrors = new List<string>();
+            /// <summary>Part of what the caller asked to be checked was not: the time/subject
+            /// budget ran out, or a ruled instance or a declared rule could not be measured.</summary>
+            public bool IsPartial => Partial || ClearanceNotMeasured.Count > 0 || ClearanceRuleErrors.Count > 0;
+            public string IsPartialWhy => PartialWhy ?? (ClearanceNotMeasured.Count > 0
+                ? ClearanceNotMeasured.Count + " ruled equipment instance(s) could not be given a clearance zone (equipment_clearance.not_measured)"
+                : ClearanceRuleErrors.Count > 0 ? ClearanceRuleErrors.Count + " declared clearance rule(s) could not be read (clearance_rules_errors)" : null);
             public int Errors => Findings.Count(f => f.Verdict.Severity == "error");
             public int Warnings => Findings.Count(f => f.Verdict.Severity == "warning");
         }
@@ -75,7 +90,8 @@ namespace Horizun.Revit.Core
             catch { return false; }
         }
 
-        public static Outcome Check(Document doc, IList<Element> subjects, int maxSubjects = DefaultMaxSubjects, int budgetMs = DefaultBudgetMs, bool includeLinks = true)
+        public static Outcome Check(Document doc, IList<Element> subjects, int maxSubjects = DefaultMaxSubjects, int budgetMs = DefaultBudgetMs,
+            bool includeLinks = true, IList<ClearanceZoneRules.Rule> clearanceRules = null)
         {
             var o = new Outcome { Subjects = subjects.Count };
             var clock = Stopwatch.StartNew();
@@ -114,6 +130,8 @@ namespace Horizun.Revit.Core
                 }
             }
             if (!o.Partial) DoorClearance(doc, subjects, o, pairs, solidCache, clock, budgetMs);
+            if (!o.Partial && clearanceRules != null && clearanceRules.Count > 0)
+                EquipmentClearance(doc, subjects, o, clearanceRules, pairs, solidCache, clock, budgetMs, includeLinks);
             if (!o.Partial && includeLinks) AgainstLinks(doc, subjects, o, solidCache, clock, budgetMs);
             o.Ms = clock.ElapsedMilliseconds;
             return o;
@@ -242,20 +260,7 @@ namespace Horizun.Revit.Core
                 long hostId = door.Host == null ? -1 : Rid.Value(door.Host.Id);
                 foreach (Solid zone in zones)
                 {
-                    IList<Element> hits;
-                    try
-                    {
-                        // Box first: the solid filter alone scanned the whole model twice per
-                        // door (a real model's 234 doors ran out of a 5-minute budget).
-                        BoundingBoxXYZ zb = zone.GetBoundingBox();
-                        XYZ z0 = zb.Transform.OfPoint(zb.Min), z1 = zb.Transform.OfPoint(zb.Max);
-                        var zoneOutline = new Outline(new XYZ(Math.Min(z0.X, z1.X), Math.Min(z0.Y, z1.Y), Math.Min(z0.Z, z1.Z)),
-                                                      new XYZ(Math.Max(z0.X, z1.X), Math.Max(z0.Y, z1.Y), Math.Max(z0.Z, z1.Z)));
-                        hits = new FilteredElementCollector(doc).WhereElementIsNotElementType()
-                            .WherePasses(new BoundingBoxIntersectsFilter(zoneOutline))
-                            .WherePasses(new ElementIntersectsSolidFilter(zone)).ToElements();
-                    }
-                    catch { continue; }
+                    IList<Element> hits = ZoneObstacles(doc, zone);
                     foreach (Element b in hits)
                     {
                         long ib = Rid.Value(b.Id);
@@ -324,6 +329,276 @@ namespace Horizun.Revit.Core
             return 0;
         }
 
+        // ---- equipment maintenance / access clearance zones -----------------------------
+        // Generalises the door clear zone to any category a caller declares via
+        // clearance_rules (ClearanceZoneRules.cs): a panelboard's front working space, an
+        // AHU's service access, a valve's overhead clearance. Org-neutral - the rules are
+        // caller data, nothing here names a real standard.
+        private static void EquipmentClearance(Document doc, IList<Element> subjects, Outcome o, IList<ClearanceZoneRules.Rule> rules,
+            HashSet<string> pairs, Dictionary<long, List<Solid>> cache, Stopwatch clock, int budgetMs, bool includeLinks)
+        {
+            o.ClearanceRan = true;
+            var ruleCategories = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ClearanceZoneRules.Rule r in rules) if (r.Category != null) ruleCategories.Add(r.Category);
+            var subjectIds = new HashSet<long>(subjects.Select(e => Rid.Value(e.Id)));
+            List<LinkView> links = includeLinks ? LoadedLinks(doc) : null;
+            // Like the door pass: ruled equipment the call did NOT change still gets its zone
+            // checked when a changed element lands near it (a column placed in front of an
+            // existing panel is the everyday case). Near = within the largest rule's reach.
+            var equipment = new Dictionary<long, FamilyInstance>();
+            foreach (Element e in subjects) if (e is FamilyInstance sf) equipment[Rid.Value(e.Id)] = sf;
+            double reach = 0;
+            var bics = new List<BuiltInCategory>();
+            foreach (ClearanceZoneRules.Rule r in rules)
+            {
+                reach = Math.Max(reach, ClearanceZoneRules.FeetFromMm(Math.Max(r.DepthMm + r.WidthExtraMm, r.HeightMm)));
+                if (r.Category != null && Enum.TryParse(r.Category, out BuiltInCategory bic) && !bics.Contains(bic)) bics.Add(bic);
+            }
+            if (bics.Count > 0)
+                foreach (Element e in subjects)
+                {
+                    BoundingBoxXYZ b = null;
+                    try { b = e.get_BoundingBox(null); } catch { }
+                    if (b == null) continue;
+                    var around = new Outline(b.Min - new XYZ(reach, reach, reach), b.Max + new XYZ(reach, reach, reach));
+                    try
+                    {
+                        foreach (Element n in new FilteredElementCollector(doc).WherePasses(new ElementMulticategoryFilter(bics))
+                                     .WhereElementIsNotElementType().WherePasses(new BoundingBoxIntersectsFilter(around)))
+                            if (n is FamilyInstance nf) equipment[Rid.Value(n.Id)] = nf;
+                    }
+                    catch { }
+                }
+            foreach (FamilyInstance fi in equipment.Values)
+            {
+                if (clock.ElapsedMilliseconds > budgetMs) { o.Partial = true; o.PartialWhy = "the time budget ran out during the equipment clearance pass"; return; }
+                Element e = fi;
+                string category = CategoryKey(e);
+                ClearanceZoneRules.Rule rule = ClearanceZoneRules.FirstMatch(rules, category, SafeFamilyName(fi), SafeTypeName(fi));
+                if (rule == null) continue;
+                long eid = Rid.Value(e.Id);
+                // Matched a rule but no zone could be built: listed with the reason and the
+                // answer reads partial - never skipped into a clean status.
+                if (!TryZones(doc, fi, rule, cache, out List<Solid> zones, out string notWhy)) { o.ClearanceNotMeasured.Add((eid, notWhy)); continue; }
+                o.ClearanceZoned++;
+                long hostId = -1;
+                try { hostId = fi.Host == null ? -1 : Rid.Value(fi.Host.Id); } catch { }
+                foreach (Solid zone in zones)
+                {
+                    IList<Element> hits = ZoneObstacles(doc, zone);
+                    foreach (Element b in hits)
+                    {
+                        long ib = Rid.Value(b.Id);
+                        if (ib == eid || !IsPhysical(b)) continue;
+                        if (!subjectIds.Contains(eid) && !subjectIds.Contains(ib)) continue;
+                        if (b is FamilyInstance bf && bf.SuperComponent != null && Rid.Value(bf.SuperComponent.Id) == eid) continue;
+                        // A run joined to the equipment by a connector (conduit out of a panel's
+                        // top, an AHU's own ducts) is expected, as in the pair check.
+                        if (Connected(e, b)) { o.Expected++; continue; }
+                        bool isHost = ib == hostId || Hosts(b, e);
+                        double? shared = Shared(new List<Solid> { zone }, Solids(b, cache));
+                        SpatialCoherenceRules.Verdict v = ClearanceZoneRules.Classify(category, ruleCategories, CategoryKey(b), isHost, shared);
+                        if (v.Kind == SpatialCoherenceRules.Kind.None) continue;
+                        if (!pairs.Add("clear-eq:" + eid + "|" + ib)) continue;
+                        o.Findings.Add(new Finding { Verdict = v, A = e, B = b, SharedVolumeFt3 = shared });
+                    }
+                    // Obstacles in loaded links, the same way AgainstLinks carries a changed
+                    // solid into a link: the zone moves into the link's coordinates and is
+                    // queried there. Only for ruled equipment this call changed - a link is
+                    // not edited here, so it can only ever be the obstacle - and judged by
+                    // category alone, since host/join relations do not cross files.
+                    if (links == null || !subjectIds.Contains(eid)) continue;
+                    foreach (LinkView l in links)
+                    {
+                        Solid moved;
+                        try { moved = SolidUtils.CreateTransformed(zone, l.ToLink); } catch { continue; }
+                        foreach (Element b in ZoneObstacles(l.Doc, moved))
+                        {
+                            if (!IsPhysical(b)) continue;
+                            double? shared = Shared(new List<Solid> { moved }, Solids(b, l.Cache));
+                            SpatialCoherenceRules.Verdict v = ClearanceZoneRules.Classify(category, ruleCategories, CategoryKey(b), false, shared);
+                            if (v.Kind == SpatialCoherenceRules.Kind.None) continue;
+                            if (!pairs.Add("clear-eq:" + eid + "|" + l.Name + "|" + Rid.Value(b.Id))) continue;
+                            v.Reason += " (in link '" + l.Name + "')";
+                            o.Findings.Add(new Finding { Verdict = v, A = e, B = b, SharedVolumeFt3 = shared, LinkB = l.Name });
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// The world-coordinate zone solid(s) a rule asks for around one instance, or false
+        /// with the reason. The front comes from ClearanceZoneRules.FrontFrame - a face-hosted
+        /// panel looks out along its transform's Z, not its FacingOrientation (which lies in
+        /// the wall face). The instance's own solids, tessellated, give its EXACT extent in
+        /// that frame; the world-aligned bounding box is only the fallback (a symbol-only
+        /// family), because at 45 degrees it inflates the front face by up to 41% and would
+        /// push the zone off the equipment. The sides start at the floor it stands on.
+        /// </summary>
+        private static bool TryZones(Document doc, FamilyInstance fi, ClearanceZoneRules.Rule rule, Dictionary<long, List<Solid>> cache,
+            out List<Solid> zones, out string why)
+        {
+            zones = new List<Solid>();
+            why = null;
+            try
+            {
+                if (!(fi.Location is LocationPoint lp) || lp.Point == null) { why = "it has no placement point (LocationPoint)"; return false; }
+                bool workPlaneBased = false;
+                XYZ facing = null, hand = null, basisZ = null;
+                try { workPlaneBased = fi.Symbol?.Family?.FamilyPlacementType == FamilyPlacementType.WorkPlaneBased; } catch { }
+                try { if (!workPlaneBased && fi.HostFace != null) workPlaneBased = true; } catch { }
+                try { facing = fi.FacingOrientation; } catch { }
+                try { hand = fi.HandOrientation; } catch { }
+                try { basisZ = fi.GetTotalTransform()?.BasisZ; } catch { }
+                if (!ClearanceZoneRules.FrontFrame(workPlaneBased, V(facing), V(basisZ), V(hand), rule.Face != "top",
+                        out double fx, out double fy, out double hx, out double hy, out why)) return false;
+                List<(double X, double Y, double Z)> corners = OwnFramePoints(fi, cache);
+                if (corners.Count == 0) { why = "it has neither a solid nor a bounding box to measure"; return false; }
+                ClearanceZoneRules.Extents ext = ClearanceZoneRules.Project(lp.Point.X, lp.Point.Y, fx, fy, hx, hy, corners);
+                foreach (ClearanceZoneRules.ZoneFootprint fp in ClearanceZoneRules.Footprints(rule, ext, FloorZ(doc, fi)))
+                {
+                    Solid zone = BuildZoneSolid(lp.Point, fx, fy, hx, hy, fp);
+                    if (zone == null) { zones.Clear(); why = "Revit could not build its " + fp.Side + " zone solid"; return false; }
+                    zones.Add(zone);
+                }
+                return zones.Count > 0;
+            }
+            catch (Exception ex) { zones.Clear(); why = "its zone could not be measured: " + ex.Message; return false; }
+        }
+
+        private static (double X, double Y, double Z) V(XYZ p) => p == null ? (0.0, 0.0, 0.0) : (p.X, p.Y, p.Z);
+
+        /// <summary>The elevation (internal coordinates, like the geometry) of the level the
+        /// instance is served from: its own level, its schedule level (a face-hosted instance
+        /// often has no LevelId), or its host's base level. Null when none is known - then the
+        /// zone starts at the equipment's own underside, as before.</summary>
+        private static double? FloorZ(Document doc, FamilyInstance fi)
+        {
+            var getters = new Func<ElementId>[]
+            {
+                () => fi.LevelId,
+                () => fi.get_Parameter(BuiltInParameter.INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM)?.AsElementId(),
+                () => fi.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM)?.AsElementId(),
+                () => fi.Host?.LevelId
+            };
+            foreach (Func<ElementId> get in getters)
+            {
+                try
+                {
+                    ElementId id = get();
+                    if (id != null && id != ElementId.InvalidElementId && doc.GetElement(id) is Level lv) return lv.ProjectElevation;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private sealed class LinkView
+        {
+            public string Name;
+            public Document Doc;
+            public Transform ToLink;
+            public Dictionary<long, List<Solid>> Cache = new Dictionary<long, List<Solid>>();
+        }
+
+        /// <summary>Every LOADED link with its host-to-link transform. Unloaded links are
+        /// already reported by AgainstLinks (LinksSkipped); they are not re-listed here.</summary>
+        private static List<LinkView> LoadedLinks(Document doc)
+        {
+            var list = new List<LinkView>();
+            try
+            {
+                foreach (RevitLinkInstance link in new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
+                {
+                    try
+                    {
+                        Document linked = link.GetLinkDocument();
+                        if (linked == null) continue;
+                        list.Add(new LinkView { Name = SafeName(link), Doc = linked, ToLink = link.GetTotalTransform().Inverse });
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        /// <summary>Points on the instance's own solids (edge tessellation, world
+        /// coordinates), or its bounding-box corners when it has no solid.</summary>
+        private static List<(double X, double Y, double Z)> OwnFramePoints(FamilyInstance fi, Dictionary<long, List<Solid>> cache)
+        {
+            var pts = new List<(double X, double Y, double Z)>();
+            foreach (Solid s in Solids(fi, cache))
+            {
+                try
+                {
+                    foreach (Edge edge in s.Edges)
+                        foreach (XYZ p in edge.Tessellate()) pts.Add((p.X, p.Y, p.Z));
+                }
+                catch { }
+            }
+            if (pts.Count > 0) return pts;
+            BoundingBoxXYZ bb = null;
+            try { bb = fi.get_BoundingBox(null); } catch { }
+            if (bb == null) return pts;
+            for (int c = 0; c < 8; c++)
+                pts.Add(((c & 1) == 0 ? bb.Min.X : bb.Max.X, (c & 2) == 0 ? bb.Min.Y : bb.Max.Y, (c & 4) == 0 ? bb.Min.Z : bb.Max.Z));
+            return pts;
+        }
+
+        private static string SafeFamilyName(FamilyInstance fi)
+        {
+            try { return fi.Symbol?.Family?.Name; } catch { return null; }
+        }
+
+        private static string SafeTypeName(FamilyInstance fi)
+        {
+            try { return fi.Symbol?.Name; } catch { return null; }
+        }
+
+        /// <summary>A zone footprint (in origin/facing/hand/Z coordinates, see
+        /// ClearanceZoneRules.Footprints) turned into a world-coordinate extrusion, the same
+        /// way ClearZones below builds a door's passage box.</summary>
+        private static Solid BuildZoneSolid(XYZ origin, double fx, double fy, double hx, double hy, ClearanceZoneRules.ZoneFootprint fp)
+        {
+            try
+            {
+                double height = fp.MaxZ - fp.MinZ;
+                if (height <= 0) return null;
+                XYZ facing = new XYZ(fx, fy, 0), hand = new XYZ(hx, hy, 0);
+                XYZ p00 = At(origin, facing, hand, fp.MinF, fp.MinH, fp.MinZ);
+                XYZ p10 = At(origin, facing, hand, fp.MaxF, fp.MinH, fp.MinZ);
+                XYZ p11 = At(origin, facing, hand, fp.MaxF, fp.MaxH, fp.MinZ);
+                XYZ p01 = At(origin, facing, hand, fp.MinF, fp.MaxH, fp.MinZ);
+                var loop = CurveLoop.Create(new List<Curve> { Line.CreateBound(p00, p10), Line.CreateBound(p10, p11), Line.CreateBound(p11, p01), Line.CreateBound(p01, p00) });
+                return GeometryCreationUtilities.CreateExtrusionGeometry(new List<CurveLoop> { loop }, XYZ.BasisZ, height);
+            }
+            catch { return null; }
+        }
+
+        private static XYZ At(XYZ origin, XYZ facing, XYZ hand, double f, double h, double z) =>
+            new XYZ(origin.X + facing.X * f + hand.X * h, origin.Y + facing.Y * f + hand.Y * h, z);
+
+        /// <summary>Every model element whose solid intersects <paramref name="zone"/>: box
+        /// filter first (a solid filter alone scanned the whole model twice per door - a
+        /// real model's 234 doors ran out of a 5-minute budget), then the solid filter.
+        /// Shared by the door clear zone and the equipment clearance zone.</summary>
+        private static IList<Element> ZoneObstacles(Document doc, Solid zone)
+        {
+            try
+            {
+                BoundingBoxXYZ zb = zone.GetBoundingBox();
+                XYZ z0 = zb.Transform.OfPoint(zb.Min), z1 = zb.Transform.OfPoint(zb.Max);
+                var zoneOutline = new Outline(new XYZ(Math.Min(z0.X, z1.X), Math.Min(z0.Y, z1.Y), Math.Min(z0.Z, z1.Z)),
+                                              new XYZ(Math.Max(z0.X, z1.X), Math.Max(z0.Y, z1.Y), Math.Max(z0.Z, z1.Z)));
+                return new FilteredElementCollector(doc).WhereElementIsNotElementType()
+                    .WherePasses(new BoundingBoxIntersectsFilter(zoneOutline))
+                    .WherePasses(new ElementIntersectsSolidFilter(zone)).ToElements();
+            }
+            catch { return new List<Element>(); }
+        }
+
         private static double DoorWidth(FamilyInstance door)
         {
             foreach (BuiltInParameter bip in new[] { BuiltInParameter.DOOR_WIDTH, BuiltInParameter.FAMILY_WIDTH_PARAM, BuiltInParameter.FURNITURE_WIDTH })
@@ -347,7 +622,7 @@ namespace Horizun.Revit.Core
 
         public static JObject ToJson(Outcome o, int maxFindings = 50)
         {
-            string status = o.Errors > 0 ? "conflicts" : o.Warnings > 0 ? "warnings" : o.Partial ? "partial" : o.Subjects == 0 ? "nothing_to_check"
+            string status = o.Errors > 0 ? "conflicts" : o.Warnings > 0 ? "warnings" : o.IsPartial ? "partial" : o.Subjects == 0 ? "nothing_to_check"
                           : o.Checked > 0 && o.WithoutSolid == o.Checked ? "not_measured" : "clean";
             var list = new JArray();
             foreach (Finding f in o.Findings.OrderBy(f => f.Verdict.Severity == "error" ? 0 : 1).Take(maxFindings))
@@ -360,19 +635,27 @@ namespace Horizun.Revit.Core
                     ["a"] = Describe(f.A), ["b"] = DescribeIn(f.B, f.LinkB),
                     ["shared_volume_m3"] = f.SharedVolumeFt3.HasValue ? (JToken)Math.Round(f.SharedVolumeFt3.Value * M3PerFt3, 6) : JValue.CreateNull()
                 });
-            return new JObject
+            var result = new JObject
             {
                 ["status"] = status,
                 ["errors"] = o.Errors, ["warnings"] = o.Warnings,
                 ["subjects"] = o.Subjects, ["checked"] = o.Checked, ["without_solid"] = o.WithoutSolid,
                 ["neighbours_examined"] = o.Candidates, ["expected_intersections"] = o.Expected,
-                ["partial"] = o.Partial, ["partial_why"] = o.PartialWhy,
+                ["partial"] = o.IsPartial, ["partial_why"] = o.IsPartialWhy,
                 ["findings"] = list, ["findings_truncated"] = o.Findings.Count > maxFindings,
                 ["ms"] = o.Ms,
                 ["links_examined"] = o.LinksExamined, ["link_neighbours_examined"] = o.LinkCandidates,
                 ["links_skipped"] = new JArray(o.LinksSkipped),
                 ["method"] = "solid intersection (ElementIntersectsElementFilter / ElementIntersectsSolidFilter + BooleanOperationsUtils) of each changed model element against every model element in the host document AND in every loaded Revit link (the changed solid is carried into the link's coordinates); hosts, joins, MEP connections and same-assembly members are expected, not findings. An unloaded link is listed in links_skipped, never counted as clear."
             };
+            if (o.ClearanceRan || o.ClearanceNotMeasured.Count > 0)
+            {
+                var notMeasured = new JArray();
+                foreach (var n in o.ClearanceNotMeasured.Take(maxFindings)) notMeasured.Add(new JObject { ["id"] = n.Id, ["reason"] = n.Why });
+                result["equipment_clearance"] = new JObject { ["zoned"] = o.ClearanceZoned, ["not_measured"] = notMeasured, ["not_measured_count"] = o.ClearanceNotMeasured.Count };
+            }
+            if (o.ClearanceRuleErrors.Count > 0) result["clearance_rules_errors"] = new JArray(o.ClearanceRuleErrors);
+            return result;
         }
 
         /// <summary>One line a person reads first: what is wrong, or that nothing is.</summary>
@@ -380,7 +663,7 @@ namespace Horizun.Revit.Core
         {
             if (o.Subjects == 0) return null;
             if (o.Errors == 0 && o.Warnings == 0)
-                return o.Partial ? "Spatial check PARTIAL (" + o.PartialWhy + "); no conflict among what was checked." : null;
+                return o.IsPartial ? "Spatial check PARTIAL (" + o.IsPartialWhy + "); no conflict among what was checked." : null;
             var first = o.Findings.OrderBy(f => f.Verdict.Severity == "error" ? 0 : 1).First();
             return "Spatial check: " + o.Errors + " error(s), " + o.Warnings + " warning(s) among the elements this call changed - e.g. " +
                    first.Verdict.Reason + " (" + Rid.Value(first.A.Id) + " / " + Rid.Value(first.B.Id) + "). The write is committed; review spatial_check.findings and fix or undo.";
