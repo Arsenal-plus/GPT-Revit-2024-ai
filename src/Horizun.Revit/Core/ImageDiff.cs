@@ -187,4 +187,66 @@ namespace Horizun.Revit.Core
             return result;
         }
     }
+
+    /// <summary>
+    /// Linear map between a 3D view's crop-box LOCAL plane (X right, Y up, in feet)
+    /// and the pixel grid ExportImage writes for it with ZoomFitType.FitToPage +
+    /// FitDirectionType.Horizontal: the crop width spans the pixel width, aspect is
+    /// preserved, pixel (0,0) is the crop's top-left corner (local MinX, MaxY).
+    /// Pure arithmetic so the mapping is testable without Revit; whether Revit adds a
+    /// margin around the crop on export is a LIVE measurement (visual-diff probe).
+    /// </summary>
+    public sealed class CropPixelMap
+    {
+        public readonly double MinX, MaxY, FeetPerPixel;
+        public readonly int PixelWidth, PixelHeight;
+
+        public CropPixelMap(double minX, double maxX, double maxY, int pixelWidth, int pixelHeight)
+        {
+            if (pixelWidth <= 0 || pixelHeight <= 0) throw new ArgumentException("pixel size must be positive.");
+            if (!(maxX - minX > 1e-9)) throw new ArgumentException("the crop width must be positive.");
+            MinX = minX; MaxY = maxY; PixelWidth = pixelWidth; PixelHeight = pixelHeight;
+            FeetPerPixel = (maxX - minX) / pixelWidth;
+        }
+
+        /// <summary>Local crop-plane point -> fractional pixel (x right, y DOWN).</summary>
+        public void ToPixel(double localX, double localY, out double px, out double py)
+        {
+            px = (localX - MinX) / FeetPerPixel;
+            py = (MaxY - localY) / FeetPerPixel;
+        }
+
+        /// <summary>Pixel corner -> local crop-plane point. (px,py) = (0,0) is the crop's top-left.</summary>
+        public void ToLocal(double px, double py, out double localX, out double localY)
+        {
+            localX = MinX + px * FeetPerPixel;
+            localY = MaxY - py * FeetPerPixel;
+        }
+
+        /// <summary>
+        /// Pixel bounding box of a set of local points, clipped to the image; null when
+        /// it falls entirely outside. Returned as {minX, minY, maxX, maxY} inclusive.
+        /// </summary>
+        public int[] PixelBox(IEnumerable<double[]> localXY)
+        {
+            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
+            foreach (double[] p in localXY)
+            {
+                ToPixel(p[0], p[1], out double px, out double py);
+                x0 = Math.Min(x0, px); y0 = Math.Min(y0, py); x1 = Math.Max(x1, px); y1 = Math.Max(y1, py);
+            }
+            if (x0 > x1) return null;
+            int a = (int)Math.Floor(x0), b = (int)Math.Floor(y0), c = (int)Math.Ceiling(x1) - 1, d = (int)Math.Ceiling(y1) - 1;
+            if (c < a) c = a; if (d < b) d = b;
+            if (c < 0 || d < 0 || a >= PixelWidth || b >= PixelHeight) return null;
+            return new[] { Math.Max(0, a), Math.Max(0, b), Math.Min(PixelWidth - 1, c), Math.Min(PixelHeight - 1, d) };
+        }
+
+        /// <summary>True when the two inclusive pixel boxes share at least one pixel, after growing box b by margin.</summary>
+        public static bool Overlaps(ImageDiffRegion r, int[] box, int margin = 0)
+        {
+            if (r == null || box == null) return false;
+            return r.MinX <= box[2] + margin && box[0] - margin <= r.MaxX && r.MinY <= box[3] + margin && box[1] - margin <= r.MaxY;
+        }
+    }
 }

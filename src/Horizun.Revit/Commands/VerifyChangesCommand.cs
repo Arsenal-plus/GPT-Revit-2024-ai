@@ -27,7 +27,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class VerifyChangesCommand : ICommand
+    public sealed partial class VerifyChangesCommand : ICommand
     {
         public string Name => "horizun_verify_changes";
         public string Description => "Spatial coherence check of the elements the last write changed (or the ids given), with an image of them and the findings highlighted.";
@@ -37,6 +37,23 @@ namespace Horizun.Revit.Commands
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+
+            // operation=snapshot|compare_to (VerifyChangesSnapshot.cs) are a SEPARATE act
+            // from the default spatial check below: a named baseline image, and a later
+            // pixel diff against it. Both need the mutation gate because both build a
+            // temporary view (rolled back, same as the check's own picture).
+            string op = (request.Value<string>("operation") ?? "check").Trim();
+            if (op != "check" && op != "snapshot" && op != "compare_to")
+                return CommandResult.Fail("operation must be 'check', 'snapshot' or 'compare_to'.");
+            if (op != "check")
+            {
+                GateResult opGate = DocumentGate.ForMutation(app, request, Name);
+                if (!opGate.Ok) return opGate.Refusal;
+                Document opDoc = opGate.Document;
+                if (opDoc.IsFamilyDocument) return CommandResult.Fail("horizun_verify_changes checks project models; this is a family document.");
+                return op == "snapshot" ? RunSnapshot(app, opDoc, request) : RunCompareTo(app, opDoc, request);
+            }
+
             bool capture = request["capture"] == null || request.Value<bool>("capture");
             int pixel = request.Value<int?>("pixel_size") ?? 1400;
             if (pixel < 256 || pixel > 4096) return CommandResult.Fail("pixel_size must be between 256 and 4096.");

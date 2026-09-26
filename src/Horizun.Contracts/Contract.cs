@@ -696,7 +696,10 @@ namespace Horizun.Contracts
     ""time_budget_seconds"": { ""type"": ""integer"", ""default"": 60, ""minimum"": 5, ""maximum"": 600, ""description"": ""Stops early and reports partial rather than running unbounded."" },
     ""include_annotation"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Also check tag/text-note overlap (view coordinates) in view_ids, or the owning view of any tag/text note in scope, or the active view."" },
     ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 50, ""description"": ""Views to check with include_annotation=true. Each id must resolve to a view in this document."" },
-    ""target_document"": { ""type"": ""string"", ""description"": ""Title or full path of the ACTIVE document; required when capture=true."" }
+    ""target_document"": { ""type"": ""string"", ""description"": ""Title or full path of the ACTIVE document; required when capture=true or operation != check."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""check"", ""snapshot"", ""compare_to""], ""default"": ""check"", ""description"": ""snapshot: save a named baseline image+camera (framed on element_ids or view_id). compare_to: pixel-diff against it."" },
+    ""snapshot_name"": { ""type"": ""string"", ""description"": ""Baseline name for snapshot/compare_to; kept per document."" },
+    ""view_id"": { ""type"": ""integer"", ""description"": ""3D view whose camera and crop/section box snapshot reuses when element_ids is omitted."" }
   },
   ""additionalProperties"": false
 }")

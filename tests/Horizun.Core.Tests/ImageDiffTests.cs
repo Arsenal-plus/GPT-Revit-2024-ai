@@ -144,5 +144,60 @@ namespace Horizun.Core.Tests
             bool[] d = ImageDiff.Dilate(mask, 3, 3, 0);
             Assert.Equal(mask, d);
         }
+
+        [Fact]
+        public void Crop_pixel_map_anchors_top_left_and_round_trips()
+        {
+            // crop 10 ft wide (-5..5) x 5 ft tall (0..5) exported at 200 px wide: 0.05 ft/px.
+            var m = new CropPixelMap(-5, 5, 5, 200, 100);
+            Assert.Equal(0.05, m.FeetPerPixel, 9);
+            m.ToPixel(-5, 5, out double px, out double py);
+            Assert.Equal(0.0, px, 9); Assert.Equal(0.0, py, 9);
+            m.ToPixel(5, 0, out px, out py);
+            Assert.Equal(200.0, px, 9); Assert.Equal(100.0, py, 9);
+            m.ToLocal(50, 20, out double lx, out double ly);
+            Assert.Equal(-2.5, lx, 9); Assert.Equal(4.0, ly, 9);
+        }
+
+        [Fact]
+        public void Crop_pixel_map_boxes_points_and_clips_to_the_image()
+        {
+            var m = new CropPixelMap(0, 10, 10, 100, 100);
+            int[] box = m.PixelBox(new[] { new[] { 1.0, 9.0 }, new[] { 2.0, 8.0 } });
+            Assert.Equal(new[] { 10, 10, 19, 19 }, box);
+            int[] clipped = m.PixelBox(new[] { new[] { -5.0, 12.0 }, new[] { 1.0, 9.0 } });
+            Assert.Equal(new[] { 0, 0, 9, 9 }, clipped);
+            Assert.Null(m.PixelBox(new[] { new[] { 20.0, 20.0 }, new[] { 30.0, 30.0 } }));
+            Assert.Null(m.PixelBox(new double[0][]));
+        }
+
+        [Fact]
+        public void Region_overlap_honours_the_margin()
+        {
+            var r = new ImageDiffRegion { MinX = 10, MinY = 10, MaxX = 19, MaxY = 19, PixelCount = 100 };
+            Assert.True(CropPixelMap.Overlaps(r, new[] { 15, 15, 30, 30 }));
+            Assert.False(CropPixelMap.Overlaps(r, new[] { 25, 25, 30, 30 }));
+            Assert.True(CropPixelMap.Overlaps(r, new[] { 25, 25, 30, 30 }, margin: 6));
+            Assert.False(CropPixelMap.Overlaps(null, new[] { 0, 0, 1, 1 }));
+        }
+
+        [Fact]
+        public void Region_found_in_a_diff_lands_on_the_projected_element_box()
+        {
+            // End-to-end in pixel space: an "element" occupying local x 4..6, y 4..6 of a
+            // 10x10 ft crop at 100 px is painted black; the labelled region must overlap
+            // the box the map projects for that element.
+            int w = 100, h = 100;
+            int[] before = Solid(White, w, h), after = (int[])before.Clone();
+            var m = new CropPixelMap(0, 10, 10, w, h);
+            int[] elementBox = m.PixelBox(new[] { new[] { 4.0, 4.0 }, new[] { 6.0, 6.0 } });
+            for (int y = elementBox[1]; y <= elementBox[3]; y++)
+                for (int x = elementBox[0]; x <= elementBox[2]; x++)
+                    after[y * w + x] = Black;
+            ImageDiffResult r = ImageDiff.Compare(before, after, w, h);
+            Assert.Single(r.Regions);
+            Assert.True(CropPixelMap.Overlaps(r.Regions[0], elementBox));
+            Assert.Equal(0.04, r.ChangedPixelRatio, 9);
+        }
     }
 }
