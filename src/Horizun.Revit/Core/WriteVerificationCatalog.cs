@@ -176,7 +176,6 @@ namespace Horizun.Revit.Core
                 "ManageCadLinksCommand.cs add ~l.847: a file hash unreadable on either side reads as no disagreement, and a disagreement does not downgrade the verdict.",
                 "ManageCadLinksCommand.cs repoint ~l.507: the commit status is not checked."),
             Row("horizun_annotate", VerificationMechanism.PerRowReread, E("annotations_verified", "application"), F(C + "AnnotateCommand.cs"),
-                "AnnotateCommand.cs ~l.1650: when the rehearsal never got a value, a post-commit null reads as a match unless expected_value was given.",
                 "AnnotateCommand.cs ~l.1969: with avoid_collisions, a tag whose own extent cannot be measured still verifies (tag_extent_measured=false says so)."),
             Row("horizun_edit_dimensions", VerificationMechanism.PerRowReread, E("actions_verified", "application"), F(C + "EditDimensionsCommand.cs"),
                 "EditDimensionsCommand.cs ~l.840/870: reset_text_position is recorded match=true without a comparison - Revit publishes no reset state to re-read."),

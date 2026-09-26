@@ -247,7 +247,7 @@ namespace Horizun.Revit.Commands
                 // permanent one. Both are things the caller would otherwise have to
                 // guess at, and guessing wrong about the second means expecting a
                 // printed sheet to show something that was never stored.
-                JObject detail = GraphicsDetail(a.Action, a.Operation.ToLowerInvariant())
+                JObject detail = GraphicsDetail(doc, a.Action, a.Operation.ToLowerInvariant(), e)
                                  ?? ControlDetail(a.Action, a.Operation.ToLowerInvariant());
                 if (detail != null) row["graphics"] = detail;
                 rows.Add(row);
@@ -918,10 +918,37 @@ namespace Horizun.Revit.Commands
             known.Add(reserved, typeof(ViewSheet));
         }
 
+        /// <summary>
+        /// Operations whose 'name' field this command actually WRITES on the created
+        /// element (SetName on a View, .Name on a ViewSheet). Any other action's
+        /// 'name' - if it even carries one - is not this command's promise to keep.
+        /// </summary>
+        private static readonly HashSet<string> NamedOps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "create_floor_plan", "create_ceiling_plan", "create_structural_plan", "create_3d", "create_drafting",
+            "create_section", "create_elevation", "duplicate_view", "create_sheet", "create_area_plan",
+            "create_callout", "create_placeholder_sheet", "duplicate_sheet",
+        };
+
+        /// <summary>
+        /// A requested name is only a promise when the request GAVE one - a duplicate
+        /// with no explicit name inherits Revit's own "Copy of ..." naming, which is
+        /// not something this command chose and so not something it re-reads here.
+        /// </summary>
+        private static bool NameMatches(Element e, JObject action)
+        {
+            string want = action.Value<string>("name");
+            if (string.IsNullOrWhiteSpace(want)) return true;
+            string got;
+            try { got = (e as View)?.Name; } catch { return false; }
+            return got != null && string.Equals(got, want, StringComparison.Ordinal);
+        }
+
         private static bool Verify(Document doc, Applied a, Element e)
         {
             if (e == null) return false;
             if (a.Action["view_scale"] != null && (!(e is View scaleView) || scaleView.Scale != a.Action.Value<int>("view_scale"))) return false;
+            if (NamedOps.Contains(a.Operation) && !NameMatches(e, a.Action)) return false;
             switch (a.Operation.ToLowerInvariant())
             {
                 case "create_floor_plan": return e is ViewPlan floor && floor.ViewType == ViewType.FloorPlan;
@@ -948,8 +975,8 @@ namespace Horizun.Revit.Commands
                 case "apply_template": return e is View && a.TargetId != null && ((View)e).ViewTemplateId == a.TargetId;
                 case "create_sheet":
                     if (!(e is ViewSheet sheet) || !NumberMatches(sheet, a.Action)) return false;
-                    string sheetName = a.Action.Value<string>("name");
-                    if (!string.IsNullOrWhiteSpace(sheetName) && sheet.Name != sheetName) return false;
+                    // name is checked generically above (NamedOps), by the same
+                    // NameMatches every other named create/duplicate op goes through.
                     if (a.Action["title_block_type_id"] != null && !new FilteredElementCollector(doc, sheet.Id)
                         .OfCategory(BuiltInCategory.OST_TitleBlocks).WhereElementIsNotElementType()
                         .Any(b => Rid.Value(b.GetTypeId()) == a.Action.Value<long>("title_block_type_id"))) return false;

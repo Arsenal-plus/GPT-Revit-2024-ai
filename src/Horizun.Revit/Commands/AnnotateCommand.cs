@@ -1647,13 +1647,20 @@ namespace Horizun.Revit.Commands
                         want.HasValue ? (JToken)want.Value : null, got.HasValue ? (JToken)got.Value : null,
                         want.HasValue && got.HasValue && Math.Abs(want.Value - got.Value) <= tol);
                 else
+                {
+                    // Not-yet-materialised is the documented, expected reading before
+                    // commit - Revit computes dimension values lazily. POST-commit it
+                    // is not: nothing in this operation ever asks to CLEAR a dimension's
+                    // value, so a null read at that stage is a real miss, never a match.
+                    bool nullReadCountsAsMatch = stage != VerifyStage.PostCommit || got.HasValue;
                     checks.Add(new JObject
                     {
                         ["field"] = "value_first_materialised",
                         ["requested"] = "no rehearsal value to hold this to: Revit materialises values at commit",
                         ["read"] = got.HasValue ? (JToken)got.Value : JValue.CreateNull(),
-                        ["match"] = true
+                        ["match"] = nullReadCountsAsMatch
                     });
+                }
                 if (baselineMaterialised && baseline.SegmentValues != null && baseline.SegmentValues.Count > 0)
                 {
                     bool segMatch = m.SegmentValues != null &&
