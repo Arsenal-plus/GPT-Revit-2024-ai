@@ -364,6 +364,7 @@
          command; the decision is proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ApplicationOutcome.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CompositeVerdict.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadConnectVerdict.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanLedger.cs" />
     <!-- And how a command's OWN counters become that declaration. Both rules here
          are ones review caught being got wrong: a TransactionStatus thrown away and
