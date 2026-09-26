@@ -343,6 +343,7 @@ namespace Horizun.Server
                 // so "is this annotation identical to the union's" is an exact comparison.
                 SubtractBranchDuplicates(copy);
                 DropBranchTypeEqualToParent(copy);
+                ApplyAdvertisedShortForms(copy);
                 CompactSchemaNode(copy);
                 return copy;
             });
@@ -440,6 +441,37 @@ namespace Horizun.Server
             if (kept.Count == 0 && branch.Count > 0)
                 return union["type"] != null ? new JObject { ["type"] = union["type"].DeepClone() } : branch;
             return kept;
+        }
+
+        // SHORT FORMS OF TEXT THE CONTRACT REPEATS VERBATIM. The idempotency_key description
+        // is attached to every mutating tool (65 occurrences, MEASURED 2026-09-26), 305
+        // characters each time. The advertised copy shows a short form that keeps the three
+        // things a caller must act on; the contract and horizun://contract/tools keep every
+        // word. Keyed by the EXACT full text on purpose: if the contract's wording changes,
+        // the short form silently stops applying, nothing breaks, the 250-character cap
+        // applies as before, and the tools/list ledger shows the growth.
+        internal static readonly Dictionary<string, string> AdvertisedShortForms = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["REQUIRED whenever this call will mutate or change the Revit session. A retry " +
+             "with the same key and identical operation returns the recorded result without " +
+             "executing twice. Reusing it for different arguments is refused. Generate a new " +
+             "UUID for each deliberate operation; keep it unchanged only for retries."] =
+                "Required when the call mutates the model or session: a new UUID per deliberate change; " +
+                "reuse it only to retry the identical call."
+        };
+
+        private static void ApplyAdvertisedShortForms(JToken node)
+        {
+            if (node is JObject o)
+            {
+                if (o["description"] is JValue d && d.Type == JTokenType.String &&
+                    AdvertisedShortForms.TryGetValue((string)d, out string shortForm))
+                    o["description"] = shortForm;
+                foreach (JProperty p in o.Properties())
+                    if (p.Name != "description") ApplyAdvertisedShortForms(p.Value);
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) ApplyAdvertisedShortForms(item);
         }
 
         // A combinator branch restating its parent's `type` adds nothing: the parent's

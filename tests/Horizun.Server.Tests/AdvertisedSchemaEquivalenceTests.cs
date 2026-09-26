@@ -366,6 +366,36 @@ namespace Horizun.Server.Tests
             Assert.True(failures.Count == 0, string.Join("\n", failures.Take(25)));
         }
 
+        [Fact]
+        public void Short_forms_replace_every_repeat_and_the_contract_keeps_the_full_text()
+        {
+            foreach (var kv in Tools.AdvertisedShortForms)
+            {
+                Assert.True(kv.Value.Length <= Tools.SchemaDescriptionMax, "short form longer than the cap: " + kv.Value);
+                int inContract = 0, afterSubtraction = 0, inAdvertised = 0, shortInAdvertised = 0;
+                foreach (CommandContract c in WithSchemas())
+                {
+                    inContract += Count(c.InputSchema, kv.Key);
+                    afterSubtraction += Count(Structural(c.InputSchema), kv.Key);
+                    JObject adv = Advertised(c.Name);
+                    inAdvertised += Count(adv, kv.Key);
+                    shortInAdvertised += Count(adv, kv.Value);
+                }
+                // MEASURED 2026-09-26: the idempotency_key text is repeated 65 times.
+                Assert.True(inContract >= 65, "the contract holds the full text " + inContract + " times");
+                Assert.Equal(0, inAdvertised);
+                // A branch copy identical to its union field was already folded away by the
+                // subtraction (MEASURED 2026-09-26: 5 in horizun_document_session); every
+                // occurrence that is still advertised shows the short form.
+                Assert.Equal(afterSubtraction, shortInAdvertised);
+                string resource = (string)McpResources.Read(new JObject { ["uri"] = "horizun://contract/tools" })["contents"][0]["text"];
+                Assert.Contains(Newtonsoft.Json.JsonConvert.ToString(kv.Key).Trim('"'), resource);
+            }
+        }
+
+        private static int Count(JToken schema, string text) =>
+            Objs(schema).Count(o => o["description"] is JValue d && d.Type == JTokenType.String && (string)d == text);
+
         private static void Positions(JToken schema, string ptr, Action<string, JToken> visit)
         {
             visit(ptr, schema);
