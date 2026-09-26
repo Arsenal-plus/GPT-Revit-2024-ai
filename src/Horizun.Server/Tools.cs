@@ -241,40 +241,52 @@ namespace Horizun.Server
             {
                 if (!enabled(t)) continue;
                 if (WithheldReason(t, live) != null) continue;
-                var published = new JObject
-                {
-                    ["name"] = t.Name,
-                    ["title"] = Title(t.Name),
-                    ["description"] = CompactDescription(t.Description),
-                    ["inputSchema"] = CompactSchema(t.Name, t.InputSchema),
-                    ["outputSchema"] = t.OutputSchema,
-                    ["annotations"] = Annotations(t)
-
-                    // execution/taskSupport is added below only for a negotiated
-                    // 2025-11-25 session. Down-level clients never see the field. The
-                    // optional/forbidden decision is the same rule the durable submit
-                    // queue enforces, through McpTasks.Supports.
-                };
-                if (advertiseTaskSupport)
-                    published["execution"] = new JObject
-                    {
-                        ["taskSupport"] = McpTasks.Supports(t) ? "optional" : "forbidden"
-                    };
-
-                // MCP Apps: a tool declares its interactive view in its own description,
-                // through _meta.ui.resourceUri, and the host may preload it before the
-                // tool is ever called. Only horizun_clash has one, and only because the
-                // app renders that reply and nothing else - an app attached to a tool
-                // whose payload it cannot render is a blank panel the user blames their
-                // client for.
-                if (t.Name == "horizun_clash") published["_meta"] = McpAppResources.ToolUiMeta();
-                // The impact preview: the five bulk writes whose rehearsal payload
-                // (change_preview / plan_resolved / confirmation_token) the app reads.
-                else if (ImpactPreviewApp.Renders(t.Name)) published["_meta"] = ImpactPreviewApp.ToolUiMeta();
-
-                arr.Add(published);
+                arr.Add(Publish(t, advertiseTaskSupport));
             }
             return arr;
+        }
+
+        /// <summary>
+        /// The one entry tools/list publishes for <paramref name="t"/>, with no enablement
+        /// or withholding decision in it. Build decides WHETHER a tool is listed; this decides
+        /// WHAT a listed tool looks like. It is separate so the per-tool byte ledger
+        /// (ToolsListLedgerTests) can measure every contract row regardless of the posture of
+        /// the machine running it.
+        /// </summary>
+        internal static JObject Publish(ToolDef t, bool advertiseTaskSupport)
+        {
+            var published = new JObject
+            {
+                ["name"] = t.Name,
+                ["title"] = Title(t.Name),
+                ["description"] = CompactDescription(t.Description),
+                ["inputSchema"] = CompactSchema(t.Name, t.InputSchema),
+                ["outputSchema"] = t.OutputSchema,
+                ["annotations"] = Annotations(t)
+
+                // execution/taskSupport is added below only for a negotiated
+                // 2025-11-25 session. Down-level clients never see the field. The
+                // optional/forbidden decision is the same rule the durable submit
+                // queue enforces, through McpTasks.Supports.
+            };
+            if (advertiseTaskSupport)
+                published["execution"] = new JObject
+                {
+                    ["taskSupport"] = McpTasks.Supports(t) ? "optional" : "forbidden"
+                };
+
+            // MCP Apps: a tool declares its interactive view in its own description,
+            // through _meta.ui.resourceUri, and the host may preload it before the
+            // tool is ever called. Only horizun_clash has one, and only because the
+            // app renders that reply and nothing else - an app attached to a tool
+            // whose payload it cannot render is a blank panel the user blames their
+            // client for.
+            if (t.Name == "horizun_clash") published["_meta"] = McpAppResources.ToolUiMeta();
+            // The impact preview: the five bulk writes whose rehearsal payload
+            // (change_preview / plan_resolved / confirmation_token) the app reads.
+            else if (ImpactPreviewApp.Renders(t.Name)) published["_meta"] = ImpactPreviewApp.ToolUiMeta();
+
+            return published;
         }
 
         private static string Title(string name)
