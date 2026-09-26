@@ -495,8 +495,29 @@ PropertySet:	Org_TypeData	T	IfcWall,IfcSlab
 
 The exporter writes a property only when its Revit parameter has a value. A
 property missing from an element therefore means an empty parameter **or** a
-mapping the exporter did not apply; the file cannot tell those apart, and the
-GlobalIds in the report are where to look.
+mapping the exporter did not apply; the file ALONE cannot tell those apart.
+
+**The model is read too, before the export, to tell them apart.** Before
+exporting, `horizun_deliver_ifc` reads the mapped Revit parameter on the
+elements in scope for every declared property (resolved from the mapping's IFC
+classes to a Revit category by a built-in table covering common architecture,
+structure and MEP classes) and counts `has_value` / `empty` / `parameter_missing`
+- a class this bridge has no category for is reported `category_unmapped`,
+never guessed. After the export, the `pset_mapping` gate's evidence carries a
+`model_comparison` array, one entry per mapping row, classifying it as
+`exported` (the file carries it - necessarily from an element that had a
+value), `empty_in_model` (the parameter had no value - **not** an exporter
+fault), `not_applied` (a value existed in the model but the file carries the
+property for fewer entities than the model had values for - the exporter did
+not apply the mapping) or `parameter_missing` (the named parameter does not
+exist on the element at all). `exported` and `not_applied` are **aggregate**
+counts: no IFC GlobalId correlates a model element to its file entity without
+recomputing the exporter's own GUID algorithm, which this bridge does not
+carry, so a `population_mismatch_note` is added per row whenever the model
+census and the file's own count of candidate entities disagree - naming the
+mismatch rather than trusting the aggregate silently. The GlobalIds in
+`missing_examples` (the file-only check) are still where to look for which
+elements to fix.
 
 ### Naming
 
@@ -514,7 +535,15 @@ coordenadas), se relee la cabecera (`FILE_SCHEMA` y cierre `END-ISO-10303-21`),
 se valida el IDS **sobre el IFC exportado**, se busca en el archivo cada
 propiedad del mapeo con cobertura *n de m* y GlobalIds de los faltantes, y
 opcionalmente se escribe un BCF con un tema por especificación fallada, releído
-estructuralmente. El pre-chequeo del modelo es solo orientativo y nunca decide.
+estructuralmente. Antes de exportar también se lee el MODELO: el parámetro de
+Revit de cada propiedad declarada, por categoría resuelta desde las clases IFC
+del mapeo, contando `has_value`/`empty`/`parameter_missing`. Cruzado con el
+archivo, cada fila del mapeo queda clasificada en `model_comparison` como
+`exported`, `empty_in_model` (parámetro vacío - no es culpa del exportador),
+`not_applied` (había valor en el modelo pero el exportador no lo aplicó) o
+`parameter_missing` (el parámetro no existe en el elemento) - algo que el
+archivo solo, sin el modelo, no puede distinguir. El pre-chequeo del modelo
+(el `precheck` con IDS) sigue siendo solo orientativo y nunca decide.
 `deliverable_ready` es `true` solo si pasan todos los gates solicitados. El
 ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
 modelo y no escribe nada. El archivo de mapeo es el mismo formato del

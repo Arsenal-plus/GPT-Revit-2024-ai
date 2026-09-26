@@ -1177,3 +1177,28 @@ this and still goes through `View.CropBox`.
   (default 0.1 mm, well inside the 1 mm this feature targets) - unordered, since
   Revit is free to start or wind the loop however it likes. A rectangle's crop
   still compares as a bounding box, unchanged.
+
+## horizun_deliver_ifc: telling an empty parameter apart from a dropped mapping
+
+`model_comparison` (inside the `pset_mapping` gate's evidence) merges a
+BEFORE-export read of the model with the AFTER-export coverage check, per
+declared property: `exported`, `empty_in_model`, `not_applied`,
+`parameter_missing`. The model-side read resolves each mapping row's IFC
+classes to a Revit category through a built-in table
+(`DeliverIfcCommand.IfcClassCategories`) covering common architecture,
+structure and MEP classes (walls, slabs, columns, beams, doors, windows,
+stairs, railings, spaces, ducts, pipes, cable trays, flow terminals,
+electrical appliances...). A class outside that table makes the ROW
+`category_unmapped` - the model is not read for it, and only the file's own
+coverage (unaffected) is known.
+
+`exported` and `not_applied` are **aggregate** counts, not element-matched: no
+IFC GlobalId correlates a specific model element to its file entity without
+recomputing the exporter's own GUID algorithm (this bridge does not carry
+that algorithm). The arithmetic (`not_applied = max(0, has_value - carrying)`)
+holds as long as the model census and the file's coverage check are counting
+the SAME population; a `population_mismatch_note` on the row says so whenever
+the heuristic category resolution and the file's own IFC-class count disagree,
+rather than trusting the aggregate silently. `PsetMapping.CombineWithModel`
+(Revit-free) does the merge; `DeliverIfcCommand.ComputeModelCensus` (Revit-
+side) builds the per-row model counts.
