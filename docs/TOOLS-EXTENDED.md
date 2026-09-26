@@ -510,8 +510,12 @@ It works on findings of the ledger that `horizun_clash record_findings=true` mai
    runs only. The run's own axis is never an escape. Distances are whole millimetres,
    rounded away from the clash, and include `clearance_mm` (default 50). Candidates over
    `max_move_mm` (default 600) are rejected.
-4. Third elements. A candidate whose moved box would reach any other model element is
-   rejected (`would_touch_other_elements`); if none survives, the finding is report-only.
+4. Third elements, HOST AND LINKS. A candidate whose moved box would reach any other
+   host model element is rejected (`would_touch_other_elements`, `contacts`); the same
+   box, carried into the coordinates of every LOADED Revit link (the link instance's
+   total transform, inverted), is checked against that link's elements too
+   (`link_contacts`). An unloaded link is named in `links_skipped` - it is never
+   silently counted as clear. If no candidate survives, the finding is report-only.
 
 Each proposal carries `kind`, `distance_mm`, `affected_elements`, a `prediction`, and the
 ready `next_arguments` for apply.
@@ -520,14 +524,19 @@ ready `next_arguments` for apply.
 token, inside one TransactionGroup: the neighbourhood (every host model element whose box
 meets the swept region of each mover, grown by the clearance) is measured on solids
 BEFORE the move; the runs are moved; positions are re-read; the same neighbourhood is
-measured AFTER. The group is kept only when every targeted pair is gone and no pair
-appears that was not there before. Anything else - including a boolean that failed, so
-the result is unmeasured - rolls the whole group back and returns `new_clashes` and the
-`postconditions` checklist. A kept apply records an undo batch and marks each finding
-`resolved_by_model` with the measurement written into its history.
-
-Limit: the re-detection covers host elements only; a clash the move creates against a
-linked model is not seen (declared in `WriteVerificationCatalog`).
+measured AFTER - AND, in both passes, each mover's solid is carried into every loaded
+link's coordinates and intersected there too (`ElementIntersectsSolidFilter` +
+`BooleanOperationsUtils`, exactly like `SpatialCoherence.AgainstLinks`; the pair key is
+`link:<name>:<hostId>~<linkElementId>`, distinct from a host-host pair). The group is kept
+only when every targeted pair is gone and no pair - host OR link - appears that was not
+there before. Anything else - including a boolean that failed, so the result is unmeasured
+- rolls the whole group back and returns `new_clashes` (naming the link when that is what
+grew back) and the `postconditions` checklist. An unloaded link is listed in
+`links_skipped` on every reply (propose and apply) and never treated as measured-clear,
+but it does not by itself block an apply whose host-side pairs are otherwise clean - the
+same convention `SpatialCoherence.AgainstLinks` already uses. A kept apply records an undo
+batch and marks each finding `resolved_by_model` with the measurement written into its
+history.
 
 ### horizun_undo
 

@@ -124,7 +124,7 @@ namespace Horizun.Revit.Core
             Row("horizun_coordination", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "CoordinationShow.cs"),
                 "CoordinationShow.cs: only a bounded sample (20 host + 10 link overrides) is re-read per apply, not every painted element."),
             Row("horizun_resolve_clash", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "ResolveClashCommand.cs"),
-                "ResolveClashCommand.cs Detect: re-detection covers the host neighbourhood of the moved runs only, not linked models; a clash the move creates against a link is not seen."),
+                "ResolveClashCommand.cs DetectLinks: an unloaded link is listed in links_skipped and its pairs are simply not measured - the no_new_clash postcondition does not fail solely for that, matching SpatialCoherence.AgainstLinks's own convention."),
             Row("horizun_undo", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "UndoCommand.cs"),
                 "UndoCapture.cs State: the drift guard compares location, type, pin, orientation and tag head; an edit to an element's OTHER parameters since the batch is not detected."),
 
