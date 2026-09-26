@@ -22,27 +22,41 @@ function Enter-HzWorksharedFixture($Ctx, [string]$Lane) {
     $writePath = [string]$me.path
     $fixturePath = Join-Path ([IO.Path]::GetDirectoryName($writePath)) ([string]$Ctx.ClosedWorksetDocument + '.rvt')
     if (-not (Test-Path -LiteralPath $fixturePath)) { return @{ Why = "no fixture file at $fixturePath" } }
+    return (Enter-HzFixtureFile $Ctx $fixturePath $Lane $writePath)
+}
+
+# Open any fixture FILE detached (a central keeps its worksets; a plain model just opens)
+# and make it the active document. Never saved: Exit-HzWorksharedFixture closes it with
+# its changes discarded and re-activates the write document.
+function Enter-HzFixtureFile($Ctx, [string]$FixturePath, [string]$Lane, [string]$WritePath) {
+    if (-not $WritePath) {
+        $h = & $Ctx.Call 'horizun_health' @{}
+        $me = @($h.data.open_documents | Where-Object { $_.title -eq $Ctx.Document }) | Select-Object -First 1
+        if (-not $me -or -not $me.path) { return @{ Why = "the write document's path is not readable from health" } }
+        $WritePath = [string]$me.path
+    }
+    if (-not (Test-Path -LiteralPath $FixturePath)) { return @{ Why = "no fixture file at $FixturePath" } }
     $open = & $Ctx.Call 'horizun_document_session' @{
-        operation = 'open'; file_path = $fixturePath.Replace([char]92, '/'); detach = $true
-        expected_version = [string]$Ctx.Year; idempotency_key = ('ws-fixture-open-' + $Lane + '-' + $Ctx.RunId)
+        operation = 'open'; file_path = $FixturePath.Replace([char]92, '/'); detach = $true
+        expected_version = [string]$Ctx.Year; idempotency_key = ('fixture-open-' + $Lane + '-' + $Ctx.RunId)
     }
     if ($open.isError -or -not $open.data -or -not $open.data.title) {
-        return @{ Why = ('the workshared fixture did not open detached: ' + [string]$open.text); WritePath = $writePath }
+        return @{ Why = ('the fixture did not open detached: ' + [string]$open.text); WritePath = $WritePath }
     }
-    return @{ Title = [string]$open.data.title; WritePath = $writePath; Why = $null }
+    return @{ Title = [string]$open.data.title; WritePath = $WritePath; Why = $null }
 }
 
 function Exit-HzWorksharedFixture($Ctx, $Fixture, [string]$Lane) {
     if (-not $Fixture -or -not $Fixture.Title) { return 'nothing to close' }
     $back = & $Ctx.Call 'horizun_open_document' @{
         path = ([string]$Fixture.WritePath).Replace([char]92, '/'); activate = $true
-        expected_version = [string]$Ctx.Year; idempotency_key = ('ws-fixture-back-' + $Lane + '-' + $Ctx.RunId)
+        expected_version = [string]$Ctx.Year; idempotency_key = ('fixture-back-' + $Lane + '-' + $Ctx.RunId)
     }
     $dry = & $Ctx.Call 'horizun_document_session' @{ operation = 'close'; target_document = $Fixture.Title; discard_unsaved = $true; dry_run = $true }
     if ($dry.isError -or -not $dry.data.confirmation_token) { return ('close dry run refused: ' + [string]$dry.text) }
     $cl = & $Ctx.Call 'horizun_document_session' @{
         operation = 'close'; target_document = $Fixture.Title; discard_unsaved = $true; dry_run = $false
-        confirmation_token = $dry.data.confirmation_token; idempotency_key = ('ws-fixture-close-' + $Lane + '-' + $Ctx.RunId)
+        confirmation_token = $dry.data.confirmation_token; idempotency_key = ('fixture-close-' + $Lane + '-' + $Ctx.RunId)
     }
     $reactivated = -not $back.isError
     if ($cl.isError -or $cl.data.closed -ne $true) { return ('close failed: ' + [string]$cl.text) }

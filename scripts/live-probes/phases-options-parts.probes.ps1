@@ -7,6 +7,7 @@
 #
 # $Ctx.WriteGate is verify-live's $writeGate cast to bool: TRUE means the gate is
 # CLOSED (verify-live keeps the reason there), so every write case is not_covered.
+. (Join-Path $PSScriptRoot 'workshared-fixture.lib.ps1')
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'phases-options-parts'
     Catalog = @(
@@ -64,7 +65,29 @@ $script:HzProbeModules += [pscustomobject]@{
             $cases += Case $names[3] $P 'unverified' 'list did not answer'
         }
         elseif ($options.Count -eq 0) {
-            $cases += Case $names[3] $P 'not_covered' 'the disposable document has no design options; the read path answered with an empty list and design_options_writable=false'
+            # The API cannot create design options, so the write model never has any.
+            # Autodesk's own sample of the run's year does (MEASURED 2026-09-26: Snowdon
+            # Towers Architectural 2026 carries 'Bandstand Options' with a primary): open it
+            # detached, read it, close it without saving.
+            $samples = @("C:\Program Files\Autodesk\Revit $($Ctx.Year)\Samples\Snowdon Towers Sample Architectural.rvt",
+                         "C:\Program Files\Autodesk\Revit $($Ctx.Year)\Samples\rac_advanced_sample_project.rvt")
+            $sample = @($samples | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
+            $fx = if ($sample) { Enter-HzFixtureFile $Ctx $sample 'dopt' $null } else { @{ Why = 'no Autodesk sample with design options is installed for this year' } }
+            if (-not $fx.Title) {
+                $cases += Case $names[3] $P 'not_covered' ('the disposable document has no design options and ' + $fx.Why)
+            }
+            else {
+                try {
+                    $ol = & $Ctx.Call $P @{ operation = 'list'; target_document = $fx.Title }
+                    $fxOptions = @($ol.data.design_options)
+                    $sets = @($fxOptions | ForEach-Object { $_.option_set_id } | Sort-Object -Unique)
+                    $primaryPerSet = $sets.Count -gt 0
+                    foreach ($s in $sets) { if (@($fxOptions | Where-Object { $_.option_set_id -eq $s -and $_.is_primary }).Count -ne 1) { $primaryPerSet = $false } }
+                    $ok = -not $ol.isError -and $fxOptions.Count -gt 0 -and $primaryPerSet -and $ol.data.design_options_writable -eq $false
+                    $cases += Case $names[3] $P $(if ($ok) { 'pass' } else { 'fail' }) ("{0}: {1} options in {2} sets, one primary per set={3}" -f $fx.Title, $fxOptions.Count, $sets.Count, $primaryPerSet)
+                }
+                finally { $null = Exit-HzWorksharedFixture $Ctx $fx 'dopt' }
+            }
         }
         else {
             $sets = @($options | ForEach-Object { $_.option_set_id } | Sort-Object -Unique)
