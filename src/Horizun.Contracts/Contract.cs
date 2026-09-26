@@ -6992,7 +6992,12 @@ namespace Horizun.Contracts
             ["cable_tray"] = new[] { "start", "end", "type_id", "level_id" },
             // FlexPipe.Create/FlexDuct.Create take a PATH (points), not a start/end pair.
             ["flex_pipe"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter" },
-            ["flex_duct"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter", "width", "height" }
+            ["flex_duct"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
+            // Space: a 2D point on a level, like room. Area/area_boundary: a POINT/PROFILE
+            // in an area plan VIEW, not a level - Revit finds the boundary through the view.
+            ["space"] = new[] { "point", "level_id" },
+            ["area"] = new[] { "point", "view_id" },
+            ["area_boundary"] = new[] { "profile", "view_id" }
         };
         public static string ValidateCreation(JObject item, string kind)
         {
@@ -7084,7 +7089,7 @@ namespace Horizun.Contracts
                 var specific = new JObject { ["kind"] = new JObject { ["const"] = pair.Key }, ["parameters"] = props["parameters"].DeepClone(), ["source_reference"]=props["source_reference"].DeepClone(), ["source_row"]=props["source_row"].DeepClone() };
                 foreach (string field in pair.Value) specific[field] = props[field].DeepClone();
                 if (pair.Key == "beam_system") specific["profile"] = JObject.Parse(@"{'type':'array','minItems':3,'maxItems':12,'items':{'type':'array','minItems':2,'maxItems':2,'items':{'type':'number'}}}");
-                if (pair.Key == "room_separator") specific["profile"]["items"]["minItems"] = 2;
+                if (pair.Key == "room_separator" || pair.Key == "area_boundary") specific["profile"]["items"]["minItems"] = 2;
                 if(pair.Key=="wall_profile") specific["profile"]["description"]="One simple contour in a vertical plane, absolute internal XYZ. No holes. Revit base normalization is checked against the resulting world-space side-face silhouette.";
                 var required = new JArray("kind");
                 string[] requiredFields;
@@ -7103,6 +7108,9 @@ namespace Horizun.Contracts
                     case "displacement": requiredFields = new[] { "view_id", "element_ids", "displacement" }; break;
                     case "duct": case "pipe": requiredFields = new[] { "start", "end", "type_id", "level_id", "system_type_id" }; break;
                     case "flex_pipe": case "flex_duct": requiredFields = new[] { "points", "type_id", "level_id", "system_type_id" }; break;
+                    case "space": requiredFields = new[] { "point", "level_id" }; break;
+                    case "area": requiredFields = new[] { "point", "view_id" }; break;
+                    case "area_boundary": requiredFields = new[] { "profile", "view_id" }; break;
                     case "cable_tray": requiredFields = new[] { "start", "end", "level_id" }; break;
                     case "fitting": requiredFields = new[] { "fitting", "elements" }; break;
                     case "slab_opening": requiredFields = new[] { "host_id", "center" }; break;
@@ -7117,8 +7125,9 @@ namespace Horizun.Contracts
                 foreach (string field in requiredFields) required.Add(field);
                 if (specific["point"] != null)
                 {
-                    specific["point"]["minItems"] = pair.Key == "room" ? 2 : 3;
-                    specific["point"]["maxItems"] = pair.Key == "room" ? 2 : 3;
+                    bool point2D = pair.Key == "room" || pair.Key == "space" || pair.Key == "area";
+                    specific["point"]["minItems"] = point2D ? 2 : 3;
+                    specific["point"]["maxItems"] = point2D ? 2 : 3;
                 }
                 if (pair.Key == "wall_profile" || pair.Key == "roof") specific["profile"]["maxItems"] = 1;
                 variants.Add(new JObject { ["type"] = "object", ["properties"] = specific, ["required"] = required, ["additionalProperties"] = false });

@@ -595,7 +595,7 @@ namespace Horizun.Revit.Commands
             {
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.Start) : null;
                 XYZ PointNow() => elbow != null ? ReadElbowJunction(doc, made, elbow, 0) : e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
-                for (int axis = 0; axis < (p.Kind == "room" ? 2 : 3); axis++)
+                for (int axis = 0; axis < (p.Kind == "room" || p.Kind == "space" || p.Kind == "area" ? 2 : 3); axis++)
                 { int a = axis; Numeric((elbow == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => a == 2 && elbow == null ? (GovernedBaseZ(doc, e) ?? PointNow()[2]) : PointNow()[a]); }
             }
             if (p.End != null && p.Kind != "wall_opening" && p.Kind != "flex_pipe" && p.Kind != "flex_duct" && !(p.Kind == "wall" && p.ArcThird == null))
@@ -625,6 +625,20 @@ namespace Horizun.Revit.Commands
                             () => FlexPointsNow().Count > idx ? FlexPointsNow()[idx][a] : double.NaN);
                     }
                 }
+            }
+            // SPACE: the 2D point and the level re-read via the generic checks above
+            // (level_id already covers Space.LevelId, set directly from p.Level at
+            // creation). This adds what those do not - whether the placement point
+            // still reads as INSIDE the enclosed region via Space.IsPointInSpace, at a
+            // height inside the space's own vertical range rather than an arbitrary one.
+            if (p.Kind == "space" && p.Level != null)
+            {
+                Exact("point_inside_space", true, () =>
+                {
+                    var space = (Space)e;
+                    double testZ = p.Level.ProjectElevation + (space.UnboundedHeight > 0 ? Math.Min(space.UnboundedHeight, 1.0) : 1.0);
+                    try { return space.IsPointInSpace(new XYZ(p.Start.X, p.Start.Y, testZ)); } catch { return false; }
+                });
             }
             if (p.Kind == "wall")
             {
@@ -746,6 +760,23 @@ namespace Horizun.Revit.Commands
                 row["absolute_z_feet"] = governedZ;
                 row["location_point_z_feet"] = point.Point.Z;
                 row["level_elevation_feet"] = p.Level.ProjectElevation; row["offset_feet"] = governedZ - p.Level.ProjectElevation;
+            }
+            // AREA (square feet), REPORTED RATHER THAN ASSERTED. Space and Area are both
+            // SpatialElement: Area<=0 means the placement point found no closed boundary
+            // around it - Revit still creates the element, at the requested point - and
+            // that is a legitimate finding about the model's boundaries, not a placement
+            // failure this row caused. Same convention as ModelScanCommand's rooms:
+            // unreadable and unbounded are told apart, never folded into one "0".
+            if ((p.Kind == "space" || p.Kind == "area") && e is SpatialElement spatial)
+            {
+                double? areaSqFt = null;
+                try { areaSqFt = spatial.Area; } catch { }
+                row["area_sqft"] = areaSqFt.HasValue ? (JToken)Math.Round(areaSqFt.Value, 4) : JValue.CreateNull();
+                row["area_enclosed"] = areaSqFt.HasValue ? (JToken)(areaSqFt.Value > 0) : JValue.CreateNull();
+                row["area_means"] = areaSqFt.HasValue
+                    ? (areaSqFt.Value > 0 ? "the placement point found a closed boundary; area is measured, not assumed."
+                                          : "area is 0: the point found no enclosing boundary at commit time - the element exists, unbounded.")
+                    : "the Area property could not be read.";
             }
             // The SOLID Revit actually built, measured independently of every parameter
             // above, so a reader can compare the governed plane against real geometry.

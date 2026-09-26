@@ -385,6 +385,47 @@ namespace Horizun.Revit.Commands
                         p.WantName = Trimmed(item, "name");
                         p.WantNumber = Trimmed(item, "number");
                         break;
+                    // Space.Create(level, uv): a 2D point on a level, exactly like a room.
+                    // Verified: level_id (generic), the placement point (generic, 2D like
+                    // room), IsPointInSpace (below), and area>0-or-unbounded (reported, not
+                    // asserted - see ReadCreated).
+                    case "space":
+                        p.Level = Need<Level>(doc, item, "level_id"); p.Start = Point(item["point"], scale, false);
+                        break;
+                    // Area.Create(areaView, uv): a point in an AREA PLAN view, not a level -
+                    // Revit finds the enclosing AreaBoundaryLine loop through the view.
+                    case "area":
+                    {
+                        var areaView = Optional<View>(doc, item, "view_id") as ViewPlan;
+                        if (areaView == null || areaView.ViewType != ViewType.AreaPlan)
+                            throw new ArgumentException(
+                                "area needs view_id naming an AREA PLAN view (ViewType.AreaPlan) - the loop of " +
+                                "area_boundary lines the point falls inside is read through that view, and " +
+                                "Revit does not check a wrong view, it stops.");
+                        p.SeparatorView = areaView;
+                        p.Start = Point(item["point"], scale, false);
+                        break;
+                    }
+                    // AreaBoundaryLine, one per curve of the profile chain - same shape as
+                    // room_separator, but for an AREA PLAN view and area_boundary's own
+                    // single-curve API (there is no plural NewAreaBoundaryLines).
+                    case "area_boundary":
+                    {
+                        var boundaryView = Optional<View>(doc, item, "view_id") as ViewPlan;
+                        if (boundaryView == null || boundaryView.ViewType != ViewType.AreaPlan)
+                            throw new ArgumentException(
+                                "area_boundary needs view_id naming an AREA PLAN view (ViewType.AreaPlan). Revit " +
+                                "does not check a wrong view, it stops.");
+                        Level boundaryLevel = null;
+                        try { boundaryLevel = boundaryView.GenLevel; } catch { }
+                        if (boundaryLevel == null)
+                            throw new ArgumentException("area_boundary: the named view has no readable storey (GenLevel).");
+                        p.SeparatorView = boundaryView; p.Level = boundaryLevel;
+                        p.Chains = Chains(item["profile"] as JArray, scale);
+                        if (p.Chains.Count < 1) throw new ArgumentException("area_boundary needs at least one chain of curves");
+                        RequireHorizontalChains(p.Chains, "area_boundary");
+                        break;
+                    }
                     // A sprinkler is a family_instance restricted to OST_Sprinklers: same
                     // routing (level/host/face), same placement, same postconditions - the
                     // category check is the only thing this kind adds over the generic route.
@@ -1262,6 +1303,46 @@ namespace Horizun.Revit.Commands
                     SetIdentity(room, BuiltInParameter.ROOM_NAME, p.WantName, "name");
                     SetIdentity(room, BuiltInParameter.ROOM_NUMBER, p.WantNumber, "number");
                     return room;
+                }
+                case "space":
+                {
+                    Space space = doc.Create.NewSpace(p.Level, new UV(p.Start.X, p.Start.Y));
+                    if (space == null)
+                        throw new InvalidOperationException(
+                            "Revit placed no space at that point. Nothing was kept - MEASURED: unlike a room, a " +
+                            "space CAN be placed unbounded (area 0), which is reported rather than refused; a " +
+                            "null here means Revit itself declined, not merely that no boundary was found.");
+                    return space;
+                }
+                case "area":
+                {
+                    var areaView = (ViewPlan)p.SeparatorView;
+                    Area area = doc.Create.NewArea(areaView, new UV(p.Start.X, p.Start.Y));
+                    if (area == null)
+                        throw new InvalidOperationException(
+                            "Revit placed no area at that point. Nothing was kept.");
+                    return area;
+                }
+                case "area_boundary":
+                {
+                    var boundaryView = (ViewPlan)p.SeparatorView;
+                    Plane boundaryPlane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, p.Level.Elevation));
+                    SketchPlane boundarySketch = SketchPlane.Create(doc, boundaryPlane);
+                    ModelCurve firstBoundary = null;
+                    int boundaryCount = 0;
+                    foreach (List<Curve> chain in p.Chains)
+                        foreach (Curve curve in chain)
+                        {
+                            ModelCurve line = doc.Create.NewAreaBoundaryLine(boundarySketch, curve, boundaryView);
+                            if (line == null)
+                                throw new InvalidOperationException(
+                                    "Revit created no area boundary line for one of the curves. Nothing was kept.");
+                            if (firstBoundary == null) firstBoundary = line; else p.AlsoCreated.Add(line.Id);
+                            boundaryCount++;
+                        }
+                    if (boundaryCount == 0) throw new ArgumentException("area_boundary was given no curves to create");
+                    p.SeparatorSegments = boundaryCount;
+                    return firstBoundary;
                 }
                 case "sprinkler":
                 case "family_instance":
@@ -2197,6 +2278,10 @@ namespace Horizun.Revit.Commands
                 case "level": return e is Level; case "grid": return e is Grid; case "wall": return e is Wall;
                 case "floor": return e is Floor; case "ceiling": return e is Ceiling; case "roof": return e is FootPrintRoof;
                 case "room": return e is Autodesk.Revit.DB.Architecture.Room;
+                case "space": return e is Autodesk.Revit.DB.Mechanical.Space;
+                case "area": return e is Autodesk.Revit.DB.Area;
+                case "area_boundary":
+                    return e is CurveElement && InCategory(e, BuiltInCategory.OST_AreaSchemeLines);
                 case "sprinkler": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_Sprinklers);
                 case "family_instance": return e is FamilyInstance; case "duct": return e is Duct;
                 case "pipe": return e is Pipe; case "conduit": return e is Conduit; case "cable_tray": return e is CableTray;
