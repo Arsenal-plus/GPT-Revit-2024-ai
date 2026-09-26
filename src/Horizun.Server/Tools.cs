@@ -339,9 +339,133 @@ namespace Horizun.Server
             return CompactSchemas.GetOrAdd(toolName, _ =>
             {
                 var copy = (JObject)schema.DeepClone();
+                // The structural steps run on the FULL text, before the description caps,
+                // so "is this annotation identical to the union's" is an exact comparison.
+                SubtractBranchDuplicates(copy);
+                DropBranchTypeEqualToParent(copy);
                 CompactSchemaNode(copy);
                 return copy;
             });
+        }
+
+        // STRUCTURAL SUBTRACTION (2026-09-26). A node that has both a `properties` map (the
+        // union of every field) and a oneOf/anyOf/allOf whose branches restate some of those
+        // fields was advertising each field's schema twice: once in the union, once more in
+        // every branch. Both apply to the SAME instance - JSON Schema evaluates the node's
+        // `properties` and the chosen branch's `properties` against the same object - so
+        // (union AND branch) == (union AND branch'), where branch' keeps only what the branch
+        // adds or tightens. Nothing about what is ACCEPTED changes; the validators read the
+        // full contract in any case (ToolInputRules, the command parsers), and the full
+        // schema of any branch is served by horizun://contract/tools/{tool}/{variant}.
+        //
+        // What is never subtracted: const (the discriminator), references and combinators
+        // (their meaning depends on the whole subschema), and `type` - kept on every field
+        // so a client that infers a missing type (codex-rs sanitize_json_schema coerces an
+        // untyped or boolean schema to a string) still sees the right one. Property KEYS
+        // are never removed: a fully redundant field becomes {"type": ...}, never {}.
+        //
+        // MEASURED 2026-09-26 (with DropBranchTypeEqualToParent): tools/list 524,199 ->
+        // 465,146 bytes for all 122 tools; horizun_create_elements 81,409 -> ~30.8 KB and
+        // horizun_document_session 17,551 -> ~9.1 KB.
+        private static readonly string[] Combinators = { "oneOf", "anyOf", "allOf" };
+        private static readonly HashSet<string> NeverSubtracted = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "type", "const", "$ref", "$defs", "definitions", "oneOf", "anyOf", "allOf", "not",
+            "unevaluatedProperties", "unevaluatedItems"
+        };
+        private static readonly HashSet<string> AnnotationKeywords = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "description", "default", "title", "examples", "$comment"
+        };
+        // Keywords that only mean something together (additionalProperties depends on the
+        // properties beside it; minItems on the items; then/else on the if). A group is
+        // dropped all-or-none, and only when EVERY key in it equals the union's.
+        private static readonly string[][] KeywordGroups =
+        {
+            new[] { "properties", "patternProperties", "additionalProperties", "required", "propertyNames", "minProperties", "maxProperties" },
+            new[] { "items", "prefixItems", "additionalItems", "minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains" },
+            new[] { "if", "then", "else" }
+        };
+
+        internal static void SubtractBranchDuplicates(JToken node)
+        {
+            if (node is JObject o)
+            {
+                if (o["properties"] is JObject union)
+                    foreach (string combinator in Combinators)
+                        if (o[combinator] is JArray branches)
+                            foreach (JToken branch in branches)
+                                if (branch is JObject b && b["properties"] is JObject own)
+                                    foreach (JProperty field in own.Properties())
+                                        if (field.Value is JObject f && union[field.Name] is JObject u)
+                                            field.Value = SubtractField(f, u);
+                foreach (JProperty p in o.Properties())
+                {
+                    if (p.Name == "properties" && p.Value is JObject props)
+                        foreach (JProperty arg in props.Properties()) SubtractBranchDuplicates(arg.Value);
+                    else
+                        SubtractBranchDuplicates(p.Value);
+                }
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) SubtractBranchDuplicates(item);
+        }
+
+        private static JObject SubtractField(JObject branch, JObject union)
+        {
+            var kept = new JObject();
+            foreach (JProperty kw in branch.Properties())
+            {
+                bool keep;
+                if (NeverSubtracted.Contains(kw.Name)) keep = true;
+                else if (AnnotationKeywords.Contains(kw.Name)) keep = !JToken.DeepEquals(union[kw.Name], kw.Value);
+                else
+                {
+                    string[] group = null;
+                    foreach (string[] g in KeywordGroups)
+                        if (Array.IndexOf(g, kw.Name) >= 0) { group = g; break; }
+                    if (group == null) keep = !JToken.DeepEquals(union[kw.Name], kw.Value);
+                    else
+                    {
+                        keep = false;
+                        foreach (string k in group)
+                            if (!JToken.DeepEquals(branch[k], union[k])) { keep = true; break; }
+                    }
+                }
+                if (keep) kept.Add(kw.Name, kw.Value.DeepClone());
+            }
+            // Never an empty schema: {} reads as "anything" to a client that ignores the
+            // union. A typed union lends its type (it applies anyway); otherwise the branch
+            // field is left exactly as the contract wrote it.
+            if (kept.Count == 0 && branch.Count > 0)
+                return union["type"] != null ? new JObject { ["type"] = union["type"].DeepClone() } : branch;
+            return kept;
+        }
+
+        // A combinator branch restating its parent's `type` adds nothing: the parent's
+        // `type` already applies to the same instance. Kept when it is all the branch has,
+        // so no branch is ever advertised as {}.
+        internal static void DropBranchTypeEqualToParent(JToken node)
+        {
+            if (node is JObject o)
+            {
+                JToken parentType = o["type"];
+                if (parentType != null)
+                    foreach (string combinator in Combinators)
+                        if (o[combinator] is JArray branches)
+                            foreach (JToken branch in branches)
+                                if (branch is JObject b && b.Count > 1 && b["type"] != null && JToken.DeepEquals(b["type"], parentType))
+                                    b.Remove("type");
+                foreach (JProperty p in o.Properties())
+                {
+                    if (p.Name == "properties" && p.Value is JObject props)
+                        foreach (JProperty arg in props.Properties()) DropBranchTypeEqualToParent(arg.Value);
+                    else
+                        DropBranchTypeEqualToParent(p.Value);
+                }
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) DropBranchTypeEqualToParent(item);
         }
 
         private static void CompactSchemaNode(JToken node)
