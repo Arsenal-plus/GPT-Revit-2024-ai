@@ -57,6 +57,14 @@ namespace Horizun.Server.Tests
             Assert.Equal("horizun://contract/tools/" + CreateElements + "/wall", (string)wall["uri"]);
             Assert.True(JToken.DeepEquals(Kinds.Branch("wall"), wall["schema"]));
 
+            // The violation text agrees with the variant it names: a wall row is told what
+            // the WALL branch needs, never to become another kind (review 2026-09-26: the
+            // fewest-errors branch was level, and the advice said kind must be "level").
+            List<string> said = help["violations"].Select(v => (string)v).ToList();
+            Assert.Contains(said, v => v.Contains("'level_id' is required"));
+            foreach (string other in Kinds.Values.Where(k => k != "wall"))
+                Assert.DoesNotContain(said, v => v.Contains("must be \"" + other + "\""));
+
             // A success keeps its text exactly the payload, and its verdict fields.
             Assert.Equal((string)reply["content"][0]["text"], (string)attached["content"][0]["text"]);
             Assert.False((bool)attached["isError"]);
@@ -113,7 +121,7 @@ namespace Horizun.Server.Tests
             Assert.DoesNotContain("\n", line);
             Assert.StartsWith("Arguments violate the contract at /", line);
             Assert.Contains("structuredContent.schema_help", line);
-            Assert.Contains("horizun://contract/tools/" + CreateElements + "/wall", line);
+            Assert.Contains("horizun://contract/tools/" + CreateElements, line);
 
             JObject unknown = Help(attached)["variants"].OfType<JObject>().Single(v => (string)v["value"] == "no_such_kind");
             Assert.Equal(Kinds.Values, unknown["valid_values"].Select(v => (string)v).ToList());
@@ -121,16 +129,44 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void An_error_without_structured_content_gets_one()
+        public void An_error_without_structured_content_gains_only_a_line()
         {
+            // No structuredContent is created on a plain error: a reader that judges or
+            // forwards structuredContent (ProcedureRun; clients that send it in place of
+            // the text) would see the advice and lose the error itself.
             JObject reply = McpResult.Text("export refused: unknown format.", true);
             JToken attached = SchemaHelp.Attach(reply, "horizun_export", new JObject { ["format"] = "no_such_format" });
-            JObject help = Help(attached);
-            Assert.NotNull(help);
-            Assert.Equal("horizun://contract/tools/horizun_export", (string)help["contract_uri"]);
-            Assert.Null(help["variants"]);
-            Assert.Contains(help["violations"].Select(v => (string)v), v => v.StartsWith("/format", StringComparison.Ordinal));
-            Assert.Contains("(also horizun://contract/tools/horizun_export)", (string)attached["content"][0]["text"]);
+            Assert.Null(attached["structuredContent"]);
+            Assert.True((bool)attached["isError"]);
+            string text = (string)attached["content"][0]["text"];
+            Assert.StartsWith("export refused: unknown format." + Environment.NewLine + Environment.NewLine +
+                              "Arguments violate the contract at /", text);
+            Assert.EndsWith(". Exact schema: horizun://contract/tools/horizun_export.", text);
+        }
+
+        [Fact]
+        public void The_error_line_names_the_schema_that_holds_the_first_violation()
+        {
+            var help = new JObject
+            {
+                ["contract_uri"] = "horizun://contract/tools/" + CreateElements,
+                ["variants"] = new JArray(new JObject
+                {
+                    ["value"] = "wall", ["pointer"] = "/elements/1",
+                    ["uri"] = "horizun://contract/tools/" + CreateElements + "/wall"
+                })
+            };
+            // A missing top-level argument is in no variant's schema.
+            Assert.EndsWith("(also horizun://contract/tools/" + CreateElements + ").",
+                SchemaHelp.ErrorLine(help, new[] { "/: 'target_document' is required" }, true));
+            // Inside the wall row, the wall variant; a sibling row with a longer index is not inside it.
+            Assert.EndsWith("/wall).", SchemaHelp.ErrorLine(help, new[] { "/elements/1/height: must be number" }, true));
+            Assert.EndsWith("(also horizun://contract/tools/" + CreateElements + ").",
+                SchemaHelp.ErrorLine(help, new[] { "/elements/10: 'kind' is required" }, true));
+            // Unstructured: the first violation itself, the count of the rest, and the uri.
+            Assert.Equal("Arguments violate the contract at /elements/1/height: must be number (+1 more). Exact schema: " +
+                         "horizun://contract/tools/" + CreateElements + "/wall.",
+                SchemaHelp.ErrorLine(help, new[] { "/elements/1/height: must be number", "/x: y" }, false));
         }
 
         [Fact]
@@ -138,7 +174,10 @@ namespace Horizun.Server.Tests
         {
             JObject args = new JObject { ["operation"] = "save" };
             Assert.NotEmpty(ContractSchemaCheck.Validate(args, Contract.Find("horizun_document_session").InputSchema));
-            JToken attached = SchemaHelp.Attach(McpResult.Text("save refused.", true), "horizun_document_session", args);
+            JObject reply = McpResult.Error("save refused.", null, null, new JObject { ["operation"] = "save" });
+            JToken attached = SchemaHelp.Attach(reply, "horizun_document_session", args);
+            Assert.Contains("(also horizun://contract/tools/horizun_document_session/save).",
+                            (string)attached["content"][0]["text"]);
             JObject save = (JObject)Help(attached)["variants"].Single();
             Assert.Equal("save", (string)save["value"]);
             Assert.Equal("", (string)save["pointer"]);

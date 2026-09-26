@@ -35,7 +35,8 @@ namespace Horizun.Server
 
         /// <summary>The result, with structuredContent.schema_help when the call failed
         /// (isError, or a rehearsal that counted invalid rows) and its arguments violate
-        /// the contract. Pure and never throws: any failure returns the result unchanged.</summary>
+        /// the contract; an error reply with no structuredContent gains one text line
+        /// instead. Pure and never throws: any failure returns the result unchanged.</summary>
         internal static JToken Attach(JToken result, string tool, JToken arguments)
             => Attach(result, tool, arguments, ContractSchemaCheck.Validate);
 
@@ -71,8 +72,14 @@ namespace Horizun.Server
             // reply), and a failure below must leave it exactly as it was.
             var copy = (JObject)r.DeepClone();
             var structured = copy["structuredContent"] as JObject;
-            if (structured == null) { structured = new JObject(); copy["structuredContent"] = structured; }
-            structured["schema_help"] = help;
+
+            // An error that carried no structure keeps none: the advice travels as one line
+            // of its text instead. Creating structuredContent there changed what readers of
+            // the envelope see (review 2026-09-26): ProcedureRun judges a step by its
+            // structuredContent, and a client that forwards structuredContent in place of
+            // the text blocks would show the model the advice and hide the error itself
+            // ("no Revit is reachable"). A success with invalid rows always has structure.
+            if (structured != null) structured["schema_help"] = help;
 
             // A SUCCESS keeps its text exactly the payload - clients parse it as one JSON
             // document (the same rule McpResult.Structured follows for the fallback block).
@@ -82,19 +89,42 @@ namespace Horizun.Server
                 JObject block = ((JArray)copy["content"]).OfType<JObject>()
                     .FirstOrDefault(b => (string)b["type"] == "text" && b["text"]?.Type == JTokenType.String);
                 if (block != null)
-                    block["text"] = (string)block["text"] + Environment.NewLine + Environment.NewLine + ErrorLine(help, violations[0]);
+                    block["text"] = (string)block["text"] + Environment.NewLine + Environment.NewLine +
+                                    ErrorLine(help, violations, structured != null);
             }
             return copy;
         }
 
-        internal static string ErrorLine(JObject help, string firstViolation)
+        /// <summary>The one line an error gains. It names the URI of the schema that holds
+        /// the FIRST violation: a variant's when the violation lies inside that variant's
+        /// instance, the whole tool's otherwise - a missing top-level argument is not in any
+        /// variant's schema, and pointing there sent the reader to a page without it.</summary>
+        internal static string ErrorLine(JObject help, IList<string> violations, bool structured)
         {
-            int colon = firstViolation.IndexOf(": ", StringComparison.Ordinal);
-            string pointer = colon > 0 ? firstViolation.Substring(0, colon) : "/";
-            string uri = (string)((help["variants"] as JArray)?.OfType<JObject>()
-                .FirstOrDefault(v => v["uri"] != null)?["uri"]) ?? (string)help["contract_uri"];
-            return "Arguments violate the contract at " + pointer +
-                   "; exact schema in structuredContent.schema_help (also " + uri + ").";
+            string first = violations[0];
+            int colon = first.IndexOf(": ", StringComparison.Ordinal);
+            string pointer = colon > 0 ? first.Substring(0, colon) : "/";
+            string uri = VariantUriHolding(help, pointer) ?? (string)help["contract_uri"];
+            if (structured)
+                return "Arguments violate the contract at " + pointer +
+                       "; exact schema in structuredContent.schema_help (also " + uri + ").";
+            string message = first.Length <= MaxViolationChars ? first : first.Substring(0, MaxViolationChars) + "...";
+            message = message.Replace("\r", " ").Replace("\n", " ");
+            return "Arguments violate the contract at " + message +
+                   (violations.Count > 1 ? " (+" + (violations.Count - 1) + " more)" : "") +
+                   ". Exact schema: " + uri + ".";
+        }
+
+        private static string VariantUriHolding(JObject help, string pointer)
+        {
+            string p = pointer == "/" ? "" : pointer;
+            foreach (JObject v in (help["variants"] as JArray)?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            {
+                string vp = (string)v["pointer"], uri = (string)v["uri"];
+                if (vp == null || uri == null) continue;
+                if (vp.Length == 0 || p == vp || p.StartsWith(vp + "/", StringComparison.Ordinal)) return uri;
+            }
+            return null;
         }
 
         private static bool IsPositive(JToken t)

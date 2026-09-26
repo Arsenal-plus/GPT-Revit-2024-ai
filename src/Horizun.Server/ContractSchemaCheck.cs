@@ -34,6 +34,9 @@ namespace Horizun.Server
 
         /// <summary>Validates <paramref name="value"/> against <paramref name="schema"/>
         /// and returns "pointer: message" strings; empty when it passes.</summary>
+        /// <summary>The most errors one validation collects; the verdict needs one.</summary>
+        internal const int MaxErrors = 1000;
+
         internal static List<string> Validate(JToken value, JToken schema)
         {
             var errors = new List<string>();
@@ -76,6 +79,9 @@ namespace Horizun.Server
 
         internal static void Validate(JToken value, JToken schemaToken, string pointer, List<string> errors)
         {
+            // Bounded: this now runs on production failures (SchemaHelp), where the input is
+            // whatever a caller sent. A verdict only needs one error and advice keeps 20.
+            if (errors.Count >= MaxErrors) return;
             if (schemaToken is JValue b && b.Type == JTokenType.Boolean)
             {
                 if (!(bool)b) errors.Add(At(pointer) + "is not allowed here");
@@ -120,10 +126,24 @@ namespace Horizun.Server
                     var arr = (JArray)value;
                     if (schema["minItems"] != null && arr.Count < (int)schema["minItems"]) errors.Add(At(pointer) + "has fewer than minItems");
                     if (schema["maxItems"] != null && arr.Count > (int)schema["maxItems"]) errors.Add(At(pointer) + "has more than maxItems");
-                    if (schema["uniqueItems"] != null && (bool)schema["uniqueItems"])
+                    // uniqueItems: the first equal pair is the finding. Candidates are bucketed
+                    // by a cheap key and compared exactly (DeepEquals) only inside a bucket, and
+                    // an array already over maxItems is not scanned - a pairwise scan of a
+                    // hostile array was quadratic in time and in strings (review 2026-09-26).
+                    bool overMax = schema["maxItems"] != null && arr.Count > (int)schema["maxItems"];
+                    if (!overMax && schema["uniqueItems"] != null && (bool)schema["uniqueItems"])
+                    {
+                        var buckets = new Dictionary<string, List<int>>(StringComparer.Ordinal);
                         for (int i = 0; i < arr.Count; i++)
-                            for (int j = i + 1; j < arr.Count; j++)
-                                if (JToken.DeepEquals(arr[i], arr[j])) errors.Add(At(pointer) + "items " + i + " and " + j + " are equal");
+                        {
+                            string key = UniqueKey(arr[i]);
+                            if (!buckets.TryGetValue(key, out List<int> same)) buckets[key] = same = new List<int>();
+                            int j = -1;
+                            foreach (int k in same) if (JToken.DeepEquals(arr[k], arr[i])) { j = k; break; }
+                            if (j >= 0) { errors.Add(At(pointer) + "items " + j + " and " + i + " are equal"); break; }
+                            same.Add(i);
+                        }
+                    }
                     if (schema["items"] != null)
                         for (int i = 0; i < arr.Count; i++) Validate(arr[i], schema["items"], pointer + "/" + i, errors);
                     break;
@@ -171,17 +191,59 @@ namespace Horizun.Server
             return errors.Count == 0;
         }
 
-        /// <summary>The errors of the closest branch, so a failing oneOf says WHY.</summary>
+        /// <summary>The errors of the closest branch, so a failing oneOf says WHY.
+        ///
+        /// "Closest" first means the branch the instance NAMES: a branch whose const
+        /// properties all equal the instance's values (a create_elements row's kind). Only
+        /// when no branch is named does the fewest-errors branch speak. Fewest errors alone
+        /// told a wall row missing four fields to become a level, because the level branch
+        /// lacked only two (MEASURED 2026-09-26) - advice pointing the wrong way.</summary>
         private static string Diagnose(JToken value, JArray branches, string pointer)
         {
+            List<JToken> named = branches.Where(b => NamedBy(value, b)).ToList();
             List<string> best = null;
-            foreach (JToken branch in branches)
+            foreach (JToken branch in named.Count > 0 ? (IEnumerable<JToken>)named : branches)
             {
                 var errors = new List<string>();
                 Validate(value, branch, pointer, errors);
                 if (best == null || errors.Count < best.Count) best = errors;
             }
             return best == null ? "" : string.Join("; ", best.Take(5));
+        }
+
+        /// <summary>True when the branch has at least one const-valued property and the
+        /// instance carries every one of them with exactly that value.</summary>
+        private static bool NamedBy(JToken value, JToken branch)
+        {
+            if (!(value is JObject o) || !(branch?["properties"] is JObject props)) return false;
+            bool any = false;
+            foreach (JProperty p in props.Properties())
+            {
+                JToken c = (p.Value as JObject)?["const"];
+                if (c == null) continue;
+                any = true;
+                if (!o.TryGetValue(p.Name, out JToken v) || !JToken.DeepEquals(v, c)) return false;
+            }
+            return any;
+        }
+
+        /// <summary>A bucket key for uniqueItems: equal JSON values always share a key
+        /// (numbers by value, so 1 and 1.0 meet; containers by kind and size, since object
+        /// key order does not change equality), and DeepEquals decides inside the bucket.</summary>
+        private static string UniqueKey(JToken t)
+        {
+            switch (t.Type)
+            {
+                case JTokenType.Integer:
+                case JTokenType.Float:
+                    return "n:" + t.Value<double>().ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                case JTokenType.String: return "s:" + (string)t;
+                case JTokenType.Boolean: return (bool)t ? "b:1" : "b:0";
+                case JTokenType.Null: return "z";
+                case JTokenType.Array: return "a:" + ((JArray)t).Count;
+                case JTokenType.Object: return "o:" + ((JObject)t).Count;
+                default: return "x:" + t.Type;
+            }
         }
 
         private static bool HasType(JToken v, string type)

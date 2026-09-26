@@ -474,7 +474,7 @@ namespace Horizun.Server
                                       "nothing here changes that.";
 
             string judged, why;
-            Judge(Ok, structured ?? result, out judged, out why);
+            Judge(Ok, JudgeInput(result, structured), out judged, out why);
             step["state"] = judged;
             step["evaluation"] = why;
             step["assessment"] = Assess((string)step["tool"], structured ?? result);
@@ -765,6 +765,20 @@ namespace Horizun.Server
         /// what a later step can reference; digging into rendered text would make a
         /// procedure depend on how a message was worded.
         /// </summary>
+        /// <summary>
+        /// What Judge reads for a tool reply. An error envelope is judged as the error it
+        /// is: the structuredContent of an error (a fallback block, a rollback trace, schema
+        /// advice) does not repeat isError, and judging that half alone recorded a failed
+        /// step as not_evaluated and left the run unfailed (review 2026-09-26).
+        /// </summary>
+        internal static JToken JudgeInput(JToken result, JObject structured)
+        {
+            if (result is JObject envelope && envelope["isError"]?.Type == JTokenType.Boolean &&
+                (bool)envelope["isError"])
+                return envelope;
+            return (JToken)structured ?? result;
+        }
+
         private static JObject Structured(JToken result)
         {
             var body = result as JObject;
@@ -816,7 +830,7 @@ namespace Horizun.Server
                 ["reconciled_utc"] = DateTime.UtcNow.ToString("o")
             };
             string judged, why;
-            Judge(Ok, structured ?? result, out judged, out why);
+            Judge(Ok, JudgeInput(result, structured), out judged, out why);
             step["state"] = judged;
             step["evaluation"] = "reconciled: " + why;
             step["assessment"] = Assess(tool, structured ?? result);
