@@ -125,8 +125,9 @@ namespace Horizun.Revit.Commands
                 DocumentGate.RecordResolvedPlan(resolved);
                 var result = new JObject { ["dry_run"] = true, ["operation"] = op, ["plan"] = plan.Describe(u), ["rehearsal"] = r.Json };
                 ApplicationOutcome.StampRehearsal(result, plan.Count, 0, 0, 0);
-                DocumentGate.StampConfirmation(result, gate, Name, hash, true,
-                    "the token binds the request and the state read before the rehearsal (rule lists, catalog sizes, element sizes); apply re-plans against the model as it is then.");
+                DocumentGate.StampConfirmation(result, gate, Name, hash, true, op == "route"
+                    ? "the token binds the request and the planned route (polyline, kind, type, system, level, size); apply searches again and refuses as stale if the route changed."
+                    : "the token binds the request and the state read before the rehearsal (rule lists, catalog sizes, element sizes); apply re-plans against the model as it is then.");
                 return CommandResult.Ok(result);
             }
 

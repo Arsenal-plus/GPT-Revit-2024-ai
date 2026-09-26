@@ -82,7 +82,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 elseif ($elbows.Count -ne ($segs.Count - 1)) {
                     Case 0 'fail' ("$($segs.Count) segments but $($elbows.Count) elbows - every bend needs its own elbow")
                 }
-                elseif (-not $sc -or [int]$sc.errors -ne 0) {
+                elseif (-not $sc -or [int]$sc.errors -ne 0 -or $sc.partial -ne $false) {
                     Case 0 'fail' ('the committed route carries no clean spatial check: ' + ($sc | ConvertTo-Json -Compress))
                 }
                 else {

@@ -5,13 +5,20 @@
 // MepRoutingCommand.cs (WritePlan, Rehearse, the transaction/rollback wrapper).
 //
 // WHAT 'route' PROVES, re-read from the model after the commit:
-//   - every created segment's two endpoints match the path RouteSearch (Core,
-//     Revit-free, unit-tested in RouteSearchTests.cs) returned, within 1 mm.
+//   - the path RouteSearch (Core, Revit-free, unit-tested in RouteSearchTests.cs)
+//     returned, within 1 mm: a FREE end (the route's own start/end) sits on its
+//     planned point; an end at a BEND is trimmed back by the elbow (NewElbowFitting
+//     does that - measured in CadConnectCommand/CadUpdateRules), so there the
+//     NOMINAL junction (the intersection of the elbow's two connector axes) sits on
+//     the planned vertex, the physical end stayed on the planned leg's axis, pulled
+//     back toward the other end, and its connector is connected to THAT elbow.
 //   - every elbow placed between two consecutive segments has both its
 //     connectors CONNECTED (NewElbowFitting is asked, not trusted).
 //   - a spatial check (SpatialCoherence, the same engine horizun_verify_changes
 //     uses) against every element the route created finds NO error against a
-//     physical host or a loaded link. Any error throws inside Apply(), which
+//     physical host or a loaded link, and is COMPLETE: a partial check (budget or
+//     subject cap hit, links skipped) is 'could not look', not 'clean', and
+//     refuses the same way. Any error throws inside Apply(), which
 //     the shared wrapper in MepRoutingCommand.cs rolls back and reports by
 //     name - this file adds no rollback code of its own.
 //
@@ -20,9 +27,15 @@
 // LOADED link, both read from a box around start/end inflated by a margin wide
 // enough for RouteSearch's own default search box (MarginSteps grid steps),
 // so nothing the search could reach through is missed. Each obstacle box is
-// the element's own bounding box (world space for links, via GetTotalTransform)
-// inflated by clearance_mm + half the run's own size - the search must keep
-// clearance_mm of AIR around the new pipe, not around its centreline.
+// the element's own bounding box (world space for links, via GetTotalTransform,
+// all EIGHT corners - two opposite corners collapse the box of a rotated link)
+// inflated by clearance_mm + half the run's OUTSIDE size - the search must keep
+// clearance_mm of AIR around the new pipe's wall, not around its nominal circle.
+//
+// THE TOKEN BINDS THE ROUTE. Apply re-plans (Build searches again against the model
+// as it is then); the resolved plan carries the rounded polyline, kind, type,
+// system, level and size as its ContextFingerprint, so a route that changed since
+// the dry run is refused as stale instead of committing a path nobody previewed.
 // An unloaded link is not observable (measured elsewhere in this codebase,
 // see workset-cerrado-en-vinculo-no-observable) and is skipped, not refused.
 // -----------------------------------------------------------------------------
@@ -42,6 +55,8 @@ namespace Horizun.Revit.Commands
     public sealed partial class MepRoutingCommand
     {
         private const double MmToFeet = 1.0 / 304.8;
+        private const double MinGridMm = 10.0;      // a finer lattice runs A* on Revit's UI thread for too long
+        private const int MaxNodesCap = 200000;     // twice per call (dry run, then apply) on the UI thread
 
         private sealed class RoutePlan : WritePlan
         {
@@ -53,10 +68,16 @@ namespace Horizun.Revit.Commands
             private readonly List<ElementId> _elbowIds = new List<ElementId>();
             private readonly List<ElementId> _createdIds = new List<ElementId>();
             private SpatialCoherence.Outcome _spatial; // the gate's own outcome, from the Apply that committed
+            private double _outerSize; private string _sizeBasis;
 
-            private struct SegRecord { public ElementId Id; public XYZ Start; public XYZ End; public BuiltInParameter[] SizeParams; public double[] SizeWanted; }
+            private sealed class SegRecord { public ElementId Id; public XYZ Start; public XYZ End; public BuiltInParameter[] SizeParams; public double[] SizeWanted; public ElementId StartElbow, EndElbow; }
 
-            public override int Count => _createdIds.Count;
+            private int Legs => _result.Polyline.Count - 1;
+
+            // PLANNED, from the polyline - not what the last Apply created: the rehearsal resets
+            // that, and the dry run must declare the N segments + N-1 elbows it will create
+            // (reviewed defect: it declared 0 requested changes and an empty change_preview).
+            public override int Count => Legs + Math.Max(0, Legs - 1);
 
             public static RoutePlan Build(Document doc, JObject request, Units u, out string error)
             {
@@ -113,23 +134,31 @@ namespace Horizun.Revit.Commands
 
                 double clearanceMm = request.Value<double?>("clearance_mm") ?? 50.0;
                 double gridMm = request.Value<double?>("grid_mm") ?? 100.0;
-                if (clearanceMm < 0 || gridMm <= 0) { error = "clearance_mm must be >= 0 and grid_mm must be > 0."; return null; }
+                if (!(clearanceMm >= 0) || double.IsInfinity(clearanceMm) || !(gridMm >= MinGridMm) || double.IsInfinity(gridMm))
+                { error = "clearance_mm must be >= 0 and grid_mm must be >= " + MinGridMm + " (a finer lattice runs the search on Revit's UI thread for too long)."; return null; }
                 double clearanceFt = clearanceMm * MmToFeet, gridFt = gridMm * MmToFeet;
                 int maxNodes = request.Value<int?>("max_nodes") ?? RouteSearch.DefaultMaxNodes;
-                if (maxNodes <= 0) { error = "max_nodes must be positive."; return null; }
+                if (maxNodes <= 0 || maxNodes > MaxNodesCap) { error = "max_nodes must be between 1 and " + MaxNodesCap + " (the search runs on Revit's UI thread, twice: dry run and apply)."; return null; }
 
-                double halfRun = diameterFt.HasValue ? diameterFt.Value / 2.0 : Math.Max(widthFt.Value, heightFt.Value) / 2.0;
-                double inflate = clearanceFt + halfRun;
+                // The run's OUTSIDE size: clearance is air around the wall, not around the nominal
+                // circle (DN100 steel is 114.3 mm outside; reviewed defect: nominal lost 7-9 mm of it).
+                string sizeBasis = "width/height as given";
+                double runSize = diameterFt.HasValue ? OuterDiameterOf(doc, typeEl, diameterFt.Value, out sizeBasis) : Math.Max(widthFt.Value, heightFt.Value);
+                double inflate = clearanceFt + runSize / 2.0;
 
                 var reqStart = new RouteSearch.Point3(start.X, start.Y, start.Z);
                 var reqEnd = new RouteSearch.Point3(end.X, end.Y, end.Z);
-                int marginSteps = 6; // RouteSearch's own default when SearchBounds is not given
-                double margin = (marginSteps + 6) * gridFt + inflate; // generous superset: the search's own box, plus room
+                int marginSteps = 6; // RouteSearch grows its box to x3 and x9 of this before refusing
+                double margin = (marginSteps * 9 + 1) * gridFt + inflate; // covers the largest box the search can grow to
                 List<RouteSearch.Box3> obstacles = CollectObstacles(doc, start, end, margin, inflate);
 
                 var searchReq = new RouteSearch.Request
                 {
-                    Start = reqStart, End = reqEnd, Obstacles = obstacles, GridSize = gridFt, MaxNodes = maxNodes, MarginSteps = marginSteps
+                    Start = reqStart, End = reqEnd, Obstacles = obstacles, GridSize = gridFt, MaxNodes = maxNodes, MarginSteps = marginSteps,
+                    // A FLOOR, not the fitting's real take-off (that depends on the elbow family and
+                    // routing preferences, unknown before one is placed): one outside size per elbow.
+                    // Revit's own answer is measured by Verify (the trim must stay inside the leg).
+                    MinEndLeg = runSize, MinInteriorLeg = 2 * runSize
                 };
                 JToken pref = request["preferred_elevation"];
                 double? pMinMm = pref?["min_mm"]?.Value<double>(), pMaxMm = pref?["max_mm"]?.Value<double>();
@@ -137,6 +166,13 @@ namespace Horizun.Revit.Commands
                 if (pMaxMm.HasValue) searchReq.PreferredMaxZ = pMaxMm.Value * MmToFeet;
 
                 RouteSearch.Result result = RouteSearch.Find(searchReq);
+                if (!result.Found && result.ShortLeg.HasValue)
+                {
+                    error = "no_route: leg " + (result.ShortLeg.Value + 1) + " of " + (result.Polyline.Count - 1) + " of the best path is " +
+                        Math.Round(result.ShortLegLength * 304.8, 1) + " mm, shorter than the " + Math.Round(result.ShortLegMinimum * 304.8, 1) +
+                        " mm its elbow(s) need (one outside size per elbow) - put the end on the start's axis, or at least that far off it.";
+                    return null;
+                }
                 if (!result.Found)
                 {
                     string reason = result.Reason ?? "no path was found within max_nodes";
@@ -148,8 +184,37 @@ namespace Horizun.Revit.Commands
                 return new RoutePlan
                 {
                     _kind = kind, _typeId = typeId, _systemTypeId = systemTypeId, _levelId = levelId,
-                    _diameter = diameterFt, _width = widthFt, _height = heightFt, _result = result
+                    _diameter = diameterFt, _width = widthFt, _height = heightFt, _result = result,
+                    _outerSize = runSize, _sizeBasis = sizeBasis
                 };
+            }
+
+            /// <summary>
+            /// The OUTSIDE diameter for the nominal size asked, from the pipe segment(s) the
+            /// type's routing preferences name; a size no segment lists, a conduit or a round
+            /// duct falls back to the nominal, and size_basis says which was used.
+            /// </summary>
+            private static double OuterDiameterOf(Document doc, Element typeEl, double nominal, out string basis)
+            {
+                basis = "nominal";
+                RoutingPreferenceManager rpm = typeEl is PipeType pt ? Rpm(pt) : null;
+                if (rpm == null) return nominal;
+                basis = "nominal (no pipe segment of the type lists this size)";
+                double best = nominal;
+                try
+                {
+                    int n = rpm.GetNumberOfRules(RoutingPreferenceRuleGroupType.Segments);
+                    for (int i = 0; i < n; i++)
+                    {
+                        var seg = doc.GetElement(rpm.GetRule(RoutingPreferenceRuleGroupType.Segments, i).MEPPartId) as PipeSegment;
+                        if (seg == null) continue;
+                        foreach (MEPSize s in seg.GetSizes())
+                            if (Math.Abs(s.NominalDiameter - nominal) <= MepRoutingRules.SizeToleranceFeet && s.OuterDiameter > best)
+                            { best = s.OuterDiameter; basis = "outer diameter of pipe segment " + Rid.Value(seg.Id); }
+                    }
+                }
+                catch { }
+                return best;
             }
 
             private static XYZ ParsePoint(JToken token, string name, Units u, ref string error)
@@ -184,10 +249,8 @@ namespace Horizun.Revit.Commands
                     if (linkedDoc == null) continue; // unloaded: not observable, skipped rather than refused
                     Transform t;
                     try { t = inst.GetTotalTransform(); } catch { continue; }
-                    XYZ localA, localB;
-                    try { Transform inv = t.Inverse; localA = inv.OfPoint(min); localB = inv.OfPoint(max); } catch { continue; }
-                    var localMin = new XYZ(Math.Min(localA.X, localB.X), Math.Min(localA.Y, localB.Y), Math.Min(localA.Z, localB.Z));
-                    var localMax = new XYZ(Math.Max(localA.X, localB.X), Math.Max(localA.Y, localB.Y), Math.Max(localA.Z, localB.Z));
+                    XYZ localMin, localMax;
+                    try { CornersBox(t.Inverse, min, max, out localMin, out localMax); } catch { continue; }
                     BoundingBoxIntersectsFilter linkFilter;
                     try { linkFilter = new BoundingBoxIntersectsFilter(new Outline(localMin, localMax)); } catch { continue; }
                     foreach (Element e in new FilteredElementCollector(linkedDoc).WherePasses(linkFilter).WhereElementIsNotElementType())
@@ -204,11 +267,31 @@ namespace Horizun.Revit.Commands
                 BoundingBoxXYZ bb = null;
                 try { bb = e.get_BoundingBox(null); } catch { }
                 if (bb == null) return;
-                XYZ mn = bb.Min, mx = bb.Max;
-                if (worldTransform != null) { mn = worldTransform.OfPoint(bb.Min); mx = worldTransform.OfPoint(bb.Max); }
-                double minX = Math.Min(mn.X, mx.X) - inflate, minY = Math.Min(mn.Y, mx.Y) - inflate, minZ = Math.Min(mn.Z, mx.Z) - inflate;
-                double maxX = Math.Max(mn.X, mx.X) + inflate, maxY = Math.Max(mn.Y, mx.Y) + inflate, maxZ = Math.Max(mn.Z, mx.Z) + inflate;
-                boxes.Add(new RouteSearch.Box3(minX, minY, minZ, maxX, maxY, maxZ, name));
+                // The box's own transform first, then the link's, over all eight corners.
+                Transform own = null;
+                try { own = bb.Transform != null && !bb.Transform.IsIdentity ? bb.Transform : null; } catch { }
+                Transform total = own == null ? worldTransform : worldTransform == null ? own : worldTransform.Multiply(own);
+                CornersBox(total, bb.Min, bb.Max, out XYZ mn, out XYZ mx);
+                boxes.Add(new RouteSearch.Box3(mn.X - inflate, mn.Y - inflate, mn.Z - inflate, mx.X + inflate, mx.Y + inflate, mx.Z + inflate, name));
+            }
+
+            /// <summary>
+            /// The axis-aligned box, in t's target space, around all EIGHT corners of min/max.
+            /// Reviewed defect: mapping two opposite corners undersizes the box of anything in
+            /// a link rotated off 90 degrees (at 45 degrees a square collapses to zero width).
+            /// </summary>
+            private static void CornersBox(Transform t, XYZ min, XYZ max, out XYZ lo, out XYZ hi)
+            {
+                double lx = double.MaxValue, ly = double.MaxValue, lz = double.MaxValue;
+                double hx = double.MinValue, hy = double.MinValue, hz = double.MinValue;
+                for (int i = 0; i < 8; i++)
+                {
+                    var c = new XYZ((i & 1) == 0 ? min.X : max.X, (i & 2) == 0 ? min.Y : max.Y, (i & 4) == 0 ? min.Z : max.Z);
+                    XYZ w = t == null ? c : t.OfPoint(c);
+                    lx = Math.Min(lx, w.X); ly = Math.Min(ly, w.Y); lz = Math.Min(lz, w.Z);
+                    hx = Math.Max(hx, w.X); hy = Math.Max(hy, w.Y); hz = Math.Max(hz, w.Z);
+                }
+                lo = new XYZ(lx, ly, lz); hi = new XYZ(hx, hy, hz);
             }
 
             public override void Apply(Document doc)
@@ -219,7 +302,10 @@ namespace Horizun.Revit.Commands
                 for (int i = 0; i < poly.Count - 1; i++)
                 {
                     XYZ a = ToXyz(poly[i]), b = ToXyz(poly[i + 1]);
-                    if (a.DistanceTo(b) < MmToFeet) continue; // two waypoints that landed on the same point
+                    // RouteSearch never emits a leg under its minimum. Refused, not skipped: skipping
+                    // shifted every later bend onto the wrong polyline vertex (reviewed defect).
+                    if (a.DistanceTo(b) < MmToFeet)
+                        throw new InvalidOperationException("leg " + (i + 1) + " of the planned route is under 1 mm; refused rather than skipped");
                     Element seg;
                     switch (_kind)
                     {
@@ -237,12 +323,13 @@ namespace Horizun.Revit.Commands
                 }
                 for (int i = 0; i < segments.Count - 1; i++)
                 {
-                    XYZ bendPoint = ToXyz(poly[i + 1]);
+                    XYZ bendPoint = ToXyz(poly[i + 1]); // segments[i] is poly[i]..poly[i+1]: no leg is ever skipped
                     Connector cA = OpenConnectorNear(segments[i], bendPoint);
                     Connector cB = OpenConnectorNear(segments[i + 1], bendPoint);
                     if (cA == null || cB == null)
-                        throw new InvalidOperationException("segment at bend " + i + " has no open connector to fit an elbow (nothing was rolled back yet - the caller's transaction wrapper does that)");
+                        throw new InvalidOperationException("segment at bend " + (i + 1) + " has no open connector within 1 mm of the bend to fit an elbow (nothing was rolled back yet - the caller's transaction wrapper does that)");
                     FamilyInstance elbow = doc.Create.NewElbowFitting(cA, cB);
+                    _segments[i].EndElbow = elbow.Id; _segments[i + 1].StartElbow = elbow.Id;
                     _elbowIds.Add(elbow.Id);
                     _createdIds.Add(elbow.Id);
                 }
@@ -250,6 +337,10 @@ namespace Horizun.Revit.Commands
 
                 SpatialCoherence.Outcome spatial = SpatialCoherence.Check(doc, SpatialCoherence.Subjects(doc, _createdIds));
                 _spatial = spatial;
+                // 'Could not look' is not 'clean': a check that ran out of budget or subjects skipped
+                // part of the route or every link (reviewed defect: it committed with host_verified=true).
+                if (spatial.Partial)
+                    throw new InvalidOperationException("the spatial check after routing was incomplete (" + (spatial.PartialWhy ?? "partial") + "); a route is not committed on a check that could not look everywhere. Rolled back.");
                 if (spatial.Errors > 0)
                 {
                     SpatialCoherence.Finding f = spatial.Findings.FirstOrDefault(x => x.Verdict.Severity == "error");
@@ -294,7 +385,7 @@ namespace Horizun.Revit.Commands
                 {
                     if (c.IsConnected) continue;
                     double d = c.Origin.DistanceTo(target);
-                    if (d < bestDist) { bestDist = d; best = c; }
+                    if (d <= MmToFeet && d < bestDist) { bestDist = d; best = c; }
                 }
                 return best;
             }
@@ -315,10 +406,12 @@ namespace Horizun.Revit.Commands
                     Curve curve = (live?.Location as LocationCurve)?.Curve;
                     XYZ actualStart = null, actualEnd = null;
                     try { if (curve != null) { actualStart = curve.GetEndPoint(0); actualEnd = curve.GetEndPoint(1); } } catch { }
-                    bool startOk = actualStart != null && actualStart.DistanceTo(s.Start) <= MmToFeet;
-                    bool endOk = actualEnd != null && actualEnd.DistanceTo(s.End) <= MmToFeet;
-                    check.Record("segment:" + Rid.Value(s.Id) + ":start", PointJson(s.Start), actualStart == null ? (JToken)JValue.CreateNull() : PointJson(actualStart), startOk);
-                    check.Record("segment:" + Rid.Value(s.Id) + ":end", PointJson(s.End), actualEnd == null ? (JToken)JValue.CreateNull() : PointJson(actualEnd), endOk);
+                    bool startOk = EndOk(doc, live as MEPCurve, actualStart, s.Start, s.End, s.StartElbow, out JToken startFound);
+                    bool endOk = EndOk(doc, live as MEPCurve, actualEnd, s.End, s.Start, s.EndElbow, out JToken endFound);
+                    // Both trims together must still leave the run pointing the planned way.
+                    if (actualStart != null && actualEnd != null && (actualEnd - actualStart).DotProduct(s.End - s.Start) <= 0) endOk = false;
+                    check.Record("segment:" + Rid.Value(s.Id) + ":start", PointJson(s.Start), startFound, startOk);
+                    check.Record("segment:" + Rid.Value(s.Id) + ":end", PointJson(s.End), endFound, endOk);
                     // The size as the model holds it now - a size Revit snapped to its catalog
                     // (not the one asked for) is a failed postcondition, named, not a pass.
                     var wantMm = new JArray(); var haveMm = new JArray(); bool sizeOk = s.SizeParams != null;
@@ -347,6 +440,49 @@ namespace Horizun.Revit.Commands
                 return check;
             }
 
+            /// <summary>
+            /// A FREE end (no elbow) must sit on its planned point within 1 mm. An end at a BEND
+            /// cannot: NewElbowFitting trims both runs back to the elbow's connectors. There the
+            /// NOMINAL junction - the intersection of the elbow's two connector axes - must sit
+            /// on the planned vertex within 1 mm, the physical end must stay on the planned leg's
+            /// axis, pulled back toward the other end (never past it), and its connector must be
+            /// connected to that same elbow. Reviewed defect of the first version: it compared the
+            /// trimmed ends with the vertices, so every route with a bend failed its rehearsal.
+            /// </summary>
+            private static bool EndOk(Document doc, MEPCurve curve, XYZ physical, XYZ planned, XYZ other, ElementId elbowId, out JToken found)
+            {
+                found = physical == null ? (JToken)JValue.CreateNull() : PointJson(physical);
+                if (physical == null) return false;
+                if (elbowId == null) return physical.DistanceTo(planned) <= MmToFeet;
+                var o = new JObject { ["physical_mm"] = PointJson(physical), ["elbow_id"] = Rid.Value(elbowId) };
+                found = o;
+                try
+                {
+                    XYZ outward = (planned - other).Normalize();
+                    double trim = (planned - physical).DotProduct(outward);
+                    double offAxis = (physical - other).CrossProduct(outward).GetLength();
+                    o["trim_mm"] = Math.Round(trim * 304.8, 1);
+                    bool onLeg = offAxis <= MmToFeet && trim >= -MmToFeet && trim < planned.DistanceTo(other);
+                    List<Connector> ports = MepFacts.Ordered(MepFacts.ManagerOf(doc.GetElement(elbowId)))
+                        .Where(c => c.ConnectorType == ConnectorType.End).ToList();
+                    if (ports.Count != 2) { o["why"] = "the elbow exposes " + ports.Count + " end connectors, not 2"; return false; }
+                    bool attached = curve != null && MepFacts.Ordered(curve.ConnectorManager).Any(c => c.Origin.DistanceTo(physical) <= MmToFeet &&
+                        ports.Any(p => p.Origin.DistanceTo(physical) <= MmToFeet && p.IsConnectedTo(c)));
+                    o["attached_to_elbow"] = attached;
+                    double[] j = MepRules.AxisIntersection(AxisFact(ports[0]), AxisFact(ports[1]), MmToFeet);
+                    XYZ junction = j == null ? null : new XYZ(j[0], j[1], j[2]);
+                    o["junction_mm"] = junction == null ? (JToken)JValue.CreateNull() : PointJson(junction);
+                    return onLeg && attached && junction != null && junction.DistanceTo(planned) <= MmToFeet;
+                }
+                catch (Exception ex) { o["why"] = ex.Message; return false; }
+            }
+
+            private static ConnectorFact AxisFact(Connector c)
+            {
+                XYZ origin = c.Origin, d = c.CoordinateSystem.BasisZ;
+                return new ConnectorFact { X = origin.X, Y = origin.Y, Z = origin.Z, DirX = d.X, DirY = d.Y, DirZ = d.Z };
+            }
+
             private static JToken PointJson(XYZ p) => new JArray(Math.Round(p.X * 304.8, 1), Math.Round(p.Y * 304.8, 1), Math.Round(p.Z * 304.8, 1));
 
             public override JObject Describe(Units u)
@@ -358,7 +494,9 @@ namespace Horizun.Revit.Commands
                     ["system_type_id"] = _systemTypeId == null ? (JToken)JValue.CreateNull() : Rid.Value(_systemTypeId),
                     ["level_id"] = Rid.Value(_levelId),
                     ["length_mm"] = Math.Round(_result.Length * 304.8, 1), ["bends"] = _result.Bends,
-                    ["nodes_expanded"] = _result.NodesExpanded, ["polyline_mm"] = poly
+                    ["nodes_expanded"] = _result.NodesExpanded, ["search_margin_steps"] = _result.MarginStepsUsed, ["polyline_mm"] = poly,
+                    ["planned_segments"] = Legs, ["planned_elbows"] = Math.Max(0, Legs - 1),
+                    ["outer_size_mm"] = Math.Round(_outerSize * 304.8, 1), ["size_basis"] = _sizeBasis
                 };
             }
 
@@ -384,7 +522,32 @@ namespace Horizun.Revit.Commands
 
             public override void ResetAfterRehearsal() { _segments.Clear(); _elbowIds.Clear(); _createdIds.Clear(); _spatial = null; }
 
-            public override ResolvedPlan Resolved(GateResult gate, UIApplication app, string command) => NewResolved(gate, app, command);
+            public override ResolvedPlan Resolved(GateResult gate, UIApplication app, string command)
+            {
+                // The token binds THIS route: apply searches again, and a different polyline (the
+                // model changed in between) must be refused as stale, not committed unpreviewed.
+                var rp = NewResolved(gate, app, command);
+                string Mm(double v) => Math.Round(v * 304.8, 1).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                string Pt(RouteSearch.Point3 p) => Mm(p.X) + "," + Mm(p.Y) + "," + Mm(p.Z);
+                List<RouteSearch.Point3> poly = _result.Polyline;
+                rp.ContextFingerprint = "route=" + _kind + ";type=" + Rid.Value(_typeId) +
+                    ";system=" + (_systemTypeId == null ? "-" : Rid.Value(_systemTypeId).ToString()) + ";level=" + Rid.Value(_levelId) +
+                    ";size=" + (_diameter.HasValue ? "d" + Mm(_diameter.Value) : "w" + Mm(_width.Value) + "h" + Mm(_height.Value)) +
+                    ";polyline=" + string.Join("|", poly.Select(Pt));
+                for (int i = 0; i < Legs; i++)
+                    rp.Elements.Add(new PlannedElement
+                    {
+                        UniqueId = "route:segment:" + i, Category = _kind, Action = PlannedAction.Create,
+                        ProposedValues = new Dictionary<string, string> { ["from_mm"] = Pt(poly[i]), ["to_mm"] = Pt(poly[i + 1]) }
+                    });
+                for (int i = 1; i < Legs; i++)
+                    rp.Elements.Add(new PlannedElement
+                    {
+                        UniqueId = "route:elbow:" + i, Category = _kind + "_elbow", Action = PlannedAction.Create,
+                        ProposedValues = new Dictionary<string, string> { ["junction_mm"] = Pt(poly[i]) }
+                    });
+                return rp;
+            }
         }
     }
 }

@@ -82,9 +82,14 @@ namespace Horizun.Core.Tests
             };
             var req = Req(new Point3(0, 0, 0), new Point3(10, 0, 0), boxes);
             req.MarginSteps = 2; // no room to go around or over/under within bounds
+            req.GrowBounds = false;
             var r = RouteSearch.Find(req);
             Assert.False(r.Found);
             Assert.Contains("no_route", r.Reason);
+            Assert.NotNull(r.BlockingRegion);
+            Assert.Equal("full-height wall", r.BlockingRegion.Value.Name);
+            Assert.True(r.BoundsBinding);
+            Assert.Contains("binding limit, not max_nodes", r.Reason);
         }
 
         [Fact]
@@ -101,15 +106,107 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void An_end_point_off_the_lattice_is_closed_with_axis_stubs()
+        public void An_end_point_off_the_lattice_is_reached_by_absorbing_the_remainder()
         {
             // grid=1ft; end at (3.4, 0, 0) is not a lattice node - the lattice reaches (3,0,0)
-            // and a 0.4ft stub along X closes the rest, without moving the caller's point.
+            // and the 0.4 remainder lengthens that same leg, without moving the caller's point.
             var r = RouteSearch.Find(Req(new Point3(0, 0, 0), new Point3(3.4, 0, 0)));
             Assert.True(r.Found);
             Point3 last = r.Polyline[r.Polyline.Count - 1];
             Assert.Equal(3.4, last.X, 6);
             Assert.Equal(3.4, r.Length, 6);
+            Assert.Equal(2, r.Polyline.Count);
+        }
+
+        [Fact]
+        public void A_negative_remainder_never_doubles_the_route_back()
+        {
+            // Reviewed defect: 2.6 on a 1-unit grid rounded to 3 and came back, 0 -> 3 -> 2.6.
+            var r = RouteSearch.Find(Req(new Point3(0, 0, 0), new Point3(2.6, 0, 0)));
+            Assert.True(r.Found);
+            Assert.Equal(2, r.Polyline.Count);
+            Assert.Equal(0, r.Bends);
+            Assert.Equal(2.6, r.Length, 9);
+        }
+
+        [Fact]
+        public void A_remainder_is_absorbed_into_the_last_leg_along_its_axis_not_added_as_a_stub()
+        {
+            var r = RouteSearch.Find(Req(new Point3(0, 0, 0), new Point3(3.4, 2.7, 0)));
+            Assert.True(r.Found);
+            Assert.Equal(1, r.Bends);
+            Assert.Equal(6.1, r.Length, 9);
+            AssertNoReversedOrShortLeg(r, 1.0);
+        }
+
+        [Fact]
+        public void A_perpendicular_remainder_is_one_end_stub_and_a_minimum_leg_refuses_it_by_name()
+        {
+            // (3, 0.02, 0): the route never travels Y, so the 0.02 needs a stub - allowed with no
+            // minimum, refused by name (leg 2 of 2) when the end leg must hold an elbow.
+            var free = RouteSearch.Find(Req(new Point3(0, 0, 0), new Point3(3, 0.02, 0)));
+            Assert.True(free.Found);
+            Assert.Equal(1, free.Bends);
+            AssertNoReversedOrShortLeg(free, 0);
+            var req = Req(new Point3(0, 0, 0), new Point3(3, 0.02, 0));
+            req.MinEndLeg = 0.5;
+            var r = RouteSearch.Find(req);
+            Assert.False(r.Found);
+            Assert.Equal(1, r.ShortLeg);
+            Assert.StartsWith("no_route: leg 2 of 2", r.Reason);
+        }
+
+        [Fact]
+        public void The_search_keeps_every_end_leg_at_least_its_minimum()
+        {
+            // (0,0,0)->(6,1,0): the plain L has a 1-unit end leg; with MinEndLeg 2 the search must
+            // find a shape whose first and last legs are both >= 2 instead of refusing.
+            var req = Req(new Point3(0, 0, 0), new Point3(6, 1, 0));
+            req.MinEndLeg = 2;
+            var r = RouteSearch.Find(req);
+            Assert.True(r.Found, r.Reason);
+            int n = r.Polyline.Count;
+            Assert.True(r.Polyline[0].DistanceTo(r.Polyline[1]) >= 2 - 1e-9);
+            Assert.True(r.Polyline[n - 2].DistanceTo(r.Polyline[n - 1]) >= 2 - 1e-9);
+            AssertNoReversedOrShortLeg(r, 0);
+        }
+
+        [Fact]
+        public void A_detour_wider_than_the_margin_grows_the_search_box_instead_of_refusing()
+        {
+            var wall = new Box3(4, -8, -8, 6, 8, 8, "wide wall");
+            var req = Req(new Point3(0, 0, 0), new Point3(10, 0, 0), wall);
+            req.MarginSteps = 2; // 2 and 6 steps are inside the wall's reach; 18 goes around it
+            req.MaxNodes = 200000;
+            var r = RouteSearch.Find(req);
+            Assert.True(r.Found, r.Reason);
+            Assert.Equal(18, r.MarginStepsUsed);
+        }
+
+        [Fact]
+        public void A_one_sided_elevation_band_is_honoured_not_ignored()
+        {
+            // A slab passable over (z > 1) or under (z < -1) at equal length; only min_z is given,
+            // so going under costs extra and the route must go over.
+            var slab = new Box3(4, -50, -1, 6, 50, 1, "slab");
+            var req = Req(new Point3(0, 0, 0), new Point3(10, 0, 0), slab);
+            req.PreferredMinZ = 0;
+            var r = RouteSearch.Find(req);
+            Assert.True(r.Found, r.Reason);
+            Assert.All(r.Polyline, p => Assert.True(p.Z >= -1e-9));
+        }
+
+        private static void AssertNoReversedOrShortLeg(RouteSearch.Result r, double minLeg)
+        {
+            for (int i = 1; i < r.Polyline.Count; i++)
+            {
+                double len = r.Polyline[i - 1].DistanceTo(r.Polyline[i]);
+                Assert.True(len > 1e-9 && len >= minLeg - 1e-9, "leg " + i + " is " + len);
+                if (i < 2) continue;
+                Point3 a = r.Polyline[i - 2], b = r.Polyline[i - 1], c = r.Polyline[i];
+                double dot = (b.X - a.X) * (c.X - b.X) + (b.Y - a.Y) * (c.Y - b.Y) + (b.Z - a.Z) * (c.Z - b.Z);
+                Assert.True(dot >= -1e-9, "leg " + i + " doubles back");
+            }
         }
 
         [Fact]

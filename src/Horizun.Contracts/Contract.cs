@@ -5367,8 +5367,8 @@ namespace Horizun.Contracts
     ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""route: first point [x, y, z], in units."" },
     ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""route: last point [x, y, z], in units."" },
     ""clearance_mm"": { ""type"": ""number"", ""default"": 50, ""description"": ""route: air kept around the run's surface."" },
-    ""grid_mm"": { ""type"": ""number"", ""default"": 100, ""description"": ""route: search lattice spacing."" },
-    ""max_nodes"": { ""type"": ""integer"", ""description"": ""route: search budget; no_route when exhausted."" },
+    ""grid_mm"": { ""type"": ""number"", ""default"": 100, ""minimum"": 10, ""description"": ""route: search lattice spacing."" },
+    ""max_nodes"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200000, ""description"": ""route: search budget; no_route when exhausted."" },
     ""preferred_elevation"": { ""type"": ""object"", ""properties"": { ""min_mm"": { ""type"": ""number"" }, ""max_mm"": { ""type"": ""number"" } }, ""description"": ""route: Z band preferred, not enforced."" },
     ""rules"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""group"", ""action""], ""properties"": {
       ""group"": { ""type"": ""string"", ""description"": ""RoutingPreferenceRuleGroupType: Segments, Elbows, Junctions, Crosses, Transitions, Unions, Caps..."" },

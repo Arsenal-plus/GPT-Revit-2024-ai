@@ -12,9 +12,29 @@
 // routing points land on round multiples of grid_mm from the Revit origin), and
 // snapping the START would silently move the very point the caller asked to leave
 // a run at. Anchoring at start makes start exact by construction; only the END
-// point may fall off-lattice, and the residual (see Snap) is closed with up to
-// three short, still-axis-aligned stub segments rather than by moving the caller's
-// point or by pretending the lattice reaches everywhere it does not.
+// point may fall off-lattice.
+//
+// HOW THE OFF-LATTICE END IS REACHED. The end is snapped TOWARD the start on each
+// axis (truncation, not rounding), so the residual always points the way the route
+// already travels along that axis, and it is ABSORBED into the route's last leg
+// along that axis: that leg and every vertex after it shift by the residual (under
+// one grid step) and are re-checked against the obstacles. Reviewed defect of the
+// first version: residuals closed with separate stubs gave legs a few mm long that
+// no elbow fits on, and a NEGATIVE residual (end 2.6 on a 1-unit grid rounded to 3)
+// doubled the route back on itself (0 -> 3 -> 2.6, a 180-degree "bend"). Only an
+// axis the route never travels (offset under one step, no detour along it) still
+// needs a stub, and the minimum-leg rule below refuses it by name when it is short.
+//
+// MINIMUM LEG LENGTHS. Every bend becomes an elbow, and an elbow trims both runs
+// back by its own take-off, so a leg between two bends must hold two take-offs and
+// the first/last legs one. The search enforces it in grid steps (the state carries
+// the current leg's length) and the finished polyline is re-checked in world units,
+// because absorbing the residual can shorten a leg by less than one step.
+//
+// WHY THE SEARCH BOX GROWS. A detour wider than MarginSteps around start/end used
+// to be refused as no_route whatever max_nodes said; now an exhausted box is retried
+// at x3 and x9 the margin (same node budget, shared) before refusing, and the
+// refusal says when the box, not max_nodes, was the binding limit.
 //
 // WHY STATE INCLUDES THE ARRIVAL DIRECTION. Cost is length + a per-bend penalty,
 // so two paths of equal length are broken by whichever bends less - which the
@@ -120,6 +140,10 @@ namespace Horizun.Revit.Core
             /// <summary>Optional search bounds (world units). Default: the box of Start/snapped-End, expanded by MarginSteps grid cells.</summary>
             public Box3? SearchBounds;
             public int MarginSteps = 6;
+            /// <summary>Without SearchBounds, an exhausted box is retried at MarginSteps x3 and x9 before refusing.</summary>
+            public bool GrowBounds = true;
+            /// <summary>World units; 0 = none. First/last leg of a bent route (one elbow) and a leg between two bends (two elbows).</summary>
+            public double MinEndLeg, MinInteriorLeg;
             /// <summary>Optional soft preference: a node outside [MinZ,MaxZ] costs extra per unit of vertical distance outside the band. Never a hard constraint.</summary>
             public double? PreferredMinZ, PreferredMaxZ;
             public double OutOfBandWeight = 0.5;
@@ -134,6 +158,12 @@ namespace Horizun.Revit.Core
             public int NodesExpanded;
             public string Reason;
             public Box3? BlockingRegion;
+            public int MarginStepsUsed;
+            /// <summary>True when the search box, not max_nodes, stopped the search.</summary>
+            public bool BoundsBinding;
+            /// <summary>Set when a leg of the found polyline is shorter than its minimum (0-based leg index).</summary>
+            public int? ShortLeg;
+            public double ShortLegLength, ShortLegMinimum;
         }
 
         public static Result Find(Request req)
@@ -154,70 +184,133 @@ namespace Horizun.Revit.Core
             if (Blocked(obstacles, req.End, out Box3 endBlock))
                 return Fail("no_route: the end point is inside " + Describe(endBlock), endBlock);
 
-            // Snap End onto the lattice anchored at Start; keep the residual to close with stubs.
-            long ex = (long)Math.Round((req.End.X - req.Start.X) / grid, MidpointRounding.AwayFromZero);
-            long ey = (long)Math.Round((req.End.Y - req.Start.Y) / grid, MidpointRounding.AwayFromZero);
-            long ez = (long)Math.Round((req.End.Z - req.Start.Z) / grid, MidpointRounding.AwayFromZero);
+            if (req.MinEndLeg < 0 || req.MinInteriorLeg < 0 || double.IsNaN(req.MinEndLeg) || double.IsNaN(req.MinInteriorLeg))
+                return Fail("minimum leg lengths must not be negative");
+
+            // Snap End TOWARD Start on the lattice anchored at Start; the residual is absorbed below.
+            long ex = SnapTowardStart(req.End.X - req.Start.X, grid);
+            long ey = SnapTowardStart(req.End.Y - req.Start.Y, grid);
+            long ez = SnapTowardStart(req.End.Z - req.Start.Z, grid);
             Point3 snappedEnd = req.Start.Add(ex * grid, ey * grid, ez * grid);
+            int minEndSteps = StepsFor(req.MinEndLeg, grid), minInteriorSteps = StepsFor(req.MinInteriorLeg, grid);
 
-            Box3 bounds = req.SearchBounds ?? DefaultBounds(req.Start, snappedEnd, grid, req.MarginSteps);
-
-            // The trivial case: start and the lattice-snapped end coincide (the residual stubs,
-            // if any, are added below regardless).
             List<Point3> gridPolyline;
-            int nodesExpanded;
+            int nodesExpanded = 0, marginUsed = req.MarginSteps;
             if (ex == 0 && ey == 0 && ez == 0)
             {
                 gridPolyline = new List<Point3> { req.Start };
-                nodesExpanded = 0;
             }
             else
             {
-                AStarResult a = RunAStar(req.Start, snappedEnd, ex, ey, ez, grid, bendPenalty, obstacles, bounds, req.MaxNodes, req);
+                int[] margins = req.SearchBounds.HasValue || !req.GrowBounds ? new[] { req.MarginSteps }
+                    : new[] { req.MarginSteps, req.MarginSteps * 3, req.MarginSteps * 9 };
+                AStarResult a = null;
+                foreach (int m in margins)
+                {
+                    Box3 bounds = req.SearchBounds ?? DefaultBounds(req.Start, snappedEnd, grid, m);
+                    a = RunAStar(req.Start, ex, ey, ez, grid, bendPenalty, obstacles, bounds, req.MaxNodes - nodesExpanded, req, minEndSteps, minInteriorSteps);
+                    nodesExpanded += a.NodesExpanded;
+                    marginUsed = m;
+                    if (a.Found || !a.BoundsExhausted || nodesExpanded >= req.MaxNodes) break;
+                }
                 if (!a.Found)
                 {
                     Box3? blocking = FindBlockingRegion(req.Start, snappedEnd, obstacles);
                     return new Result
                     {
                         Found = false,
-                        Reason = a.Reason ?? "no_route: no orthogonal path connects the two points within the search bounds and max_nodes budget",
-                        BlockingRegion = blocking,
-                        NodesExpanded = a.NodesExpanded
+                        Reason = (a.Reason ?? "no_route: no orthogonal path connects the two points within the search bounds and max_nodes budget") +
+                            (a.BoundsExhausted && !req.SearchBounds.HasValue ? " (the search box, " + marginUsed + " grid steps around start/end, was the binding limit, not max_nodes)" : ""),
+                        BlockingRegion = blocking, NodesExpanded = nodesExpanded, MarginStepsUsed = marginUsed, BoundsBinding = a.BoundsExhausted
                     };
                 }
                 gridPolyline = a.Path;
-                nodesExpanded = a.NodesExpanded;
             }
 
-            // Close the residual with up to 3 axis stubs (X, then Y, then Z), each checked for collision.
-            var full = new List<Point3>(gridPolyline);
-            Point3 cursor = full[full.Count - 1];
-            foreach (var axis in new[] { 'x', 'y', 'z' })
+            // Absorb the residual, axis by axis, into the last leg along that axis.
+            List<Point3> path = Simplify(gridPolyline);
+            double[] residual = { req.End.X - snappedEnd.X, req.End.Y - snappedEnd.Y, req.End.Z - snappedEnd.Z };
+            for (int axis = 0; axis < 3; axis++)
             {
-                double dx = axis == 'x' ? req.End.X - cursor.X : 0;
-                double dy = axis == 'y' ? req.End.Y - cursor.Y : 0;
-                double dz = axis == 'z' ? req.End.Z - cursor.Z : 0;
-                if (Math.Abs(dx) <= Tolerance && Math.Abs(dy) <= Tolerance && Math.Abs(dz) <= Tolerance) continue;
-                Point3 next = cursor.Add(dx, dy, dz);
-                if (Blocked(obstacles, cursor, next, out Box3 block))
-                    return new Result { Found = false, Reason = "no_route: the final connector to the end point is blocked by " + Describe(block), BlockingRegion = block, NodesExpanded = nodesExpanded };
-                full.Add(next);
-                cursor = next;
+                double r = residual[axis];
+                if (Math.Abs(r) <= Tolerance) continue;
+                List<Point3> absorbed = null; Box3? block = null;
+                // A leg already travelling the residual's way first: lengthening never shortens a leg below its fitting.
+                foreach (bool sameWay in new[] { true, false })
+                    for (int i = path.Count - 2; i >= 0 && absorbed == null; i--)
+                    {
+                        if (!IsAlong(path[i], path[i + 1], axis)) continue;
+                        if ((Coord(path[i + 1], axis) - Coord(path[i], axis)) * r > 0 != sameWay) continue;
+                        var candidate = new List<Point3>(path);
+                        for (int k = i + 1; k < candidate.Count; k++) candidate[k] = Shift(candidate[k], axis, r);
+                        if (FirstBlockedLeg(obstacles, candidate, i, out Box3 hit)) { block = hit; continue; }
+                        absorbed = candidate;
+                    }
+                if (absorbed != null) { path = absorbed; continue; }
+                if (block.HasValue)
+                    return new Result { Found = false, Reason = "no_route: the end point's off-grid remainder cannot be absorbed into the route without crossing " + Describe(block.Value), BlockingRegion = block, NodesExpanded = nodesExpanded, MarginStepsUsed = marginUsed };
+                // No leg travels this axis: the remainder (under one grid step) needs its own stub at the end.
+                Point3 last = path[path.Count - 1], next = Shift(last, axis, r);
+                if (Blocked(obstacles, last, next, out Box3 stubBlock))
+                    return new Result { Found = false, Reason = "no_route: the final connector to the end point is blocked by " + Describe(stubBlock), BlockingRegion = stubBlock, NodesExpanded = nodesExpanded, MarginStepsUsed = marginUsed };
+                path.Add(next);
             }
-            if (cursor.DistanceTo(req.End) > Tolerance)
-                return new Result { Found = false, Reason = "no_route: the residual connector to the end point could not be closed", NodesExpanded = nodesExpanded };
+            path = Simplify(path);
+            if (path[path.Count - 1].DistanceTo(req.End) > Tolerance)
+                return new Result { Found = false, Reason = "no_route: the residual connector to the end point could not be closed", NodesExpanded = nodesExpanded, MarginStepsUsed = marginUsed };
 
-            List<Point3> simplified = Simplify(full);
             double length = 0;
-            for (int i = 1; i < simplified.Count; i++) length += simplified[i - 1].DistanceTo(simplified[i]);
+            for (int i = 1; i < path.Count; i++) length += path[i - 1].DistanceTo(path[i]);
+            int legs = path.Count - 1;
+            for (int j = 0; legs >= 2 && j < legs; j++)
+            {
+                double need = j == 0 || j == legs - 1 ? req.MinEndLeg : req.MinInteriorLeg;
+                double len = path[j].DistanceTo(path[j + 1]);
+                if (len + Tolerance < need)
+                    return new Result
+                    {
+                        Found = false, Polyline = path, Length = length, Bends = legs - 1, NodesExpanded = nodesExpanded, MarginStepsUsed = marginUsed,
+                        ShortLeg = j, ShortLegLength = len, ShortLegMinimum = need,
+                        Reason = "no_route: leg " + (j + 1) + " of " + legs + " is " + len.ToString("R") + " long, shorter than the " + need.ToString("R") + " its elbow(s) need"
+                    };
+            }
             return new Result
             {
                 Found = true,
-                Polyline = simplified,
+                Polyline = path,
                 Length = length,
-                Bends = Math.Max(0, simplified.Count - 2),
-                NodesExpanded = nodesExpanded
+                Bends = Math.Max(0, legs - 1),
+                NodesExpanded = nodesExpanded,
+                MarginStepsUsed = marginUsed
             };
+        }
+
+        /// <summary>Grid steps from start toward the end, truncated so the residual keeps the travel's sign; a quotient within 1e-9 of an integer is that integer.</summary>
+        private static long SnapTowardStart(double delta, double grid)
+        {
+            double q = delta / grid, k = Math.Round(q);
+            return (long)(Math.Abs(q - k) <= 1e-9 ? k : Math.Truncate(q));
+        }
+
+        private static int StepsFor(double length, double grid) => length <= Tolerance ? 0 : (int)Math.Ceiling(length / grid - 1e-9);
+
+        private static double Coord(Point3 p, int axis) => axis == 0 ? p.X : axis == 1 ? p.Y : p.Z;
+
+        private static Point3 Shift(Point3 p, int axis, double d) => p.Add(axis == 0 ? d : 0, axis == 1 ? d : 0, axis == 2 ? d : 0);
+
+        private static bool IsAlong(Point3 a, Point3 b, int axis)
+        {
+            for (int k = 0; k < 3; k++)
+                if (k != axis && Math.Abs(Coord(a, k) - Coord(b, k)) > Tolerance) return false;
+            return Math.Abs(Coord(a, axis) - Coord(b, axis)) > Tolerance;
+        }
+
+        private static bool FirstBlockedLeg(IList<Box3> obstacles, List<Point3> path, int from, out Box3 hit)
+        {
+            for (int i = Math.Max(0, from); i < path.Count - 1; i++)
+                if (Blocked(obstacles, path[i], path[i + 1], out hit)) return true;
+            hit = default;
+            return false;
         }
 
         private static Result Fail(string reason, Box3? blocking = null) => new Result { Found = false, Reason = reason, BlockingRegion = blocking };
@@ -290,16 +383,22 @@ namespace Horizun.Revit.Core
         private struct StateKey : IEquatable<StateKey>
         {
             public long X, Y, Z; public Direction Dir;
-            public bool Equals(StateKey o) => X == o.X && Y == o.Y && Z == o.Z && Dir == o.Dir;
+            public int Run;    // grid steps of the current leg, capped (0 when no minimum leg is tracked)
+            public bool Bent;  // the path has turned at least once (its current leg is not the first)
+            public bool Equals(StateKey o) => X == o.X && Y == o.Y && Z == o.Z && Dir == o.Dir && Run == o.Run && Bent == o.Bent;
             public override bool Equals(object o) => o is StateKey k && Equals(k);
-            public override int GetHashCode() => (X, Y, Z, Dir).GetHashCode();
+            public override int GetHashCode() => (X, Y, Z, Dir, Run, Bent).GetHashCode();
         }
 
-        private sealed class AStarResult { public bool Found; public List<Point3> Path; public int NodesExpanded; public string Reason; }
+        private sealed class AStarResult { public bool Found, BoundsExhausted; public List<Point3> Path; public int NodesExpanded; public string Reason; }
 
-        private static AStarResult RunAStar(Point3 start, Point3 goal, long gx, long gy, long gz, double grid, double bendPenalty,
-            IList<Box3> obstacles, Box3 bounds, int maxNodes, Request req)
+        private static AStarResult RunAStar(Point3 start, long gx, long gy, long gz, double grid, double bendPenalty,
+            IList<Box3> obstacles, Box3 bounds, int maxNodes, Request req, int minEndSteps, int minInteriorSteps)
         {
+            int cap = Math.Max(minEndSteps, minInteriorSteps);
+            bool track = cap > 1; // a one-step minimum is met by every grid leg
+            bool prunedByBounds = false;
+            double bandLo = req.PreferredMinZ ?? double.NegativeInfinity, bandHi = req.PreferredMaxZ ?? double.PositiveInfinity;
             var heap = new BinaryHeap<StateKey>();
             var best = new Dictionary<StateKey, double>();
             var parent = new Dictionary<StateKey, StateKey?>();
@@ -317,29 +416,34 @@ namespace Horizun.Revit.Core
                 StateKey cur = heap.Pop();
                 double gCur = best[cur];
                 expanded++;
-                if (cur.X == gx && cur.Y == gy && cur.Z == gz)
+                if (cur.X == gx && cur.Y == gy && cur.Z == gz && (!track || !cur.Bent || cur.Run >= minEndSteps))
                     return new AStarResult { Found = true, NodesExpanded = expanded, Path = Reconstruct(parent, cur, start, grid) };
 
                 foreach (Direction dir in AllDirections)
                 {
                     if (cur.Dir != Direction.None && dir == Opposite(cur.Dir)) continue; // never backtrack on the spot
+                    bool turning = cur.Dir != Direction.None && dir != cur.Dir;
+                    if (track && turning && cur.Run < (cur.Bent ? minInteriorSteps : minEndSteps)) continue; // leg too short for its elbow(s)
                     Step(dir, out long dx, out long dy, out long dz);
                     long nx = cur.X + dx, ny = cur.Y + dy, nz = cur.Z + dz;
                     Point3 fromP = start.Add(cur.X * grid, cur.Y * grid, cur.Z * grid);
                     Point3 toP = start.Add(nx * grid, ny * grid, nz * grid);
-                    if (!bounds.Contains(toP)) continue;
+                    if (!bounds.Contains(toP)) { prunedByBounds = true; continue; }
                     if (Blocked(obstacles, fromP, toP, out _)) continue;
 
                     double stepCost = grid;
                     if (cur.Dir != Direction.None && dir != cur.Dir) stepCost += bendPenalty;
-                    if (req.PreferredMinZ.HasValue && req.PreferredMaxZ.HasValue)
+                    // A one-sided band is unbounded on its missing side (it used to be ignored entirely).
+                    if (req.PreferredMinZ.HasValue || req.PreferredMaxZ.HasValue)
                     {
                         double z = toP.Z;
-                        double outside = z < req.PreferredMinZ.Value ? req.PreferredMinZ.Value - z : z > req.PreferredMaxZ.Value ? z - req.PreferredMaxZ.Value : 0;
+                        double outside = z < bandLo ? bandLo - z : z > bandHi ? z - bandHi : 0;
                         if (outside > 0) stepCost += outside * req.OutOfBandWeight;
                     }
                     double ng = gCur + stepCost;
-                    var nk = new StateKey { X = nx, Y = ny, Z = nz, Dir = dir };
+                    var nk = new StateKey { X = nx, Y = ny, Z = nz, Dir = dir,
+                        Run = !track ? 0 : turning || cur.Dir == Direction.None ? 1 : Math.Min(cap, cur.Run + 1),
+                        Bent = track && (cur.Bent || turning) };
                     if (best.TryGetValue(nk, out double knownG) && knownG <= ng + 1e-9) continue;
                     best[nk] = ng;
                     parent[nk] = cur;
@@ -347,7 +451,7 @@ namespace Horizun.Revit.Core
                     heap.Push(nk, f);
                 }
             }
-            return new AStarResult { Found = false, NodesExpanded = expanded, Reason = "no_route: the open set was exhausted with no path to the end point within the search bounds" };
+            return new AStarResult { Found = false, BoundsExhausted = prunedByBounds, NodesExpanded = expanded, Reason = "no_route: the open set was exhausted with no path to the end point within the search bounds" };
         }
 
         private static double Heuristic(long x, long y, long z, long gx, long gy, long gz, double grid)
