@@ -1149,7 +1149,7 @@ namespace Horizun.Revit.Commands
                 {
                     string graphicsOp = a.Operation.ToLowerInvariant();
                     if (IsGraphicsOperation(graphicsOp)) return VerifyGraphics(doc, a.Action, graphicsOp, e);
-                    if (IsLegendOperation(graphicsOp)) return VerifyLegend(doc, a.Action, graphicsOp, e);
+                    if (IsLegendOperation(graphicsOp)) return VerifyLegend(doc, a.Action, graphicsOp, e, a.Scale);
                     if (IsControlOperation(graphicsOp)) return VerifyControl(doc, a.Action, graphicsOp, e);
                     return false;
                 }

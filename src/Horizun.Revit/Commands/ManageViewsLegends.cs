@@ -181,7 +181,7 @@ namespace Horizun.Revit.Commands
         // VERIFY
         // =====================================================================
 
-        internal static bool VerifyLegend(Document doc, JObject action, string op, Element e)
+        internal static bool VerifyLegend(Document doc, JObject action, string op, Element e, double scale)
         {
             if (op == "create_legend")
                 return e is View legend && legend.ViewType == ViewType.Legend &&
@@ -195,7 +195,28 @@ namespace Horizun.Revit.Commands
                 long wanted = action.Value<long?>("component_type_id") ?? -1;
                 // Re-READ, not assumed: setting LEGEND_COMPONENT to a type the legend
                 // cannot draw is accepted by the parameter and reverted by Revit.
-                return Rid.Value(p.AsElementId()) == wanted;
+                if (Rid.Value(p.AsElementId()) != wanted) return false;
+
+                // detail_level: only when the request GAVE one - Revit's own default for
+                // a freshly copied component is not this command's promise to keep.
+                string detailLevel = action.Value<string>("detail_level");
+                if (!string.IsNullOrWhiteSpace(detailLevel))
+                {
+                    Parameter dl = e.get_Parameter(BuiltInParameter.LEGEND_COMPONENT_DETAIL_LEVEL);
+                    if (dl == null || dl.IsReadOnly) return false;
+                    int got;
+                    try { got = dl.AsInteger(); } catch { return false; }
+                    if (got != DetailLevelValue(detailLevel)) return false;
+                }
+
+                // position: the whole point of the call is putting the copy where the
+                // caller asked, not at the template component's own location - re-read
+                // it rather than trusting the move that ran inside the transaction.
+                LocationPoint location = e.Location as LocationPoint;
+                if (location == null) return false;
+                XYZ want;
+                try { want = Point(action["point"]) * scale; } catch { return false; }
+                return location.Point.DistanceTo(want) <= 1e-6;
             }
             return false;
         }
