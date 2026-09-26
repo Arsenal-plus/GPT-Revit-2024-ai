@@ -41,7 +41,7 @@ assumed. Dates are the day the work landed.
   - `export` counts the files produced for non-PDF formats; an unreadable-before file is `unmeasured`, not new.
   - `annotate` no longer accepts a null read-back.
   - `horizun_health` gains `include_verification_catalog`, and names a blocking modal dialog (title, text, buttons, owning module) without clicking it.
-- **New element kinds.** `create_elements`: `sprinkler`, `flex_pipe`, `flex_duct`, `space`, `area`, `area_boundary`, each rehearsed, committed and re-read. `ramp` is refused by name, because no Revit 2023–2027 API creates one.
+- **New element kinds.** `create_elements`: `sprinkler`, `flex_pipe`, `flex_duct`, `space`, `area`, `area_boundary`, each rehearsed, committed and re-read. `ramp` is refused by name, because no Revit 2023–2027 API creates one. `horizun_mep_routing` resize now covers flex runs and checks every fitting it retypes or inserts against the target size; a mismatch fails the plan. `tools/list` stays under 512 KiB by cutting argument descriptions at 250 characters. Inventory: 122 tools, 414 operations.
 - **IFC and planimetry.**
   - `deliver_ifc`'s Pset mapping tells an empty Revit parameter apart from a mapping the exporter did not apply (`model_comparison`, from a census before export).
   - `ids_from_loin` converts length/area/volume bounds to the IFC default unit (`converted_units`).
