@@ -1312,6 +1312,10 @@ organisation-neutral:
   mechanical, specialty, or any category a rule names); a WARNING for anything else
   (furniture, casework, MEP runs). The door calibration applies: an intrusion under
   10 L is ignored, and a volume Revit could not measure stays a finding.
+- Scope, like the door clear zone: ruled equipment in the checked elements, AND ruled
+  equipment the call did not touch that lies within the largest rule's reach of a
+  checked element - so placing a column in front of an existing panel is caught by the
+  column's own write. Link obstacles are looked for only around equipment in scope.
 - A malformed rule is refused by index (`clearance_rules[1].category must be ...`)
   before anything is read.
 

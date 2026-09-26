@@ -326,10 +326,37 @@ namespace Horizun.Revit.Core
             foreach (ClearanceZoneRules.Rule r in rules) if (r.Category != null) ruleCategories.Add(r.Category);
             var subjectIds = new HashSet<long>(subjects.Select(e => Rid.Value(e.Id)));
             List<LinkView> links = includeLinks ? LoadedLinks(doc) : null;
-            foreach (Element e in subjects)
+            // Like the door pass: ruled equipment the call did NOT change still gets its zone
+            // checked when a changed element lands near it (a column placed in front of an
+            // existing panel is the everyday case). Near = within the largest rule's reach.
+            var equipment = new Dictionary<long, FamilyInstance>();
+            foreach (Element e in subjects) if (e is FamilyInstance sf) equipment[Rid.Value(e.Id)] = sf;
+            double reach = 0;
+            var bics = new List<BuiltInCategory>();
+            foreach (ClearanceZoneRules.Rule r in rules)
+            {
+                reach = Math.Max(reach, ClearanceZoneRules.FeetFromMm(Math.Max(r.DepthMm + r.WidthExtraMm, r.HeightMm)));
+                if (r.Category != null && Enum.TryParse(r.Category, out BuiltInCategory bic) && !bics.Contains(bic)) bics.Add(bic);
+            }
+            if (bics.Count > 0)
+                foreach (Element e in subjects)
+                {
+                    BoundingBoxXYZ b = null;
+                    try { b = e.get_BoundingBox(null); } catch { }
+                    if (b == null) continue;
+                    var around = new Outline(b.Min - new XYZ(reach, reach, reach), b.Max + new XYZ(reach, reach, reach));
+                    try
+                    {
+                        foreach (Element n in new FilteredElementCollector(doc).WherePasses(new ElementMulticategoryFilter(bics))
+                                     .WhereElementIsNotElementType().WherePasses(new BoundingBoxIntersectsFilter(around)))
+                            if (n is FamilyInstance nf) equipment[Rid.Value(n.Id)] = nf;
+                    }
+                    catch { }
+                }
+            foreach (FamilyInstance fi in equipment.Values)
             {
                 if (clock.ElapsedMilliseconds > budgetMs) { o.Partial = true; o.PartialWhy = "the time budget ran out during the equipment clearance pass"; return; }
-                if (!(e is FamilyInstance fi)) continue;
+                Element e = fi;
                 string category = CategoryKey(e);
                 ClearanceZoneRules.Rule rule = ClearanceZoneRules.FirstMatch(rules, category, SafeFamilyName(fi), SafeTypeName(fi));
                 if (rule == null) continue;
