@@ -1839,11 +1839,11 @@ matches, and nothing is written. The apply sends the token and an `idempotency_k
 {
   "operation": "ceiling", "element_ids": [523456], "dry_run": true,
   "spec": { "ceiling": {
-    "main":      { "type_id": 900201, "spacing_mm": 1200, "direction": "short" },
-    "cross":     { "type_id": 900202, "spacing_mm": 400 },
-    "perimeter": { "type_id": 900203 },
+    "main":      { "type_id": 900201, "spacing_mm": 1200, "direction": "short", "depth_mm": 38 },
+    "cross":     { "type_id": 900202, "spacing_mm": 400, "depth_mm": 22 },
+    "perimeter": { "type_id": 900203, "depth_mm": 22 },
     "hanger":    { "type_id": 900204, "spacing_mm": 1200, "max_length_mm": 3000, "attach": "structure_above" },
-    "drop_mm": 0
+    "drop_mm": 22
   } }
 }
 ```
@@ -1871,7 +1871,28 @@ matches, and nothing is written. The apply sends the token and an `idempotency_k
   **ceiling.perimeter** `{type_id}` optional. **ceiling.hanger**: `type_id`, `spacing_mm`
   (along each main) required; `max_length_mm` default 3000; `end_offset_mm` default half
   the spacing; `attach` `structure_above`. **ceiling.drop_mm**: from the ceiling's top face
-  up to the mains' underside, default 0.
+  up to the mains' underside, default 0 (in the example the furring, 22 mm deep, sits on
+  the board and the mains bear on the furring). `depth_mm` on main, cross and perimeter is
+  optional: each axis sits half its depth above the face it bears on; without it the axis
+  sits ON that face and the plan says so in `warnings`.
+
+### Ceiling geometry
+
+- **Boundary**: the ceiling's own sketch, every loop chained end to end (arcs tessellated),
+  the largest loop first; holes are honoured. A sketch with a second region outside the
+  largest one is refused (split it into one ceiling per region), and so is a sloped
+  ceiling (its box taller than the type's compound width + 1 mm).
+- **Heights** (model z, mm): cross and perimeter axes at top face + depth/2; mains at top
+  face + `drop_mm` + depth/2; each hanger from the mains' top face up to its support.
+- **Hangers**: one ray straight up per station, from the mains' top face, against floors,
+  structural framing and roofs of the host and of loaded links, in a temporary 3-D view
+  that is always rolled back (no template, filters or section box; the ceiling's phase).
+  The nearest hit within `max_length_mm` is the support and its distance the rod; a
+  horizun_framing member is never a support. A station with nothing above is listed in
+  `no_support_above` (main index and point) and NOT placed; the counts, the signature
+  and the confirmation token are those of the hangers that will exist.
+- **Verification** adds `inside_boundary`: every member end within 1 mm of the sketch
+  boundary (holes count), and reports per ceiling `hanger_supports` (support -> hangers).
 
 Spec errors come back together, before anything is read from the model, as
 `{path, code, detail}` with code `missing`, `not_object`, `not_integer`, `not_number`,
@@ -1912,3 +1933,9 @@ of the same spec on the same wall is `already_applied`: nothing is created and t
 existing members are re-read against the plan. Framing from another spec on the same
 source is refused until `operation=remove` takes it away. Hand-modelled framing carries no
 marker and is never read, claimed or removed.
+
+**The automatic spatial check** (`spatial_check` after every write) treats a framing
+member and its own source wall or ceiling, and two members of the same framed source, as
+EXPECTED intersections (reason "framing inside its own source, or members of one framed
+source"), read from the marker: studs inside the wall they frame and tracks meeting studs
+are what was asked for. A member touching anything else is still reported.
