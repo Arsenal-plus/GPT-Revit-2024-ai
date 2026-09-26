@@ -184,7 +184,10 @@ namespace Horizun.Revit.Core
             // the resize's own target size); a fitting whose id was removed and replaced
             // has no id left to check, so it is named in Report()'s fittings_removed_or_replaced
             // and its replacement (if any) is verified there under fittings_added instead.
-            Row("horizun_mep_routing", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "MepRoutingCommand.cs")),
+            // hangers: every placed instance re-reads its type, position (1 mm, Z from its level
+            // plus the governing offset), rotation (0.5 degree) and the named rod parameter (1 mm),
+            // and a "count" item holds placed == planned (MepRoutingHangers.cs).
+            Row("horizun_mep_routing", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "MepRoutingCommand.cs", C + "MepRoutingHangers.cs")),
             Row("horizun_structural_connections", VerificationMechanism.PerRowReread, E("host_verified", "application"), F(C + "StructuralConnectionsCommand.cs"),
                 "StructuralConnectionsCommand.cs ~l.580: the per-row verified field uses a count (connected >= members), not containment; the verdict itself uses containment."),
             Row("horizun_copy_between_documents", VerificationMechanism.PerRowReread, E("host_verified", "application"), F(C + "CopyBetweenDocumentsCommand.cs"),

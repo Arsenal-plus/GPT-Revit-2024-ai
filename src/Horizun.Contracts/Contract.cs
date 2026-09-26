@@ -5351,12 +5351,14 @@ namespace Horizun.Contracts
                     "segments (material, schedule, nominal/inner/outer sizes), duct, conduit and cable-tray catalogs. " +
                     "set_rules, add_sizes, remove_sizes and resize: dry_run, then confirmation_token; apply re-reads rules, " +
                     "catalog or sizes and rolls back on mismatch. resize takes catalog sizes only and reports fittings Revit " +
-                    "replaced or added. size_by_flow proposes sizes by velocity limit; writes nothing.",
+                    "replaced or added. size_by_flow proposes sizes by velocity limit; writes nothing. hangers places a " +
+                    "caller-supplied family at spaced stations under the floor/framing/roof above (host or link), re-reading " +
+                    "position, rotation and rod length; stations with nothing above are reported, not placed.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""size_by_flow""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""size_by_flow"", ""hangers""] },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""in"", ""feet""], ""default"": ""mm"" },
     ""type_id"": { ""type"": ""integer"" }, ""segment_id"": { ""type"": ""integer"" },
     ""rules"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""group"", ""action""], ""properties"": {
@@ -5375,6 +5377,12 @@ namespace Horizun.Contracts
     ""system_id"": { ""type"": ""integer"" },
     ""diameter"": { ""type"": ""number"" }, ""width"": { ""type"": ""number"" }, ""height"": { ""type"": ""number"" },
     ""max_velocity"": { ""type"": ""number"", ""description"": ""m/s"" }, ""flow"": { ""type"": ""number"", ""description"": ""L/s; default: the element's flow"" },
+    ""hanger_type_id"": { ""type"": ""integer"", ""description"": ""hangers: non-hosted family type placed at each station"" },
+    ""spacing_mm"": { ""type"": ""number"", ""description"": ""hangers: maximum distance between supports"" },
+    ""end_offset_mm"": { ""type"": ""number"", ""description"": ""hangers: clearance from each run end and each tap fitting"" },
+    ""rod_length_parameter"": { ""type"": ""string"", ""description"": ""hangers: instance length parameter set to the measured rod"" },
+    ""attach"": { ""type"": ""string"", ""enum"": [""structure_above""], ""default"": ""structure_above"" },
+    ""max_rod_mm"": { ""type"": ""number"", ""default"": 3000 },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")
