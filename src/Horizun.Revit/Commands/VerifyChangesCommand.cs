@@ -203,6 +203,7 @@ namespace Horizun.Revit.Commands
             string next = outcome.Errors + outcome.Warnings > 0
                 ? "Fix each finding (move, delete the duplicate, reroute) or undo the write with horizun_undo; then call this again. Do not report the modelling as done while errors remain."
                 : outcome.Partial ? "Partial check - narrow element_ids or raise time_budget_seconds before calling the result clean."
+                : outcome.IsPartial ? "Partial check - " + outcome.IsPartialWhy + ". Fix those rules or check that equipment by hand before calling the result clean."
                 : "No spatial conflict among the changed elements. Still look at the image: this check sees solids, not intent (wrong level, wrong room, missing element).";
             if (annotationHeadline != null) next += " Also move or restyle the overlapping tags/text notes named in annotation_check.findings.";
             result["next"] = next;
