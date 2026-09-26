@@ -215,10 +215,15 @@ namespace Horizun.Revit.Commands
             return new WallOpeningSpan { Id = id, Start = xs.Min(), End = xs.Max(), Sill = zs.Min(), Head = zs.Max() };
         }
 
+        /// <summary>
+        /// A positive length parameter, instance first then type, or null. A rough width or
+        /// height a family publishes as 0 is "not given": the span falls back to the nominal
+        /// size rather than to the (wider, trim-inclusive) bounding box.
+        /// </summary>
         private static double? Length(FamilyInstance fi, BuiltInParameter bip)
         {
             Parameter p = fi.get_Parameter(bip) ?? fi.Symbol?.get_Parameter(bip);
-            return p != null && p.HasValue && p.StorageType == StorageType.Double ? p.AsDouble() : (double?)null;
+            return p != null && p.HasValue && p.StorageType == StorageType.Double && p.AsDouble() > 0 ? p.AsDouble() : (double?)null;
         }
 
         // ---- placement ------------------------------------------------------------------
