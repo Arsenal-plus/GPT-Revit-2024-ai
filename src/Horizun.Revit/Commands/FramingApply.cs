@@ -100,6 +100,7 @@ namespace Horizun.Revit.Commands
 
             List<FramingSourcePlan> plans;
             List<KeyValuePair<Element, FramingMark>> toRemove = null;
+            var skipped = new List<string>();
             string signature;
             try
             {
@@ -113,7 +114,7 @@ namespace Horizun.Revit.Commands
                 }
                 else
                 {
-                    plans = op == "ceiling" ? PlanCeilings(doc, request, ceilingSpec, specHash) : PlanWalls(doc, request, wallSpec, specHash);
+                    plans = op == "ceiling" ? PlanCeilings(doc, request, ceilingSpec, specHash) : PlanWalls(doc, request, wallSpec, specHash, skipped);
                     signature = string.Join(",", plans.Select(p => Rid.Value(p.Source.Id).ToString(CultureInfo.InvariantCulture) + ":" + p.Signature));
                 }
             }
@@ -140,6 +141,7 @@ namespace Horizun.Revit.Commands
             string hash = DocumentGate.PlanHash(request, HashScope) + "|" + FramingPlanSignature.Of(new[] { new FramingMember { Role = op, TypeKey = signature } });
 
             JObject summary = op == "remove" ? RemoveSummary(toRemove) : op == "ceiling" ? CeilingSummary(plans) : WallSummary(plans);
+            if (skipped.Count > 0) summary["skipped"] = new JArray(skipped.ToArray());
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             if (dryRun)
             {
@@ -181,7 +183,7 @@ namespace Horizun.Revit.Commands
                         started = true;
                         try
                         {
-                            if (op == "remove") doc.Delete(toRemove.Select(p => p.Key.Id).ToList());
+                            if (op == "remove") { if (toRemove.Count > 0) doc.Delete(toRemove.Select(p => p.Key.Id).ToList()); }
                             else foreach (FramingSourcePlan p in plans.Where(x => !x.AlreadyApplied)) PlaceSource(doc, p);
                             doc.Regenerate();
                             if (op == "wall" && UnjoinFromSources(doc, plans, evidence) > 0) doc.Regenerate();
@@ -248,7 +250,12 @@ namespace Horizun.Revit.Commands
             return ids;
         }
 
-        private static List<T> Sources<T>(Document doc, JObject request, string what) where T : Element
+        /// <summary>
+        /// The sources named by element_ids (each must qualify, or the call refuses) or visible in
+        /// view_id. A view scope shows whatever the model has, so there an element viewFilter
+        /// rejects (a curtain or curved wall) is listed in 'skipped' with its reason, not refused.
+        /// </summary>
+        private static List<T> Sources<T>(Document doc, JObject request, string what, Func<T, string> viewFilter = null, List<string> skipped = null) where T : Element
         {
             HashSet<long> ids = SourceIds(request);
             long? viewId = request.Value<long?>("view_id");
@@ -266,12 +273,17 @@ namespace Horizun.Revit.Commands
             }
             if (!Rid.CanRepresent(viewId.Value) || !(doc.GetElement(Rid.Make(viewId.Value)) is View view) || view.IsTemplate)
                 throw new ArgumentException("view_id " + viewId + " is not a view of this document.");
-            found.AddRange(new FilteredElementCollector(doc, view.Id).OfClass(typeof(T)).Cast<T>().OrderBy(e => Rid.Value(e.Id)));
-            if (found.Count == 0) throw new ArgumentException("view " + viewId + " shows no " + what + ".");
+            foreach (T e in new FilteredElementCollector(doc, view.Id).OfClass(typeof(T)).Cast<T>().OrderBy(e => Rid.Value(e.Id)))
+            {
+                string why = viewFilter?.Invoke(e);
+                if (why == null) found.Add(e);
+                else skipped?.Add(what + " " + Rid.Value(e.Id) + ": " + why);
+            }
+            if (found.Count == 0) throw new ArgumentException("view " + viewId + " shows no " + what + " this operation can frame" + (skipped?.Count > 0 ? " (" + skipped.Count + " skipped: " + string.Join("; ", skipped.Take(5)) + ")" : "") + ".");
             return found;
         }
 
-        private static List<FramingSourcePlan> PlanWalls(Document doc, JObject request, WallFramingSpec spec, string specHash)
+        private static List<FramingSourcePlan> PlanWalls(Document doc, JObject request, WallFramingSpec spec, string specHash, List<string> skipped)
         {
             var symbols = new Dictionary<string, FamilySymbol>(StringComparer.Ordinal);
             foreach (long id in spec.TypeIds())
@@ -288,7 +300,7 @@ namespace Horizun.Revit.Commands
             var kinds = new Dictionary<string, FramingPlacementKind>(StringComparer.Ordinal);
             var plans = new List<FramingSourcePlan>();
             int total = 0;
-            foreach (Wall wall in Sources<Wall>(doc, request, "wall"))
+            foreach (Wall wall in Sources<Wall>(doc, request, "wall", WallOutOfScope, skipped))
             {
                 FramedWall fw = ReadWall(doc, wall, spec, out string refusal);
                 if (fw == null) throw new ArgumentException(refusal);
@@ -320,6 +332,13 @@ namespace Horizun.Revit.Commands
                 plans.Add(p);
             }
             return plans;
+        }
+
+        /// <summary>Why a wall a view shows is not one this operation frames (curtain, stacked, curved), or null.</summary>
+        private static string WallOutOfScope(Wall w)
+        {
+            if (w.WallType == null || w.WallType.Kind != WallKind.Basic) return "not a Basic wall";
+            return w.Location is LocationCurve lc && lc.Curve is Line ? null : "not straight";
         }
 
         /// <summary>Earlier framing on this source: the same spec and plan is already applied; anything else refuses.</summary>

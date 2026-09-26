@@ -1807,7 +1807,7 @@ is compiled in.
 
 | operation | writes | what it does |
 |---|---|---|
-| `wall` | yes | studs, tracks, kings, jacks, headers, sills, cripples and blocking inside one layer of each straight Basic wall in `element_ids` (or visible in `view_id`) |
+| `wall` | yes | studs, tracks, kings, jacks, headers, sills, cripples and blocking inside one layer of each straight Basic wall in `element_ids` (or visible in `view_id`, where curtain, stacked and curved walls are listed in `plan.skipped` with their reason instead of refusing the call; named in `element_ids` they refuse) |
 | `ceiling` | yes | mains, cross (furring) channels, perimeter track and hangers for each Ceiling in `element_ids`, the hangers ray-cast to the structure above |
 | `read` | no | what a previous apply produced, per source, found by the marker on each member |
 | `remove` | yes | deletes the members (and their work planes) a previous apply produced for `element_ids`, verified |
