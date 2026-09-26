@@ -237,8 +237,7 @@ namespace Horizun.Revit.Core
                 "ApplyCadUpdateCommand.cs: `verdict`/`state`/`failures` still count an action landed on the child's transport Success, not on its application block - `application` (added) is the accurate one; a caller reading the older fields alone still gets the pre-existing, more lenient answer."),
             Row("horizun_cad_connect", VerificationMechanism.DelegatedChildDeclaration, E("state"), F(C + "CadConnectCommand.cs", C + "CadRefit.cs"),
                 "CadConnectCommand.cs ~l.1751/1855: direct joins and elbow/tee/cross rows become joined/created on the child's Success, not on its application block.",
-                "CadConnectCommand.cs ~l.429, CadRefit.cs ~l.131: state reads applied whenever nothing was refused, including when zero junctions were joined; neither reply carries an application block.",
-                "CadConnectCommand.cs ~l.328, CadRefit.cs ~l.94: CheckedWriteGroup.Keep() is followed without checking Outcome == kept or Started."),
+                "CadConnectCommand.cs ~l.429, CadRefit.cs ~l.131: state reads applied whenever nothing was refused, including when zero junctions were joined; neither reply carries a top-level application block."),
 
             // ---- outside the model ---------------------------------------------------------
             Row("horizun_power_bi_push", VerificationMechanism.RemoteAcknowledgement, E("http_status"), F(S + "PowerBiPush.cs"),
