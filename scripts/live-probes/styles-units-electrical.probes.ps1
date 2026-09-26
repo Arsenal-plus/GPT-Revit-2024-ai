@@ -146,8 +146,38 @@ $script:HzProbeModules += [pscustomobject]@{
         # electrical: panel schedule
         $n = $writeNames[3].N
         $panels = @($pl.data.panels) | Where-Object { $_.is_panel -eq $true }
+        # STAGE A PANEL when the write model has none (HZ_WRITE is an HVAC sample):
+        # Autodesk's own electrical template of the run's year carries a face-hosted
+        # panelboard; copy its type, host it on an own wall with the point 250 mm in
+        # front of the wall's +Y face (a point inside the wall is refused as no side
+        # could be chosen - measured 2026-09-26), and delete both afterwards.
+        $staged = @()
+        $stageNote = $null
         if ($panels.Count -eq 0) {
-            Add-Case $n 'horizun_electrical' 'not_covered' 'the disposable document holds no electrical equipment that is a panel; create_circuit, assign_panel and panel_schedule cannot be exercised on it'
+            $tpl = "C:\ProgramData\Autodesk\RVT $($Ctx.Year)\Templates\English\Electrical-Default_Metric.rte"
+            $panelName = 'M_Lighting and Appliance Panelboard - 208V MLO: 100 A'
+            if (-not (Test-Path -LiteralPath $tpl)) { $stageNote = "no electrical template at $tpl" }
+            else {
+                $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); type_names = @($panelName); category = 'OST_ElectricalEquipment'; duplicate_types = 'use_destination' } 'sue-panel-type'
+                $types = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_ElectricalEquipment'); include_types = $true; include_links = $false; max_rows = 500 }
+                $ptype = @($types.data.rows | Where-Object { $_.is_element_type -and [string]$_.family -like 'M_Lighting and Appliance Panelboard - 208V MLO*' -and [string]$_.name -eq '100 A' }) | Select-Object -First 1
+                $lvRows = & $Ctx.Call 'horizun_list_elements' @{ category = 'OST_Levels'; max_rows = 20; include_links = $false }
+                $lv = @($lvRows.data.rows | Sort-Object { [double]$_.elevation }) | Select-Object -First 1
+                if (-not $ptype -or -not $lv) { $stageNote = 'the panelboard type could not be copied from the template: ' + (Short $cp.answer) }
+                else {
+                    $wl = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'wall'; start = @(960000, 0, 0); end = @(964000, 0, 0); level_id = [long]$lv.element_id; height = 3000 }) } 'sue-panel-wall'
+                    $wallId = if ($wl.stage -eq 'apply' -and -not $wl.answer.isError) { [long]@($wl.answer.data.rows)[0].element_id } else { $null }
+                    if ($wallId) { $staged += $wallId }
+                    $pn = if ($wallId) { & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'family_instance'; type_id = [long]$ptype.element_id; host_id = $wallId; point = @(962000, 250, 1200); coordinate_mode = 'absolute'; level_id = [long]$lv.element_id }) } 'sue-panel-place' } else { $null }
+                    if ($pn -and $pn.stage -eq 'apply' -and -not $pn.answer.isError) { $staged = @([long]@($pn.answer.data.rows)[0].element_id) + $staged }
+                    else { $stageNote = 'the panelboard could not be placed: ' + $(if ($pn) { Short $pn.answer } else { 'no host wall: ' + (Short $wl.answer) }) }
+                    $pl = & $Ctx.Call 'horizun_electrical' (@{ operation = 'list_panels' } + $readArgs)
+                    $panels = @($pl.data.panels) | Where-Object { $_.is_panel -eq $true }
+                }
+            }
+        }
+        if ($panels.Count -eq 0) {
+            Add-Case $n 'horizun_electrical' 'not_covered' ('the disposable document holds no electrical equipment that is a panel and none could be staged: ' + $stageNote)
         } else {
             $done = $false; $notes = @()
             foreach ($p in $panels) {
@@ -165,6 +195,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 Add-Case $n 'horizun_electrical' $(if ($allHave) { 'not_covered' } else { 'fail' }) ($notes -join ' | ')
             }
         }
+        if ($staged.Count -gt 0) { $null = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = @($staged); id_cap = 10 } 'sue-panel-cleanup' }
         return $cases.ToArray()
     }
 }

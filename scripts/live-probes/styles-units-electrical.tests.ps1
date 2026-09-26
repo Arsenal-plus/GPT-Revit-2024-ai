@@ -11,8 +11,8 @@ function Check($name, $ok) { if ($ok) { "  PASS  $name" } else { "  FAIL  $name"
 # global: GetNewClosure only resolves functions in the global scope (fails under -Command "& x.ps1").
 function global:Obj($h) { return ($h | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
 
-function New-Fakes([bool]$panels, [bool]$breakRestore) {
-    $state = @{ accuracy = 0.01; subcats = @(); patterns = @(); applied = New-Object System.Collections.ArrayList; restoreBroken = $breakRestore }
+function New-Fakes([bool]$panels, [bool]$breakRestore, [bool]$canStage = $true) {
+    $state = @{ accuracy = 0.01; subcats = @(); patterns = @(); applied = New-Object System.Collections.ArrayList; restoreBroken = $breakRestore; staged = $false; canStage = $canStage }
     $call = {
         param($tool, $arguments)
         $op = $arguments.operation
@@ -27,10 +27,15 @@ function New-Fakes([bool]$panels, [bool]$breakRestore) {
             'horizun_manage_units/read' { return @{ isError = $false; data = (Obj @{ specs = @(@{ spec = 'autodesk.spec.aec:length-2.0.0'; unit = 'autodesk.unit.unit:millimeters-1.0.1'; accuracy = $state.accuracy; symbol = $null }) }) } }
             'horizun_manage_units/project_information' { return @{ isError = $false; data = (Obj @{ count = 14; fields = @{ name = 'Sample' } }) } }
             'horizun_electrical/list_panels' {
-                $p = if ($panels) { @(@{ id = 901; is_panel = $true }) } else { @() }
+                $p = if ($panels -or $state.staged) { @(@{ id = 901; is_panel = $true }) } else { @() }
                 return @{ isError = $false; data = (Obj @{ count = $p.Count; panels = $p }) }
             }
             'horizun_electrical/list_circuits' { return @{ isError = $false; data = (Obj @{ count = 0; circuits = @() }) } }
+            'horizun_query_model/' {
+                $rows = if ($state.canStage) { @(@{ element_id = 700; is_element_type = $true; family = 'M_Lighting and Appliance Panelboard - 208V MLO'; name = '100 A' }) } else { @() }
+                return @{ isError = $false; data = (Obj @{ rows = $rows }) }
+            }
+            'horizun_list_elements/' { return @{ isError = $false; data = (Obj @{ rows = @(@{ element_id = 30; elevation = 0 }) }) } }
         }
         throw "unexpected call $tool/$op"
     }.GetNewClosure()
@@ -54,6 +59,12 @@ function New-Fakes([bool]$panels, [bool]$breakRestore) {
             }
             'horizun_electrical/panel_schedule' { return (& $ok @{ panel_schedule_view_id = 999 }) }
             'horizun_delete_verified/' { return @{ stage = 'apply'; answer = @{ isError = $false } } }
+            'horizun_copy_between_documents/' { return @{ stage = 'apply'; answer = @{ isError = $false; text = 'copied'; data = (Obj @{ host_verified = $true }) } } }
+            'horizun_create_elements/' {
+                $kind = @($arguments.elements)[0].kind
+                if ($kind -eq 'family_instance') { $state.staged = $true; return @{ stage = 'apply'; answer = @{ isError = $false; data = (Obj @{ rows = @(@{ element_id = 951 }) }) } } }
+                return @{ stage = 'apply'; answer = @{ isError = $false; data = (Obj @{ rows = @(@{ element_id = 950 }) }) } }
+            }
         }
         throw "unexpected apply $tool/$($arguments.operation)"
     }.GetNewClosure()
@@ -77,11 +88,18 @@ Check 'every case passes against well-behaved tools' (@($r.Values | Where-Object
 Check 'the length accuracy is restored to its original value' ($f.State.accuracy -eq 0.01)
 Check 'what the probe created is deleted again' (@($f.State.applied | Where-Object { $_ -like 'horizun_delete_verified*' }).Count -eq 3)
 
-$f = New-Fakes $false $false
+$sched = 'electrical: create a panel schedule for a panel without one and re-read its panel'
+$f = New-Fakes $false $false $false
 $r = Invoke-Probe $f $false
-Check 'no electrical equipment makes the schedule case not_covered, with a reason' (
-    $r['electrical: create a panel schedule for a panel without one and re-read its panel'].Outcome -eq 'not_covered' -and
-    $r['electrical: create a panel schedule for a panel without one and re-read its panel'].Detail -match 'no electrical equipment')
+Check 'no panel and none can be staged: the schedule case is not_covered, with the reason' (
+    $r[$sched].Outcome -eq 'not_covered' -and $r[$sched].Detail -match 'none could be staged')
+
+$f = New-Fakes $false $false $true
+$r = Invoke-Probe $f $false
+if (Test-Path -LiteralPath 'C:\ProgramData\Autodesk\RVT 2026\Templates\English\Electrical-Default_Metric.rte') {
+    Check 'no panel: one is staged from the template, the schedule case passes' ($r[$sched].Outcome -eq 'pass')
+    Check 'the staged panel and its wall are deleted afterwards' (@($f.State.applied | Where-Object { $_ -like '*sue-panel-cleanup' }).Count -eq 1)
+} else { '  SKIP  staging needs the Autodesk 2026 electrical template on this machine' }
 Check 'the electrical reads still pass on an empty document' ($r['electrical: list_panels and list_circuits read the document'].Outcome -eq 'pass')
 
 $f = New-Fakes $true $true
