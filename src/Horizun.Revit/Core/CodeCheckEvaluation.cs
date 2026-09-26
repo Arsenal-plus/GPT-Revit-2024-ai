@@ -159,11 +159,25 @@ namespace Horizun.Revit.Core
             return set.Passes(rule, exists, p?.Text) ? "passes" : "fails";
         }
 
+        /// <summary>The Measures key a travel_distance_m rule's own routed value is stored under.</summary>
+        public static string TravelKey(Requirement rule) => "travel_distance_m#" + (rule?.Id ?? "");
+
         private static MeasuredValue MeasureFor(Requirement rule, CheckedElement e)
         {
             if (rule.AssertionMeasure == "travel_distance_m")
-                return MeasuredValue.None("this tool does not route a travel distance. horizun_audit_access with " +
-                                          "route_view_id measures a real path per room; a straight line is not a travel distance.");
+            {
+                // Populated by CodeCheckCommand.AttachTravelDistance (Revit-side) ONLY when THIS
+                // rule's own config names a route_view_id and an exits selector, under a key of the
+                // rule's own (TravelKey): two rules with different exits are two measurements, and a
+                // rule without a config never borrows another rule's routes. This evaluator stays
+                // pure. No config, no measurement: not_decidable, never a guessed straight line.
+                e.Measures.TryGetValue(TravelKey(rule), out MeasuredValue tm);
+                return tm ?? MeasuredValue.None(
+                    "no travel_distance_m was computed for this room: the rule's config must name " +
+                    "route_view_id (a floor plan view) and exits (parameter/value, mark_prefix, or " +
+                    "element_ids selecting the exit doors) so Revit's path-of-travel service can route a " +
+                    "real path. Without a config this measure is never computed and stays not_decidable.");
+            }
             if (rule.AssertionMeasure == "exit_count_minus_required") return ExitsVsRequired(rule.Config, e);
             e.Measures.TryGetValue(rule.AssertionMeasure, out MeasuredValue m);
             return m ?? MeasuredValue.None("this element yields no " + rule.AssertionMeasure + " (wrong category for the measure?).");

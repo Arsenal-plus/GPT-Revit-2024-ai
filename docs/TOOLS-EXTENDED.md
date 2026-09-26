@@ -1094,7 +1094,7 @@ Measures (`Core/CodeCheckRules.cs`):
 | `stair_riser_mm`, `stair_tread_mm`, `stair_2r_plus_t_mm`, `stair_run_width_mm` | `Stairs.ActualRiserHeight/ActualTreadDepth`, narrowest `StairsRun.ActualRunWidth` | exact; handrails not deducted. |
 | `space_illuminance_lx` | Space `Average Estimated Illumination` | 0 or empty is `not_decidable` (Revit computed nothing). |
 | `exit_count_minus_required` | per Level: placed rooms, doors | needs `config`: an occupant load (`occupant_load_parameter`, or `occupancy_parameter` + `area_per_person_by_group: {group: m2}` so each room takes the factor of the group it declares, or one `area_per_person_m2`), `exit_door` (`{parameter, value}` or `{mark_prefix}`) and `required_exits: [{max_load, exits}]`; any missing piece - including a room with no group or a group the table does not list - is `not_decidable`. |
-| `travel_distance_m` | — | never computed here: always `not_decidable`. `horizun_audit_access` with `route_view_id` routes a real path. |
+| `travel_distance_m` | per room, routed with Revit's path of travel | only when the rule's OWN `config` names `route_view_id(s)` (a floor plan, crop off) and `exits`; a rule without one stays `not_decidable` and never borrows another rule's routes. The value is a LOWER bound: above the limit it `fails`; it `passes` only under a proven ceiling (see below); otherwise `not_decidable`. Multi-level egress is `not_decidable` with a reason prefixed `not_assessable:`. |
 
 Outcomes are `passes`, `fails`, `not_decidable`, `unreadable`. A rule's verdict is
 `fails` if any element fails, `not_decidable` if any element is undecided or the
@@ -1144,6 +1144,44 @@ Example sets in `standards/` (data, not compiled in; review before use):
   Libro 3, Tabla 3.2.2.6 a (maintained illuminance Ēm per space type), matched on
   Space names; plus a Room template with a declared illuminance parameter.
 
+
+#### Egress travel distance — `operation: "travel_distance"`
+
+Routes egress per room with Revit's own `PathOfTravel` service (same members in 2023–2027).
+
+```json
+{ "operation": "travel_distance",
+  "travel": { "view_ids": [123], "exits": { "parameter": "Comments", "value": "EXIT" },
+              "room_ids": [456], "max_m": 45, "create_paths": false } }
+```
+
+- `exits` is the caller's declaration — `{parameter, value?}`, `{mark_prefix}` or `{element_ids}`. Nothing in a
+  model reliably marks an exit, so it is never guessed.
+- Per room: the longest of the routed sample points (boundary corners pulled 300 mm toward the room point and kept
+  only if Revit's own room lookup still puts them in that room, the room point, and any whole-plan start from
+  `FindStartsOfLongestPathsFromRooms` that falls in the room) to the nearest declared exit (`FindShortestPaths`; the
+  exit reached comes from `FindEndsOfShortestPaths`). Each row gives `distance_m`, `bound: "lower"`,
+  `upper_bound_m`, `candidates`, `routed`, `dropped_outside_room`, `exit_door_id`, `start_m`, `polyline_m` and
+  `outcome` (`passes|fails|measured|not_decidable|not_assessable`).
+- **`distance_m` is a lower bound.** The true farthest point is at least that far. Over `max_m` is a certain
+  `fails`. A `passes` needs `upper_bound_m <= max_m`, and a ceiling is proven only for a convex room of straight
+  walls, no island, and every sample routed: `min over routed samples c of travel(c) + max over vertices |v - c|`,
+  assuming a straight walk inside the room to `c` is clear (`ceiling_assumes`). Otherwise `not_decidable`, with the
+  reason: not convex, curved wall, island, or `k of N sample points found no route` (a start inside furniture).
+- Measuring opens **no transaction**: the Find* calls are computations. `create_paths: true` is the only write:
+  dry run → `confirmation_token` → apply creates one `PathOfTravel` per measured room in its plan, re-read after
+  the commit (owner view + length within max(50 mm, 1 %) of the measured route).
+- Honest limits: one level per plan view. A room with no declared exit matched on its level (egress through a
+  stair) is `not_assessable` — exits on another level are never flattened into the route. A requested room on a
+  level no given plan shows, in another phase than the plan's, or in a secondary design option is `not_decidable`
+  with `out of scope: ...`; with `room_ids` omitted such rooms are only counted (`coverage.travel_distance.
+  rooms_not_asked_out_of_scope`). Obstacles are what the plan shows, in its phase. A plan whose crop box is active is
+  refused (Revit ignores what lies outside the crop and `Create` throws there).
+- `create_paths` is refused under `permission_profile=read_only`; the check and the measurement stay available there
+  and under `force_read_only_on_workshared`. One room whose `PathOfTravel.Create` throws is that room's unverified row.
+- In a requirement set, a rule `{ "measure": "travel_distance_m", "operator": "lte", "value": 45 }` with its own
+  `config: { route_view_id | route_view_ids, exits }` is measured under its own key; two rules with different
+  exits are two measurements. `coverage.travel_distance` is keyed by rule id.
 ### `horizun_link_schedule` — 4D
 
 `operation`: `import` (file only), `match` (read), `write` and `status_view`

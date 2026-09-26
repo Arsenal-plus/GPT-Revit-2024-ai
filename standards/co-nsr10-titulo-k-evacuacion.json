@@ -124,7 +124,7 @@
       "unverified_value": true,
       "severity": "blocking",
       "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.6.5 (Tabla K.3.6-1)" },
-      "note": "The limits WERE read (Tabla K.3.6-1: 22 to 120 m by group and sprinklers, +30 % under its note; K.3.6.3: 15 m inside a room of up to 6 people; K.3.5.1.3: dead ends 6 m) and are transcribed in docs/TOOLS-EXTENDED.md, but no single number applies to every room and horizun_code_check never computes this measure: kept without a value. horizun_audit_access with route_view_id routes a real path."
+      "note": "The limits WERE read (Tabla K.3.6-1: 22 to 120 m by group and sprinklers, +30 % under its note; K.3.6.3: 15 m inside a room of up to 6 people; K.3.5.1.3: dead ends 6 m) and are transcribed in docs/TOOLS-EXTENDED.md, but no single number applies to every room: kept without a value. To route it, copy the rule with the limit that applies and a config naming route_view_id (a floor plan with its crop off) and exits ({parameter, value?}, {mark_prefix} or {element_ids}); horizun_code_check then routes each room with Revit's path of travel. The routed number is a lower bound: a certain fail above the limit, a pass only under a proven ceiling."
     }
   ]
 }

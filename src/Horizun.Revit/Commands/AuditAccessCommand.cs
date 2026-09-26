@@ -471,7 +471,9 @@ namespace Horizun.Revit.Commands
             return rows;
         }
 
-        private static List<FamilyInstance> ResolveExits(Document doc, JObject rule, out string refusal)
+        // internal: reused by CodeCheckCommand.AttachTravelDistance (CodeCheckTravel.cs) so both
+        // tools resolve "which doors are exits" the same way, from the caller's own declaration.
+        internal static List<FamilyInstance> ResolveExits(Document doc, JObject rule, out string refusal)
         {
             refusal = null;
             List<FamilyInstance> doors = new FilteredElementCollector(doc)
