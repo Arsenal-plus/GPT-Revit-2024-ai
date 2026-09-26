@@ -1706,7 +1706,7 @@ namespace Horizun.Contracts
         ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""area_scheme_id"": { ""type"": ""integer"", ""description"": ""create_area_plan: the AreaScheme the plan belongs to."" },
-        ""area_scheme_name"": { ""type"": ""string"", ""description"": ""create_area_plan: the scheme by name, e.g. Gross Building; a refusal lists the schemes."" },
+        ""area_scheme_name"": { ""type"": ""string"", ""description"": ""create_area_plan: scheme by name; a refusal lists them."" },
         ""parent_view_id"": { ""type"": ""integer"", ""description"": ""create_callout: the view the callout is drawn in."" },
         ""parent_view_key"": { ""type"": ""string"" },
         ""phase_id"": { ""type"": ""integer"", ""description"": ""set_phase: the Phase the view shows."" },
@@ -5355,16 +5355,11 @@ namespace Horizun.Contracts
                 Name = "horizun_mep_routing",
                 Command = "horizun_mep_routing",
                 Description =
-                    "MEP routing preferences and size catalogs. read: a pipe/duct type's rules per group (part, size ranges), " +
-                    "segments (material, schedule, nominal/inner/outer sizes), duct, conduit and cable-tray catalogs. " +
-                    "set_rules, add_sizes, remove_sizes, resize and slope: dry_run, then confirmation_token; apply re-reads rules, " +
-                    "catalog, sizes or elevations and rolls back on mismatch. resize takes catalog sizes only and reports fittings " +
-                    "Revit replaced or added. slope moves a gravity pipe run's endpoints to a target grade from a fixed end " +
-                    "(element_ids + walk to follow fittings, slope_percent, fixed_end). size_by_flow proposes sizes by velocity " +
-                    "limit; writes nothing. route: orthogonal 3-D path around obstacles (refuses no_route); apply creates segments " +
-                    "and elbows, re-reads ends, sizes and connections, and rolls back on any spatial-check error. hangers places a " +
-                    "caller-supplied family at spaced stations under the floor/framing/roof above (host or link), re-reading " +
-                    "position, rotation and rod length; stations with nothing above are reported, not placed.",
+                    "MEP routing preferences and size catalogs. read: a type's rules per group, segments (nominal/inner/outer), duct, " +
+                    "conduit and cable-tray catalogs. set_rules, add_sizes, remove_sizes, resize, slope, route and hangers: dry_run -> " +
+                    "confirmation_token -> apply, re-read, rolled back on mismatch. resize: catalog sizes only; fittings Revit replaced are " +
+                    "checked. slope: a gravity run to a grade from a fixed end. route: orthogonal 3-D path around obstacles, spatial-checked. " +
+                    "hangers: a caller family at spaced stations under the structure above. size_by_flow proposes sizes; writes nothing.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
@@ -5592,7 +5587,7 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_resolve_clash",
                 Command = "horizun_resolve_clash",
-                Description = @"Resolve horizun_clash ledger findings with verification. propose (read-only): shift or re-elevate the host MEP run the minimum + clearance - if it is connected, its whole eligible network moves as one (run_shift), or it is report-only naming the blocking connection; checked against host elements AND every loaded link. Structure, architecture, pinned runs and moves touching a third element (host or link) are report-only. apply: dry_run -> token -> TransactionGroup, re-detect on solids against host and links; the pair must vanish with no new clash or the group rolls back. Kept moves are undoable (horizun_undo); findings become resolved_by_model only by that measurement. propose_opening/apply_opening: run-vs-host pair a move cannot fix -> cut wall/floor/roof/ceiling or place a caller sleeve family (framing/columns: sleeve only, by scope); solid re-check, finding stays open (opening_requested).",
+                Description = @"Resolve horizun_clash ledger findings with verification. propose (read-only): shift or re-elevate the MEP run by the minimum + clearance; a connected run moves with its eligible network (run_shift) or is report-only naming the blocking connection; checked against host AND loaded links. Structure, architecture, pinned runs and moves touching a third element are report-only. apply: dry_run -> token -> TransactionGroup, re-detected on solids; the pair must vanish with no new clash or it rolls back; undoable; resolved_by_model only by that measurement. propose_opening/apply_opening: cut a wall/floor/roof/ceiling or place a caller sleeve family where a move cannot fix it; the finding stays open (opening_requested).",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
