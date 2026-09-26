@@ -602,6 +602,12 @@ the HOST gets an opening, or a sleeve. Pure geometry lives in `Core/SleeveRules.
 - To measure live: the orientation of a point-placed sleeve depends on how its family
   was modelled (caught by `contains_crossing`, not predicted), and face-based placement
   on a sloped or curved host face is not built (it fails with the reason).
+- Live probe: `scripts/live-probes/sleeves-openings.probes.ps1` (offline test
+  `sleeves-openings.tests.ps1`) stages an own level with a pipe through a wall, a vertical
+  pipe through a floor and a vertical pipe through a beam; it applies the wall and floor
+  cuts, reads the finding back as still `open` with its `opening_requested` entry, checks
+  the beam refusal by name in propose and in the apply rehearsal, and deletes everything.
+  The sleeve family path is not staged (no sleeve family ships with the fixtures).
 
 ### horizun_undo
 
