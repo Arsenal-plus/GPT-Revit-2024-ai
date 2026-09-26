@@ -501,33 +501,63 @@ It works on findings of the ledger that `horizun_clash record_findings=true` mai
    architecture are never moved: the row is `report_only` with
    `report_only_no_movable_side`. When both sides are runs, the smaller cross section
    moves; equal sections are `ambiguous_both_movable` (a design decision).
-2. Safety. A run in a linked model (`linked_element_not_writable`), a pinned run
-   (`pinned`) or a run with any connected connector (`connected_run_not_safe` -
-   moving one segment would tear the network) is reported, not moved.
+2. Safety and scope. A run in a linked model (`linked_element_not_writable`) or a
+   pinned run (`pinned`) is reported, not moved. A run with any connected connector
+   is no longer refused outright: its whole connected network (pipes/ducts/conduits/
+   cable trays and their fittings/accessories, walked through live connectors, capped
+   at 60 elements) is collected and re-checked fresh every time - propose AND apply -
+   never trusted from an earlier call. It moves as one rigid body (`mode: "run_shift"`)
+   only when EVERY member is a host element, unpinned and outside any group, AND every
+   connector at the network's boundary is open (not connected to equipment, fixtures or
+   terminals outside the set); otherwise it stays report-only, naming what blocks it:
+   `network_exceeds_cap`, `member_in_group`, `boundary_connector_blocked` (with the
+   blocking element), or `linked_element_not_writable`/`pinned` for a bad member.
 3. Geometry (`Core/ClashResolveRules.cs`). The mover's centreline and exact section are
    compared with the fixed element's bounding box projected on each escape direction:
    `shift` perpendicular to the run in plan, and `elevation` (vertical) for horizontal
    runs only. The run's own axis is never an escape. Distances are whole millimetres,
    rounded away from the clash, and include `clearance_mm` (default 50). Candidates over
    `max_move_mm` (default 600) are rejected.
-4. Third elements. A candidate whose moved box would reach any other model element is
-   rejected (`would_touch_other_elements`); if none survives, the finding is report-only.
+4. Third elements, HOST AND LINKS. A candidate whose moved box would reach any other
+   host model element is rejected (`would_touch_other_elements`, `contacts`); the same
+   box, carried into the coordinates of every LOADED Revit link (the link instance's
+   total transform, inverted), is checked against that link's elements too
+   (`link_contacts`). For a run_shift EVERY member's box is checked, not just the
+   mover's - a fitting far from the clash that would land on something is caught too.
+   An unloaded link is named in `links_skipped` - it is never silently counted as
+   clear. If no candidate survives, the finding is report-only.
 
-Each proposal carries `kind`, `distance_mm`, `affected_elements`, a `prediction`, and the
-ready `next_arguments` for apply.
+Each proposal carries `kind`, `mode` (`single` or `run_shift`), `distance_mm`,
+`affected_elements` (every member for a run_shift), a `prediction`, and the ready
+`next_arguments` for apply.
 
-**apply**. `dry_run` defaults to true and issues a token bound to the proposals. With the
-token, inside one TransactionGroup: the neighbourhood (every host model element whose box
-meets the swept region of each mover, grown by the clearance) is measured on solids
-BEFORE the move; the runs are moved; positions are re-read; the same neighbourhood is
-measured AFTER. The group is kept only when every targeted pair is gone and no pair
-appears that was not there before. Anything else - including a boolean that failed, so
-the result is unmeasured - rolls the whole group back and returns `new_clashes` and the
-`postconditions` checklist. A kept apply records an undo batch and marks each finding
+**apply**. `dry_run` defaults to true and issues a token bound to the proposals; the
+`element_id`/`vector_mm` of each proposal is re-resolved and re-validated fresh against
+the LIVE model (pinned/connected/network eligibility all re-derived, never trusted from
+propose - a network that changed since propose is refused, not moved on stale
+information). Inside one TransactionGroup: the neighbourhood (every host model element
+whose box meets the swept region of every MEMBER, grown by the clearance) is measured on
+solids BEFORE the move; every member of every move is moved together in one
+`ElementTransformUtils.MoveElements` call (a run_shift moves rigidly, never one segment at
+a time); positions are re-read (1 mm tolerance); the same neighbourhood is measured AFTER -
+AND, in both passes, every member's solid is carried into every loaded link's coordinates
+and intersected there too (`ElementIntersectsSolidFilter` + `BooleanOperationsUtils`,
+exactly like `SpatialCoherence.AgainstLinks`; the pair key is
+`link:<name>:<hostId>~<linkElementId>`, distinct from a host-host pair). For a run_shift,
+every internal connector pair recorded at propose time is also re-read
+(`connections:<idA>-<idB>`) - a rigid translation should never drop one, and the contract
+re-reads rather than assumes. The group is kept only when every position, every internal
+connection, the targeted pair, and "no new clash" (host OR link) all measure clean.
+Anything else - including a boolean that failed, so the result is unmeasured - rolls the
+whole group back and returns `new_clashes` (naming the link when that is what grew back)
+and the `postconditions` checklist. Two proposals whose networks share a member are
+refused as a batch, before anything moves (moving one would silently disturb the other).
+An unloaded link is listed in `links_skipped` on every reply (propose and apply) and never
+treated as measured-clear, but it does not by itself block an apply whose host-side pairs
+are otherwise clean - the same convention `SpatialCoherence.AgainstLinks` already uses. A
+kept apply records an undo batch covering EVERY member (not just the primary mover, so
+`horizun_undo` moves the whole network back together) and marks each finding
 `resolved_by_model` with the measurement written into its history.
-
-Limit: the re-detection covers host elements only; a clash the move creates against a
-linked model is not seen (declared in `WriteVerificationCatalog`).
 
 ### horizun_undo
 

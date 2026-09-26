@@ -6,16 +6,21 @@
 //   propose  READ-ONLY. For findings of the horizun_clash ledger, proposes a
 //            conservative correction (Core/ClashResolveRules.cs): move the flexible
 //            MEP run the minimum distance plus clearance, as a perpendicular shift
-//            or an elevation offset. Structure/architecture, linked elements,
-//            connected runs, pinned runs and moves that would touch a third element
-//            are REPORTED, never auto-resolved. Each proposal carries the typed action
-//            and a verifiable prediction.
+//            or an elevation offset - and, if the run is CONNECTED, its whole
+//            eligible network moves as one rigid body instead (run_shift; ineligible
+//            networks stay report-only, naming the blocking element). Third-element
+//            contact is checked against the host AND every loaded Revit link
+//            (box-only prediction; apply re-measures on solids). Structure/
+//            architecture, elements in a link, pinned runs and moves that would touch
+//            a third element are REPORTED, never auto-resolved. Each proposal carries
+//            the typed action and a verifiable prediction.
 //   apply    dry_run (default) -> token -> commit inside a TransactionGroup, then
-//            RE-DETECTS on solids over the affected neighbourhood: every targeted pair
-//            must be gone and no pair may appear that was not there before the move.
-//            Anything else rolls the WHOLE group back and says why. Kept work is
-//            recorded for horizun_undo, and the finding becomes resolved_by_model
-//            only from that measurement.
+//            RE-DETECTS on solids over the affected neighbourhood, HOST AND LINKS:
+//            every targeted pair must be gone and no pair may appear that was not
+//            there before the move. A run_shift also re-reads every member's
+//            position and every internal connection. Anything else rolls the WHOLE
+//            group back and says why. Kept work is recorded for horizun_undo, and
+//            the finding becomes resolved_by_model only from that measurement.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -127,30 +132,46 @@ namespace Horizun.Revit.Commands
             Element m = mover == 0 ? a : b, other = mover == 0 ? b : a;
             row["mover_id"] = Rid.Value(m.Id);
             if (other != null) row["fixed_id"] = Rid.Value(other.Id);
-            if (!Validate(doc, m, out code, out reason)) return null;
+            if (!ResolveMoveScope(doc, m, out List<long> memberIds, out string mode, out List<Tuple<long, long>> internalEdges, out code, out reason)) return null;
+            List<Element> moving = memberIds.Select(id => doc.GetElement(Rid.Make(id))).Where(e => e != null).ToList();
+            var excludeIds = new HashSet<long>(memberIds) { Rid.Value(other.Id) };
             ResolveRun run = Run(m);
             if (run == null) { code = ClashResolveRules.CodeNoGeometry; reason = "the run has no straight centreline or readable section"; return null; }
             ResolveBox fixedBox = other != null ? Box(other.get_BoundingBox(null)) : null;
             if (fixedBox == null) { code = ClashResolveRules.CodeNoGeometry; reason = "the fixed side has no bounding box in the host"; return null; }
             List<ResolveCandidate> candidates = ClashResolveRules.Candidates(run, fixedBox, clearance, out string geomCode);
+            var linksSkipped = new List<string>();
+            List<LinkContext> links = ResolveLoadedLinks(doc, linksSkipped);
             var considered = new JArray();
             foreach (ResolveCandidate c in candidates)
             {
                 var cr = new JObject { ["kind"] = c.Kind, ["distance_mm"] = c.DistanceMm, ["vector_mm"] = new JArray(c.VectorMm) };
                 considered.Add(cr);
                 if (c.DistanceMm > maxMove) { cr["rejected"] = ClashResolveRules.CodeTooFar; continue; }
-                List<long> contacts = PredictedContacts(doc, m, other, c.VectorMm, clearance);
-                if (contacts.Count > 0) { cr["rejected"] = "would_touch_other_elements"; cr["contacts"] = new JArray(contacts); continue; }
+                List<long> contacts = PredictedContacts(doc, moving, excludeIds, c.VectorMm, clearance);
+                List<string> linkContacts = PredictedLinkContacts(moving, links, c.VectorMm);
+                if (contacts.Count > 0 || linkContacts.Count > 0)
+                {
+                    cr["rejected"] = "would_touch_other_elements";
+                    if (contacts.Count > 0) cr["contacts"] = new JArray(contacts);
+                    if (linkContacts.Count > 0) cr["link_contacts"] = new JArray(linkContacts);
+                    continue;
+                }
                 row["candidates"] = considered;
-                row["kind"] = c.Kind; row["distance_mm"] = c.DistanceMm;
-                row["affected_elements"] = new JArray(Rid.Value(m.Id));
+                if (linksSkipped.Count > 0) row["links_skipped"] = new JArray(linksSkipped);
+                row["kind"] = c.Kind; row["distance_mm"] = c.DistanceMm; row["mode"] = mode;
+                row["affected_elements"] = new JArray(memberIds);
                 row["prediction"] = "after apply, the pair " + Rid.Value(m.Id) + "-" + Rid.Value(other.Id) +
                     " does not intersect (box clearance >= " + clearance + " mm) and no new clash appears with the elements " +
-                    "around the moved run - verified by solid re-detection at apply, or rolled back.";
+                    "or loaded links around the moved " + (mode == ClashResolveRules.ModeRunShift ? "network (" + memberIds.Count + " elements, moved rigidly, internal connections re-verified)" : "run") +
+                    " - verified by solid re-detection at apply, or rolled back.";
                 if (geomCode != null) row["note"] = geomCode;
-                return new JObject { ["finding_id"] = f.Id, ["element_id"] = Rid.Value(m.Id), ["vector_mm"] = new JArray(c.VectorMm), ["kind"] = c.Kind };
+                var action = new JObject { ["finding_id"] = f.Id, ["element_id"] = Rid.Value(m.Id), ["vector_mm"] = new JArray(c.VectorMm), ["kind"] = c.Kind };
+                if (mode == ClashResolveRules.ModeRunShift) { action["mode"] = mode; action["network_ids"] = new JArray(memberIds); }
+                return action;
             }
             row["candidates"] = considered;
+            if (linksSkipped.Count > 0) row["links_skipped"] = new JArray(linksSkipped);
             code = candidates.Count == 0 ? (geomCode ?? ClashResolveRules.CodeNoGeometry) : "no_safe_candidate";
             reason = candidates.Count == 0 ? "no escape direction exists for this run" :
                 "every candidate either exceeds max_move_mm or would touch another element - report only";
@@ -182,22 +203,96 @@ namespace Horizun.Revit.Commands
             return MepFacts.TryProfile(e, out string _, out double w, out double h) ? w * h : 0;
         }
 
-        private static bool Validate(Document doc, Element m, out string code, out string reason)
+        /// <summary>
+        /// What moves for `m`: itself alone when it has no connection, or its whole
+        /// connected network when every member and boundary qualifies (run_shift) - re-derived
+        /// fresh from the LIVE model every time (propose and apply alike), never trusted from a
+        /// prior call. `memberIds` always includes `m` itself and is never null.
+        /// </summary>
+        private static bool ResolveMoveScope(Document doc, Element m, out List<long> memberIds, out string mode,
+                                             out List<Tuple<long, long>> internalEdges, out string code, out string reason)
         {
-            code = null; reason = null;
+            memberIds = new List<long> { Rid.Value(m.Id) }; mode = ClashResolveRules.ModeSingle;
+            internalEdges = new List<Tuple<long, long>>(); code = null; reason = null;
             bool pinned; try { pinned = m.Pinned; } catch { pinned = true; }
             if (pinned) { code = ClashResolveRules.CodePinned; reason = "the run is pinned; unpin it deliberately first"; return false; }
+            if (!IsConnected(m)) return true;
+            var blocks = new List<ClashResolveRules.BoundaryBlock>();
+            var edges = new List<Tuple<long, long>>();
+            List<long> ids = ClashResolveRules.CollectNetwork(Rid.Value(m.Id),
+                id => NetworkNeighbours(doc, id, blocks, edges), ClashResolveRules.MaxNetworkMembers, out bool truncated);
+            List<ClashResolveRules.NetworkMemberFacts> facts = MemberFacts(doc, ids);
+            if (!ClashResolveRules.EligibleForRunShift(facts, blocks, truncated, out code, out reason)) return false;
+            memberIds = ids; mode = ClashResolveRules.ModeRunShift; internalEdges = edges.Distinct().ToList();
+            return true;
+        }
+
+        private static bool IsConnected(Element m)
+        {
             foreach (Connector c in MepFacts.Ordered(MepFacts.ManagerOf(m)))
             {
                 bool connected; try { connected = c.IsConnected; } catch { connected = true; }
-                if (connected)
+                if (connected) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Live connectors out of `id`, restricted to run/fitting/accessory categories
+        /// (<see cref="ClashResolveRules.IsNetworkMember"/>): the walk follows those, and
+        /// records every OTHER connected owner (equipment, fixtures, terminals...) as a
+        /// <see cref="ClashResolveRules.BoundaryBlock"/> instead. Every followed connection is
+        /// also recorded as an internal edge (member id, member id), for the post-move
+        /// "connections still connected" re-check.
+        /// </summary>
+        private static IEnumerable<long> NetworkNeighbours(Document doc, long id, List<ClashResolveRules.BoundaryBlock> blocks,
+                                                            List<Tuple<long, long>> edges)
+        {
+            var result = new List<long>();
+            Element e = doc.GetElement(Rid.Make(id));
+            if (e == null) return result;
+            foreach (Connector c in MepFacts.Ordered(MepFacts.ManagerOf(e)))
+            {
+                bool connected; try { connected = c.IsConnected; } catch { connected = false; }
+                if (!connected) continue;
+                foreach (Connector r in c.AllRefs.OfType<Connector>())
                 {
-                    code = ClashResolveRules.CodeConnected;
-                    reason = "the run is connected to fittings/other runs; moving one segment would tear the network - not safe, reroute the run deliberately";
-                    return false;
+                    Element owner = r.Owner;
+                    if (owner == null) continue;
+                    long oid = Rid.Value(owner.Id);
+                    if (oid == id) continue;
+                    if (ClashResolveRules.IsNetworkMember(CategoryBic(owner)))
+                    {
+                        result.Add(oid);
+                        edges.Add(Tuple.Create(Math.Min(id, oid), Math.Max(id, oid)));
+                    }
+                    else blocks.Add(new ClashResolveRules.BoundaryBlock { OwnerId = id, BlockedByDescription = Describe(owner) });
                 }
             }
-            return true;
+            return result.Distinct();
+        }
+
+        private static List<ClashResolveRules.NetworkMemberFacts> MemberFacts(Document doc, List<long> ids)
+        {
+            var list = new List<ClashResolveRules.NetworkMemberFacts>();
+            foreach (long id in ids)
+            {
+                Element e = doc.GetElement(Rid.Make(id));
+                bool pinned; try { pinned = e == null || e.Pinned; } catch { pinned = true; }
+                bool inGroup; try { inGroup = e != null && e.GroupId != ElementId.InvalidElementId; } catch { inGroup = false; }
+                list.Add(new ClashResolveRules.NetworkMemberFacts { Id = id, Host = e != null, Pinned = pinned, InGroup = inGroup });
+            }
+            return list;
+        }
+
+        private static string CategoryBic(Element e)
+        {
+            try { return ((BuiltInCategory)Rid.Value(e.Category.Id)).ToString(); } catch { return null; }
+        }
+
+        private static string Describe(Element e)
+        {
+            return (CategoryBic(e) ?? "an unknown category") + " " + Rid.Value(e.Id);
         }
 
         private static ResolveRun Run(Element m)
@@ -217,19 +312,30 @@ namespace Horizun.Revit.Commands
             new ResolveBox(bb.Min.X * MmPerFoot, bb.Min.Y * MmPerFoot, bb.Min.Z * MmPerFoot,
                            bb.Max.X * MmPerFoot, bb.Max.Y * MmPerFoot, bb.Max.Z * MmPerFoot);
 
-        /// <summary>Model elements whose box the moved run's box would reach (excluding the fixed side).</summary>
-        private static List<long> PredictedContacts(Document doc, Element m, Element fixedSide, double[] vectorMm, double clearance)
+        /// <summary>
+        /// Host model elements whose box any of the moving elements' boxes would reach, after
+        /// the shift (`excludeIds` = every moving element plus the fixed side). A single move
+        /// passes a one-element `moving`; a run_shift passes the whole network, so a fitting
+        /// far from the clash that would hit something is caught too - not just the mover.
+        /// </summary>
+        private static List<long> PredictedContacts(Document doc, List<Element> moving, HashSet<long> excludeIds, double[] vectorMm, double clearance)
         {
-            BoundingBoxXYZ bb = m.get_BoundingBox(null);
-            var moved = new ResolveBox(
-                bb.Min.X * MmPerFoot + vectorMm[0], bb.Min.Y * MmPerFoot + vectorMm[1], bb.Min.Z * MmPerFoot + vectorMm[2],
-                bb.Max.X * MmPerFoot + vectorMm[0], bb.Max.Y * MmPerFoot + vectorMm[1], bb.Max.Z * MmPerFoot + vectorMm[2]);
             var result = new List<long>();
-            foreach (Element e in Neighbours(doc, moved, 0))
+            var seen = new HashSet<long>();
+            foreach (Element m in moving)
             {
-                if (e.Id == m.Id || (fixedSide != null && e.Id == fixedSide.Id)) continue;
-                ResolveBox other = Box(e.get_BoundingBox(null));
-                if (other != null && ClashResolveRules.BoxesOverlap(moved, other, 0)) result.Add(Rid.Value(e.Id));
+                BoundingBoxXYZ bb = m.get_BoundingBox(null);
+                if (bb == null) continue;
+                var moved = new ResolveBox(
+                    bb.Min.X * MmPerFoot + vectorMm[0], bb.Min.Y * MmPerFoot + vectorMm[1], bb.Min.Z * MmPerFoot + vectorMm[2],
+                    bb.Max.X * MmPerFoot + vectorMm[0], bb.Max.Y * MmPerFoot + vectorMm[1], bb.Max.Z * MmPerFoot + vectorMm[2]);
+                foreach (Element e in Neighbours(doc, moved, 0))
+                {
+                    long eid = Rid.Value(e.Id);
+                    if (excludeIds.Contains(eid) || !seen.Add(eid)) continue;
+                    ResolveBox other = Box(e.get_BoundingBox(null));
+                    if (other != null && ClashResolveRules.BoxesOverlap(moved, other, 0)) result.Add(eid);
+                }
             }
             return result;
         }
@@ -245,9 +351,100 @@ namespace Horizun.Revit.Commands
                 .ToList();
         }
 
+        // ---- loaded links (propose's box prediction AND apply's solid re-detection) ------
+        // A clash a move creates against a LINKED element is exactly as real as one against a
+        // host element - it is just split across files, which is how real projects are built
+        // (SpatialCoherence.AgainstLinks judges the same way). Each host box/solid is carried
+        // into the link's own coordinates (the link instance's total transform, inverted); the
+        // basis vectors are unitless direction cosines so they need no unit conversion, only
+        // the origin does (ClashResolveRules.TransformBox is the Revit-free half of this).
+
+        private sealed class LinkContext
+        {
+            public string Name;
+            public Document Doc;
+            public double[] BasisX, BasisY, BasisZ, OriginMm;
+        }
+
+        /// <summary>Every loaded link, ready to carry a host box/solid into its coordinates. Unloaded links go to <paramref name="skipped"/>, never silently dropped.</summary>
+        private static List<LinkContext> ResolveLoadedLinks(Document doc, List<string> skipped)
+        {
+            var list = new List<LinkContext>();
+            List<RevitLinkInstance> links;
+            try { links = new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>().ToList(); }
+            catch { return list; }
+            foreach (RevitLinkInstance link in links)
+            {
+                string name = LinkName(link);
+                Document linked; try { linked = link.GetLinkDocument(); } catch { linked = null; }
+                if (linked == null) { skipped.Add(name); continue; }
+                Transform toLink; try { toLink = link.GetTotalTransform().Inverse; } catch { skipped.Add(name + " (no transform)"); continue; }
+                list.Add(new LinkContext
+                {
+                    Name = name, Doc = linked,
+                    BasisX = new[] { toLink.BasisX.X, toLink.BasisX.Y, toLink.BasisX.Z },
+                    BasisY = new[] { toLink.BasisY.X, toLink.BasisY.Y, toLink.BasisY.Z },
+                    BasisZ = new[] { toLink.BasisZ.X, toLink.BasisZ.Y, toLink.BasisZ.Z },
+                    OriginMm = new[] { toLink.Origin.X * MmPerFoot, toLink.Origin.Y * MmPerFoot, toLink.Origin.Z * MmPerFoot }
+                });
+            }
+            return list;
+        }
+
+        private static string LinkName(Element link)
+        {
+            try { return link.Name; } catch { return "link " + Rid.Value(link.Id); }
+        }
+
+        /// <summary>Linked elements whose box any of the moving elements' boxes would reach, after the shift - conservative (box-only); apply re-measures on solids.</summary>
+        private static List<string> PredictedLinkContacts(List<Element> moving, List<LinkContext> links, double[] vectorMm)
+        {
+            var result = new List<string>();
+            if (links == null || links.Count == 0) return result;
+            foreach (Element m in moving)
+            {
+                BoundingBoxXYZ bb = m.get_BoundingBox(null);
+                if (bb == null) continue;
+                var hostBox = new ResolveBox(
+                    bb.Min.X * MmPerFoot + vectorMm[0], bb.Min.Y * MmPerFoot + vectorMm[1], bb.Min.Z * MmPerFoot + vectorMm[2],
+                    bb.Max.X * MmPerFoot + vectorMm[0], bb.Max.Y * MmPerFoot + vectorMm[1], bb.Max.Z * MmPerFoot + vectorMm[2]);
+                foreach (LinkContext link in links)
+                {
+                    ResolveBox inLink = ClashResolveRules.TransformBox(hostBox, link.BasisX, link.BasisY, link.BasisZ, link.OriginMm);
+                    var outline = new Outline(
+                        new XYZ(inLink.MinX / MmPerFoot, inLink.MinY / MmPerFoot, inLink.MinZ / MmPerFoot),
+                        new XYZ(inLink.MaxX / MmPerFoot, inLink.MaxY / MmPerFoot, inLink.MaxZ / MmPerFoot));
+                    List<Element> hits;
+                    try
+                    {
+                        hits = new FilteredElementCollector(link.Doc).WhereElementIsNotElementType()
+                            .WherePasses(new BoundingBoxIntersectsFilter(outline))
+                            .Where(e => SpatialCoherence.IsPhysical(e)).ToList();
+                    }
+                    catch { continue; }
+                    foreach (Element e in hits)
+                    {
+                        ResolveBox eb = Box(e.get_BoundingBox(null));
+                        if (eb != null && ClashResolveRules.BoxesOverlap(inLink, eb, 0))
+                            result.Add(link.Name + ":" + Rid.Value(e.Id));
+                    }
+                }
+            }
+            return result.Distinct().ToList();
+        }
+
         // ---- apply -----------------------------------------------------------------
 
-        private sealed class Move { public string FindingId; public Element El; public XYZ Vector; public long FixedId; public JObject BeforeState; }
+        private sealed class Move
+        {
+            public string FindingId; public Element El; public XYZ Vector; public long FixedId;
+            /// <summary>Every element that moves with this Move - always includes El.Id; a single-element move is a list of one.</summary>
+            public List<long> MemberIds;
+            public string Mode;
+            /// <summary>Member-to-member connector pairs re-verified after the move (run_shift only).</summary>
+            public List<Tuple<long, long>> InternalEdges;
+            public Dictionary<long, JObject> MemberBefore;
+        }
 
         private CommandResult Apply(UIApplication app, JObject request, double clearance, double maxMove)
         {
@@ -266,6 +463,18 @@ namespace Horizun.Revit.Commands
                 string error = Parse(doc, o, ledger, maxMove, claimed, out Move mv);
                 if (error != null) errors.Add(new JObject { ["index"] = i, ["error"] = error }); else moves.Add(mv);
             }
+            // Two different findings' networks must never share a member: moving one would
+            // silently double-move (or half-move) the other's network. The whole batch is
+            // refused rather than guessing which proposal wins - the same "ask, do not assume"
+            // rule this bridge holds everywhere else.
+            var ownerOfMember = new Dictionary<long, int>();
+            for (int i = 0; i < moves.Count; i++)
+                foreach (long id in moves[i].MemberIds)
+                {
+                    if (ownerOfMember.TryGetValue(id, out int prior) && prior != i)
+                        errors.Add(new JObject { ["index"] = i, ["error"] = "element " + id + " is also part of the connected network moved by proposal " + prior + "; combine them into one proposal" });
+                    else ownerOfMember[id] = i;
+                }
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             string planHash = DocumentGate.PlanHash(request, "proposals", "clearance_mm");
             if (dryRun)
@@ -277,6 +486,7 @@ namespace Horizun.Revit.Commands
                     ["plan"] = new JArray(moves.Select(mv => (JToken)new JObject
                     {
                         ["finding_id"] = mv.FindingId, ["element_id"] = Rid.Value(mv.El.Id), ["fixed_id"] = mv.FixedId,
+                        ["mode"] = mv.Mode, ["network_ids"] = mv.Mode == ClashResolveRules.ModeRunShift ? new JArray(mv.MemberIds) : (JToken)JValue.CreateNull(),
                         ["vector_mm"] = new JArray(mv.Vector.X * MmPerFoot, mv.Vector.Y * MmPerFoot, mv.Vector.Z * MmPerFoot)
                     })),
                     ["note"] = "Nothing was moved. The apply keeps the group only if solid re-detection shows every targeted pair gone and no new clash."
@@ -291,26 +501,37 @@ namespace Horizun.Revit.Commands
             if (refusal != null) return refusal;
 
             // The neighbourhood: every model element whose box meets the swept region of any
-            // mover (before AND after), so "before" and "after" are measured over one set.
-            var movedIds = new HashSet<long>(moves.Select(mv => Rid.Value(mv.El.Id)));
+            // MEMBER of any move (before AND after) - the whole network for a run_shift, not
+            // just its primary mover - so "before" and "after" are measured over one set.
+            var movedIds = new HashSet<long>(moves.SelectMany(mv => mv.MemberIds));
             var region = new Dictionary<long, Element>();
             foreach (Move mv in moves)
-            {
-                BoundingBoxXYZ bb = mv.El.get_BoundingBox(null);
-                ResolveBox b0 = Box(bb);
-                double[] v = { mv.Vector.X * MmPerFoot, mv.Vector.Y * MmPerFoot, mv.Vector.Z * MmPerFoot };
-                var swept = new ResolveBox(Math.Min(b0.MinX, b0.MinX + v[0]), Math.Min(b0.MinY, b0.MinY + v[1]), Math.Min(b0.MinZ, b0.MinZ + v[2]),
-                                           Math.Max(b0.MaxX, b0.MaxX + v[0]), Math.Max(b0.MaxY, b0.MaxY + v[1]), Math.Max(b0.MaxZ, b0.MaxZ + v[2]));
-                foreach (Element e in Neighbours(doc, swept, clearance)) region[Rid.Value(e.Id)] = e;
-            }
-            bool completeBefore;
+                foreach (long id in mv.MemberIds)
+                {
+                    Element member = doc.GetElement(Rid.Make(id));
+                    BoundingBoxXYZ bb = member?.get_BoundingBox(null);
+                    ResolveBox b0 = Box(bb);
+                    if (b0 == null) continue;
+                    double[] v = { mv.Vector.X * MmPerFoot, mv.Vector.Y * MmPerFoot, mv.Vector.Z * MmPerFoot };
+                    var swept = new ResolveBox(Math.Min(b0.MinX, b0.MinX + v[0]), Math.Min(b0.MinY, b0.MinY + v[1]), Math.Min(b0.MinZ, b0.MinZ + v[2]),
+                                               Math.Max(b0.MaxX, b0.MaxX + v[0]), Math.Max(b0.MaxY, b0.MaxY + v[1]), Math.Max(b0.MaxZ, b0.MaxZ + v[2]));
+                    foreach (Element e in Neighbours(doc, swept, clearance)) region[Rid.Value(e.Id)] = e;
+                }
+            bool completeBefore, completeBeforeLinks;
             List<string> before = Detect(doc, movedIds, region.Keys, out completeBefore);
-            foreach (Move mv in moves) mv.BeforeState = UndoCapture.State(doc, Rid.Value(mv.El.Id));
+            List<string> linksSkippedBefore;
+            before = before.Concat(DetectLinks(doc, movedIds, out completeBeforeLinks, out linksSkippedBefore)).ToList();
+            completeBefore = completeBefore && completeBeforeLinks;
+            foreach (Move mv in moves)
+                mv.MemberBefore = mv.MemberIds.ToDictionary(id => id, id => UndoCapture.State(doc, id));
 
             string txName = "Horizun: resolve clash";
-            var postconditions = new PostconditionCheck(moves.Select(mv => "position:" + Rid.Value(mv.El.Id))
-                .Concat(moves.Select(mv => "pair_cleared:" + mv.FindingId)).Concat(new[] { "no_new_clash" }).ToArray());
+            var postconditions = new PostconditionCheck(moves.SelectMany(mv => mv.MemberIds.Select(id => "position:" + id))
+                .Concat(moves.Select(mv => "pair_cleared:" + mv.FindingId))
+                .Concat(moves.Where(mv => mv.Mode == ClashResolveRules.ModeRunShift).SelectMany(mv => mv.InternalEdges.Select(ed => "connections:" + ed.Item1 + "-" + ed.Item2)))
+                .Concat(new[] { "no_new_clash" }).ToArray());
             List<string> after = null; bool completeAfter = false; string verdict = null; bool keep = false;
+            List<string> linksSkippedAfter = new List<string>();
             using (var group = new TransactionGroup(doc, txName))
             {
                 RevitErrorRecorder said = null;
@@ -321,19 +542,37 @@ namespace Horizun.Revit.Commands
                     {
                         said = RevitErrorRecorder.On(tx);
                         tx.Start();
-                        foreach (Move mv in moves) ElementTransformUtils.MoveElements(doc, new List<ElementId> { mv.El.Id }, mv.Vector);
+                        foreach (Move mv in moves)
+                            ElementTransformUtils.MoveElements(doc, mv.MemberIds.Select(Rid.Make).ToList(), mv.Vector);
                         Guard.Commit(tx, txName);
                     }
                     bool positions = true;
                     foreach (Move mv in moves)
-                    {
-                        JObject now = UndoCapture.State(doc, Rid.Value(mv.El.Id));
-                        JToken expected = Shift(mv.BeforeState, mv.Vector);
-                        bool ok = now != null && UndoRules.StatesMatch(expected?["loc"], now["loc"]);
-                        postconditions.Record("position:" + Rid.Value(mv.El.Id), expected?["loc"], now?["loc"], ok);
-                        positions &= ok;
-                    }
+                        foreach (long id in mv.MemberIds)
+                        {
+                            JObject now = UndoCapture.State(doc, id);
+                            JToken expected = Shift(mv.MemberBefore.TryGetValue(id, out JObject b0) ? b0 : null, mv.Vector);
+                            bool ok = now != null && UndoRules.StatesMatch(expected?["loc"], now["loc"], PositionToleranceFt);
+                            postconditions.Record("position:" + id, expected?["loc"], now?["loc"], ok);
+                            positions &= ok;
+                        }
+                    // A run_shift moves rigidly, so every internal connection SHOULD survive on
+                    // its own - but the contract re-reads rather than assumes: a connector that
+                    // silently dropped is exactly the kind of thing a rigid translation should
+                    // never do, and is worth rolling back over if it somehow did.
+                    bool connections = true;
+                    foreach (Move mv in moves.Where(m => m.Mode == ClashResolveRules.ModeRunShift))
+                        foreach (Tuple<long, long> edge in mv.InternalEdges)
+                        {
+                            bool ok = StillConnected(doc, edge.Item1, edge.Item2);
+                            postconditions.Record("connections:" + edge.Item1 + "-" + edge.Item2, "connected", ok ? "connected" : "disconnected", ok);
+                            connections &= ok;
+                        }
+                    positions &= connections;
                     after = Detect(doc, movedIds, region.Keys, out completeAfter);
+                    bool completeAfterLinks;
+                    after = after.Concat(DetectLinks(doc, movedIds, out completeAfterLinks, out linksSkippedAfter)).ToList();
+                    completeAfter = completeAfter && completeAfterLinks;
                     bool? cleared = completeAfter ? (bool?)true : null;
                     foreach (Move mv in moves)
                     {
@@ -353,7 +592,8 @@ namespace Horizun.Revit.Commands
                         return CommandResult.FailWithDetail("Rolled back, nothing kept: " + verdict + ".", new JObject
                         {
                             ["state"] = rb.Confirmed ? "rolled_back" : "uncertain", ["rollback_status"] = rb.StatusName,
-                            ["new_clashes"] = new JArray(fresh), ["postconditions"] = postconditions.ToJson()
+                            ["new_clashes"] = new JArray(fresh), ["postconditions"] = postconditions.ToJson(),
+                            ["links_skipped"] = new JArray(linksSkippedAfter)
                         });
                     }
                     Guard.Assimilate(group, txName);
@@ -369,16 +609,24 @@ namespace Horizun.Revit.Commands
 
             // Post-assimilation re-read: positions only (the solids were measured inside the group).
             foreach (Move mv in moves)
-            {
-                JObject now = UndoCapture.State(doc, Rid.Value(mv.El.Id));
-                if (now == null || !UndoRules.StatesMatch(Shift(mv.BeforeState, mv.Vector)?["loc"], now["loc"]))
-                    return CommandResult.FailWithDetail("The group was kept but element " + Rid.Value(mv.El.Id) + " does not re-read at its verified position; inspect the model.",
-                        new JObject { ["state"] = "uncertain" });
-            }
+                foreach (long id in mv.MemberIds)
+                {
+                    JObject now = UndoCapture.State(doc, id);
+                    JObject memberBefore = mv.MemberBefore.TryGetValue(id, out JObject b0) ? b0 : null;
+                    if (now == null || !UndoRules.StatesMatch(Shift(memberBefore, mv.Vector)?["loc"], now["loc"], PositionToleranceFt))
+                        return CommandResult.FailWithDetail("The group was kept but element " + id + " does not re-read at its verified position; inspect the model.",
+                            new JObject { ["state"] = "uncertain" });
+                }
 
-            var entries = moves.Select(mv => UndoCapture.Entry(doc, "move", new[] { Rid.Value(mv.El.Id) },
-                new JObject { [Rid.Value(mv.El.Id).ToString(CultureInfo.InvariantCulture)] = mv.BeforeState },
-                new JObject { ["vector"] = new JArray(mv.Vector.X, mv.Vector.Y, mv.Vector.Z) })).ToList();
+            // Undo covers every MEMBER, not just the primary mover - horizun_undo must move
+            // the whole network back, or the undone document would be a network moved apart.
+            var entries = moves.Select(mv =>
+            {
+                var beforeStates = new JObject();
+                foreach (long id in mv.MemberIds)
+                    beforeStates[id.ToString(CultureInfo.InvariantCulture)] = (JToken)(mv.MemberBefore.TryGetValue(id, out JObject b0) ? b0 : null) ?? JValue.CreateNull();
+                return UndoCapture.Entry(doc, "move", mv.MemberIds, beforeStates, new JObject { ["vector"] = new JArray(mv.Vector.X, mv.Vector.Y, mv.Vector.Z) });
+            }).ToList();
             JObject undo = UndoCapture.Record(doc, Name, entries);
 
             // The ledger learns the MEASURED outcome - and only that.
@@ -388,7 +636,8 @@ namespace Horizun.Revit.Commands
                 string now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
                 foreach (Move mv in moves)
                     if (ledger.TryGetValue(mv.FindingId, out CoordinationFinding f) &&
-                        ClashResolveRules.ResolveMeasured(f, true, "solid re-detection after moving " + Rid.Value(mv.El.Id) +
+                        ClashResolveRules.ResolveMeasured(f, true, "solid re-detection after moving " +
+                            (mv.Mode == ClashResolveRules.ModeRunShift ? "the connected network of " + mv.MemberIds.Count + " elements led by " + Rid.Value(mv.El.Id) : Rid.Value(mv.El.Id).ToString(CultureInfo.InvariantCulture)) +
                             " found the pair gone and no new clash (undo batch " + undo.Value<string>("batch_id") + ")", now))
                         resolved.Add(mv.FindingId);
                 CoordinationLedger.Save(ledgerPath, ledgerTitle ?? doc.Title, ledger);
@@ -400,7 +649,7 @@ namespace Horizun.Revit.Commands
                 ["dry_run"] = false, ["transaction_status"] = "Committed", ["transaction_name"] = txName,
                 ["verdict"] = verdict, ["postconditions"] = postconditions.ToJson(),
                 ["findings_resolved_by_model"] = resolved, ["ledger_note"] = ledgerNote, ["undo"] = undo,
-                ["neighbourhood_elements"] = region.Count
+                ["neighbourhood_elements"] = region.Count, ["links_skipped"] = new JArray(linksSkippedAfter)
             };
             ApplicationOutcome.StampApplied(applied, ApplicationOutcome.Committed, moves.Count, moves.Count, moves.Count, 0, 0, 0);
             return CommandResult.Ok(applied);
@@ -436,14 +685,108 @@ namespace Horizun.Revit.Commands
             if (other == null) return "the other side of finding " + fid + " is not a host element; its clash cannot be re-measured here";
             string bic = null; try { bic = ((BuiltInCategory)Rid.Value(e.Category.Id)).ToString(); } catch { }
             if (ClashResolveRules.RoleOf(bic, false) != ClashResolveRules.RoleMovable) return "element " + raw + " is not a flexible MEP run; it is never moved automatically";
-            if (!Validate(doc, e, out string _, out string why)) return why;
+            // Re-derived fresh from the live model, never trusted from the propose call that
+            // may be minutes old: a network that changed since propose must be re-approved,
+            // not moved on stale information.
+            if (!ResolveMoveScope(doc, e, out List<long> memberIds, out string mode, out List<Tuple<long, long>> edges, out string _, out string why)) return why;
             JArray v = o["vector_mm"] as JArray;
             if (v == null || v.Count != 3) return "vector_mm must be [x,y,z]";
             var vec = new XYZ((double)v[0] / MmPerFoot, (double)v[1] / MmPerFoot, (double)v[2] / MmPerFoot);
             if (vec.GetLength() * MmPerFoot > maxMove) return "the move exceeds max_move_mm";
             if (vec.GetLength() < 1e-6) return "vector_mm is zero";
-            mv = new Move { FindingId = fid, El = e, Vector = vec, FixedId = Rid.Value(other.Id) };
+            mv = new Move { FindingId = fid, El = e, Vector = vec, FixedId = Rid.Value(other.Id), MemberIds = memberIds, Mode = mode, InternalEdges = edges };
             return null;
+        }
+
+        private const double PositionToleranceFt = 1.0 / MmPerFoot;   // 1 mm
+
+        private static bool StillConnected(Document doc, long idA, long idB)
+        {
+            Element a = doc.GetElement(Rid.Make(idA));
+            if (a == null) return false;
+            foreach (Connector c in MepFacts.Ordered(MepFacts.ManagerOf(a)))
+            {
+                bool connected; try { connected = c.IsConnected; } catch { connected = false; }
+                if (!connected) continue;
+                foreach (Connector r in c.AllRefs.OfType<Connector>())
+                    if (r?.Owner != null && Rid.Value(r.Owner.Id) == idB) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Solid intersections between each mover and every element of every LOADED link, as
+        /// <see cref="ClashResolveRules.LinkPairKey"/> pairs. `complete` is false only when a
+        /// solid read or boolean actually failed - an unloaded link is never counted against
+        /// completeness (it is listed in <paramref name="linksSkipped"/> instead, "never as
+        /// clear": the caller must not report it clean, but a link nobody could load does not
+        /// block every apply either, matching SpatialCoherence.AgainstLinks).
+        /// </summary>
+        private static List<string> DetectLinks(Document doc, HashSet<long> movers, out bool complete, out List<string> linksSkipped)
+        {
+            complete = true;
+            linksSkipped = new List<string>();
+            var pairs = new List<string>();
+            var options = new Options { ComputeReferences = false, DetailLevel = ViewDetailLevel.Fine };
+            var hostCache = new Dictionary<long, List<Solid>>();
+            List<RevitLinkInstance> links;
+            try { links = new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>().ToList(); }
+            catch { return pairs; }
+            foreach (RevitLinkInstance link in links)
+            {
+                string name = LinkName(link);
+                Document linked; try { linked = link.GetLinkDocument(); } catch { linked = null; }
+                if (linked == null) { linksSkipped.Add(name); continue; }
+                Transform toLink; try { toLink = link.GetTotalTransform().Inverse; } catch { linksSkipped.Add(name + " (no transform)"); continue; }
+                var linkCache = new Dictionary<long, List<Solid>>();
+                foreach (long m in movers)
+                {
+                    List<Solid> sm = Solids(doc, m, options, hostCache);
+                    if (sm == null || sm.Count == 0) { complete = false; continue; }
+                    var moved = new List<Solid>();
+                    foreach (Solid s in sm) { try { moved.Add(SolidUtils.CreateTransformed(s, toLink)); } catch { complete = false; } }
+                    if (moved.Count == 0) continue;
+                    var hits = new Dictionary<long, Element>();
+                    foreach (Solid ms in moved)
+                    {
+                        try
+                        {
+                            BoundingBoxXYZ bb = ms.GetBoundingBox();
+                            Transform t = bb.Transform;
+                            XYZ p0 = t.OfPoint(bb.Min), p1 = t.OfPoint(bb.Max);
+                            var outline = new Outline(
+                                new XYZ(Math.Min(p0.X, p1.X), Math.Min(p0.Y, p1.Y), Math.Min(p0.Z, p1.Z)),
+                                new XYZ(Math.Max(p0.X, p1.X), Math.Max(p0.Y, p1.Y), Math.Max(p0.Z, p1.Z)));
+                            foreach (Element e in new FilteredElementCollector(linked).WhereElementIsNotElementType()
+                                         .WherePasses(new BoundingBoxIntersectsFilter(outline))
+                                         .WherePasses(new ElementIntersectsSolidFilter(ms))
+                                         .Where(e => SpatialCoherence.IsPhysical(e)))
+                                hits[Rid.Value(e.Id)] = e;
+                        }
+                        catch { complete = false; }
+                    }
+                    foreach (Element e in hits.Values)
+                    {
+                        long eid = Rid.Value(e.Id);
+                        List<Solid> se = Solids(linked, eid, options, linkCache);
+                        if (se == null) { complete = false; continue; }
+                        if (se.Count == 0) continue;
+                        bool hit = false;
+                        foreach (Solid x in moved)
+                            foreach (Solid y in se)
+                            {
+                                try
+                                {
+                                    Solid i = BooleanOperationsUtils.ExecuteBooleanOperation(x, y, BooleanOperationsType.Intersect);
+                                    if (i != null && i.Volume > TinyVolume) hit = true;
+                                }
+                                catch { complete = false; }
+                            }
+                        if (hit) pairs.Add(ClashResolveRules.LinkPairKey(m, name, eid));
+                    }
+                }
+            }
+            return pairs;
         }
 
         /// <summary>

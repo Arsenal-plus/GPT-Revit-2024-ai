@@ -5544,7 +5544,7 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_resolve_clash",
                 Command = "horizun_resolve_clash",
-                Description = @"Resolve horizun_clash ledger findings with verification. propose (read-only): shift or re-elevate the unconnected host MEP run the minimum + clearance; structure, architecture, links, connected or pinned runs and moves touching a third element are report-only. apply: dry_run -> token -> TransactionGroup, re-detect on solids; the pair must vanish with no new clash or the group rolls back. Kept moves are undoable (horizun_undo); findings become resolved_by_model only by that measurement.",
+                Description = @"Resolve horizun_clash ledger findings with verification. propose (read-only): shift or re-elevate the host MEP run the minimum + clearance - if it is connected, its whole eligible network moves as one (run_shift), or it is report-only naming the blocking connection; checked against host elements AND every loaded link. Structure, architecture, pinned runs and moves touching a third element (host or link) are report-only. apply: dry_run -> token -> TransactionGroup, re-detect on solids against host and links; the pair must vanish with no new clash or the group rolls back. Kept moves are undoable (horizun_undo); findings become resolved_by_model only by that measurement.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
