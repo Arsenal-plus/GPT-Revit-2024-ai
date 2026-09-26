@@ -226,9 +226,8 @@ namespace Horizun.Revit.Core
 
             // ---- composition ----------------------------------------------------------------
             Row("horizun_execute_plan", VerificationMechanism.DelegatedChildDeclaration, E("actions_verified", "application"), F(C + "ExecutePlanCommand.cs", "Horizun.Revit/Core/PlanLedger.cs", "Horizun.Revit/Core/CompositeVerdict.cs")),
-            Row("horizun_apply_corrections", VerificationMechanism.DelegatedChildDeclaration, E("re_audit", "application"), F(C + "ApplyCorrectionsCommand.cs", "Horizun.Revit/Core/CorrectionApplyLoop.cs"),
-                "Core/CorrectionApplyLoop.cs ~l.89: a child that answers no_op counts as an applied step.",
-                "ApplyCorrectionsCommand.cs ~l.292: the re-audit (persistent / not_verifiable) is reported beside the application block, not folded into it."),
+            Row("horizun_apply_corrections", VerificationMechanism.DelegatedChildDeclaration, E("re_audit", "application"), F(C + "ApplyCorrectionsCommand.cs", "Horizun.Revit/Core/CorrectionApplyLoop.cs", "Horizun.Revit/Core/CompositeVerdict.cs"),
+                "ApplyCorrectionsCommand.cs ~l.292: the re-audit (persistent / not_verifiable) is reported beside the application block, not folded into it - a step whose typed call declared verified_applied but whose re-run check still lists the finding as persistent does not downgrade this command's own application block."),
             Row("horizun_apply_ifc_plan", VerificationMechanism.DelegatedChildDeclaration, E("state", "created_verified", "application"), F(C + "ApplyIfcPlanCommand.cs", "Horizun.Revit/Core/CompositeVerdict.cs"),
                 "ApplyIfcPlanCommand.cs ApplyUpdates: the dry-run (rehearse-and-rollback) reply stays undeclared - it wrote and undid real values, which is not what ApplicationState.Rehearsed means, and there is no vocabulary word for it yet."),
             Row("horizun_apply_cad_plan", VerificationMechanism.DelegatedChildDeclaration, E("created_verified", "state", "application"), F(C + "ApplyCadPlanCommand.cs", "Horizun.Revit/Core/CompositeVerdict.cs")),
