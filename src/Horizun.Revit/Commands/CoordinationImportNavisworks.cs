@@ -57,17 +57,8 @@ namespace Horizun.Revit.Commands
                     "issue (folded issues are already excluded upstream). Nothing to import.");
 
             // ---- where an element can live: the host, plus every LOADED rvt link -------
-            var linkSources = new List<LinkSrc>();
             var linksUnloaded = new List<string>();
-            foreach (RevitLinkInstance li in new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
-            {
-                string label = SafeLinkName(li);
-                Document ldoc;
-                try { ldoc = li.GetLinkDocument(); }
-                catch { ldoc = null; }
-                if (ldoc == null) { linksUnloaded.Add(label); continue; }
-                linkSources.Add(new LinkSrc { Label = label, Doc = ldoc, Xf = li.GetTotalTransform(), InstanceId = li.Id.ToString() });
-            }
+            List<LinkSrc> linkSources = BuildLinkSources(doc, linksUnloaded);
 
             int issuesTotal = parsed.Issues.Count;
             int traceable = 0, matched = 0, reproduced = 0, notReproduced = 0;
@@ -260,6 +251,27 @@ namespace Horizun.Revit.Commands
         // ---- resolving one navis target to a Revit element ---------------------------
 
         private sealed class LinkSrc { public string Label; public Document Doc; public Transform Xf; public string InstanceId; }
+
+        /// <summary>
+        /// Every LOADED rvt link in the active document, as a resolvable source - shared by
+        /// import_navisworks and the BCF-from-any-tool resolution beside it. A link that is
+        /// present but not loaded cannot be resolved into (its elements are not in this
+        /// session at all); its label is appended to `unloaded` so the caller can say why.
+        /// </summary>
+        private static List<LinkSrc> BuildLinkSources(Document doc, List<string> unloaded)
+        {
+            var sources = new List<LinkSrc>();
+            foreach (RevitLinkInstance li in new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
+            {
+                string label = SafeLinkName(li);
+                Document ldoc;
+                try { ldoc = li.GetLinkDocument(); }
+                catch { ldoc = null; }
+                if (ldoc == null) { unloaded.Add(label); continue; }
+                sources.Add(new LinkSrc { Label = label, Doc = ldoc, Xf = li.GetTotalTransform(), InstanceId = li.Id.ToString() });
+            }
+            return sources;
+        }
 
         private sealed class ResolvedTarget
         {

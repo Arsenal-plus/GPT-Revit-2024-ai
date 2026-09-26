@@ -285,7 +285,27 @@ namespace Horizun.Revit.Commands
                         var xml = new XmlDocument();
                         using (Stream entryStream = entry.Open()) xml.Load(entryStream);
                         BcfTopic topic = ReadTopic(xml, entry.FullName);
-                        if (topic != null) topics.Add(topic);
+                        if (topic == null) continue;
+
+                        // THE VIEWPOINT(S): a topic's Components live beside markup.bcf, never
+                        // in it. A markup that names a .bcfv this zip does not hold, or one that
+                        // is not valid XML, leaves this topic with zero components - which the
+                        // resolution step below reports as not_traceable, never as a reason to
+                        // fail the whole import (one broken viewpoint is not every topic's fault).
+                        string folder = entry.FullName.Substring(0, entry.FullName.Length - "markup.bcf".Length);
+                        foreach (string viewpointFile in DeclaredViewpointFiles(xml.DocumentElement))
+                        {
+                            ZipArchiveEntry vpEntry = zip.GetEntry(folder + viewpointFile);
+                            if (vpEntry == null) continue;
+                            try
+                            {
+                                var vpXml = new XmlDocument();
+                                using (Stream vpStream = vpEntry.Open()) vpXml.Load(vpStream);
+                                topic.Components.AddRange(ReadComponents(vpXml.DocumentElement));
+                            }
+                            catch (XmlException) { /* this topic's viewpoint is unreadable; it just resolves fewer components */ }
+                        }
+                        topics.Add(topic);
                     }
                 }
             }
@@ -324,6 +344,8 @@ namespace Horizun.Revit.Commands
                 Guid = Attribute(topicNode, "Guid"),
                 Status = Attribute(topicNode, "TopicStatus"),
                 Title = Text(topicNode, "Title"),
+                Priority = Text(topicNode, "Priority"),
+                AssignedTo = Text(topicNode, "AssignedTo"),
                 CreationDate = Text(topicNode, "CreationDate")
             };
 
@@ -337,6 +359,53 @@ namespace Horizun.Revit.Commands
                 });
 
             return string.IsNullOrWhiteSpace(topic.Guid) ? null : topic;
+        }
+
+        /// <summary>
+        /// The viewpoint filename(s) a topic's markup.bcf declares - BOTH the BCF 2.1 shape
+        /// (one or more sibling &lt;Viewpoints Guid="..."&gt;&lt;Viewpoint&gt;file&lt;/Viewpoint&gt;&lt;/Viewpoints&gt;
+        /// elements) and the BCF 3.0 shape (one &lt;Viewpoints&gt; wrapping several
+        /// &lt;ViewPoint Guid="..."&gt;&lt;Viewpoint&gt;file&lt;/Viewpoint&gt;&lt;/ViewPoint&gt; children). Both carry
+        /// the file name in a child element literally named "Viewpoint"; only the nesting differs.
+        /// </summary>
+        private static List<string> DeclaredViewpointFiles(XmlElement markupRoot)
+        {
+            var files = new List<string>();
+            if (markupRoot == null) return files;
+            foreach (XmlNode viewpointsNode in markupRoot.SelectNodes("Viewpoints"))
+            {
+                foreach (XmlNode direct in viewpointsNode.SelectNodes("Viewpoint"))
+                    if (!string.IsNullOrWhiteSpace(direct.InnerText)) files.Add(direct.InnerText.Trim());
+                foreach (XmlNode nested in viewpointsNode.SelectNodes("ViewPoint"))
+                {
+                    XmlNode inner = nested.SelectSingleNode("Viewpoint");
+                    if (inner != null && !string.IsNullOrWhiteSpace(inner.InnerText)) files.Add(inner.InnerText.Trim());
+                }
+            }
+            return files;
+        }
+
+        /// <summary>
+        /// Every Components/Selection/Component a viewpoint names, exactly as written: an
+        /// IfcGuid attribute and/or an AuthoringToolId child. A component with neither is not
+        /// collected - it names nothing this or any other tool could resolve.
+        /// </summary>
+        private static List<BcfExternalComponent> ReadComponents(XmlElement viewpointRoot)
+        {
+            var list = new List<BcfExternalComponent>();
+            if (viewpointRoot == null) return list;
+            foreach (XmlNode c in viewpointRoot.SelectNodes("Components/Selection/Component"))
+            {
+                string ifcGuid = Attribute(c, "IfcGuid");
+                string authoringToolId = Text(c, "AuthoringToolId");
+                if (string.IsNullOrWhiteSpace(ifcGuid) && string.IsNullOrWhiteSpace(authoringToolId)) continue;
+                list.Add(new BcfExternalComponent
+                {
+                    IfcGuid = string.IsNullOrWhiteSpace(ifcGuid) ? null : ifcGuid.Trim(),
+                    AuthoringToolId = string.IsNullOrWhiteSpace(authoringToolId) ? null : authoringToolId.Trim()
+                });
+            }
+            return list;
         }
 
         private static string Attribute(XmlNode node, string name)
@@ -423,10 +492,26 @@ namespace Horizun.Revit.Commands
             public string Guid;
             public string Status;
             public string Title;
+            public string Priority;
+            public string AssignedTo;
 
             /// <summary>The topic's own CreationDate: the only external date a topic with no comments has.</summary>
             public string CreationDate;
             public readonly List<BcfComment> Comments = new List<BcfComment>();
+
+            /// <summary>
+            /// Every Component this topic's viewpoint(s) name - IfcGuid and/or AuthoringToolId,
+            /// exactly what the file itself carries. Empty for a topic with no viewpoint, or
+            /// one this reader could not parse; never invented.
+            /// </summary>
+            public readonly List<BcfExternalComponent> Components = new List<BcfExternalComponent>();
+        }
+
+        /// <summary>One Components/Selection/Component entry from ANY tool's viewpoint.bcfv.</summary>
+        private sealed class BcfExternalComponent
+        {
+            public string IfcGuid;
+            public string AuthoringToolId;
         }
 
         private sealed class BcfComment
