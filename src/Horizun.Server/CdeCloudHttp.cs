@@ -306,10 +306,12 @@ namespace Horizun.Server
         }
 
         /// <summary>
-        /// Resolves a data:read token. Order: an explicit access token, then the 3-legged
-        /// token file (refreshed when it expires and a client id is configured - APS
-        /// refresh tokens are replaced on use, so the new pair is written back and read
-        /// back), then 2-legged client credentials. Throws ToolRefusal on failure.
+        /// Resolves a token. Order: an explicit access token, then the 3-legged token file
+        /// (refreshed when it expires, or when it lacks a scope the caller needs, and a client
+        /// id is configured - APS refresh tokens are replaced on use, so the new pair is
+        /// written back and read back), then 2-legged client credentials. <paramref name="scope"/>
+        /// is what the caller NEEDS (null = data:read); it is asked of a 2-legged grant but never
+        /// of a refresh, which keeps the scope of the original sign-in. Throws ToolRefusal on failure.
         /// </summary>
         internal static CloudCredential Resolve(CdeCloudEnvironment env, CdeCloudHttp http, string scope = null)
         {
@@ -342,17 +344,26 @@ namespace Horizun.Server
             string refresh = (string)stored["refresh_token"];
             DateTimeOffset? expires = ParseExpiry(stored["expires_at"]);
             DateTimeOffset now = env.Now();
-            if (!string.IsNullOrWhiteSpace(access) && expires.HasValue && expires.Value > now.AddSeconds(60))
+            string idName = FirstSet(env, ClientIdNames);
+            bool canRefresh = !string.IsNullOrWhiteSpace(refresh) && idName != null;
+            bool fresh = !string.IsNullOrWhiteSpace(access) && expires.HasValue && expires.Value > now.AddSeconds(60);
+            // A stored token that is fresh but lacks a scope the caller needs (a write needs
+            // data:write) is refreshed rather than reused; one that cannot be refreshed is
+            // returned as it is and the caller's own scope check names what is missing.
+            if (fresh && (CoversScope(access, scope) || !canRefresh))
                 return new CloudCredential { Mode = "three_legged", Source = file, Token = access };
 
-            string idName = FirstSet(env, ClientIdNames);
-            if (string.IsNullOrWhiteSpace(refresh) || idName == null)
+            if (!canRefresh)
                 throw new ToolRefusal("The APS token in " + file + " is expired or has no expires_at, and it cannot be refreshed " +
                                       "(" + (string.IsNullOrWhiteSpace(refresh) ? "no refresh_token in the file" : "HORIZUN_APS_CLIENT_ID is not set") +
                                       "). Sign in again to renew the file. No request was made.");
             string secretName = FirstSet(env, ClientSecretNames);
+            // NO scope on a refresh. Asking one NARROWS the grant (review finding: a read that
+            // refreshed with 'data:read' left a token - and a refresh token - without data:write,
+            // and the next issue_create was refused). Without it APS keeps the scopes of the
+            // original sign-in. To measure live: that APS v2 accepts a refresh without scope.
             JObject token = RequestToken(http, env.Variable(idName).Trim(), secretName == null ? null : env.Variable(secretName).Trim(),
-                new Dictionary<string, string> { ["grant_type"] = "refresh_token", ["refresh_token"] = refresh, ["scope"] = scope ?? Scope });
+                new Dictionary<string, string> { ["grant_type"] = "refresh_token", ["refresh_token"] = refresh });
 
             var cred = new CloudCredential { Mode = "three_legged", Source = file, Token = (string)token["access_token"] };
             int expiresIn = token["expires_in"] != null && token["expires_in"].Type == JTokenType.Integer ? (int)token["expires_in"] : 3600;
@@ -364,12 +375,27 @@ namespace Horizun.Server
                 ["token_type"] = (string)token["token_type"] ?? "Bearer",
                 ["refreshed_by"] = CdeCloudTool.ToolName
             };
+            string granted = (string)token["scope"] ?? (string)stored["scope"];
+            if (!string.IsNullOrWhiteSpace(granted)) updated["scope"] = granted;
             string problem = WriteBackVerified(file, updated);
             cred.TokenFileRefreshed = problem == null;
             if (problem != null)
                 cred.Warnings.Add("The token was refreshed but the token file could not be rewritten (" + problem + "). APS " +
                                   "replaces a refresh token when it is used, so the stored one may no longer work: sign in again.");
             return cred;
+        }
+
+        /// <summary>
+        /// Does the token carry every scope in <paramref name="scope"/>? Read from its own JWT
+        /// claims; a token whose claims are not readable is not second-guessed (true).
+        /// </summary>
+        internal static bool CoversScope(string token, string scope)
+        {
+            if (string.IsNullOrWhiteSpace(scope)) return true;
+            JObject claims = CdeCloudTool.JwtClaims(token);
+            List<string> have = claims == null ? null : CdeCloudTool.ScopesOf(claims);
+            if (have == null) return true;
+            return scope.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).All(have.Contains);
         }
 
         private static DateTimeOffset? ParseExpiry(JToken t)

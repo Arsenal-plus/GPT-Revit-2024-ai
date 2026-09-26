@@ -28,7 +28,7 @@ namespace Horizun.Server.Tests
         private const string Project = "b." + Guid2;
         private const string Base = Aps + "/construction/issues/v1/projects/" + Guid2;
         private const string Types = Base + "/issue-types?include=subtypes&limit=200";
-        private const string Scan = Base + "/issues?limit=100&offset=0";
+        private const string Scan = Base + "/issues?limit=100&offset=0&sortBy=displayId";
 
         private readonly string _dir;
         private readonly string _savedRoot;
@@ -143,7 +143,7 @@ namespace Horizun.Server.Tests
             cloud.Json("GET", Types, IssueTypes());
             cloud.Json("GET", Scan, Page());
             cloud.Json("POST", Base + "/issues", new JObject { ["id"] = "iss-1" });
-            string landed = "Duct vs beam\n\nlevel: L2\nelement_a: 123456\n\n[horizun-key:clash-42]";
+            string landed = "level: L2\nelement_a: 123456\n\n[horizun-key:clash-42]";
             cloud.Json("GET", Base + "/issues/iss-1", Issue("iss-1", "Duct vs beam", "open", landed, "U9"));
 
             JObject rehearsal = CdeCloudTool.Handle(CreateArgs(true), CancellationToken.None, Env(cloud, UserToken()));
@@ -181,7 +181,7 @@ namespace Horizun.Server.Tests
         {
             var cloud = new FakeCloud();
             cloud.Json("GET", Types, IssueTypes());
-            string there = "Duct vs beam\n\nlevel: L2\nelement_a: 123456\n\n[horizun-key:clash-42]";
+            string there = "level: L2\nelement_a: 123456\n\n[horizun-key:clash-42]";
             cloud.Json("GET", Scan, Page(Issue("iss-1", "Duct vs beam", "open", there, "U9")));
             cloud.Json("GET", Base + "/issues/iss-1", Issue("iss-1", "Duct vs beam", "open", there, "U9"));
 
@@ -344,6 +344,177 @@ namespace Horizun.Server.Tests
             Assert.Equal("sub-1", (string)r["issue_types"][0]["subtypes"][0]["id"]);
             Assert.Equal("r1", (string)r["root_cause_categories"][0]["root_causes"][0]["id"]);
             Assert.All(cloud.Requests, q => Assert.Equal("GET", q.Method));
+        }
+
+        // ---- review round 1 -----------------------------------------------------------------
+
+        [Fact]
+        public void A_token_file_holding_a_read_only_token_is_refreshed_for_a_write_without_narrowing()
+        {
+            // The sequence the live probe runs: a read refreshed the file, and what it left is
+            // data:read only. The write refreshes instead of reusing it, and the refresh asks
+            // NO scope, so the original grant (with data:write) comes back.
+            string readOnly = Jwt(new JObject { ["scope"] = new JArray("data:read"), ["userid"] = "U1" });
+            string file = Path.Combine(_dir, "aps-token.json");
+            File.WriteAllText(file, new JObject
+            {
+                ["access_token"] = readOnly, ["refresh_token"] = "r-1", ["expires_at"] = "2026-09-26T13:00:00Z"
+            }.ToString());
+            var cloud = new FakeCloud();
+            cloud.Json("POST", ApsAuth.TokenUrl, new JObject
+            {
+                ["access_token"] = _userToken, ["refresh_token"] = "r-2", ["expires_in"] = 3600, ["token_type"] = "Bearer"
+            });
+            cloud.Json("GET", Types, IssueTypes());
+            cloud.Json("GET", Scan, Page());
+            var vars = new Dictionary<string, string> { ["HORIZUN_APS_CLIENT_ID"] = "id" };
+
+            JObject r = CdeCloudTool.Handle(CreateArgs(true), CancellationToken.None, Env(cloud, vars));
+            Assert.Equal("rehearsed", (string)r["state"]);
+            Assert.True((bool)r["auth"]["token_file_refreshed"]);
+            var refresh = cloud.Requests.Single(q => q.Url == ApsAuth.TokenUrl);
+            Assert.Contains("grant_type=refresh_token", refresh.Body);
+            Assert.DoesNotContain("scope=", refresh.Body);
+            JObject stored = JObject.Parse(File.ReadAllText(file));
+            Assert.Equal(_userToken, (string)stored["access_token"]);
+            Assert.Equal("r-2", (string)stored["refresh_token"]);
+            Assert.Equal("Bearer " + _userToken, cloud.Requests.Last().Auth);
+        }
+
+        [Fact]
+        public void A_read_refresh_asks_no_scope()
+        {
+            string file = Path.Combine(_dir, "aps-token.json");
+            File.WriteAllText(file, new JObject { ["access_token"] = "old", ["refresh_token"] = "r-1", ["expires_at"] = "2026-09-26T11:00:00Z" }.ToString());
+            var cloud = new FakeCloud();
+            cloud.Json("POST", ApsAuth.TokenUrl, new JObject { ["access_token"] = _userToken, ["refresh_token"] = "r-2", ["expires_in"] = 3600 });
+            cloud.Json("GET", Scan, Page());
+            cloud.Json("GET", Types, IssueTypes());
+            cloud.Json("GET", Base + "/issue-root-cause-categories?include=rootcauses&limit=200", new JObject { ["results"] = new JArray() });
+            JObject r = CdeCloudTool.Handle(new JObject { ["operation"] = "issues_list", ["provider"] = "acc", ["project_id"] = Project },
+                CancellationToken.None, Env(cloud, new Dictionary<string, string> { ["HORIZUN_APS_CLIENT_ID"] = "id" }));
+            Assert.True((bool)r["auth"]["token_file_refreshed"]);
+            Assert.DoesNotContain("scope=", cloud.Requests.Single(q => q.Url == ApsAuth.TokenUrl).Body);
+        }
+
+        [Theory]
+        [InlineData(503, "{}")]
+        [InlineData(201, "")]
+        public void A_lost_post_answer_is_reconciled_by_the_key(int status, string body)
+        {
+            var cloud = new FakeCloud();
+            string landed = "level: L2\nelement_a: 123456\n\n[horizun-key:clash-42]";
+            JObject issue = Issue("iss-9", "Duct vs beam", "open", landed, "U9");
+            cloud.Json("GET", Types, IssueTypes());
+            cloud.Json("GET", Scan, Page(), Page(), Page(issue));
+            cloud.On("POST", Base + "/issues", () => new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent(body) });
+            cloud.Json("GET", Base + "/issues/iss-9", issue);
+
+            string token = (string)CdeCloudTool.Handle(CreateArgs(true), CancellationToken.None, Env(cloud, UserToken()))["confirmation_token"];
+            JObject r = CdeCloudTool.Handle(CreateArgs(false, token), CancellationToken.None, Env(cloud, UserToken()));
+            Assert.Equal("applied", (string)r["state"]);
+            Assert.NotNull(r["reconciled"]);
+            Assert.Equal("iss-9", (string)r["issue_id"]);
+            Assert.True((bool)r["host_verified"]);
+            Assert.Single(cloud.Requests, q => q.Method == "POST" && q.Url == Base + "/issues");
+        }
+
+        [Fact]
+        public void A_description_patch_whose_read_back_keeps_the_old_text_is_not_verified()
+        {
+            var cloud = new FakeCloud();
+            JObject before = Issue("iss-1", "Duct vs beam", "open", "Duct vs beam at L2 grid C4\n\n[horizun-key:k]");
+            cloud.Json("GET", Base + "/issues/iss-1", before);
+            cloud.Json("PATCH", Base + "/issues/iss-1", before);
+            Func<bool, string, JObject> args = (dry, token) => new JObject
+            {
+                ["operation"] = "issue_update", ["provider"] = "acc", ["project_id"] = Project, ["issue_id"] = "iss-1",
+                ["dry_run"] = dry, ["confirmation_token"] = token, ["issue"] = new JObject { ["description"] = "Duct vs beam" }
+            };
+            JObject rehearsal = CdeCloudTool.Handle(args(true, null), CancellationToken.None, Env(cloud, UserToken()));
+            Assert.Equal("Duct vs beam\n\n[horizun-key:k]", (string)rehearsal["plan"]["body"]["description"]);
+            JObject applied = CdeCloudTool.Handle(args(false, (string)rehearsal["confirmation_token"]), CancellationToken.None, Env(cloud, UserToken()));
+            Assert.Equal("applied_unverified", (string)applied["state"]);
+            Assert.False((bool)applied["host_verified"]);
+        }
+
+        [Fact]
+        public void An_update_naming_a_key_the_issue_lacks_writes_the_marker()
+        {
+            var cloud = new FakeCloud();
+            cloud.Json("GET", Base + "/issues/iss-1", Issue("iss-1", "Duct vs beam", "open", "Found on site"));
+            JObject r = CdeCloudTool.Handle(new JObject
+            {
+                ["operation"] = "issue_update", ["provider"] = "acc", ["project_id"] = Project, ["issue_id"] = "iss-1",
+                ["external_key"] = "k7", ["issue"] = new JObject { ["status"] = "closed" }
+            }, CancellationToken.None, Env(cloud, UserToken()));
+            Assert.Equal("rehearsed", (string)r["state"]);
+            Assert.Equal("Found on site\n\n[horizun-key:k7]", (string)r["plan"]["body"]["description"]);
+        }
+
+        [Fact]
+        public void A_call_budget_without_room_for_the_post_withholds_the_token()
+        {
+            var cloud = new FakeCloud();
+            cloud.Json("GET", Types, IssueTypes());
+            cloud.Json("GET", Scan, Page());
+            JObject a = CreateArgs(true);
+            a["max_calls"] = 3;   // types + one scan page leave one call: the POST and its read-back need two
+            JObject r = CdeCloudTool.Handle(a, CancellationToken.None, Env(cloud, UserToken()));
+            Assert.Null(r["confirmation_token"]);
+            Assert.Contains("max_calls", (string)r["apply_blocked"]);
+        }
+
+        // The columns of this repo's own coordination ledger, exactly as CoordinationRules.CsvHeader
+        // and CoordinationLedger.ToJson write them (pinned on the Core side by CoordinationLedgerColumnsTests).
+        private static readonly string[] LedgerCsvHeader =
+        {
+            "finding_id", "status", "assignee", "note", "category_a", "category_b",
+            "side_a", "side_b", "point_mm", "first_seen_utc", "last_seen_utc",
+            "resolved_utc", "times_seen", "regression",
+            "scope", "external_source", "external_issue_id", "priority", "responsible", "immovable_discipline"
+        };
+
+        [Fact]
+        public void A_ledger_csv_row_and_json_row_make_an_issue()
+        {
+            string[] cells =
+            {
+                "f-0001", "open", "", "Reroute above the beam", "Ducts", "Structural Framing",
+                "host|101|u1", "host|202|u2", "1000.0 2000.0 3000.0", "2026-09-01T00:00:00Z", "2026-09-20T00:00:00Z",
+                "", "3", "false", "hvac-vs-structure", "", "", "high", "Mechanical", ""
+            };
+            var csv = new JObject();
+            for (int i = 0; i < LedgerCsvHeader.Length; i++) csv[LedgerCsvHeader[i]] = cells[i];
+            var json = new JObject
+            {
+                ["scope"] = "hvac-vs-structure", ["status"] = "open", ["side_a"] = "host|101|u1", ["side_b"] = "host|202|u2",
+                ["category_a"] = "Ducts", ["category_b"] = "Structural Framing", ["first_seen_utc"] = "2026-09-01T00:00:00Z",
+                ["last_seen_utc"] = "2026-09-20T00:00:00Z", ["times_seen"] = 3, ["regression"] = false,
+                ["note"] = "Reroute above the beam", ["point_mm"] = new JArray(1000.0, 2000.0, 3000.0),
+                ["priority"] = "high", ["responsible"] = "Mechanical", ["suggested_action"] = "move the duct", ["finding_id"] = "f-0001"
+            };
+            foreach (JObject row in new[] { csv, json })
+            {
+                var cloud = new FakeCloud();
+                cloud.Json("GET", Types, IssueTypes());
+                cloud.Json("GET", Scan, Page());
+                JObject r = CdeCloudTool.Handle(new JObject
+                {
+                    ["operation"] = "issue_create", ["provider"] = "acc", ["project_id"] = Project, ["finding"] = row,
+                    ["issue"] = new JObject { ["issue_type_id"] = "sub-1" }
+                }, CancellationToken.None, Env(cloud, UserToken()));
+                JObject body = (JObject)r["plan"]["body"];
+                Assert.Equal("Clash: Ducts vs Structural Framing", (string)body["title"]);
+                string d = (string)body["description"];
+                Assert.StartsWith("Reroute above the beam", d);
+                Assert.Contains("side_a: host|101|u1", d);
+                Assert.Contains("side_b: host|202|u2", d);
+                Assert.Contains("point_mm: ", d);
+                Assert.Contains("responsible: Mechanical", d);
+                Assert.Contains("priority: high", d);
+                Assert.EndsWith("[horizun-key:f-0001]", d);
+            }
         }
     }
 }

@@ -31,7 +31,8 @@
 //
 // VERIFICATION. After a write the issue is read back with a GET and compared field by
 // field - title, status, assignee, dates, subtype, location, root cause, the text and
-// the key marker. host_verified is true only when every field sent reads back as sent.
+// the key marker; the description whole, for equality. host_verified is true only
+// when every field sent reads back as sent, and never when nothing was compared.
 //
 // Nothing binary is attached in this pass (no snapshot, file, markup or linked
 // document); the reply says so.
@@ -79,13 +80,18 @@ namespace Horizun.Server
         private static KeyValuePair<string, string> Pair(string a, string b) => new KeyValuePair<string, string>(a, b);
 
         // A coordination ledger row (CSV columns or JSON keys) names the same things its own
-        // way. First present wins; explicit issue fields override all of it.
+        // way. First present wins; explicit issue fields override all of it. This repo's own
+        // ledger (CoordinationRules.CsvHeader / CoordinationLedger.ToJson) has no title column:
+        // its title is built from category_a/category_b (LedgerTitle), its text is the note,
+        // and its clash context (sides, point, responsible, suggested action) goes below it.
         private static readonly string[] FindingTitleKeys = { "title", "name", "summary", "clash_name", "check" };
-        private static readonly string[] FindingTextKeys = { "description", "detail", "details", "comment", "message", "reason" };
+        private static readonly string[] FindingTextKeys = { "description", "detail", "details", "comment", "message", "reason", "note" };
         private static readonly string[] FindingIdKeys = { "external_key", "finding_id", "clash_id", "issue_key", "guid", "id" };
         private static readonly string[] FindingContextKeys =
         {
-            "severity", "priority", "discipline", "category", "test", "level", "grid", "location", "zone",
+            "category_a", "category_b", "side_a", "side_b", "point_mm", "priority", "responsible", "immovable_discipline",
+            "suggested_action", "scope",
+            "severity", "discipline", "category", "test", "level", "grid", "location", "zone",
             "element_a", "element_b", "element_ids", "elements", "distance", "point", "x", "y", "z", "source", "model"
         };
 
@@ -229,7 +235,7 @@ namespace Horizun.Server
             catch (JsonException) { return null; }
         }
 
-        private static List<string> ScopesOf(JObject claims)
+        internal static List<string> ScopesOf(JObject claims)
         {
             JToken s = claims["scope"];
             if (s is JArray a) return a.Select(x => (string)x).Where(x => x != null).ToList();
@@ -305,7 +311,7 @@ namespace Horizun.Server
                     string k = p.Name.Trim().ToLowerInvariant().Replace(' ', '_');
                     if (!cols.ContainsKey(k)) cols[k] = p.Value;
                 }
-                title = FromFinding(cols, FindingTitleKeys, "title", d.Sources);
+                title = FromFinding(cols, FindingTitleKeys, "title", d.Sources) ?? LedgerTitle(cols, d.Sources);
                 text = FromFinding(cols, FindingTextKeys, "description", d.Sources);
                 d.Key = FromFinding(cols, FindingIdKeys, "external_key", d.Sources);
                 var lines = new List<string>();
@@ -361,7 +367,7 @@ namespace Horizun.Server
             if (op == "issue_create")
             {
                 if (d.Fields["title"] == null)
-                    throw new ToolRefusal("issue_create needs a title: issue.title, or a finding with title/name/summary. Nothing was read or written.");
+                    throw new ToolRefusal("issue_create needs a title: issue.title, or a finding with title/name/summary or category_a/category_b. Nothing was read or written.");
                 if (d.Fields["issueSubtypeId"] == null)
                     throw new ToolRefusal("issue_create needs issue.issue_type_id: ACC requires an issue SUBTYPE id, and issues_list returns " +
                                           "issue_types with their subtypes. Nothing was read or written.");
@@ -373,6 +379,20 @@ namespace Horizun.Server
             else if (d.Fields.Count == 0 && !d.HasText)
                 throw new ToolRefusal("issue_update needs at least one field in issue (or a finding). Nothing was read or written.");
             return d;
+        }
+
+        /// <summary>A ledger row has no title column: "Clash: &lt;category_a&gt; vs &lt;category_b&gt;".</summary>
+        private static string LedgerTitle(Dictionary<string, JToken> cols, JArray sources)
+        {
+            JToken a, b;
+            string ca = cols.TryGetValue("category_a", out a) ? Scalar(a)?.Trim() : null;
+            string cb = cols.TryGetValue("category_b", out b) ? Scalar(b)?.Trim() : null;
+            var from = new JArray();
+            if (!string.IsNullOrEmpty(ca)) from.Add("category_a");
+            if (!string.IsNullOrEmpty(cb)) from.Add("category_b");
+            if (from.Count == 0) return null;
+            sources.Add(new JObject { ["field"] = "title", ["from"] = from });
+            return "Clash: " + (from.Count == 2 ? ca + " vs " + cb : !string.IsNullOrEmpty(ca) ? ca : cb);
         }
 
         private static string FromFinding(Dictionary<string, JToken> cols, string[] keys, string field, JArray sources)
@@ -455,7 +475,7 @@ namespace Horizun.Server
                 // is read back and compared with what this call would have sent.
                 result["state"] = "already_exists";
                 if (existing.Count > 1) result["duplicates"] = new JArray(existing.Select(i => i["id"]));
-                VerifyInto(http, projectId, (string)existing[0]["id"], Comparable(payload), d.Key, d.Text, result);
+                VerifyInto(http, projectId, (string)existing[0]["id"], Comparable(payload), d.Key, (string)payload["description"], result);
                 result["note"] = "An issue already carries " + IssueMarker(d.Key) + ": nothing was created. A difference in verification " +
                                  "is reported, not overwritten - issue_update changes it.";
                 return;
@@ -470,6 +490,9 @@ namespace Horizun.Server
             {
                 result["state"] = "rehearsed";
                 result["plan"] = new JObject { ["method"] = "POST", ["path"] = "/issues", ["body"] = payload };
+                if (blocked == null && http.Budget - http.Calls < WriteCalls)
+                    blocked = "max_calls=" + http.Budget + " leaves " + (http.Budget - http.Calls) + " call(s) after the scan; the apply needs the " +
+                              "same reads plus " + WriteCalls + " (the POST and its read-back). Raise max_calls.";
                 if (blocked != null) result["apply_blocked"] = blocked;
                 else
                 {
@@ -482,14 +505,18 @@ namespace Horizun.Server
                 return;
             }
             if (blocked != null) throw new ToolRefusal("Not applied: " + blocked + " Nothing was written.");
+            RequireWriteBudget(http, "POST");
             string tokenProblem = IssueConfirmations.Validate(token, command, docKey, planHash);
             if (tokenProblem != null) throw new ToolRefusal(tokenProblem + " Nothing was written.");
 
             CloudResponse r = http.SendJson(HttpMethod.Post, IssuesBase(projectId) + "/issues", payload, false);
+            if (r.BudgetExhausted) throw new ToolRefusal("The call budget was spent before the POST: no request was made. Nothing was written.");
             string id = r.Ok ? (string)IssueBody(r.Body)?["id"] : null;
             if (id == null)
             {
-                bool lost = r.Ok || r.Status == 0 || r.Status >= 500;
+                // A 2xx whose body is empty or not a JSON object is an ACCEPTED write with a
+                // lost answer, not a refusal: it goes through the same re-scan by key.
+                bool lost = r.Ok || r.Status == 0 || r.Status >= 500 || (r.Status >= 200 && r.Status < 300);
                 if (!lost) throw new ToolRefusal("ACC refused the create: " + r.Error + ApiDetail(r) + ". Nothing was written.");
                 IssueScan again = ReadIssues(http, projectId, "", 0, int.MaxValue);
                 JObject landed = again.Issues.FirstOrDefault(i => KeyOf(i) == d.Key);
@@ -501,7 +528,7 @@ namespace Horizun.Server
                 result["reconciled"] = "the POST's answer was lost; the issue was found again by its key";
             }
             result["state"] = "applied";
-            VerifyInto(http, projectId, id, Comparable(payload), d.Key, d.Text, result);
+            VerifyInto(http, projectId, id, Comparable(payload), d.Key, (string)payload["description"], result);
         }
 
         private static void IssueUpdate(CdeCloudHttp http, string projectId, IssueDraft d, string issueId, bool dryRun, string token, JObject result)
@@ -533,6 +560,9 @@ namespace Horizun.Server
 
             JObject wanted = (JObject)d.Fields.DeepClone();
             if (d.HasText) wanted["description"] = key != null ? ComposeDescription(d.Text, key) : d.Text;
+            // A key named for an issue that carries none is WRITTEN (the text kept as it is):
+            // reporting external_key without storing it would let a later keyed create miss it.
+            else if (d.Key != null && currentKey == null) wanted["description"] = ComposeDescription((string)current["description"], d.Key);
             var patch = new JObject();
             var changes = new JArray();
             foreach (JProperty p in wanted.Properties())
@@ -572,19 +602,34 @@ namespace Horizun.Server
                                  "only the fields listed in changes are sent, then the issue is read back and compared.";
                 return;
             }
+            RequireWriteBudget(http, "PATCH");
             string tokenProblem = IssueConfirmations.Validate(token, command, docKey, planHash);
             if (tokenProblem != null) throw new ToolRefusal(tokenProblem + " Nothing was written.");
 
             // A PATCH with the same values is idempotent, so a lost answer may be retried.
             CloudResponse r = http.SendJson(new HttpMethod("PATCH"), IssuesBase(projectId) + "/issues/" + Esc(issueId), patch, true);
-            if (!r.Ok)
+            if (r.BudgetExhausted) throw new ToolRefusal("The call budget was spent before the PATCH: no request was made. Nothing was written.");
+            bool accepted = r.Status >= 200 && r.Status < 300;
+            if (!r.Ok && accepted)
+                result["answer"] = "ACC accepted the PATCH (HTTP " + r.Status + ") without a usable body (" + r.Error + "); the read-back decides.";
+            if (!r.Ok && !accepted)
                 throw new ToolRefusal("ACC refused the update: " + r.Error + ApiDetail(r) + ". " +
                                       (r.Status == 0 || r.Status >= 500
                                           ? "It may or may not have landed; rehearse again - the dry run compares against what is there now."
                                           : "Nothing was written."));
             result["state"] = "applied";
-            VerifyInto(http, projectId, issueId, Comparable(patch), patch["description"] != null ? key : null,
-                       patch["description"] != null ? d.Text : null, result);
+            string sent = (string)patch["description"];
+            VerifyInto(http, projectId, issueId, Comparable(patch), sent != null ? KeyOf(new JObject { ["description"] = sent }) : null, sent, result);
+        }
+
+        /// <summary>A write needs the request and its read-back: refused up front, before the token is spent.</summary>
+        private const int WriteCalls = 2;
+
+        private static void RequireWriteBudget(CdeCloudHttp http, string method)
+        {
+            if (http.Budget - http.Calls < WriteCalls)
+                throw new ToolRefusal("max_calls=" + http.Budget + " leaves " + (http.Budget - http.Calls) + " call(s): the " + method + " and its read-back need " +
+                                      WriteCalls + ". Raise max_calls. No " + method + " was sent and the confirmation_token was not spent. Nothing was written.");
         }
 
         // ================================================================================
@@ -599,7 +644,9 @@ namespace Horizun.Server
             {
                 int want = (int)Math.Min(IssuesPage, (long)max - s.Issues.Count);
                 if (want <= 0) { s.Truncated = s.Total < 0 || at < s.Total; return s; }
-                CloudResponse r = http.Get(IssuesBase(projectId) + "/issues?limit=" + want + "&offset=" + at + query);
+                // Sorted on displayId - assigned once, growing with each create - so an issue edited
+                // during a multi-page scan cannot move to a page already read. To measure live.
+                CloudResponse r = http.Get(IssuesBase(projectId) + "/issues?limit=" + want + "&offset=" + at + query + "&sortBy=displayId");
                 if (!r.Ok) { s.Complete = false; s.Error = r.Error; return s; }
                 JArray results = r.Body["results"] as JArray ?? new JArray();
                 JToken total = r.Body["pagination"]?["totalResults"];
@@ -692,7 +739,8 @@ namespace Horizun.Server
             return names.Count == 0 ? "none readable" : string.Join(", ", names.Take(40));
         }
 
-        private static void VerifyInto(CdeCloudHttp http, string projectId, string id, JObject wanted, string key, string text, JObject result)
+        /// <param name="description">The WHOLE description sent (marker included), compared for equality; null when none was sent.</param>
+        private static void VerifyInto(CdeCloudHttp http, string projectId, string id, JObject wanted, string key, string description, JObject result)
         {
             result["issue_id"] = id;
             result["web_url"] = IssueWebUrl(projectId, id);
@@ -715,18 +763,25 @@ namespace Horizun.Server
                 all &= ok;
                 checks.Add(new JObject { ["field"] = p.Name, ["expected"] = p.Value, ["actual"] = actual, ["ok"] = ok });
             }
-            string description = Normalize((string)back["description"]);
             if (key != null)
             {
                 bool ok = KeyOf(back) == key;
                 all &= ok;
                 checks.Add(new JObject { ["field"] = "description_marker", ["expected"] = IssueMarker(key), ["ok"] = ok });
             }
-            if (!string.IsNullOrEmpty(text))
+            if (description != null)
             {
-                bool ok = description.Contains(Normalize(text));
+                // Equality, not containment: a PATCH that never landed must not pass because the
+                // old text still contains the new one, and an emptied description is compared too.
+                string expected = Normalize(description), actual = Normalize((string)back["description"]);
+                bool ok = actual == expected;
                 all &= ok;
-                checks.Add(new JObject { ["field"] = "description_text", ["ok"] = ok });
+                checks.Add(new JObject { ["field"] = "description", ["ok"] = ok, ["expected_length"] = expected.Length, ["actual_length"] = actual.Length });
+            }
+            if (checks.Count == 0)
+            {
+                all = false;
+                result["verification_reason"] = "nothing sent could be compared with the read-back";
             }
             result["verification"] = checks;
             result["host_verified"] = all;
@@ -735,7 +790,7 @@ namespace Horizun.Server
             if ((string)result["state"] == "applied" && !all) result["state"] = "applied_unverified";
         }
 
-        /// <summary>The fields a read-back is judged on: the description by marker and text, published only reported.</summary>
+        /// <summary>The fields a read-back is judged on field by field: the description is compared whole, published only reported.</summary>
         private static JObject Comparable(JObject payload)
         {
             var o = (JObject)payload.DeepClone();
