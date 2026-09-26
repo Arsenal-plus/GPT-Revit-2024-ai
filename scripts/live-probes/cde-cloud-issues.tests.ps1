@@ -10,12 +10,14 @@ $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'cde-cloud-issues'
 $fails = 0
 function Check($name, $ok) { if ($ok) { "  PASS  $name" } else { "  FAIL  $name"; $script:fails++ } }
 
-# Modes: 'ok' behaves; 'nocred' has no APS credential; 'leaky' creates the issue on the DRY RUN.
+# Modes: 'ok' behaves; 'nocred' has no APS credential; 'leaky' creates the issue on the DRY RUN;
+# 'readonly' lists but refuses every create for lack of data:write; 'notypes' lists no subtype.
 function New-Fake([string]$Mode) {
     $state = @{ issues = New-Object System.Collections.ArrayList; calls = New-Object System.Collections.ArrayList; next = 1 }
     $reply = { param($data, $isError, $text) [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $types = @([pscustomobject]@{ id = 't1'; title = 'Coordination'; is_active = $true
                                   subtypes = @([pscustomobject]@{ id = 'st-1'; title = 'Clash'; is_active = $true }) })
+    if ($Mode -eq 'notypes') { $types = @() }
     $call = {
         param($tool, $a)
         [void]$state.calls.Add($a)
@@ -30,6 +32,10 @@ function New-Fake([string]$Mode) {
                                                     coverage_complete = $true; problems = @() }) $false ''
             }
             'issue_create' {
+                if ($Mode -eq 'readonly') {
+                    return & $reply $null $true ('issue_create needs data:write and the token from aps-token.json carries only [data:read]. ' +
+                                                 "Sign in again asking 'data:read data:write'. Nothing was written.")
+                }
                 $existing = @($state.issues | Where-Object { $_.external_key -eq $a.external_key }) | Select-Object -First 1
                 if ($null -ne $existing) {
                     return & $reply ([pscustomobject]@{ state = 'already_exists'; issue_id = $existing.issue_id; host_verified = $true }) $false ''
@@ -89,11 +95,23 @@ try {
     Check 'opted in: the apply passes and the retry does not duplicate' ($b3[$n[2]].Outcome -eq 'pass' -and $f3.state.issues.Count -eq 1)
     if ($b3[$n[2]].Outcome -ne 'pass') { "    $($b3[$n[2]].Detail)" }
 
-    # No credential: the list is not_covered, the dry run's refusal is the expected answer.
+    # No credential: nothing can be rehearsed, so the list AND the dry run are not_covered.
     $f4 = New-Fake 'nocred'
-    $b4 = Run-Probe (Ctx $f4 $true 'proj-guid' $null)
+    $b4 = Run-Probe (Ctx $f4 $false 'proj-guid' '1')
     Check 'no credential: the list is not_covered' ($b4[$n[0]].Outcome -eq 'not_covered')
-    Check 'no credential: the dry run refusal passes' ($b4[$n[1]].Outcome -eq 'pass')
+    Check 'no credential: the dry run is not_covered, not a pass' ($b4[$n[1]].Outcome -eq 'not_covered')
+    Check 'no credential: the apply is not_covered' ($b4[$n[2]].Outcome -eq 'not_covered')
+
+    # A subtype was read and the create is refused for lack of data:write: that is a failure.
+    $f7 = New-Fake 'readonly'
+    $b7 = Run-Probe (Ctx $f7 $true 'proj-guid' $null)
+    Check 'a data:write refusal of a real subtype fails the dry run' ($b7[$n[1]].Outcome -eq 'fail')
+
+    # No subtype readable: the fabricated subtype's own refusal is the rehearsal's proof.
+    $f8 = New-Fake 'notypes'
+    $b8 = Run-Probe (Ctx $f8 $true 'proj-guid' $null)
+    Check 'no subtype: the refusal naming the fabricated subtype passes' ($b8[$n[1]].Outcome -eq 'pass')
+    if ($b8[$n[1]].Outcome -ne 'pass') { "    $($b8[$n[1]].Detail)" }
 
     # A server whose dry run writes is caught.
     $f5 = New-Fake 'leaky'

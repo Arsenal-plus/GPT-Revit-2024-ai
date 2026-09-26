@@ -6154,7 +6154,7 @@ namespace Horizun.Contracts
     ""document_ids"": { ""type"": ""array"" },
     ""document_id"": { ""type"": ""string"" },
     ""issue_id"": { ""type"": ""string"" },
-    ""issue"": { ""type"": ""object"", ""description"": ""title, description, issue_type_id (subtype), status, assigned_to, assigned_to_type, due_date, location_id, root_cause_id"" },
+    ""issue"": { ""type"": ""object"", ""description"": ""title, description, issue_type_id (subtype), status, assigned_to(_type), due_date/start_date, location_id, root_cause_id"" },
     ""finding"": { ""type"": ""object"", ""description"": ""A coordination ledger row (CSV columns/JSON keys) mapped to title/description/key; issue overrides it."" },
     ""external_key"": { ""type"": ""string"", ""description"": ""Idempotency key kept in the issue description; a retry finds the issue instead of duplicating it."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },

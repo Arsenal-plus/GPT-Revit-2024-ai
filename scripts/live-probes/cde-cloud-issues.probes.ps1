@@ -68,7 +68,12 @@ $script:HzProbeModules += [pscustomobject]@{
         }
 
         # ---- case 2: the issue_create dry run ----
+        # A refusal is NOT a rehearsal: without a credential there is nothing to rehearse
+        # (not_covered), and with a subtype that was read any refusal - a wrong scope, a
+        # scan error - is a failure. Only the fabricated subtype's own refusal proves it.
+        $dry = $null
         $subtype = $null
+        $fabricated = $false
         if (-not $list.isError) {
             foreach ($issueType in @($list.data.issue_types)) {
                 if ($issueType.is_active -eq $false) { continue }
@@ -77,17 +82,19 @@ $script:HzProbeModules += [pscustomobject]@{
             }
         }
         # No readable subtype: an id that cannot exist, so the rehearsal must refuse it.
-        if ([string]::IsNullOrWhiteSpace($subtype)) { $subtype = 'hz-probe-no-such-subtype' }
+        if ([string]::IsNullOrWhiteSpace($subtype)) { $subtype = 'hz-probe-no-such-subtype'; $fabricated = $true }
         $create = @{
             operation = 'issue_create'; provider = 'acc'; project_id = $project; external_key = $key
             issue = @{ title = ('Horizun live probe ' + $Ctx.RunId); issue_type_id = $subtype;
                        description = 'Created by the Horizun live probe on a test project; safe to close.' }
         }
-        $dry = & $Ctx.Call $T $create
         $rehearsed = $false
-        if ($dry.isError) {
-            $ok2 = [string]$dry.text -match 'Nothing was (read or )?written|No request was made'
-            $detail2 = 'refused: ' + (Excerpt $dry)
+        if ($noCredential) { $ok2 = $null; $detail2 = 'no APS credential on this machine: nothing to rehearse with' }
+        else { $dry = & $Ctx.Call $T $create }
+        if ($null -eq $dry) { }
+        elseif ($dry.isError) {
+            $ok2 = $fabricated -and ([string]$dry.text -match [regex]::Escape($subtype)) -and ([string]$dry.text -match 'Nothing was written')
+            $detail2 = 'refused (subtype ' + $(if ($fabricated) { 'fabricated' } else { 'read from the project' }) + '): ' + (Excerpt $dry)
         }
         else {
             $dd = $dry.data
@@ -105,11 +112,12 @@ $script:HzProbeModules += [pscustomobject]@{
                 $detail2 += ' | issues carrying the key after the dry run=' + $after.data.count
             }
         }
-        Case 1 $ok2 $detail2
+        if ($null -eq $ok2) { Skip 1 $detail2 } else { Case 1 $ok2 $detail2 }
 
         # ---- case 3: the apply (opt-in) ----
         $optIn = (CtxValue 'AccIssueWrite' 'HORIZUN_PROBE_ACC_ISSUE_WRITE') -in @('1', 'true', 'True')
         if ($Ctx.WriteGate) { Skip 2 'write tier closed' }
+        elseif ($noCredential) { Skip 2 'no APS credential on this machine' }
         elseif (-not $optIn) {
             Skip 2 'creates a real ACC issue the API cannot delete: run by hand with the user''s approval (HORIZUN_PROBE_ACC_ISSUE_WRITE=1)'
         }
