@@ -23,6 +23,12 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'views-vg: DWG layer table write persists (measured per year)'; Tool = 'horizun_export' }
         @{ Name = 'views-vg: DWG export with the named setup to ScratchRoot'; Tool = 'horizun_export' }
         @{ Name = 'views-vg: cleanup deletes everything the module created'; Tool = 'horizun_delete_verified' }
+        # Appended, not inserted: every Out-Case above is called by its FIXED
+        # numeric index, so these three live at the end regardless of where their
+        # own logic runs in the script.
+        @{ Name = 'views-vg: color_by_value re-reads each legend value''s override colour'; Tool = 'horizun_manage_views' }
+        @{ Name = 'views-vg: hide_elements (temporary) re-reads exactly the requested id''s visibility'; Tool = 'horizun_manage_views' }
+        @{ Name = 'views-vg: re-exporting the same DWG with overwrite still counts exactly one produced file'; Tool = 'horizun_export' }
     )
     # MEASURED (2026-09-24, Revit 2026): a DUPLICATED view carries the source view's
     # filters - Revit copies them - so the own view held five filters, not two, and
@@ -77,6 +83,8 @@ $script:HzProbeModules += [pscustomobject]@{
         $dup = $null; $f1 = $null; $f2 = $null; $tpl = $null
         if (-not $plan) {
             for ($i = 0; $i -le 6; $i++) { Out-Case $i 'unverified' 'the fixture holds no non-template floor plan to duplicate' }
+            # 13/14 (color_by_value, hide_elements) are marked later, unconditionally on
+            # $dup - which stays null in this branch too, so they are covered there.
         }
         else {
             # ---- A: own view, two filters ---------------------------------------------
@@ -177,8 +185,15 @@ $script:HzProbeModules += [pscustomobject]@{
                     else { Out-Case 5 'fail' ('govern/apply: ' + (Short $g.answer) + ' | remove: ' + (Short $r.answer)) }
                 }
                 else { Out-Case 5 'fail' (Short $t.answer); Out-Case 6 'unverified' 'no template was created to govern the view' }
+                # color_by_value and hide_elements (cases 13/14) run LATER, right before
+                # cleanup - so any filter id they create is appended to $created AFTER
+                # 500 (the DWG setup), keeping that id's position in the cleanup case's
+                # detail stable for anyone matching it by eye or by pattern.
             }
-            else { for ($i = 1; $i -le 6; $i++) { Out-Case $i 'unverified' 'the own view was not created' } }
+            else {
+                for ($i = 1; $i -le 6; $i++) { Out-Case $i 'unverified' 'the own view was not created' }
+                # 13/14 are marked later, unconditionally on $dup (which stays null here too).
+            }
         }
 
         # ---- schedules ------------------------------------------------------------------
@@ -248,8 +263,74 @@ $script:HzProbeModules += [pscustomobject]@{
                 Out-Case 11 'pass' ("{0} bytes exported with setup {1}" -f (Get-Item -LiteralPath $dwg).Length, $setup)
             }
             else { Out-Case 11 'fail' (Short $d3.answer) }
+
+            # ---- re-export the SAME dwg with overwrite: exactly one produced file,
+            # ---- never folded into a bare "at least one matching file" count --------
+            if (Applied $d3) {
+                $d4 = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg'; output_path = $dwg
+                        view_ids = @($dup); dwg_setup = @{ name = $setup }; overwrite = $true } 'vg-dwg-reexport'
+                if ((Applied $d4) -and [int]$d4.answer.data.files_verified -eq 1) {
+                    Out-Case 15 'pass' ("re-export with overwrite=true still measured exactly 1 produced file (was {0} before)" -f $d4.answer.data.files_verified)
+                }
+                else { Out-Case 15 'fail' (Short $d4.answer) }
+            }
+            else { Out-Case 15 'unverified' 'the first dwg export did not succeed' }
         }
-        else { Out-Case 11 'unverified' 'needs the own view and the setup' }
+        else {
+            Out-Case 11 'unverified' 'needs the own view and the setup'
+            Out-Case 15 'unverified' 'needs the own view and the setup'
+        }
+
+        # ---- color_by_value and hide_elements, on the own view (run here, after every
+        # ---- other id-producing case, so the new filter id lands after 500 in $created) ---
+        if (-not $dup) {
+            Out-Case 13 'unverified' 'the own view was not created'
+            Out-Case 14 'unverified' 'the own view was not created'
+        }
+        else {
+            # ---- color_by_value: each legend value's OVERRIDE COLOUR is re-read, not
+            # ---- only that a filter got attached and made visible ---------------------
+            $cbv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
+                    @{ operation = 'color_by_value'; view_id = $dup; categories = @('OST_Walls'); parameter = 'ALL_MODEL_MARK'
+                       filter_prefix = "HZ_CBV_$tag" }) } 'vg-color-by-value'
+            if (Applied $cbv) {
+                $row = @($cbv.answer.data.rows)[0]
+                $legend = @($row.graphics.legend)
+                foreach ($fid in $legend.filter_id) { $created.Add([long]$fid) }
+                $ov = $row.graphics.overrides_verified
+                if ($row.verified -eq $true -and $ov -and $ov.all_verified -eq $true -and $legend.Count -gt 0) {
+                    Out-Case 13 'pass' ("{0} value(s) coloured, every override colour re-read from the committed view: {1}" -f
+                        $legend.Count, (($ov.by_value | ForEach-Object { $_.value + '=' + $_.found_rgb }) -join '; '))
+                }
+                else { Out-Case 13 'fail' ('overrides_verified: ' + ($ov | ConvertTo-Json -Compress -Depth 5)) }
+            }
+            else { Out-Case 13 'fail' (Short $cbv.answer) }
+
+            # ---- hide_elements (temporary): the SPECIFIC requested id must read
+            # ---- not-visible in the view's temporary mode, not only that the mode is on
+            if (-not $wall) { Out-Case 14 'unverified' 'the fixture holds no wall to hide' }
+            else {
+                $wallId = [long]$wall.element_id
+                $hide = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
+                        @{ operation = 'hide_elements'; view_id = $dup; element_ids = @($wallId) }) } 'vg-hide-temp'
+                if (Applied $hide) {
+                    $row = @($hide.answer.data.rows)[0]
+                    $ev = $row.graphics.elements_verified
+                    $mine = @(if ($ev) { $ev.by_element | Where-Object { [long]$_.element_id -eq $wallId } })
+                    if ($row.verified -eq $true -and $ev -and $ev.all_verified -eq $true -and $mine.Count -eq 1 -and $mine[0].hidden -eq $true) {
+                        Out-Case 14 'pass' ("wall {0} re-read as not-visible under TemporaryHideIsolate; elements_verified.all_verified=true" -f $wallId)
+                    }
+                    else { Out-Case 14 'fail' ('elements_verified: ' + ($ev | ConvertTo-Json -Compress -Depth 5)) }
+                    # Undo the temporary state so this view leaves no lingering mode -
+                    # deleting the view at cleanup would do this anyway, but a probe
+                    # that leaves the disposable document in temporary-hide mode until
+                    # then is a smaller footprint avoided for free.
+                    $null = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
+                            @{ operation = 'reset_temporary'; view_id = $dup }) } 'vg-reset-temp'
+                }
+                else { Out-Case 14 'fail' (Short $hide.answer) }
+            }
+        }
 
         # ---- cleanup ------------------------------------------------------------------------
         if ($created.Count -eq 0) { Out-Case 12 'unverified' 'nothing was created' }

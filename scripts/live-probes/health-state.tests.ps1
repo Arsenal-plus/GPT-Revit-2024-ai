@@ -11,7 +11,22 @@ function Check($name, $ok) { if ($ok) { "  PASS  $name" } else { "  FAIL  $name"
 
 function Reply($data) { [pscustomobject]@{ isError = $false; data = $data; text = '' } }
 
-function New-Health([bool]$Workshared, [int]$Batches) {
+# A plausible WriteVerificationCatalog summary shape - just enough for the
+# probe's own checks (per-row fields present, horizun_export and
+# horizun_manage_views both declared, neither SelfReported).
+function New-VerificationCatalog {
+    [pscustomobject]@{
+        tool_count = 3
+        tools = @(
+            [pscustomobject]@{ tool = 'horizun_export'; mechanism = 'FileArtifactReread'; residual_gap_count = 1 }
+            [pscustomobject]@{ tool = 'horizun_manage_views'; mechanism = 'PerRowReread'; residual_gap_count = 1 }
+            [pscustomobject]@{ tool = 'horizun_execute_python'; mechanism = 'SelfReported'; residual_gap_count = 1 }
+        )
+        full_text_source = 'src/Horizun.Revit/Core/WriteVerificationCatalog.cs'
+    }
+}
+
+function New-Health([bool]$Workshared, [int]$Batches, [bool]$WithCatalog = $false) {
     $ws = if ($Workshared) {
         [pscustomobject]@{
             # No username: HealthCommand.cs deliberately does not publish the account name.
@@ -32,13 +47,15 @@ function New-Health([bool]$Workshared, [int]$Batches) {
         most_recent = $recent
         note = 'The Revit API does NOT expose its Undo/Redo stack to an add-in - there is no method that lists what Ctrl+Z would undo.'
     }
-    return Reply ([pscustomobject]@{ workshare_status = $ws; recent_horizun_writes = $rw })
+    $data = [pscustomobject]@{ workshare_status = $ws; recent_horizun_writes = $rw }
+    if ($WithCatalog) { $data | Add-Member -NotePropertyName verification_catalog -NotePropertyValue (New-VerificationCatalog) }
+    return Reply $data
 }
 
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('hz-health-probe-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
-    $call = { param($tool, $a) New-Health $true 3 }.GetNewClosure()
+    $call = { param($tool, $a) New-Health $true 3 ($a.include_verification_catalog -eq $true) }.GetNewClosure()
     $ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $scratch; RunId = 'r-1'; WriteGate = $false; Call = $call; Apply = { throw 'not used' } }
     $cases = @(& $module.Run $ctx)
     $by = @{}; foreach ($c in $cases) { $by[$c.Name] = $c }
@@ -46,7 +63,7 @@ try {
     Check 'a workshared document with batches passes both cases' (@($cases | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
     if ($fails) { $cases | ForEach-Object { "    $($_.Name): $($_.Outcome) $($_.Detail)" } }
 
-    $callNws = { param($tool, $a) New-Health $false 0 }.GetNewClosure()
+    $callNws = { param($tool, $a) New-Health $false 0 ($a.include_verification_catalog -eq $true) }.GetNewClosure()
     $ctx2 = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $scratch; RunId = 'r-2'; WriteGate = $true; Call = $callNws; Apply = { throw 'not used' } }
     $by2 = @{}; foreach ($c in @(& $module.Run $ctx2)) { $by2[$c.Name] = $c }
     Check 'not-workshared, gated tier, zero batches still passes (an honest empty journal is a valid shape)' (

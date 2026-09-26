@@ -7,6 +7,7 @@ $script:HzProbeModules += [pscustomobject]@{
     Catalog = @(
         @{ Name = 'health: workshare_status reports ownership for the active document';               Tool = 'horizun_health' }
         @{ Name = 'health: recent_horizun_writes names its journal, not Revit Undo, honestly';         Tool = 'horizun_health' }
+        @{ Name = 'health: include_verification_catalog=true adds the per-tool summary';               Tool = 'horizun_health' }
     )
     Run     = {
         param($Ctx)
@@ -17,7 +18,8 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         $names = @(
             'health: workshare_status reports ownership for the active document',
-            'health: recent_horizun_writes names its journal, not Revit Undo, honestly'
+            'health: recent_horizun_writes names its journal, not Revit Undo, honestly',
+            'health: include_verification_catalog=true adds the per-tool summary'
         )
 
         $h = & $Ctx.Call $T @{}
@@ -57,6 +59,29 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         Case $names[1] $rwOk ('batches_recorded_total=' + $rw.batches_recorded_total + ' most_recent_count=' + @($rw.most_recent).Count +
             ' source=' + $rw.source + ' write_gate=' + $Ctx.WriteGate)
+
+        # ---- include_verification_catalog=true ----
+        # A SECOND call: the default (this module's first call above) must stay
+        # small, so the compact per-tool summary only exists behind the argument.
+        $hc = & $Ctx.Call $T @{ include_verification_catalog = $true }
+        $vc = $hc.data.verification_catalog
+        $tools = @($vc.tools)
+        $vcOk = (-not $hc.isError) -and ($null -ne $vc) -and ($tools.Count -gt 0) -and
+                (-not [string]::IsNullOrWhiteSpace([string]$vc.full_text_source)) -and
+                (-not ($tools | Where-Object {
+                    [string]::IsNullOrWhiteSpace([string]$_.tool) -or [string]::IsNullOrWhiteSpace([string]$_.mechanism) -or
+                    ($null -eq $_.residual_gap_count) -or ($_.residual_gap_count -lt 0)
+                }))
+        # horizun_export and horizun_manage_views must both be declared, and neither
+        # is 'SelfReported' (that mechanism belongs to horizun_execute_python only) -
+        # a cheap check that this is really WriteVerificationCatalog and not a stub.
+        if ($vcOk) {
+            $exportRow = $tools | Where-Object { $_.tool -eq 'horizun_export' } | Select-Object -First 1
+            $viewsRow = $tools | Where-Object { $_.tool -eq 'horizun_manage_views' } | Select-Object -First 1
+            $vcOk = ($null -ne $exportRow) -and ($null -ne $viewsRow) -and
+                    ($exportRow.mechanism -ne 'SelfReported') -and ($viewsRow.mechanism -ne 'SelfReported')
+        }
+        Case $names[2] $vcOk ('tool_count=' + $tools.Count + ' full_text_source=' + $vc.full_text_source)
 
         return $out.ToArray()
     }
