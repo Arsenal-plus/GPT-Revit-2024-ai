@@ -226,8 +226,7 @@ namespace Horizun.Revit.Core
             Row("horizun_information_container", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "InformationContainerTool.cs")),
 
             // ---- composition ----------------------------------------------------------------
-            Row("horizun_execute_plan", VerificationMechanism.DelegatedChildDeclaration, E("actions_verified"), F(C + "ExecutePlanCommand.cs", "Horizun.Revit/Core/PlanLedger.cs"),
-                "ExecutePlanCommand.cs / Core/PlanLedger.cs ~l.251: the plan's own reply carries no top-level application block, and a plan whose every child answered no_op reports actions_verified=N."),
+            Row("horizun_execute_plan", VerificationMechanism.DelegatedChildDeclaration, E("actions_verified", "application"), F(C + "ExecutePlanCommand.cs", "Horizun.Revit/Core/PlanLedger.cs", "Horizun.Revit/Core/CompositeVerdict.cs")),
             Row("horizun_apply_corrections", VerificationMechanism.DelegatedChildDeclaration, E("re_audit", "application"), F(C + "ApplyCorrectionsCommand.cs", "Horizun.Revit/Core/CorrectionApplyLoop.cs"),
                 "Core/CorrectionApplyLoop.cs ~l.89: a child that answers no_op counts as an applied step.",
                 "ApplyCorrectionsCommand.cs ~l.292: the re-audit (persistent / not_verifiable) is reported beside the application block, not folded into it."),
