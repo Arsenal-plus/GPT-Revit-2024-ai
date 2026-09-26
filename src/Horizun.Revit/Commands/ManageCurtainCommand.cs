@@ -542,7 +542,7 @@ namespace Horizun.Revit.Commands
             {
                 if (t?.Category == null) return null;
                 long raw = Rid.Value(t.Category.Id);
-                return Enum.IsDefined(typeof(BuiltInCategory), (int)raw) ? ((BuiltInCategory)(int)raw).ToString() : null;
+                return Enum.IsDefined(typeof(BuiltInCategory), (BuiltInCategory)raw) ? ((BuiltInCategory)raw).ToString() : null;   // the enum, not an int: Int64-backed from Revit 2024 (see CodeCheckReaders.CategoryToken)
             }
             catch { return null; }
         }

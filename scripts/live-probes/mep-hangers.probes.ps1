@@ -49,7 +49,29 @@ $script:HzProbeModules += [pscustomobject]@{
         $pipeType = Types 'OST_PipeCurves' | Where-Object { $_.family -notmatch 'Flex' -and $_.type -notmatch 'Flex' } | Select-Object -First 1
         $system = Types 'OST_PipingSystem' | Select-Object -First 1
         $floorType = Types 'OST_Floors' | Select-Object -First 1
-        $hangerTypes = @(Types 'OST_GenericModel' | Select-Object -First 3)
+        # A LOADABLE generic model only: 'Model Text' is a system type (MEASURED 2026-09-26,
+        # Revit 2026: "hanger_type_id ... is not a loaded family type"). When the fixture has
+        # none, the probe AUTHORS its own hanger with horizun_create_family - a 60 mm box on
+        # the year's Metric Generic Model template with an instance length parameter the
+        # tool then sets to the measured rod - loaded into the disposable document only.
+        $hangerTypes = @(Types 'OST_GenericModel' | Where-Object { [string]$_.family -notmatch '(?i)model text|texto de modelo' } | Select-Object -First 3)
+        $rodParam = $null
+        if ($hangerTypes.Count -eq 0) {
+            $rftRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Ctx.Year)
+            $rft = if (Test-Path -LiteralPath $rftRoot) { Get-ChildItem -LiteralPath $rftRoot -Recurse -Filter 'Metric Generic Model.rft' -File -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1 } else { $null }
+            if ($rft) {
+                New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+                $rfa = Join-Path $Ctx.ScratchRoot ('HZ_HANGER_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa')
+                $fam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $rft.FullName; output_path = $rfa
+                        units = 'mm'; overwrite = $true; load_into_project = $true
+                        parameters = @(@{ name = 'HZ Rod Length'; data_type = 'length'; group = 'geometry'; instance = $true })
+                        types = @(@{ name = 'HZ_HANGER'; values = @{} })
+                        forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 100
+                                     profile = @(, @(@(-30, -30, 0), @(30, -30, 0), @(30, 30, 0), @(-30, 30, 0))) }) } ($run + '-hg-family')
+                $sym = if ($fam.stage -eq 'apply' -and -not $fam.answer.isError -and $fam.answer.data.loaded_family) { @($fam.answer.data.loaded_family.symbol_ids)[0] } else { $null }
+                if ($sym) { $hangerTypes = @([pscustomobject]@{ element_id = [long]$sym; family = 'HZ_HANGER' }); $rodParam = 'HZ Rod Length' }
+            }
+        }
         $lvA = Create @(@{ kind = 'level'; name = "HZ_HG_A_$run"; elevation = $E }) 'level-a'
         $lvB = Create @(@{ kind = 'level'; name = "HZ_HG_B_$run"; elevation = ($E + $H) }) 'level-b'
         $floor = $null; $pipe = $null; $bare = $null
@@ -67,12 +89,14 @@ $script:HzProbeModules += [pscustomobject]@{
         # 4350 and 5700 (four equal gaps of 1350, none above 1500).
         $placedIds = @()
         if (-not $floor -or -not $pipe) { Case $catalog[0] $tools[0] 'not_covered' "no own floor ($floor) or pipe ($pipe) could be staged" }
-        elseif ($hangerTypes.Count -eq 0) { Case $catalog[0] $tools[0] 'not_covered' 'the fixture carries no generic model type to use as a hanger' }
+        elseif ($hangerTypes.Count -eq 0) { Case $catalog[0] $tools[0] 'not_covered' 'the fixture carries no loadable generic model type and the probe could not author one (no Metric Generic Model template for this year, or create_family refused)' }
         else {
             $last = $null; $ok = $null
             foreach ($t in $hangerTypes) {
-                $r = & $Ctx.Apply 'horizun_mep_routing' @{ operation = 'hangers'; target_document = $doc; element_ids = @($pipe); hanger_type_id = [long]$t.element_id
-                        spacing_mm = 1500; end_offset_mm = 300; max_rod_mm = 5000 } ($run + '-hg-apply-' + $t.element_id)
+                $hArgs = @{ operation = 'hangers'; target_document = $doc; element_ids = @($pipe); hanger_type_id = [long]$t.element_id
+                        spacing_mm = 1500; end_offset_mm = 300; max_rod_mm = 5000 }
+                if ($rodParam) { $hArgs.rod_length_parameter = $rodParam }
+                $r = & $Ctx.Apply 'horizun_mep_routing' $hArgs ($run + '-hg-apply-' + $t.element_id)
                 $last = $r
                 if ($r.stage -eq 'apply' -and -not $r.answer.isError -and $r.answer.data.postconditions.all_verified -eq $true) { $ok = $r; break }
                 # A type Revit will not place free-standing is refused by name before any write; try the next.

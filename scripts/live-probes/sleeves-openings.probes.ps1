@@ -53,6 +53,16 @@ $script:HzProbeModules += [pscustomobject]@{
             $wallType = @(Types 'OST_Walls' | Where-Object { -not ($_.family -match 'Curtain|cortina|Stacked|apilad' -or $_.type -match 'Curtain|cortina') } | Select-Object -First 1)[0]
             $floorType = @(Types 'OST_Floors' | Select-Object -First 1)[0]
             $beamType = @(Types 'OST_StructuralFraming' | Select-Object -First 1)[0]
+            # STAGED, NEVER ASSUMED: an MEP fixture carries no framing family; Autodesk's
+            # structural template of the run's year does (MEASURED 2026-09-26: 'M_Concrete-
+            # Rectangular Beam: 300 x 600mm'), brought in by the typed copy.
+            if (-not $beamType) {
+                $tpl = "C:\ProgramData\Autodesk\RVT $($Ctx.Year)\Templates\English\Structural Analysis-DefaultMetric.rte"
+                if (Test-Path -LiteralPath $tpl) {
+                    $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); type_names = @('M_Concrete-Rectangular Beam: 300 x 600mm'); category = 'OST_StructuralFraming'; duplicate_types = 'use_destination' } ($run + '-so-beamtype')
+                    $beamType = @(Types 'OST_StructuralFraming' | Select-Object -First 1)[0]
+                }
+            }
             $level = Create @{ kind = 'level'; name = "HZ_SLEEVE_$run"; elevation = $E } 'level'
             function Pipe($s, $e, $d, $key) {
                 if (-not $level -or -not $pipeType -or -not $system) { return $null }
@@ -173,8 +183,9 @@ $script:HzProbeModules += [pscustomobject]@{
                 $fids = @(@($rows) | Where-Object { $_ -and $_.finding_id } | ForEach-Object { [string]$_.finding_id } | Select-Object -Unique)
                 $notClosed = @()
                 foreach ($fid in $fids) {
-                    $c = & $Ctx.Apply 'horizun_coordination' @{ operation = 'update'; finding_id = $fid; status = 'closed_by_decision'; note = 'live probe fixture, deleted' } ($run + '-so-close-' + $fid)
-                    if (-not ($c.stage -eq 'apply' -and -not $c.answer.isError)) { $notClosed += $fid }
+                    # update applies without a token (a dry run writes nothing and issues none): one call.
+                    $c = & $Ctx.Call 'horizun_coordination' @{ operation = 'update'; finding_id = $fid; status = 'closed_by_decision'; note = 'live probe fixture, deleted' }
+                    if ($c.isError -or -not $c.data -or $c.data.verified_after_reread -ne $true) { $notClosed += $fid }
                 }
                 $deleted = $del.stage -eq 'apply' -and -not $del.answer.isError
                 if ($deleted -and $notClosed.Count -eq 0) { Case 6 'pass' ("deleted " + ($ids -join ',') + "; closed findings " + ($fids -join ',')) }

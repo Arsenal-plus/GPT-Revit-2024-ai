@@ -91,7 +91,7 @@ $script:HzProbeModules += [pscustomobject]@{
             Create @{ kind = 'family_instance'; type_id = $doorType.element_id; point = $doorPoint; coordinate_mode = 'absolute'
                       level_id = $levelId; host_id = $walls[0] } 'door'
         } else { $null }
-        $roomId = if ($doorId) { Create @{ kind = 'room'; point = @(($X + $W / 2), ($Y + $D / 2), $E); level_id = $levelId } 'room' } else { $null }
+        $roomId = if ($doorId) { Create @{ kind = 'room'; point = @(($X + $W / 2), ($Y + $D / 2)); level_id = $levelId } 'room' } else { $null }
 
         if (-not ($planId -and $doorId -and $roomId)) {
             $why = "staging incomplete: level=$levelId plan=$planId walls=$(@($walls | Where-Object { $_ }).Count) door=$doorId room=$roomId" + $doorWhy

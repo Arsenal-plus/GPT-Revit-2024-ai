@@ -30,6 +30,15 @@ function New-Fake([string]$mode) {
                 return & $reply ([pscustomobject]@{ findings = [pscustomobject]@{ new = $s.Ledger.Count } })
             }
             'horizun_coordination' {
+                # The REAL update (MEASURED 2026-09-26): no token, applied at once and re-read;
+                # an explicit dry_run=true rehearses and writes nothing.
+                if ($a.operation -eq 'update') {
+                    [void]$s.Calls.Add('coordination-update')
+                    if ($a.dry_run -eq $true) { return & $reply ([pscustomobject]@{ dry_run = $true; would_leave = [pscustomobject]@{ status = $a.status } }) }
+                    $before = $s.Ledger[[string]$a.finding_id].status
+                    $s.Ledger[[string]$a.finding_id].status = [string]$a.status
+                    return & $reply ([pscustomobject]@{ status_before = $before; verified_after_reread = $true; row = [pscustomobject]@{ finding_id = $a.finding_id; status = $a.status } })
+                }
                 $rows = @($s.Ledger.Keys | ForEach-Object { [pscustomobject]@{ finding_id = $_; status = $s.Ledger[$_].status
                     history = @($s.Ledger[$_].history | ForEach-Object { [pscustomobject]$_ }) } })
                 return & $reply ([pscustomobject]@{ rows = $rows })
@@ -84,9 +93,9 @@ function New-Fake([string]$mode) {
             }
             'horizun_delete_verified' { $s.Deleted = @($a.ids); return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true })) } }
             'horizun_coordination' {
-                if ($a.operation -ne 'update' -or $a.status -ne 'closed_by_decision') { return @{ stage = 'dry_run'; answer = (& $reply $null $true 'unexpected update') } }
-                $s.Ledger[[string]$a.finding_id].status = 'closed_by_decision'
-                return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true })) }
+                # update is not a token operation: a rehearse-then-apply wrapper finds no token.
+                [void]$s.Calls.Add('coordination-apply-wrapper')
+                return @{ stage = 'dry_run'; answer = (& $reply ([pscustomobject]@{ dry_run = $true })) }
             }
         }
         return @{ stage = 'dry_run'; answer = (& $reply $null $true 'unexpected apply') }
@@ -107,6 +116,7 @@ Check 'the beam is never sent to apply, only rehearsed' ((-not $f.State.BeamAppl
 Check 'the cleanup closes exactly the probe''s own findings' ((@($f.State.Ledger.Keys | Where-Object { $f.State.Ledger[$_].status -eq 'closed_by_decision' }).Count -eq 3))
 Check 'every propose and apply carries the fixture''s structural approval' ($f.State.Structural -and -not $f.State.MissingStructural)
 Check 'the cleanup deletes the openings too, and the level last' ((@($f.State.Deleted).Count -eq 9) -and (@($f.State.Deleted)[-1] -eq $f.State.Ids['level']))
+Check 'the probe''s findings are closed by one tokenless update each, re-read, never through the rehearse-then-apply wrapper' ((@($f.State.Ledger.Values | Where-Object { $_.status -ne 'closed_by_decision' }).Count -eq 0) -and (@($f.State.Calls | Where-Object { $_ -eq 'coordination-update' }).Count -eq $f.State.Ledger.Count) -and -not ($f.State.Calls -contains 'coordination-apply-wrapper'))
 
 $g = New-Fake 'no-framing'
 $cases2 = @(& $module.Run $g.Ctx)

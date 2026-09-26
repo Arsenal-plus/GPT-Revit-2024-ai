@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP - original Horizun code.
 //
 // ONE declaration of what this bridge offers, shared by both halves.
@@ -5563,7 +5563,7 @@ namespace Horizun.Contracts
     ""dry_run"": {
       ""type"": ""boolean"",
       ""default"": true,
-      ""description"": ""import: show what a returned .bcfzip WOULD change. import_navisworks: show what would be matched/reproduced before recording it. prepare_navisworks: preview the detail-level/unhide change before a confirmation_token applies it.""
+      ""description"": ""import: show what a returned .bcfzip WOULD change. import_navisworks: show what would be matched/reproduced before recording it. prepare_navisworks: preview the detail-level/unhide change before a confirmation_token applies it. update: explicit true rehearses and writes nothing.""
     },
     ""overwrite"": {
       ""type"": ""boolean"",

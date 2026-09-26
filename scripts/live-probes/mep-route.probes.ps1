@@ -55,9 +55,19 @@ $script:HzProbeModules += [pscustomobject]@{
         $pipeType = Types 'OST_PipeCurves' | Where-Object { $_.family -notmatch 'Flex' -and $_.type -notmatch 'Flex' } | Select-Object -First 1
         $system = Types 'OST_PipingSystem' | Select-Object -First 1
         $columnType = Types 'OST_StructuralColumns' | Select-Object -First 1
+        # STAGED, NEVER ASSUMED: an MEP fixture carries no structural column family, and
+        # Autodesk's structural template of the run's year does (MEASURED 2026-09-26:
+        # 'M_Concrete-Rectangular-Column: 300 x 450mm'); the typed copy brings the type in.
+        if (-not $columnType) {
+            $tpl = "C:\ProgramData\Autodesk\RVT $($Ctx.Year)\Templates\English\Structural Analysis-DefaultMetric.rte"
+            if (Test-Path -LiteralPath $tpl) {
+                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); type_names = @('M_Concrete-Rectangular-Column: 300 x 450mm'); category = 'OST_StructuralColumns'; duplicate_types = 'use_destination' } ($run + '-route-coltype')
+                $columnType = Types 'OST_StructuralColumns' | Select-Object -First 1
+            }
+        }
         $columnId = $null
         if ($levelId -and $columnType) {
-            $columnId = Create @(@{ kind = 'structural_column'; point = @(($X + 3000), $Y); level_id = $levelId; type_id = [long]$columnType.element_id }) 'column'
+            $columnId = Create @(@{ kind = 'structural_column'; point = @(($X + 3000), $Y, 0); coordinate_mode = 'level_offset'; level_id = $levelId; type_id = [long]$columnType.element_id }) 'column'
         }
         if (-not $levelId -or -not $pipeType -or -not $system -or -not $columnId) {
             $why = "the fixture lacks what the probe stages (level=$levelId, pipe type=" + $pipeType.element_id + ', piping system=' + $system.element_id + ", column=$columnId)"

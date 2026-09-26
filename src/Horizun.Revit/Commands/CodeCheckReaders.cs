@@ -17,8 +17,14 @@ namespace Horizun.Revit.Commands
             try
             {
                 long v = Rid.Value(c.Id);
-                if (v < 0 && v >= int.MinValue && Enum.IsDefined(typeof(BuiltInCategory), (int)v))
-                    return Enum.GetName(typeof(BuiltInCategory), (int)v);
+                // THE ENUM, NOT AN INT. BuiltInCategory is Int32-backed in Revit 2023 and
+                // Int64-backed from 2024 (MEASURED 2026-09-26 by reflection on each year's
+                // RevitAPI.dll); Enum.IsDefined with a boxed int throws on the Int64 enum, the
+                // catch below turned that into "no category", and every requirement-set rule
+                // with a category selector matched NOTHING in 2024-2027. The cast works on both.
+                var bic = (BuiltInCategory)v;
+                if (v < 0 && v >= int.MinValue && Enum.IsDefined(typeof(BuiltInCategory), bic))
+                    return bic.ToString();
             }
             catch { }
             return null;

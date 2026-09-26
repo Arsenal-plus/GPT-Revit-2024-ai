@@ -48,6 +48,7 @@ $fakeApply = {
             # create_elements has no 'door' kind: the probe must send a hosted family_instance.
             if ($kind -eq 'family_instance' -and $arguments.elements[0].host_id -and $arguments.elements[0].coordinate_mode -eq 'absolute') { $kind = 'door' }
             if ($kind -in @('door', 'room', 'level')) { $script:ids[$kind] = $script:nextId }
+            if ($kind -eq 'room') { $script:roomPoint = @($arguments.elements[0].point) }
             return @{ stage = 'apply'; answer = @{ isError = $false; data = [pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $script:nextId }) } } }
         }
         'horizun_manage_views' {
@@ -104,4 +105,5 @@ $closed = $ctx.PSObject.Copy(); $closed.WriteGate = $true
 $shut = @(& $module.Run $closed)
 Check 'a closed write tier reports every case not_covered' ((@($shut | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq $module.Catalog.Count))
 
+Check 'the room is placed by an XY point (a room insertion takes no Z; MEASURED 2026-09-26 the XYZ form was refused)' (@($script:roomPoint).Count -eq 2)
 if ($fails) { "egress-travel tests: $fails FAILED"; exit 1 } else { 'egress-travel tests: ALL PASS'; exit 0 }
