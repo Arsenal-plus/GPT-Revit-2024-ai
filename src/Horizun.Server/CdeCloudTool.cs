@@ -1,8 +1,9 @@
 // -----------------------------------------------------------------------------
 // Horizun MCP server - original Horizun code.
 //
-// horizun_cde_cloud - a HOST-RESIDENT, READ-ONLY reader of a cloud CDE. It never
-// touches Revit and never writes to the cloud: every request is a GET, except the
+// horizun_cde_cloud - a HOST-RESIDENT reader of a cloud CDE. It never touches Revit.
+// It writes to the cloud in ONE place - ACC Issues, issue_create / issue_update in
+// CdeCloudIssues.cs, dry_run by default. Every other request is a GET, except the
 // OpenCDE document-versions QUERY (a POST whose body is a list of ids) and the
 // OAuth token request itself.
 //
@@ -28,13 +29,16 @@
 //                cross - through ContainerInspection, the SAME core the local inspect
 //                of horizun_information_container uses.
 //   versions     the version history of one item / document.
+//   issues_list, issue_create, issue_update   ACC Issues - see CdeCloudIssues.cs.
 //
 // Coverage is the contract: anything that could not be read (401/403, a spent call
 // budget, a folder that was not found, a depth limit) makes coverage_complete=false
 // and is named. A cloud reader that says "empty" when it means "could not look" is
 // worse than no reader.
 //
-// PERMISSION. Classified ReadOnly with openWorldHint: it changes nothing anywhere.
+// PERMISSION. Classified ExternalSideEffectOnRequest with openWorldHint: every read is
+// admitted at every profile; an issue write with dry_run=false asks
+// Settings.AllowsExternalSideEffect first (CdeCloudIssues.cs).
 // The one local write it can make is the user's own 3-legged token file, rewritten
 // after a refresh because APS replaces a refresh token when it is used.
 // -----------------------------------------------------------------------------
@@ -50,7 +54,7 @@ using Newtonsoft.Json.Linq;
 
 namespace Horizun.Server
 {
-    internal static class CdeCloudTool
+    internal static partial class CdeCloudTool
     {
         internal const string ToolName = "horizun_cde_cloud";
         internal const string ApsBase = "https://developer.api.autodesk.com";
@@ -70,7 +74,9 @@ namespace Horizun.Server
         private static readonly HashSet<string> Keys = new HashSet<string>(StringComparer.Ordinal)
         {
             "operation", "provider", "project_context_path", "hub_id", "project_id", "states", "naming", "deliverables",
-            "as_of", "offset", "limit", "max_calls", "item_id", "server_url", "document_ids", "document_id"
+            "as_of", "offset", "limit", "max_calls", "item_id", "server_url", "document_ids", "document_id",
+            // issues_list / issue_create / issue_update - ACC Issues, CdeCloudIssues.cs
+            "issue_id", "issue", "finding", "external_key", "dry_run", "confirmation_token"
         };
 
         internal static JObject Handle(JObject args, CancellationToken ct) => Handle(args, ct, new CdeCloudEnvironment());
@@ -83,9 +89,13 @@ namespace Horizun.Server
                 if (!Keys.Contains(p.Name))
                     throw new ToolRefusal("Unknown argument '" + p.Name + "'. Nothing was read.");
             string op = Str(args, "operation");
-            if (op != "list_projects" && op != "list_states" && op != "inspect" && op != "versions")
-                throw new ToolRefusal("operation must be one of list_projects, list_states, inspect, versions. Nothing was read.");
+            if (op != "list_projects" && op != "list_states" && op != "inspect" && op != "versions" &&
+                op != "issues_list" && op != "issue_create" && op != "issue_update")
+                throw new ToolRefusal("operation must be one of list_projects, list_states, inspect, versions, issues_list, " +
+                                      "issue_create, issue_update. Nothing was read.");
             string provider = Str(args, "provider");
+            if ((op == "issues_list" || op == "issue_create" || op == "issue_update") && provider != "acc")
+                throw new ToolRefusal("operation=" + op + " is ACC Issues (APS Issues API v1); provider must be 'acc'. Nothing was read.");
             try
             {
                 switch (provider)
@@ -130,6 +140,8 @@ namespace Horizun.Server
             // answers with what the credential can see, so the project is chosen, not typed.
             if (op == "list_projects") return AccListProjects(hubId, maxCalls, ct, env);
             string projectId = ProjectId(Str(args, "project_id") ?? (string)context?["cde"]?["project_ref"]);
+            // ACC Issues (CdeCloudIssues.cs): scoped by the project alone, with its own credential rules.
+            if (op == "issues_list" || op == "issue_create" || op == "issue_update") return AccIssues(op, args, ct, env, projectId, maxCalls);
             string itemId = null;
             List<StateTarget> targets = null;
             ContainerNaming naming = null;

@@ -1,7 +1,8 @@
 // -----------------------------------------------------------------------------
 // Horizun MCP server - original Horizun code.
 //
-// The HTTP half of horizun_cde_cloud: a bounded, READ-ONLY client and the two
+// The HTTP half of horizun_cde_cloud: a bounded client - reads, plus the ACC Issues
+// writes of CdeCloudIssues.cs (never retried on a lost answer unless idempotent) - and the two
 // credential resolvers (Autodesk Platform Services and an OpenCDE bearer token).
 //
 // Rules this file keeps, each one a way a cloud reader lies if it is broken:
@@ -22,6 +23,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -55,6 +57,8 @@ namespace Horizun.Server
         public int Status;
         public JObject Body;
         public string Error;
+        /// <summary>A write's own validation message from the API (WithDetail); null for reads.</summary>
+        public string Detail;
         public bool BudgetExhausted;
         public bool Ok => Error == null && Body != null;
     }
@@ -104,6 +108,13 @@ namespace Horizun.Server
             Send(HttpMethod.Post, url, () => new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json"), Bearer());
 
         /// <summary>
+        /// A JSON write (POST/PATCH) with the bearer. idempotent=false (a create) is not retried on
+        /// a lost answer or a 5xx - it may have landed - only on 429; the caller reconciles.
+        /// </summary>
+        public CloudResponse SendJson(HttpMethod method, string url, JObject body, bool idempotent) =>
+            Send(method, url, () => new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json"), Bearer(), idempotent, true);
+
+        /// <summary>
         /// A token request. Never carries the bearer; the client credential goes in a Basic
         /// header (or, for a public client, only the id in the form). A failure is a refusal
         /// that names the status and nothing else.
@@ -121,7 +132,8 @@ namespace Horizun.Server
         private AuthenticationHeaderValue Bearer() =>
             BearerToken == null ? null : new AuthenticationHeaderValue("Bearer", BearerToken);
 
-        private CloudResponse Send(HttpMethod method, string url, Func<HttpContent> content, AuthenticationHeaderValue auth)
+        private CloudResponse Send(HttpMethod method, string url, Func<HttpContent> content, AuthenticationHeaderValue auth,
+                                   bool idempotent = true, bool captureDetail = false)
         {
             Uri uri;
             if (!Uri.TryCreate(url, UriKind.Absolute, out uri) || uri.Scheme != Uri.UriSchemeHttps)
@@ -160,24 +172,25 @@ namespace Horizun.Server
 
                 if (transport != null)
                 {
-                    if (attempt < MaxRetries) { Backoff(attempt, null); continue; }
+                    if (idempotent && attempt < MaxRetries) { Backoff(attempt, null); continue; }
                     return Fail(uri.AbsolutePath, 0, "no HTTP answer after " + (attempt + 1) + " attempts (" + transport + ")");
                 }
 
                 using (response)
                 {
                     int status = (int)response.StatusCode;
-                    if (status == 429 || status == 502 || status == 503 || status == 504)
+                    if (status == 429 || (idempotent && (status == 502 || status == 503 || status == 504)))
                     {
                         if (attempt < MaxRetries) { Backoff(attempt, RetryAfter(response)); continue; }
                         return Fail(uri.AbsolutePath, status, "HTTP " + status + " after " + (attempt + 1) + " attempts");
                     }
                     if (status == 401 || status == 403)
-                        return Fail(uri.AbsolutePath, status, "HTTP " + status + (status == 401
+                        return WithDetail(captureDetail, response, Fail(uri.AbsolutePath, status, "HTTP " + status + (status == 401
                             ? ": the credential was not accepted (expired or wrong)"
-                            : ": the credential has no access to this resource") + "; not retried");
+                            : ": the credential has no access to this resource") + "; not retried"));
                     if (!response.IsSuccessStatusCode)
-                        return Fail(uri.AbsolutePath, status, "HTTP " + status + "; the body is not echoed");
+                        return WithDetail(captureDetail, response, Fail(uri.AbsolutePath, status,
+                            "HTTP " + status + (captureDetail ? "" : "; the body is not echoed")));
                     string text = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
                     try
                     {
@@ -191,6 +204,30 @@ namespace Horizun.Server
                     catch (JsonException) { return Fail(uri.AbsolutePath, status, "a successful answer that is not JSON"); }
                 }
             }
+        }
+
+        /// <summary>
+        /// For a WRITE only: the API's own validation message (title/detail/message fields, at
+        /// most 300 characters), so a refused issue says why. It answers the caller's own
+        /// payload; a READ's error body is still never echoed.
+        /// </summary>
+        private static CloudResponse WithDetail(bool capture, HttpResponseMessage response, CloudResponse r)
+        {
+            if (!capture) return r;
+            try
+            {
+                JObject o = JObject.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+                var parts = new List<string>();
+                var sources = new List<JObject> { o };
+                if (o["errors"] is JArray errors) sources.AddRange(errors.OfType<JObject>().Take(3));
+                foreach (JObject e in sources)
+                    foreach (string k in new[] { "title", "detail", "developerMessage", "message", "errorCode", "code", "field" })
+                        if (e[k] != null && e[k].Type == JTokenType.String && !string.IsNullOrWhiteSpace((string)e[k])) parts.Add((string)e[k]);
+                string d = string.Join("; ", parts.Distinct(StringComparer.Ordinal));
+                r.Detail = d.Length == 0 ? null : d.Length > 300 ? d.Substring(0, 300) + "..." : d;
+            }
+            catch (Exception ex) when (ex is JsonException || ex is IOException || ex is HttpRequestException || ex is InvalidOperationException) { }
+            return r;
         }
 
         private void Backoff(int attempt, TimeSpan? retryAfter)
@@ -269,31 +306,33 @@ namespace Horizun.Server
         }
 
         /// <summary>
-        /// Resolves a data:read token. Order: an explicit access token, then the 3-legged
-        /// token file (refreshed when it expires and a client id is configured - APS
-        /// refresh tokens are replaced on use, so the new pair is written back and read
-        /// back), then 2-legged client credentials. Throws ToolRefusal on failure.
+        /// Resolves a token. Order: an explicit access token, then the 3-legged token file
+        /// (refreshed when it expires, or when it lacks a scope the caller needs, and a client
+        /// id is configured - APS refresh tokens are replaced on use, so the new pair is
+        /// written back and read back), then 2-legged client credentials. <paramref name="scope"/>
+        /// is what the caller NEEDS (null = data:read); it is asked of a 2-legged grant but never
+        /// of a refresh, which keeps the scope of the original sign-in. Throws ToolRefusal on failure.
         /// </summary>
-        internal static CloudCredential Resolve(CdeCloudEnvironment env, CdeCloudHttp http)
+        internal static CloudCredential Resolve(CdeCloudEnvironment env, CdeCloudHttp http, string scope = null)
         {
             string direct = env.Variable(AccessTokenName);
             if (!string.IsNullOrWhiteSpace(direct))
                 return new CloudCredential { Mode = "access_token", Source = AccessTokenName, Token = direct.Trim() };
 
             string file = env.ResolvedTokenFile();
-            if (File.Exists(file)) return FromTokenFile(env, http, file);
+            if (File.Exists(file)) return FromTokenFile(env, http, file, scope);
 
             string idName = FirstSet(env, ClientIdNames), secretName = FirstSet(env, ClientSecretNames);
             if (idName == null || secretName == null) throw new ToolRefusal(NotConfiguredMessage(env));
             JObject token = RequestToken(http, env.Variable(idName).Trim(), env.Variable(secretName).Trim(),
-                new Dictionary<string, string> { ["grant_type"] = "client_credentials", ["scope"] = Scope });
+                new Dictionary<string, string> { ["grant_type"] = "client_credentials", ["scope"] = scope ?? Scope });
             var cred = new CloudCredential { Mode = "two_legged", Source = idName + "/" + secretName, Token = (string)token["access_token"] };
             cred.Warnings.Add("A 2-legged token sees only what the APS app itself was provisioned for in the account " +
                               "(an ACC custom integration); a folder it cannot see is reported as not covered, not as empty.");
             return cred;
         }
 
-        private static CloudCredential FromTokenFile(CdeCloudEnvironment env, CdeCloudHttp http, string file)
+        private static CloudCredential FromTokenFile(CdeCloudEnvironment env, CdeCloudHttp http, string file, string scope)
         {
             JObject stored;
             try { stored = JObject.Parse(File.ReadAllText(file, Encoding.UTF8)); }
@@ -305,17 +344,26 @@ namespace Horizun.Server
             string refresh = (string)stored["refresh_token"];
             DateTimeOffset? expires = ParseExpiry(stored["expires_at"]);
             DateTimeOffset now = env.Now();
-            if (!string.IsNullOrWhiteSpace(access) && expires.HasValue && expires.Value > now.AddSeconds(60))
+            string idName = FirstSet(env, ClientIdNames);
+            bool canRefresh = !string.IsNullOrWhiteSpace(refresh) && idName != null;
+            bool fresh = !string.IsNullOrWhiteSpace(access) && expires.HasValue && expires.Value > now.AddSeconds(60);
+            // A stored token that is fresh but lacks a scope the caller needs (a write needs
+            // data:write) is refreshed rather than reused; one that cannot be refreshed is
+            // returned as it is and the caller's own scope check names what is missing.
+            if (fresh && (CoversScope(access, scope) || !canRefresh))
                 return new CloudCredential { Mode = "three_legged", Source = file, Token = access };
 
-            string idName = FirstSet(env, ClientIdNames);
-            if (string.IsNullOrWhiteSpace(refresh) || idName == null)
+            if (!canRefresh)
                 throw new ToolRefusal("The APS token in " + file + " is expired or has no expires_at, and it cannot be refreshed " +
                                       "(" + (string.IsNullOrWhiteSpace(refresh) ? "no refresh_token in the file" : "HORIZUN_APS_CLIENT_ID is not set") +
                                       "). Sign in again to renew the file. No request was made.");
             string secretName = FirstSet(env, ClientSecretNames);
+            // NO scope on a refresh. Asking one NARROWS the grant (review finding: a read that
+            // refreshed with 'data:read' left a token - and a refresh token - without data:write,
+            // and the next issue_create was refused). Without it APS keeps the scopes of the
+            // original sign-in. To measure live: that APS v2 accepts a refresh without scope.
             JObject token = RequestToken(http, env.Variable(idName).Trim(), secretName == null ? null : env.Variable(secretName).Trim(),
-                new Dictionary<string, string> { ["grant_type"] = "refresh_token", ["refresh_token"] = refresh, ["scope"] = Scope });
+                new Dictionary<string, string> { ["grant_type"] = "refresh_token", ["refresh_token"] = refresh });
 
             var cred = new CloudCredential { Mode = "three_legged", Source = file, Token = (string)token["access_token"] };
             int expiresIn = token["expires_in"] != null && token["expires_in"].Type == JTokenType.Integer ? (int)token["expires_in"] : 3600;
@@ -327,12 +375,27 @@ namespace Horizun.Server
                 ["token_type"] = (string)token["token_type"] ?? "Bearer",
                 ["refreshed_by"] = CdeCloudTool.ToolName
             };
+            string granted = (string)token["scope"] ?? (string)stored["scope"];
+            if (!string.IsNullOrWhiteSpace(granted)) updated["scope"] = granted;
             string problem = WriteBackVerified(file, updated);
             cred.TokenFileRefreshed = problem == null;
             if (problem != null)
                 cred.Warnings.Add("The token was refreshed but the token file could not be rewritten (" + problem + "). APS " +
                                   "replaces a refresh token when it is used, so the stored one may no longer work: sign in again.");
             return cred;
+        }
+
+        /// <summary>
+        /// Does the token carry every scope in <paramref name="scope"/>? Read from its own JWT
+        /// claims; a token whose claims are not readable is not second-guessed (true).
+        /// </summary>
+        internal static bool CoversScope(string token, string scope)
+        {
+            if (string.IsNullOrWhiteSpace(scope)) return true;
+            JObject claims = CdeCloudTool.JwtClaims(token);
+            List<string> have = claims == null ? null : CdeCloudTool.ScopesOf(claims);
+            if (have == null) return true;
+            return scope.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).All(have.Contains);
         }
 
         private static DateTimeOffset? ParseExpiry(JToken t)

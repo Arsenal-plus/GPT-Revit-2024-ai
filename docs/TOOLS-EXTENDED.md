@@ -1385,7 +1385,7 @@ side) builds the per-row model counts.
 every writing tool, its `mechanism` (the enum name from `WriteVerificationCatalog`
 - `PostconditionChecklist`, `PerRowReread`, `CountReconciliation`,
 `FileArtifactReread`, `DelegatedChildDeclaration`, `RemoteAcknowledgement`,
-`QueuedNotExecuted` or `SelfReported`) and `residual_gap_count` (how many known,
+`RemoteReread`, `QueuedNotExecuted` or `SelfReported`) and `residual_gap_count` (how many known,
 unfixed gaps the catalog still names for it - 0 means none are DECLARED, not that
 the tool is flawless). `full_text_source` points at the source file
 (`src/Horizun.Revit/Core/WriteVerificationCatalog.cs`), where every gap's own
@@ -1415,3 +1415,48 @@ post to it. Both failures now carry a structured `modal_dialog` block in
 A null field means Win32 could not read it, never that the dialog has no such
 thing. `modal_dialog` is absent (not merely null) when the probe itself is
 unavailable or the main window is enabled.
+
+## horizun_cde_cloud: ACC Issues (`issues_list`, `issue_create`, `issue_update`)
+
+`provider=acc` only. The full flow (key marker, 3-legged `data:write`, read-back) is in
+[INFORMATION-MANAGEMENT.md, "ACC Issues from coordination findings"](INFORMATION-MANAGEMENT.md#acc-issues-from-coordination-findings).
+The arguments the schema keeps terse:
+
+| argument | meaning |
+|---|---|
+| `issue` | the issue fields, every value a string: `title`, `description`, `issue_type_id` (the ACC **subtype** id - `issues_list` returns `issue_types` with their subtypes), `status` (`draft`, `open`, `pending`, `in_progress`, `completed`, `in_review`, `not_approved`, `in_dispute`, `closed`), `assigned_to`, `assigned_to_type` (`user` default, `company`, `role`), `due_date` and `start_date` (`YYYY-MM-DD`), `location_id`, `root_cause_id`. In `issues_list` only `status`, `issue_type_id` and `assigned_to` are accepted, as filters. |
+| `finding` | one coordination-ledger row: a row of this bridge's own ledger (the `horizun_coordination` CSV columns or JSON keys) as it is, or another tool's row. Column aliases (case-insensitive, spaces read as `_`, first present wins): title ← `title`, `name`, `summary`, `clash_name`, `check`, else `Clash: <category_a> vs <category_b>` (the ledger has no title column); description ← `description`, `detail`, `details`, `comment`, `message`, `reason`, `note`, plus a `column: value` line for each context column (`category_a`, `category_b`, `side_a`, `side_b`, `point_mm`, `priority`, `responsible`, `immovable_discipline`, `suggested_action`, `scope`, `severity`, `discipline`, `category`, `test`, `level`, `grid`, `location`, `zone`, `element_a`, `element_b`, `element_ids`, `elements`, `distance`, `point`, `x`, `y`, `z`, `source`, `model`); key ← `external_key`, `finding_id`, `clash_id`, `issue_key`, `guid`, `id`. `issue` overrides the finding. |
+| `external_key` | 1-100 characters of `A-Z a-z 0-9 . _ : -`, stored as `[horizun-key:<key>]` on the last line of the description. Required on create (or a finding id). An `issue_update` naming a key the issue does not carry yet WRITES the marker (its text kept) - it is part of the plan and of `changes`. In `issues_list` it selects the issues carrying it. |
+| `issue_id` | the ACC issue id (UUID). `issue_update` also finds the issue by its key when `issue_id` is absent. |
+| `dry_run`, `confirmation_token` | the writes rehearse by default; the apply sends the same arguments with `dry_run=false` and the rehearsal's token. |
+
+Reply of a write: `state` (`rehearsed`, `applied`, `applied_unverified`,
+`already_exists`, `no_change`), `plan`, `changes` (update), `issue_id`, `display_id`,
+`web_url`, `verification` and `host_verified`, `mapped_from_finding`, `external_key`,
+`attachments` (always "none" in this pass), `auth` and `http`. A 2-legged-only
+configuration is refused before any request, with the steps to obtain a 3-legged token.
+
+What the verdict rests on:
+
+- **The read-back.** Every field sent is compared with a GET after the write; the
+  description is compared WHOLE (line endings and outer whitespace normalised), not by
+  containment, so a PATCH that never landed does not pass because the old text still
+  contains the new one, and an emptied description is compared too. Nothing compared
+  is never `host_verified`.
+- **A lost answer.** A POST is not retried. A 5xx, a transport loss, or a 2xx whose body is
+  empty or not a JSON object is reconciled by scanning for the key again (`reconciled`);
+  a 2xx PATCH without a usable body goes straight to the read-back.
+- **The idempotency scan** reads every issue page sorted by `displayId` (fixed at creation),
+  so an issue edited during the scan cannot move to a page already read. A scan that could
+  not finish withholds the token.
+- **The call budget.** The dry run withholds its token when `max_calls` leaves no room for
+  the write and its read-back; the apply checks the same before the POST/PATCH, so a spent
+  budget is "no request was made", never a possibly-landed write.
+- **The token file.** A refresh asks no scope, so APS keeps the scopes of the original
+  sign-in: a read no longer leaves a `data:read`-only token behind. A stored token that is
+  still valid but lacks `data:write` is refreshed for a write instead of being reused.
+  (That APS v2 accepts a refresh without `scope`, and that the Issues list accepts
+  `sortBy=displayId`, are to be measured live.)
+
+Live probe: `scripts/live-probes/cde-cloud-issues.probes.ps1` (read-only cases; the apply
+is `not_covered` and is run by hand, with the user's approval, against a test project).

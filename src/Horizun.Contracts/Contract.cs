@@ -6133,12 +6133,12 @@ namespace Horizun.Contracts
                 // Deliberately terse: tools/list has a byte budget. The detail is in
                 // docs/INFORMATION-MANAGEMENT.md, "Cloud CDE reader".
                 Description =
-                    "READ-ONLY cloud CDE reader, acc (APS) or opencde. list_projects (acc): hubs and projects visible; list_states: folders to ISO 19650 states; inspect: " +
-                    "files, naming, MIDP cross; versions: history. Env-var credentials only. Unread parts: coverage_complete=false.",
+                    "Cloud CDE, acc (APS) or opencde. Reads: list_projects, list_states (ISO 19650 folders), inspect (files, naming, MIDP), versions, " +
+                    "issues_list. ACC issue_create/issue_update: dry_run->confirmation_token, 3-legged data:write, keyed, read back. Unread: coverage_complete=false.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation"", ""provider""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""list_projects"", ""list_states"", ""inspect"", ""versions""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list_projects"", ""list_states"", ""inspect"", ""versions"", ""issues_list"", ""issue_create"", ""issue_update""] },
     ""provider"": { ""type"": ""string"", ""enum"": [""acc"", ""opencde""] },
     ""project_context_path"": { ""type"": ""string"" },
     ""hub_id"": { ""type"": ""string"" },
@@ -6153,7 +6153,13 @@ namespace Horizun.Contracts
     ""item_id"": { ""type"": ""string"" },
     ""server_url"": { ""type"": ""string"" },
     ""document_ids"": { ""type"": ""array"" },
-    ""document_id"": { ""type"": ""string"" }
+    ""document_id"": { ""type"": ""string"" },
+    ""issue_id"": { ""type"": ""string"" },
+    ""issue"": { ""type"": ""object"", ""description"": ""title, description, issue_type_id (subtype), status, assigned_to(_type), due_date/start_date, location_id, root_cause_id"" },
+    ""finding"": { ""type"": ""object"", ""description"": ""A coordination ledger row (CSV columns/JSON keys) mapped to title/description/key; issue overrides it."" },
+    ""external_key"": { ""type"": ""string"", ""description"": ""Idempotency key kept in the issue description; a retry finds the issue instead of duplicating it."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""confirmation_token"": { ""type"": ""string"" }
   },
   ""additionalProperties"": false
 }")
@@ -6686,7 +6692,10 @@ namespace Horizun.Contracts
                 // name/verify/inspect only read; stamp and transition write a sidecar, a copy
                 // and a log line - and only with dry_run=false, which the handler gates
                 // through Settings.AllowsExternalSideEffect. Nothing is ever overwritten.
-                "horizun_information_container"
+                "horizun_information_container",
+                // Reads by default; issue_create / issue_update with dry_run=false write ACC
+                // issues and ask Settings.AllowsExternalSideEffect first (CdeCloudIssues.cs).
+                "horizun_cde_cloud"
             };
 
             // Steers the host and leaves no artefact: which Revit answers, what is
@@ -6760,8 +6769,7 @@ namespace Horizun.Contracts
             {
                 "horizun_open_document", "horizun_export", "horizun_deliver_ifc", "horizun_create_family",
                 "horizun_power_bi_push", "horizun_execute_python", "horizun_catalog_lookup",
-                // Reads a cloud CDE over HTTPS. ReadOnly by effect - it changes nothing anywhere -
-                // and open-world by nature.
+                // Reads a cloud CDE over HTTPS and, on request, writes ACC issues: open-world by nature.
                 "horizun_cde_cloud"
             };
 

@@ -259,7 +259,7 @@ namespace Horizun.Revit.Commands
                 full_text_source = "src/Horizun.Revit/Core/WriteVerificationCatalog.cs",
                 means = "mechanism is HOW that tool's reply proves what it wrote (PostconditionChecklist, " +
                         "PerRowReread, CountReconciliation, FileArtifactReread, DelegatedChildDeclaration, " +
-                        "RemoteAcknowledgement, QueuedNotExecuted or SelfReported - see the enum's own doc " +
+                        "RemoteAcknowledgement, RemoteReread, QueuedNotExecuted or SelfReported - see the enum's own doc " +
                         "comments at full_text_source). residual_gap_count is how many known, unfixed gaps the " +
                         "catalog names for that tool; 0 does not mean flawless, it means none are DECLARED. The " +
                         "full text of every gap, plus each row's evidence fields and source files, is only in " +

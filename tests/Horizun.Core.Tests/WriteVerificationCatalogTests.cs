@@ -177,6 +177,19 @@ namespace Horizun.Core.Tests
         private static string Command(string file) => File.ReadAllText(Src("Horizun.Revit/Commands/" + file));
 
         [Fact]
+        public void Acc_issue_writes_are_a_remote_reread_not_an_acknowledgement()
+        {
+            WriteVerification row = WriteVerificationCatalog.Rows.Single(r => r.Tool == "horizun_cde_cloud");
+            Assert.Equal(VerificationMechanism.RemoteReread, row.Mechanism);
+            Assert.Contains("host_verified", row.Evidence);
+            Assert.Contains("verification", row.Evidence);
+            // The verdict is derived from a GET after the write, field by field - not from the POST's status.
+            string src = File.ReadAllText(Src("Horizun.Server/CdeCloudIssues.cs"));
+            Assert.Contains("JObject back = ReadIssue(http, projectId, id, out error);", src);
+            Assert.Contains("result[\"host_verified\"] = all;", src);
+        }
+
+        [Fact]
         public void Transform_tag_verification_is_a_checklist_and_never_invents_a_read()
         {
             string src = Command("TransformElementsCommand.cs");

@@ -97,6 +97,7 @@
     <Compile Include="..\..\src\Horizun.Server\ContainerInspection.cs" Link="ContainerInspection.cs" />
     <Compile Include="..\..\src\Horizun.Server\CdeCloudHttp.cs" Link="CdeCloudHttp.cs" />
     <Compile Include="..\..\src\Horizun.Server\CdeCloudTool.cs" Link="CdeCloudTool.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CdeCloudIssues.cs" Link="CdeCloudIssues.cs" />
     <!-- The repair memory and the tool that works it. The property worth proving here is
          the privacy one: that nothing specific survives normalisation, and that a message
          the redactor could not clean is never written at all. -->
