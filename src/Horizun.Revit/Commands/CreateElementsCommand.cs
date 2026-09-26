@@ -431,6 +431,58 @@ namespace Horizun.Revit.Commands
                         p.Diameter = ReadDiameter(item, scale);
                         p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<ConduitType>(doc, item, "type_id");
                         break;
+                    // FlexPipe.Create/FlexDuct.Create take the PATH directly - no start/end pair, a
+                    // list of points including both ends. Start/End are kept as the first/last point
+                    // so every generic check that reads them (join rules, endpoint postconditions
+                    // this kind opts out of below) still has something to read.
+                    case "flex_pipe":
+                        p.FlexPoints = ReadPoints(item["points"], scale);
+                        p.Start = p.FlexPoints[0]; p.End = p.FlexPoints[p.FlexPoints.Count - 1];
+                        p.Diameter = ReadDiameter(item, scale);
+                        p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<FlexPipeType>(doc, item, "type_id");
+                        p.SystemType = Need<PipingSystemType>(doc, item, "system_type_id");
+                        break;
+                    case "flex_duct":
+                    {
+                        p.FlexPoints = ReadPoints(item["points"], scale);
+                        p.Start = p.FlexPoints[0]; p.End = p.FlexPoints[p.FlexPoints.Count - 1];
+                        p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<FlexDuctType>(doc, item, "type_id");
+                        p.SystemType = Need<MechanicalSystemType>(doc, item, "system_type_id");
+                        // FlexDuctType exposes no public Shape, unlike DuctType - the shape is
+                        // whatever the created instance's connectors turn out to be, read AFTER
+                        // commit. So diameter and width/height are only checked for being
+                        // mutually exclusive and positive here; the wrong one for the type's real
+                        // shape fails at commit with Revit's own "no settable parameter" refusal.
+                        double? flexDia = item.Value<double?>("diameter");
+                        JToken flexW = item["width"], flexH = item["height"];
+                        if (flexDia != null && (flexW != null || flexH != null))
+                            throw new ArgumentException("diameter AND width/height were both given: two sections for one run. Send one.");
+                        if ((flexW == null) != (flexH == null))
+                            throw new ArgumentException("width and height come together: a section with one side is not a section");
+                        if (flexDia != null) p.Diameter = ReadDiameter(item, scale);
+                        else if (flexW != null)
+                        {
+                            double w = Finite(flexW.Value<double>(), "width") * scale, h = Finite(flexH.Value<double>(), "height") * scale;
+                            if (w <= 0 || h <= 0) throw new ArgumentException("width and height must be positive");
+                            p.SectionWidth = w; p.SectionHeight = h;
+                        }
+                        break;
+                    }
+                    // Ramps have no creation surface in the public Revit API in ANY of 2023-2027:
+                    // no Ramp class, no Ramp.Create, nothing beyond StairRampFailures (an enum
+                    // SHARED with stairs failures) in RevitAPI.xml. horizun_execute_python cannot
+                    // build one either - it is the same public API, not a bigger one - so this is
+                    // refused as an ordinary argument error rather than a capability gap: granting
+                    // the Python fallback here would send a caller to try something that fails the
+                    // same way for the same reason. Model it with Revit's own Ramp tool (Architecture
+                    // tab > Ramp) or, for coordination geometry only, a sloped floor/generic model.
+                    case "ramp":
+                        throw new ArgumentException(
+                            "kind='ramp' is refused: Revit's public API has no Ramp class or Ramp.Create method " +
+                            "in any supported year (2023-2027), so neither this command nor horizun_execute_python " +
+                            "can create one. Use Revit's own Ramp tool (Architecture tab > Ramp) and, if the model " +
+                            "needs it back for coordination, read it afterwards with horizun_query_model; or, for " +
+                            "geometry-only coordination, model its shape as a sloped floor or generic model.");
                     case "cable_tray":
                         p.Start = Point(item["start"], scale, true); p.End = Point(item["end"], scale, true); NonZero(p.Start, p.End);
                         p.Diameter = ReadDiameter(item, scale);
@@ -1513,6 +1565,8 @@ namespace Horizun.Revit.Commands
                 case "duct": return Duct.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.Start, p.End);
                 case "pipe": return Pipe.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.Start, p.End);
                 case "conduit": return Conduit.Create(doc, p.Type.Id, p.Start, p.End, p.Level.Id);
+                case "flex_pipe": return FlexPipe.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.FlexPoints);
+                case "flex_duct": return FlexDuct.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.FlexPoints);
                 case "cable_tray": return CableTray.Create(doc, p.Type.Id, p.Start, p.End, p.Level.Id);
                 case "structural_framing":
                     FamilySymbol framing = (FamilySymbol)p.Type;
@@ -2146,6 +2200,7 @@ namespace Horizun.Revit.Commands
                 case "sprinkler": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_Sprinklers);
                 case "family_instance": return e is FamilyInstance; case "duct": return e is Duct;
                 case "pipe": return e is Pipe; case "conduit": return e is Conduit; case "cable_tray": return e is CableTray;
+                case "flex_pipe": return e is FlexPipe; case "flex_duct": return e is FlexDuct;
                 case "structural_framing": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_StructuralFraming);
                 case "structural_column": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_StructuralColumns);
                 // THREE KINDS OF HOLE, THREE CATEGORIES. "is it an Opening" is
@@ -2208,6 +2263,15 @@ namespace Horizun.Revit.Commands
             if (a == null || a.Count < minimum || a.Count > 3) throw new ArgumentException("point/start/end must contain " + minimum + " XYZ coordinates");
             return new XYZ(GeometryInput.Number(a[0], "X") * scale, GeometryInput.Number(a[1], "Y") * scale,
                 (a.Count > 2 ? GeometryInput.Number(a[2], "Z") : 0) * scale);
+        }
+        /// <summary>flex_pipe/flex_duct: the path FlexPipe.Create/FlexDuct.Create take directly, in order.</summary>
+        private static List<XYZ> ReadPoints(JToken token, double scale)
+        {
+            JArray a = token as JArray;
+            if (a == null || a.Count < 2) throw new ArgumentException("points must contain at least 2 XYZ coordinates");
+            var list = new List<XYZ>(a.Count);
+            foreach (JToken t in a) list.Add(Point(t, scale, true));
+            return list;
         }
         /// <summary>
         /// OPEN CHAINS of curves, for the things Revit takes as a run rather than
@@ -2386,11 +2450,11 @@ namespace Horizun.Revit.Commands
         {
             if (element == null) return null;
             BuiltInParameter[] candidates;
-            if (element is Autodesk.Revit.DB.Plumbing.Pipe)
+            if (element is Autodesk.Revit.DB.Plumbing.Pipe || element is Autodesk.Revit.DB.Plumbing.FlexPipe)
                 candidates = new[] { BuiltInParameter.RBS_PIPE_DIAMETER_PARAM };
             else if (element is Autodesk.Revit.DB.Electrical.Conduit)
                 candidates = new[] { BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM };
-            else if (element is Autodesk.Revit.DB.Mechanical.Duct)
+            else if (element is Autodesk.Revit.DB.Mechanical.Duct || element is Autodesk.Revit.DB.Mechanical.FlexDuct)
                 candidates = new[] { BuiltInParameter.RBS_CURVE_DIAMETER_PARAM };
             else return null;
 
@@ -2647,6 +2711,8 @@ namespace Horizun.Revit.Commands
             public double BeamSpacing; public FamilySymbol BeamType;
             public Wall FoundationWall;
             public MEPCurve InlineHost; public XYZ InlinePoint;
+            /// <summary>flex_pipe/flex_duct: the full path, including its two ends (Start/End mirror the first/last point).</summary>
+            public List<XYZ> FlexPoints;
             public string SystemName; public List<Element> SystemMembers;
             /// <summary>The exact connector id validated per member, so create time uses
             /// what the plan checked rather than choosing again.</summary>

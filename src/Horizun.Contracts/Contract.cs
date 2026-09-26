@@ -6989,7 +6989,10 @@ namespace Horizun.Contracts
             ["duct"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
             ["pipe"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter" },
             ["conduit"] = new[] { "start", "end", "type_id", "level_id", "diameter" },
-            ["cable_tray"] = new[] { "start", "end", "type_id", "level_id" }
+            ["cable_tray"] = new[] { "start", "end", "type_id", "level_id" },
+            // FlexPipe.Create/FlexDuct.Create take a PATH (points), not a start/end pair.
+            ["flex_pipe"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter" },
+            ["flex_duct"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter", "width", "height" }
         };
         public static string ValidateCreation(JObject item, string kind)
         {
@@ -7058,6 +7061,14 @@ namespace Horizun.Contracts
             props["view_id"] = new JObject { ["type"]="integer" };
             props["element_ids"] = new JObject { ["type"]="array",["minItems"]=1,["maxItems"]=2000,["items"]=new JObject { ["type"]="integer" } };
             props["displacement"] = props["start"].DeepClone();
+            props["points"] = new JObject
+            {
+                ["type"] = "array", ["minItems"] = 2, ["maxItems"] = 100,
+                ["items"] = new JObject { ["type"] = "array", ["minItems"] = 3, ["maxItems"] = 3, ["items"] = new JObject { ["type"] = "number" } },
+                ["description"] = "kind=flex_pipe/flex_duct: the flexible path IN ORDER, including both ends - " +
+                                  "FlexPipe.Create/FlexDuct.Create take this directly, not a start/end pair. " +
+                                  "Re-read after commit point-for-point and by count; Revit may drop a redundant point."
+            };
             props["desired_risers"]=new JObject { ["type"]="integer",["minimum"]=1,["maximum"]=1000 };
             props["tread_depth"]=new JObject { ["type"]="number",["exclusiveMinimum"]=0 };
             props["runs"]=JObject.Parse(@"{'type':'array','minItems':1,'maxItems':50,'items':{'type':'object','required':['start','end','width','expected_risers'],'properties':{'start':{'type':'array','minItems':3,'maxItems':3,'items':{'type':'number'}},'end':{'type':'array','minItems':3,'maxItems':3,'items':{'type':'number'}},'width':{'type':'number','exclusiveMinimum':0},'expected_risers':{'type':'integer','minimum':1}},'additionalProperties':false}}");
@@ -7091,6 +7102,7 @@ namespace Horizun.Contracts
                     case "stairs": requiredFields = new[] { "level_id", "top_level_id", "type_id", "desired_risers", "tread_depth", "runs" }; break;
                     case "displacement": requiredFields = new[] { "view_id", "element_ids", "displacement" }; break;
                     case "duct": case "pipe": requiredFields = new[] { "start", "end", "type_id", "level_id", "system_type_id" }; break;
+                    case "flex_pipe": case "flex_duct": requiredFields = new[] { "points", "type_id", "level_id", "system_type_id" }; break;
                     case "cable_tray": requiredFields = new[] { "start", "end", "level_id" }; break;
                     case "fitting": requiredFields = new[] { "fitting", "elements" }; break;
                     case "slab_opening": requiredFields = new[] { "host_id", "center" }; break;

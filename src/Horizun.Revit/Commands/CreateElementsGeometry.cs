@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Mechanical;
+using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.DB.Structure;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
@@ -589,18 +591,40 @@ namespace Horizun.Revit.Commands
                     return worst * 304.8;
                 }, allowanceFt * 304.8);
             }
-            else if (p.Start != null && p.Kind != "wall_opening")
+            else if (p.Start != null && p.Kind != "wall_opening" && p.Kind != "flex_pipe" && p.Kind != "flex_duct")
             {
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.Start) : null;
                 XYZ PointNow() => elbow != null ? ReadElbowJunction(doc, made, elbow, 0) : e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
                 for (int axis = 0; axis < (p.Kind == "room" ? 2 : 3); axis++)
                 { int a = axis; Numeric((elbow == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => a == 2 && elbow == null ? (GovernedBaseZ(doc, e) ?? PointNow()[2]) : PointNow()[a]); }
             }
-            if (p.End != null && p.Kind != "wall_opening" && !(p.Kind == "wall" && p.ArcThird == null))
+            if (p.End != null && p.Kind != "wall_opening" && p.Kind != "flex_pipe" && p.Kind != "flex_duct" && !(p.Kind == "wall" && p.ArcThird == null))
             {
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.End) : null;
                 for (int axis = 0; axis < 3; axis++)
                 { int a = axis; Numeric((elbow == null ? "end_" : "end_junction_") + "xyz"[a], p.End[a], () => a == 2 && elbow == null && GovernedBaseZ(doc, e) is double governed ? governed : elbow != null ? ReadElbowJunction(doc, made, elbow, 1)[a] : (e is Grid grid ? grid.Curve : ((LocationCurve)e.Location).Curve).GetEndPoint(1)[a]); }
+            }
+            // FLEX RUNS ARE NOT ONE CURVE. FlexPipe/FlexDuct expose their path as Points
+            // (including both ends), not as a LocationCurve.Curve with two endpoints - the
+            // generic checks above assume the latter and would misread or throw on the
+            // former. Points is re-read after commit and compared point-for-point, in
+            // order and in COUNT: Revit is free to keep or discard interior points it
+            // considers redundant, and a run that came back with fewer of them is a
+            // different path even when both ends still land correctly.
+            if ((p.Kind == "flex_pipe" || p.Kind == "flex_duct") && p.FlexPoints != null)
+            {
+                IList<XYZ> FlexPointsNow() => p.Kind == "flex_pipe" ? ((FlexPipe)e).Points : ((FlexDuct)e).Points;
+                Exact("flex_point_count", p.FlexPoints.Count, () => FlexPointsNow().Count);
+                for (int i = 0; i < p.FlexPoints.Count; i++)
+                {
+                    int idx = i;
+                    for (int axis = 0; axis < 3; axis++)
+                    {
+                        int a = axis;
+                        Numeric("flex_point_" + idx + "_" + "xyz"[a], p.FlexPoints[idx][a],
+                            () => FlexPointsNow().Count > idx ? FlexPointsNow()[idx][a] : double.NaN);
+                    }
+                }
             }
             if (p.Kind == "wall")
             {
