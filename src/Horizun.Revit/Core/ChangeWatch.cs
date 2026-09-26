@@ -157,7 +157,7 @@ namespace Horizun.Revit.Core
             public int Deleted;
         }
 
-        private const int HistoryCap = 500;
+        internal const int HistoryCap = 500;
         private static readonly object Gate = new object();
         private static readonly Dictionary<string, Entry> Last = new Dictionary<string, Entry>(StringComparer.Ordinal);
         private static readonly Dictionary<string, List<Entry>> History = new Dictionary<string, List<Entry>>(StringComparer.Ordinal);

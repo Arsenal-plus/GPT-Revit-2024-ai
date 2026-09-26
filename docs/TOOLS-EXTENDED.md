@@ -1277,6 +1277,73 @@ wrong level or room, or a missing element, needs the picture).
   automatic pass stays cheap; a batch that annotated more views calls
   `horizun_verify_changes(include_annotation=true, view_ids=[...])` explicitly.
 
+### Visual diff before/after (`operation=snapshot` / `operation=compare_to`)
+
+`operation` defaults to `check` (everything above). Two more operations turn the same
+capture path into a before/after comparison; both need `target_document` (the mutation
+gate, because the temporary view is created and then rolled back like the check's own
+picture). As in the check, the rollback is not a footnote: when it does not confirm, or
+the temporary view still resolves in the document afterwards, the call fails with
+`temporary_view_not_rolled_back` and `write_started: true` (delete the view with
+`horizun_delete_verified`). A capture that failed after a confirmed rollback answers
+`capture_failed` with `write_started: false`.
+
+- **`snapshot`** saves a named baseline: `snapshot_name` (sanitised to letters, digits,
+  `-`, `_`, `.`; kept per document) plus EITHER `element_ids` — the camera is framed
+  around them exactly like the check's image (padded section box, `orientation`, crop
+  fitted to the box) — OR an orthographic 3D view (`view_id`, else the active 3D view)
+  whose own orientation and active crop/section box are reused. Refused seeds: one with
+  neither box active (Revit would refit to the model's extents, so an element added far
+  away would move the whole frame), a perspective camera view
+  (`perspective_seed_not_supported`: the capture view is orthographic and a perspective
+  crop box means something else there) and a sketched crop region
+  (`non_rectangular_crop_not_supported`). The camera stored is the one Revit APPLIED to
+  the temporary view (read back after the commit), not the one requested, in
+  `%USERPROFILE%\.horizun\verify\baselines\<doc-key>\<name>.png` + `.json`. `<doc-key>`
+  is the document title plus a hash of its path, so two models with the same file name
+  never share baselines; the json also records `document_path` (compare_to refuses
+  another document with `baseline_other_document`), the camera (eye, up, forward,
+  section and crop boxes with their transforms), `pixel_size`, `captured_at_utc` /
+  `captured_at_ticks` and the PNG's `png_sha256`. Both files are written under temporary
+  names, re-read (the PNG must decode, the hash must match), and only then moved over
+  the previous pair; `replaced_existing` (with `replaced_captured_at_utc`) says when a
+  same-named baseline was overwritten.
+- **`compare_to`** (`snapshot_name` of an existing baseline) first refuses a PNG that no
+  longer matches its camera's hash (`baseline_unpaired`: an interrupted snapshot or a
+  replaced file), then rebuilds a temporary view from the STORED camera — not from
+  whatever the live view looks like now — and checks that Revit applied it: view and up
+  directions, the crop rectangle within half a pixel, the section box within
+  max(half a pixel, 1e-3 ft). Otherwise, or when the image size differs, it refuses with
+  `frame_not_reproduced` and both cameras, instead of diffing misaligned pixels
+  (`camera_reproduced` reports the tolerance and the deviation measured). It exports at
+  the same `pixel_size` and diffs with `Core/ImageDiff`: per-pixel max(|ΔR|,|ΔG|,|ΔB|)
+  above 24 counts as changed, the mask is dilated by 2 px, and a region is kept only with
+  at least 8 RAW changed pixels (so an isolated antialiasing speck is dropped whatever
+  the dilation). Returns `before_path`, `after_path`, `diff_path` (the after image with
+  the dilated mask painted red), all three re-read before `artifacts_verified: true`;
+  `changed_pixel_ratio` (measured on the RAW mask); `regions` (up to 50, largest first)
+  each with `pixel_bbox`, `pixel_count` (raw), `model_bbox_approx` (the pixel rectangle
+  swept through the section box's depth — the crop's near/far range without one — and
+  clipped to the section box, feet: a bound on where the change is, not an element box)
+  and `element_ids`: the elements changed since the baseline whose bounding box,
+  projected into the image through the same crop map (`Core/CropPixelMap`), touches the
+  region. `elements_changed_since_baseline` lists the ids `ChangeLedger` recorded for
+  Horizun writes after the capture (compared by ticks) in this Revit session — manual
+  edits are not in the ledger, although they do show in the pixels. Deleted elements are
+  only counted (`elements_deleted_since_baseline_count`): a region they caused has no
+  `element_ids`. The ledger keeps the last 500 writes per document; when older writes
+  since the baseline were evicted, `change_history_evicted` and
+  `elements_changed_since_baseline_truncated` are true.
+
+Typical use: `snapshot` on the elements about to be touched, model, then `compare_to`
+and look at `diff_path`. PNG decoding/encoding runs in the add-in through WPF imaging
+(PresentationCore, referenced on net48, net8 and net10); `Core/ImageDiff` itself only
+sees `int[]` ARGB arrays, so its threshold, dilation and labelling are unit-tested on
+plain net8. To measure live (probe `visual-diff`): whether Revit's export adds a margin
+around the crop (the attribution tolerates 6 px), whether a read-back camera is
+re-applied within the tolerances above, and how far a recapture of an unchanged scene
+is from exactly 0.
+
 ## Field notes: naming side effects and a read-only add-in's own writes
 
 Three usage notes from a 2026-09-25 field session, kept here rather than invented

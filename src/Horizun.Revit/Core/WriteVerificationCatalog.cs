@@ -220,7 +220,7 @@ namespace Horizun.Revit.Core
                 "ExportCommand.cs dwg with dwg_setup: the named setup's layer mapping is not proved from the DWG binary; dwg_layers proves the table itself."),
             Row("horizun_deliver_ifc", VerificationMechanism.FileArtifactReread, E("deliverable_ready"), F(C + "DeliverIfcCommand.cs")),
             Row("horizun_capture_view", VerificationMechanism.FileArtifactReread, E("sha256", "bytes"), F(C + "CaptureViewCommand.cs")),
-            Row("horizun_verify_changes", VerificationMechanism.FileArtifactReread, E("image", "spatial_check"), F(C + "VerifyChangesCommand.cs")),
+            Row("horizun_verify_changes", VerificationMechanism.FileArtifactReread, E("image", "spatial_check", "baseline_png", "artifacts_verified"), F(C + "VerifyChangesCommand.cs", C + "VerifyChangesSnapshot.cs")),
             Row("horizun_excel_write_rows", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "ExcelWriteRows.cs")),
             Row("horizun_budget_compare", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "BudgetCompare.cs")),
             Row("horizun_project_context", VerificationMechanism.FileArtifactReread, E("written", "verification"), F(S + "ProjectContext.cs")),
