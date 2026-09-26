@@ -640,6 +640,8 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\DataOnlyGeometryRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SessionScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\TagOverlapRules.cs" />
+    <!-- horizun_verify_changes operation=compare_to: pure ARGB pixel-diff math, Revit-free. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ImageDiff.cs" />
   </ItemGroup>
 
   <ItemGroup>
