@@ -549,7 +549,16 @@ namespace Horizun.Contracts
                 InputSchema = new JObject
                 {
                     ["type"] = "object",
-                    ["properties"] = new JObject(),
+                    ["properties"] = new JObject
+                    {
+                        ["include_verification_catalog"] = new JObject
+                        {
+                            ["type"] = "boolean", ["default"] = false,
+                            ["description"] = "true adds verification_catalog: per writing tool, its mechanism and residual_gap_count " +
+                                "from WriteVerificationCatalog, plus where the full text (mechanisms, evidence fields, known gaps) lives. " +
+                                "Default false keeps health small."
+                        }
+                    },
                     ["additionalProperties"] = false
                 }
             },

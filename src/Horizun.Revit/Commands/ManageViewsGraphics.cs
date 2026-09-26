@@ -379,6 +379,16 @@ namespace Horizun.Revit.Commands
                         ElementId id = Rid.Make(raw);
                         if (!coloured.GetFilters().Contains(id)) return false;
                         if (!coloured.GetFilterVisibility(id)) return false;
+                        // The colour itself, not only that a filter got attached and shown:
+                        // a template or a stale filter can keep filters/visibility exactly
+                        // as set while wearing a DIFFERENT colour - re-read from the view.
+                        try
+                        {
+                            OverrideGraphicSettings settings = coloured.GetFilterOverrides(id);
+                            Color wanted = ReadColour(row.Value<string>("rgb"), "rgb");
+                            if (!SameColour(settings.ProjectionLineColor, wanted)) return false;
+                        }
+                        catch { return false; }
                     }
                     return true;
                 }
@@ -400,20 +410,39 @@ namespace Horizun.Revit.Commands
                     bool permanent = action.Value<bool?>("permanent") ?? false;
                     var hidden = ReadElementIds(doc, action, "element_ids").ToList();
                     if (hidden.Count == 0) return false;   // nothing compared is not a pass
+                    if (!permanent && !hiding.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate)) return false;
                     foreach (ElementId id in hidden)
                     {
                         Element element = doc.GetElement(id);
                         if (element == null) return false;
-                        if (permanent && !element.IsHidden(hiding)) return false;
+                        if (permanent) { if (!element.IsHidden(hiding)) return false; continue; }
+                        // Element.IsHidden reports the PERMANENT hidden state only; a
+                        // temporary hide is a VIEW-MODE fact the element itself does not
+                        // carry, so exactly the requested ids are re-read from the view.
+                        bool visible;
+                        try { visible = hiding.IsElementVisibleInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate, id); }
+                        catch { return false; }
+                        if (visible) return false;
                     }
-                    // The temporary mode is a view state, not an element property, so
-                    // the check is that the mode is ON - IsHidden does not report it.
-                    return permanent || hiding.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate);
+                    return true;
                 }
 
                 case "isolate_elements":
-                    return e is View isolating &&
-                           isolating.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate);
+                {
+                    if (!(e is View isolating) || !isolating.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate)) return false;
+                    var isolated = ReadElementIds(doc, action, "element_ids").ToList();
+                    if (isolated.Count == 0) return false;   // nothing compared is not a pass
+                    foreach (ElementId id in isolated)
+                    {
+                        bool visible;
+                        try { visible = isolating.IsElementVisibleInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate, id); }
+                        catch { return false; }
+                        // Isolating keeps exactly the requested ids visible; anything not
+                        // still visible was not actually isolated by this call.
+                        if (!visible) return false;
+                    }
+                    return true;
+                }
 
                 case "reset_temporary":
                     return e is View reset &&
@@ -433,29 +462,100 @@ namespace Horizun.Revit.Commands
             return false;
         }
 
-        /// <summary>What a graphic-control action reports back beyond its id.</summary>
-        internal static JObject GraphicsDetail(JObject action, string op)
+        /// <summary>
+        /// What a graphic-control action reports back beyond its id - POST-COMMIT, so
+        /// 'doc' and 'e' (the re-fetched element) let this re-read each value's colour
+        /// and each requested id's actual hidden/visible state, rather than echoing
+        /// back what the apply phase intended to write.
+        /// </summary>
+        internal static JObject GraphicsDetail(Document doc, JObject action, string op, Element e)
         {
             if (op == "color_by_value")
+            {
+                View coloured = e as View;
+                var byValue = new JArray();
+                bool allVerified = coloured != null;
+                foreach (JToken row in (action["__legend"] as JArray) ?? new JArray())
+                {
+                    string wantHex = row.Value<string>("rgb");
+                    string gotHex = null; bool visible = false; bool readable = false;
+                    long raw = row.Value<long?>("filter_id") ?? -1;
+                    if (coloured != null && Rid.CanRepresent(raw))
+                    {
+                        try
+                        {
+                            ElementId id = Rid.Make(raw);
+                            visible = coloured.GetFilters().Contains(id) && coloured.GetFilterVisibility(id);
+                            Color c = coloured.GetFilterOverrides(id).ProjectionLineColor;
+                            if (c != null && c.IsValid)
+                            {
+                                gotHex = string.Format("#{0:X2}{1:X2}{2:X2}", c.Red, c.Green, c.Blue);
+                                readable = true;
+                            }
+                        }
+                        catch { readable = false; }
+                    }
+                    bool matches = readable && visible && string.Equals(gotHex, wantHex, StringComparison.OrdinalIgnoreCase);
+                    if (!matches) allVerified = false;
+                    byValue.Add(new JObject
+                    {
+                        ["value"] = row.Value<string>("value"), ["filter_id"] = row["filter_id"],
+                        ["requested_rgb"] = wantHex, ["found_rgb"] = gotHex, ["visible"] = visible, ["matches"] = matches
+                    });
+                }
                 return new JObject
                 {
                     ["legend"] = action["__legend"],
                     ["values_found"] = action["__values_found"],
                     ["values_coloured"] = action["__values_coloured"],
                     ["palette_wrapped"] = action["__palette_wrapped"],
+                    ["overrides_verified"] = new JObject { ["all_verified"] = allVerified, ["by_value"] = byValue },
                     ["means"] = "values_found counts the distinct values present in this view; " +
                                 "values_coloured is how many got a colour before max_values. When " +
                                 "palette_wrapped is true, two different values share a colour and the " +
-                                "legend is the only way to tell them apart."
+                                "legend is the only way to tell them apart. overrides_verified RE-READS each " +
+                                "value's filter override colour from the committed view; a template or a stale " +
+                                "filter can keep the filter attached and visible while wearing a different colour."
                 };
+            }
             if (op == "hide_elements" || op == "isolate_elements")
+            {
+                bool permanent = action.Value<bool?>("permanent") ?? false;
+                View view = e as View;
+                var byElement = new JArray();
+                bool allVerified = view != null;
+                foreach (ElementId id in ReadElementIds(doc, action, "element_ids"))
+                {
+                    bool hidden = false; bool measured = false;
+                    if (view != null)
+                    {
+                        try
+                        {
+                            hidden = permanent
+                                ? (doc.GetElement(id)?.IsHidden(view) ?? false)
+                                : !view.IsElementVisibleInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate, id);
+                            measured = true;
+                        }
+                        catch { measured = false; }
+                    }
+                    // isolate_elements keeps the requested ids VISIBLE (everything else is
+                    // what disappears); "hidden" here always means "not part of what stayed".
+                    bool wantHidden = op == "hide_elements";
+                    bool matches = measured && hidden == wantHidden;
+                    if (!matches) allVerified = false;
+                    byElement.Add(new JObject { ["element_id"] = Rid.Value(id), ["measured"] = measured, ["hidden"] = hidden, ["matches"] = matches });
+                }
                 return new JObject
                 {
-                    ["temporary"] = !(action.Value<bool?>("permanent") ?? false),
+                    ["temporary"] = !permanent,
+                    ["elements_verified"] = new JObject { ["all_verified"] = allVerified, ["by_element"] = byElement },
                     ["means"] = "a temporary hide/isolate is a VIEW MODE. It does not survive closing the " +
                                 "document, it is not what a printed sheet shows, and reset_temporary undoes it. " +
-                                "A permanent hide is stored on the view and is what prints."
+                                "A permanent hide is stored on the view and is what prints. elements_verified " +
+                                "RE-READS exactly the requested ids' hidden/visible state from the view, not only " +
+                                "whether the view's temporary-mode flag is on."
                 };
+            }
             return null;
         }
 

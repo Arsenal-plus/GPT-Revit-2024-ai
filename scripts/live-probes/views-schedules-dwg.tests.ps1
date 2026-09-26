@@ -106,7 +106,30 @@ function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwg
                 Set-Content -LiteralPath $arguments.output_path -Value 'AC1032'
                 return (& $ok @{ files_verified = 1 })
             }
-            'vg-cleanup' { return (& $ok @{ deleted = 6 }) }
+            'vg-dwg-reexport' {
+                Set-Content -LiteralPath $arguments.output_path -Value 'AC1032-2'
+                return (& $ok @{ files_verified = 1 })
+            }
+            'vg-color-by-value' {
+                $legend = @([pscustomobject]@{ value = 'HZ'; filter_id = 600; rgb = '#E6194B' })
+                $byValue = @([pscustomobject]@{ value = 'HZ'; requested_rgb = '#E6194B'; found_rgb = '#E6194B'; visible = $true; matches = $true })
+                $row = [pscustomobject]@{
+                    verified = $true
+                    graphics = [pscustomobject]@{ legend = $legend; overrides_verified = [pscustomobject]@{ all_verified = $true; by_value = $byValue } }
+                }
+                return (& $ok @{ rows = @($row) })
+            }
+            'vg-hide-temp' {
+                $wallId = [long]$arguments.actions[0].element_ids[0]
+                $byElement = @([pscustomobject]@{ element_id = $wallId; measured = $true; hidden = $true; matches = $true })
+                $row = [pscustomobject]@{
+                    verified = $true
+                    graphics = [pscustomobject]@{ elements_verified = [pscustomobject]@{ all_verified = $true; by_element = $byElement } }
+                }
+                return (& $ok @{ rows = @($row) })
+            }
+            'vg-reset-temp' { return (& $ok @{ actions_verified = 1 }) }
+            'vg-cleanup' { return (& $ok @{ deleted = 7 }) }
         }
         return @{ stage = 'dry_run'; answer = @{ isError = $true; text = 'unexpected apply ' + $key } }
     }.GetNewClosure()

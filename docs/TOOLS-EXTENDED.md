@@ -1353,3 +1353,40 @@ the heuristic category resolution and the file's own IFC-class count disagree,
 rather than trusting the aggregate silently. `PsetMapping.CombineWithModel`
 (Revit-free) does the merge; `DeliverIfcCommand.ComputeModelCensus` (Revit-
 side) builds the per-row model counts.
+
+## horizun_health: the verification catalog and modal-dialog detail
+
+`include_verification_catalog=true` adds a `verification_catalog` block: for
+every writing tool, its `mechanism` (the enum name from `WriteVerificationCatalog`
+- `PostconditionChecklist`, `PerRowReread`, `CountReconciliation`,
+`FileArtifactReread`, `DelegatedChildDeclaration`, `RemoteAcknowledgement`,
+`QueuedNotExecuted` or `SelfReported`) and `residual_gap_count` (how many known,
+unfixed gaps the catalog still names for it - 0 means none are DECLARED, not that
+the tool is flawless). `full_text_source` points at the source file
+(`src/Horizun.Revit/Core/WriteVerificationCatalog.cs`), where every gap's own
+sentence, evidence fields and source files actually live; the summary is kept
+out of the default reply (`include_verification_catalog` defaults to `false`)
+so an ordinary health call stays small.
+
+**A blocked UI thread is diagnosed from a thread that is not blocked.** When
+Revit's UI thread is stuck on a modal dialog, no typed command - `horizun_health`
+included - can run there to answer: `ICommand.Execute` is never called, because
+the ExternalEvent the bridge raises is only serviced when Revit is idle. The
+"Revit has a MODAL DIALOG open" and timeout failures a queued request gets
+instead come from `Dispatcher.cs`/`ModalProbe.cs`, which read the dialog's own
+Win32 window from a background thread (never the UI thread) and never click or
+post to it. Both failures now carry a structured `modal_dialog` block in
+`structuredContent` beside the prose message:
+
+| field | meaning |
+|---|---|
+| `dialog_window_found` | false means only "the main window is disabled" is known - the dialog itself could not be enumerated (it can live on another thread of the same process) |
+| `title`, `class_name` | `GetWindowText`/`GetClassName` of the dialog window itself (`#32770` is the generic Windows dialog class) |
+| `main_text` | best-effort: the LONGEST text found on a direct `Static`/`SysLink` child - a heuristic, because a dialog can carry several short labels besides its real message |
+| `all_text` | every `Static`/`SysLink` child's text this probe could read, in enumeration order, so a caller can judge `main_text`'s guess for themselves |
+| `buttons` | every `Button` child's caption, in enumeration order |
+| `owning_module` | `GetWindowModuleFileName` for the dialog - which module's window class this is (Revit's own core, or a third-party add-in's dialog on the same UI thread); null when Win32 could not resolve it |
+
+A null field means Win32 could not read it, never that the dialog has no such
+thing. `modal_dialog` is absent (not merely null) when the probe itself is
+unavailable or the main window is enabled.

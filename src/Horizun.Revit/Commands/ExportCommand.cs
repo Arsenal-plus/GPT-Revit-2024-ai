@@ -330,7 +330,7 @@ namespace Horizun.Revit.Commands
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
 
-            var before = Snapshot(folder);
+            var before = Snapshot(folder, format, output, pdfPaths);
             bool apiAccepted = false;
             JObject pdfApplied = null;
             try
@@ -417,16 +417,36 @@ namespace Horizun.Revit.Commands
                 new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
                     ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) }); }
 
-            var after = Snapshot(folder);
-            List<string> produced = after.Where(kv => kv.Value.Size > 0 &&
-                    (format == "pdf" ? pdfPaths.Contains(kv.Key,StringComparer.OrdinalIgnoreCase) : MatchesOutput(format, output, kv.Key)) &&
-                    (!before.TryGetValue(kv.Key, out Stamp old) || old.Size != kv.Value.Size || old.Mtime != kv.Value.Mtime))
-                .Select(kv => kv.Key).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+            var after = Snapshot(folder, format, output, pdfPaths);
+            (List<string> produced, List<string> unmeasured) = ExportFileDiff.Diff(before, after);
             if (produced.Count == 0)
                 return CommandResult.FailWithDetail("Revit returned from export (accepted=" + apiAccepted +
-                    "), but no new or changed non-empty file was measured in " + folder + ". Success is not claimed.",
+                    "), but no new or changed non-empty file was measured in " + folder +
+                    (unmeasured.Count > 0 ? ". " + unmeasured.Count + " matching file(s) existed before this call and could " +
+                        "not be read then, so a change could not be proven either way: " + string.Join(", ", unmeasured) + "." : ".") +
+                    " Success is not claimed.",
                     new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
-                        ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) });
+                        ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}),
+                        ["unmeasured_files"]=new JArray(unmeasured) });
+            // Non-PDF formats produce exactly one file per call (dwg/image/nwc(view) take
+            // exactly one view_id, ifc/nwc(model)/schedule_csv take none, fbx combines every
+            // 3D view_id into ONE .fbx) - so, unlike PDF's per-view pdfPaths, the expected
+            // set here is always {output}. More than one matching produced file, as much as
+            // fewer, is reported by name rather than folded into a bare count.
+            if (format != "pdf")
+            {
+                (List<string> missing, List<string> extra) = ExportFileDiff.AgainstExpectedSingleFile(produced, output);
+                if (missing.Count > 0 || extra.Count > 0)
+                    return CommandResult.FailWithDetail("Expected exactly 1 produced file for format=" +
+                        format + "; measured " + produced.Count + "." +
+                        (missing.Count > 0 ? " Missing: " + string.Join(", ", missing) + "." : "") +
+                        (extra.Count > 0 ? " Unexpected: " + string.Join(", ", extra) + "." : "") +
+                        " Success is not claimed.",
+                        new JObject { ["external_files_may_exist"] = true, ["rollback_available"] = false,
+                            ["planned_files"] = new JArray(new[] { output }), ["produced_files"] = new JArray(produced),
+                            ["missing_files"] = new JArray(missing), ["unexpected_files"] = new JArray(extra),
+                            ["unmeasured_files"] = new JArray(unmeasured) });
+            }
 
             var files = new JArray();
             foreach (string path in produced)
@@ -441,6 +461,14 @@ namespace Horizun.Revit.Commands
                 ["note"] = produced.Count == 1 ? "One produced file was re-read from disk." :
                     "Revit produced multiple sidecar/output files; every changed non-empty file is reported."
             };
+            if (unmeasured.Count > 0)
+                exportResult["unmeasured_files"] = new JObject
+                {
+                    ["paths"] = new JArray(unmeasured),
+                    ["means"] = "matching file(s) existed before this call and could not be read (or hashed) at that " +
+                                "moment - a lock, a permission blip. Whether THIS export touched them cannot be proven " +
+                                "either way, so they are reported here rather than folded into files_verified as new."
+                };
             if (preset != null)
                 exportResult["preset"] = VerifyPreset(preset, presetHash, produced);
             if (format == "pdf")
@@ -894,19 +922,59 @@ namespace Horizun.Revit.Commands
             if (format == "dwg_layers") return ".json";
             return "." + format;
         }
-        private static Dictionary<string, Stamp> Snapshot(string folder)
+        /// <summary>
+        /// Only files this export could plausibly touch (MatchesOutput/the exact
+        /// PDF paths) are snapshotted - bounded cost even in a folder that also
+        /// holds other people's large CAD files this call never looks at.
+        ///
+        /// MEASURED gap this closes: the old version dropped a file from the
+        /// snapshot entirely when its FileInfo threw (locked, permission blip) -
+        /// so a pre-existing file that was merely unreadable AT THAT INSTANT came
+        /// back missing from 'before', and the diff then called it NEW. Now every
+        /// matching path Directory.GetFiles returned gets an entry: Existed is
+        /// always true for it, and Readable is true only when size, mtime AND a
+        /// content hash could all be measured. The comparison itself is Revit-free
+        /// (Core/ExportFileDiff.cs) and unit-tested without a Revit in the room.
+        /// </summary>
+        private static Dictionary<string, ExportFileStamp> Snapshot(string folder, string format, string output, string[] pdfPaths)
         {
-            var result = new Dictionary<string, Stamp>(StringComparer.OrdinalIgnoreCase);
-            foreach (string file in Directory.GetFiles(folder))
-            { try { var f = new FileInfo(file); result[file] = new Stamp { Size = f.Length, Mtime = f.LastWriteTimeUtc.Ticks }; } catch { } }
+            var result = new Dictionary<string, ExportFileStamp>(StringComparer.OrdinalIgnoreCase);
+            string[] files;
+            try { files = Directory.GetFiles(folder); } catch { return result; }
+            foreach (string file in files)
+            {
+                bool relevant = format == "pdf"
+                    ? pdfPaths != null && pdfPaths.Contains(file, StringComparer.OrdinalIgnoreCase)
+                    : MatchesOutput(format, output, file);
+                if (!relevant) continue;
+                var stamp = new ExportFileStamp { Existed = true };
+                try
+                {
+                    var f = new FileInfo(file);
+                    stamp.Size = f.Length;
+                    stamp.Mtime = f.LastWriteTimeUtc.Ticks;
+                    stamp.Hash = FileHash(file);
+                    stamp.Readable = true;
+                }
+                catch { /* Existed stays true; Size/Mtime/Hash stay unmeasured. */ }
+                result[file] = stamp;
+            }
             return result;
         }
+
+        /// <summary>SHA-256 of the file's bytes. Bounded to the handful of matching output/sidecar files, never the whole folder.</summary>
+        private static string FileHash(string path)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var stream = File.OpenRead(path))
+                return Convert.ToBase64String(sha.ComputeHash(stream));
+        }
+
         private static T ParseEnum<T>(string raw, T fallback, string field) where T : struct
         {
             if (string.IsNullOrWhiteSpace(raw)) return fallback;
             if (Enum.TryParse(raw, true, out T value) && Enum.IsDefined(typeof(T), value)) return value;
             throw new ArgumentException(field + " has unsupported value '" + raw + "'.");
         }
-        private sealed class Stamp { public long Size, Mtime; }
     }
 }

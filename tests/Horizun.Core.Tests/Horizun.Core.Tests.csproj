@@ -51,6 +51,10 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPdf.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExportFileDiff.cs" />
+    <!-- ModalProbe's Win32 P/Invoke is never called from a test - only ModalDialogInfo's
+         two pure rendering methods (ToSummaryLine/ToJson) are exercised offline. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModalProbe.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncResumeGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\WorkflowPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanPreview.cs" />

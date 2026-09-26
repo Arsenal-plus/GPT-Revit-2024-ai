@@ -20,6 +20,7 @@ using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Horizun.Revit.Core;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Commands
 {
@@ -35,10 +36,22 @@ namespace Horizun.Revit.Commands
             "workshare_status (worksets you own, a time-bounded scan of elements checked out to you) and " +
             "recent_horizun_writes (the last few batches THIS bridge's own typed writes recorded, from the " +
             "journal horizun_undo reverses) for the active document - neither is Revit's own Undo stack, which " +
-            "the API does not expose to an add-in at all.";
+            "the API does not expose to an add-in at all. include_verification_catalog=true adds a compact, " +
+            "per-tool summary of WriteVerificationCatalog (mechanism + residual_gap_count).";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
+            // Malformed or absent params never fail health - the diagnostic call's job
+            // is to answer, and a bad JSON blob here just keeps the reply at its small
+            // default shape instead of adding the optional catalog block.
+            bool includeVerificationCatalog = false;
+            try
+            {
+                JObject request = string.IsNullOrWhiteSpace(paramsJson) ? null : JObject.Parse(paramsJson);
+                includeVerificationCatalog = request?.Value<bool?>("include_verification_catalog") ?? false;
+            }
+            catch { /* keep the default */ }
+
             Autodesk.Revit.ApplicationServices.Application rvt = app.Application;
 
             UIDocument uidoc = app.ActiveUIDocument;
@@ -219,8 +232,40 @@ namespace Horizun.Revit.Commands
                 // API does not expose to an add-in at all (see recent_horizun_writes.note).
                 workshare_status = active == null ? null : WorkshareBlock(active, rvt),
                 recent_horizun_writes = active == null ? null : RecentWritesBlock(active),
+                // Compact on purpose (default false keeps health small): every writing
+                // tool's verification mechanism and how many residual gaps the catalog
+                // still names for it. The full text - evidence fields, source files, and
+                // each gap's own sentence - lives at the source path this points to.
+                verification_catalog = includeVerificationCatalog ? VerificationCatalogBlock() : null,
                 note = Note(active, match, listError)
             });
+        }
+
+        private static object VerificationCatalogBlock()
+        {
+            var tools = WriteVerificationCatalog.Rows
+                .OrderBy(r => r.Tool, StringComparer.Ordinal)
+                .Select(r => new
+                {
+                    tool = r.Tool,
+                    mechanism = r.Mechanism.ToString(),
+                    residual_gap_count = r.KnownGaps?.Length ?? 0
+                })
+                .ToList();
+            return new
+            {
+                tool_count = tools.Count,
+                tools,
+                full_text_source = "src/Horizun.Revit/Core/WriteVerificationCatalog.cs",
+                means = "mechanism is HOW that tool's reply proves what it wrote (PostconditionChecklist, " +
+                        "PerRowReread, CountReconciliation, FileArtifactReread, DelegatedChildDeclaration, " +
+                        "RemoteAcknowledgement, QueuedNotExecuted or SelfReported - see the enum's own doc " +
+                        "comments at full_text_source). residual_gap_count is how many known, unfixed gaps the " +
+                        "catalog names for that tool; 0 does not mean flawless, it means none are DECLARED. The " +
+                        "full text of every gap, plus each row's evidence fields and source files, is only in " +
+                        "the source file named above - this summary exists so a caller can ask 'which tools carry " +
+                        "declared risk' without loading it."
+            };
         }
 
         /// <summary>
