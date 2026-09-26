@@ -2,6 +2,78 @@
 
 Detail that does not belong in `tools/list` descriptions. One section per topic.
 
+## Advertised schemas and the contract
+
+`tools/list` advertises an **abridged copy** of each input schema; the contract
+compiled into the server (and into the add-in, which shares its hash) is the
+full one. Nothing is deferred: every tool, argument, `kind` and `operation` is in
+`tools/list`, with its enum, its `required` set and its `type`. What the copy
+folds:
+
+- **Union field schemas repeated inside branches.** Where a node has both
+  `properties` and a `oneOf`/`anyOf`/`allOf`, a branch that repeats a union field
+  keeps only what it adds or tightens. Both apply to the same instance, so
+  `union AND branch'` accepts exactly what `union AND branch` accepts; `type` is
+  always kept and a fully repeated field becomes `{"type": ...}`, never `{}` or a
+  boolean. MEASURED 2026-09-26: `horizun_create_elements` 81,409 -> 30,707 bytes,
+  `horizun_document_session` 17,551 -> 9,034.
+- **The `idempotency_key` text** (305 characters, 65 places) is shown in a short
+  form; the contract keeps every word.
+- **Descriptions over 250 characters** are capped, as before.
+
+The exact schema is one read away:
+
+| Resource | Serves |
+|---|---|
+| `horizun://contract/tools` | every contract row |
+| `horizun://contract/tools/{tool}` | one tool's row, full `input_schema` |
+| `horizun://contract/tools/{tool}/{variant}` | one discriminated branch verbatim, with the fields it requires |
+
+Variants are found in the contract by rule (a `oneOf`/`anyOf` whose branches are
+each selected by one `const` of the same field, listed in that field's enum):
+today `horizun_create_elements` `kind` (32) and `horizun_document_session`
+`operation` (5). `resources/templates/list` returns both templates and
+`completion/complete` fills `{tool}` and `{variant}`.
+
+**`schema_help`.** A call that failed (`isError`, or a rehearsal with
+`invalid > 0`) and whose arguments violate the full contract carries
+`structuredContent.schema_help`: `contract_uri`, up to 20 `pointer: message`
+violations and, for a discriminated tool, one entry per kind/operation in the
+arguments with its `uri` and (for up to 3 branches, 12 KB) the verbatim branch;
+an unknown value gets `valid_values`. It is bounded at 16 KB. It is advice
+attached after the verdict: a success keeps its text exactly the payload, an
+error gains one line naming the first pointer, and `isError`, `invalid`,
+`errors`, `fallback` and `capability_gaps` are unchanged.
+
+**What a call is validated against.** There is no generic JSON-Schema check
+before dispatch, and this change does not add one. Validation reads the FULL
+contract where it always did: `ToolInputRules` in the add-in, each command's
+parser, the host tools' unknown-argument refusals, and the procedure/workflow
+checks of top-level `required`/`additionalProperties`. The advertised copy is
+read only by `tools/list` and tests.
+
+**Client evidence** (from source, not a live run): codex-rs
+`sanitize_json_schema` keeps `oneOf`/`anyOf`/`allOf`/`enum`/`items`/`required`/
+`additionalProperties`, turns `const` into `enum`, drops `maxItems`/`if`/`then`/
+`default`, and coerces boolean schemas to `{type: string}` (hence no boolean
+subschemas). Claude Code flattens a top-level `oneOf` into an "Input constraint"
+line and passes a nested `oneOf` through. The copy adds no keyword kinds.
+
+**The ledger.** `tests/Horizun.Server.Tests/tools-list-ledger.json` records, per
+tool, the SHA-256 of the advertised description and schema and the entry's bytes,
+plus the totals of every permission profile and tool pack (MEASURED 2026-09-26:
+524,199 -> 460,166 bytes for all 122 tools; ceiling 524,288). A change that moves
+any of it fails naming the tool and the signed delta. To accept it deliberately,
+set `HORIZUN_UPDATE_TOOLS_LEDGER=1`, run `dotnet test tests/Horizun.Server.Tests
+-c Release --filter "FullyQualifiedName~ToolsListLedger"`, then review and commit the diff
+with the change that caused it (the rewrite fails once, and refuses under `CI`).
+
+**Reserve levers** (measured on the prototype, not implemented): defer the
+discriminated branches behind the variant template plus a host-resident describe
+tool (about -14.8 KB; a new contract row moves `Contract.Hash`); cap descriptions
+at 230 instead of 250 (-5.2 KB, lossy); omit spec-default annotations (-7.5 KB,
+client-display risk).
+
 ## Wire parse errors and cancellation retries
 
 ### Parse errors (-32700)

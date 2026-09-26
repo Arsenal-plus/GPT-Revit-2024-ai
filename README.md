@@ -477,6 +477,10 @@ Prompts, Completions, logging and durable Tasks. Resources expose the compiled
 tool contract, build identity, effective profile and BIM workflow guidance.
 Named prompts cover family recipes, room documentation, audits and delivery.
 These protocol features and workflow prompts are additional to the tool count.
+`tools/list` schemas are abridged; the exact one is `horizun://contract/tools/{tool}`
+(or `.../{tool}/{variant}` for one `create_elements` kind or `document_session`
+operation), and a failed call that violates it carries `structuredContent.schema_help`
+([details](docs/TOOLS-EXTENDED.md#advertised-schemas-and-the-contract)).
 
 Tool packs, compact/summary queries, selected-field projections and durable jobs
 help manage context and long-running work. Calls use a bounded 16-slot FIFO

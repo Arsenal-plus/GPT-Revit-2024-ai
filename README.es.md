@@ -490,6 +490,10 @@ Completions, logging y Tasks durables. Los recursos exponen el contrato compilad
 identidad del build, perfil efectivo y guía de flujos BIM. Los prompts nombrados
 cubren recetas de familias, documentación de habitaciones, auditorías y entregas.
 Estas funciones del protocolo y sus prompts son adicionales al recuento de herramientas.
+Los esquemas de `tools/list` van abreviados; el exacto está en `horizun://contract/tools/{tool}`
+(o `.../{tool}/{variant}` para un `kind` de `create_elements` o una operación de
+`document_session`), y una llamada fallida que lo incumple trae `structuredContent.schema_help`
+([detalles](docs/TOOLS-EXTENDED.md#advertised-schemas-and-the-contract)).
 
 Los paquetes de herramientas, consultas compactas/resumidas, selección de campos
 y trabajos durables permiten gestionar contexto y operaciones largas. Las
