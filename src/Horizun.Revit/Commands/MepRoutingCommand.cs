@@ -867,7 +867,21 @@ namespace Horizun.Revit.Commands
                 { r.Kind = shape == ConnectorProfileType.Oval ? "duct_oval" : "duct_rectangular"; r.Params = new[] { BuiltInParameter.RBS_CURVE_WIDTH_PARAM, BuiltInParameter.RBS_CURVE_HEIGHT_PARAM }; }
                 else { why = "duct " + Rid.Value(e.Id) + " has no readable shape"; return null; }
             }
-            else { why = "element " + Rid.Value(e.Id) + " is a " + e.GetType().Name + "; resize covers pipes, ducts, conduits and cable trays"; return null; }
+            // FLEX PIPE: always round, and (unlike a rigid Pipe) has no separate PipeType
+            // to hold a segment - FlexPipeType exposes none, so the segment is read from
+            // the ELEMENT's own RBS_PIPE_SEGMENT_PARAM, same as a rigid pipe.
+            else if (e is FlexPipe) { r.Kind = "flex_pipe"; r.Params = new[] { BuiltInParameter.RBS_PIPE_DIAMETER_PARAM }; }
+            // FLEX DUCT: FlexDuctType exposes no public Shape (unlike DuctType), so the
+            // shape is read from the element's own end connectors instead of its type.
+            else if (e is FlexDuct fd)
+            {
+                ConnectorProfileType shape = FlexDuctConnectorShape(fd);
+                if (shape == ConnectorProfileType.Round) { r.Kind = "flex_duct_round"; r.Params = new[] { BuiltInParameter.RBS_CURVE_DIAMETER_PARAM }; }
+                else if (shape == ConnectorProfileType.Rectangular || shape == ConnectorProfileType.Oval)
+                { r.Kind = shape == ConnectorProfileType.Oval ? "flex_duct_oval" : "flex_duct_rectangular"; r.Params = new[] { BuiltInParameter.RBS_CURVE_WIDTH_PARAM, BuiltInParameter.RBS_CURVE_HEIGHT_PARAM }; }
+                else { why = "flex duct " + Rid.Value(e.Id) + " has no readable end-connector shape"; return null; }
+            }
+            else { why = "element " + Rid.Value(e.Id) + " is a " + e.GetType().Name + "; resize covers pipes, ducts, conduits, cable trays and flex runs"; return null; }
             r.Before = new double[r.Params.Length];
             for (int i = 0; i < r.Params.Length; i++)
             {
@@ -878,12 +892,29 @@ namespace Horizun.Revit.Commands
             return r;
         }
 
+        /// <summary>
+        /// A FlexDuctType has no public Shape property (unlike DuctType), so this reads it
+        /// from the element's own end connectors instead - Rectangular/Oval when every end
+        /// connector agrees, Round otherwise (including when there are no readable end
+        /// connectors to disagree, e.g. immediately after Create before any regenerate).
+        /// </summary>
+        private static ConnectorProfileType FlexDuctConnectorShape(FlexDuct fd)
+        {
+            ConnectorManager manager = MepFacts.ManagerOf(fd);
+            if (manager == null) return ConnectorProfileType.Round;
+            var shapes = MepFacts.Ordered(manager).Where(c => c.ConnectorType == ConnectorType.End)
+                .Select(c => Safe(() => (ConnectorProfileType?)c.Shape)).Where(s => s.HasValue).Select(s => s.Value).Distinct().ToList();
+            return shapes.Count == 1 ? shapes[0] : ConnectorProfileType.Round;
+        }
+
         /// <summary>The catalog the element's own size must come from, in feet.</summary>
         private static List<double> CatalogFor(Document doc, Run r, out string name)
         {
             switch (r.Kind)
             {
-                case "pipe":
+                // flex_pipe reads its segment from the same RBS_PIPE_SEGMENT_PARAM as a
+                // rigid pipe - FlexPipeType carries no segment of its own.
+                case "pipe": case "flex_pipe":
                     var seg = doc.GetElement(r.Element.get_Parameter(BuiltInParameter.RBS_PIPE_SEGMENT_PARAM)?.AsElementId() ?? ElementId.InvalidElementId) as Segment;
                     name = seg == null ? "(no segment)" : "segment " + seg.Name;
                     return seg == null ? new List<double>() : seg.GetSizes().Select(s => s.NominalDiameter).ToList();
@@ -892,8 +923,10 @@ namespace Horizun.Revit.Commands
                     name = "conduit standard " + (std ?? "(unreadable)");
                     return std != null && ConduitStandards(doc).TryGetValue(std, out var rows) ? rows.Select(c => c.Nominal).ToList() : new List<double>();
                 case "cable_tray": name = "cable-tray sizes"; return CableTrayList(doc).Select(s => s.NominalDiameter).ToList();
-                case "duct_round": name = "round duct sizes"; return DuctSizes(doc, DuctShape.Round).Select(s => s.NominalDiameter).ToList();
-                case "duct_oval": name = "oval duct sizes"; return DuctSizes(doc, DuctShape.Oval).Select(s => s.NominalDiameter).ToList();
+                // flex_duct_* draws from the SAME round/oval/rectangular catalogs as a
+                // rigid duct - the catalog is a document-wide size list, not a per-type one.
+                case "duct_round": case "flex_duct_round": name = "round duct sizes"; return DuctSizes(doc, DuctShape.Round).Select(s => s.NominalDiameter).ToList();
+                case "duct_oval": case "flex_duct_oval": name = "oval duct sizes"; return DuctSizes(doc, DuctShape.Oval).Select(s => s.NominalDiameter).ToList();
                 default: name = "rectangular duct sizes"; return DuctSizes(doc, DuctShape.Rectangular).Select(s => s.NominalDiameter).ToList();
             }
         }
@@ -918,7 +951,8 @@ namespace Horizun.Revit.Commands
                 var system = Rid.CanRepresent(systemId) ? doc.GetElement(Rid.Make(systemId)) as MEPSystem : null;
                 ElementSet net = system is PipingSystem ps ? ps.PipingNetwork : system is MechanicalSystem ms ? ms.DuctNetwork : null;
                 if (net == null) { error = "system_id " + systemId + " is not a piping or duct system with a readable network."; return null; }
-                foreach (Element e in net) if (e is MEPCurve c && !(e is FlexPipe) && !(e is FlexDuct)) list.Add(c);
+                // Flex runs are no longer excluded here - resize now covers them (Classify).
+                foreach (Element e in net) if (e is MEPCurve c) list.Add(c);
                 if (list.Count == 0) { error = "system " + systemId + " holds no pipe or duct runs."; return null; }
             }
             if (list.Count > MaxElements) { error = "at most " + MaxElements + " runs per call."; return null; }
@@ -982,7 +1016,6 @@ namespace Horizun.Revit.Commands
                     outcomes.Add(outcome);
                     Run r = Classify(e, out string why);
                     if (r == null) { outcome.Error = why; continue; }
-                    if (e is FlexPipe || e is FlexDuct) { outcome.UnsupportedReason = FallbackSignal.ReasonUnsupportedKind; outcome.Error += " - flex runs are unsupported by resize"; }
                     if ((r.Params.Length == 1) != round) { outcome.Error = "element " + Rid.Value(e.Id) + " is " + r.Kind + ", which is sized by " + (round ? "width and height" : "diameter"); continue; }
                     List<double> catalog = CatalogFor(doc, r, out string catalogName);
                     double missing = p._target.FirstOrDefault(v => !MepRoutingRules.CatalogHas(catalog, v));
@@ -1018,6 +1051,19 @@ namespace Horizun.Revit.Commands
             {
                 var required = new List<string>();
                 foreach (Run r in _runs) { required.Add("size:" + Rid.Value(r.Element.Id)); required.Add("connections:" + Rid.Value(r.Element.Id)); }
+                // FITTINGS THE RESIZE TOUCHED, NOT JUST NAMED. Revit's routing preferences
+                // can retype an existing fitting or insert a new one (a transition) at a
+                // run's end; Report() used to name these as facts and stop there, which is
+                // exactly the kind of unverified success this bridge exists to refuse. A
+                // fitting is TOUCHED when it is retyped (same id, different type) or new
+                // since the resize (an "added" neighbor, computed the same way Report()
+                // does); each one gets a required checklist item, so a mismatch fails the
+                // postcondition instead of only showing up in descriptive output.
+                var resizedIds = new HashSet<long>(_runs.Select(r => Rid.Value(r.Element.Id)));
+                Dictionary<long, Neighbor> after = NeighborsOf(doc, _runs.Select(r => r.Element.Id));
+                var touchedFittingIds = after.Keys.Where(id =>
+                    !_neighborsBefore.TryGetValue(id, out Neighbor before) || before.TypeId != after[id].TypeId).ToList();
+                foreach (long id in touchedFittingIds) required.Add("fitting_size:" + id);
                 var check = new PostconditionCheck(required.ToArray());
                 foreach (Run r in _runs)
                 {
@@ -1031,7 +1077,53 @@ namespace Horizun.Revit.Commands
                     int now = ConnectedCount(e);
                     check.Record("connections:" + id, _connectedBefore[id], now, now >= _connectedBefore[id]);
                 }
+                foreach (long id in touchedFittingIds)
+                {
+                    Element fitting = doc.GetElement(Rid.Make(id));
+                    if (fitting == null) { check.Unreadable("fitting_size:" + id, Arr(_target), "the fitting no longer exists"); continue; }
+                    bool touches; JObject evidence;
+                    bool ok = FittingConnectorSizesMatch(fitting, _target, resizedIds, out touches, out evidence);
+                    if (!touches) check.Unreadable("fitting_size:" + id, Arr(_target), "no connector on this fitting re-reads as connected to a resized run - its size cannot be judged against this resize");
+                    else check.Record("fitting_size:" + id, Arr(_target), evidence, ok);
+                }
                 return check;
+            }
+
+            /// <summary>
+            /// Every END connector of this fitting that re-reads as connected to one of the
+            /// resized runs, compared to the resize's own target size. touches is false when
+            /// none does (the fitting is reported as a neighbor but no live connector traces
+            /// back to a resized run at Verify() time - unreadable, not a silent pass).
+            /// </summary>
+            private static bool FittingConnectorSizesMatch(Element fitting, double[] target, HashSet<long> resizedIds, out bool touches, out JObject evidence)
+            {
+                var rows = new JArray(); touches = false; bool allOk = true;
+                ConnectorManager manager = MepFacts.ManagerOf(fitting);
+                if (manager != null)
+                    foreach (Connector c in MepFacts.Ordered(manager))
+                    {
+                        if (c.ConnectorType != ConnectorType.End || !Safe(() => (bool?)c.IsConnected).GetValueOrDefault()) continue;
+                        bool touchesResizedRun = false;
+                        try { foreach (Connector other in c.AllRefs) if (other?.Owner != null && resizedIds.Contains(Rid.Value(other.Owner.Id))) { touchesResizedRun = true; break; } }
+                        catch { }
+                        if (!touchesResizedRun) continue;
+                        touches = true;
+                        bool round = target.Length == 1;
+                        double[] found = round ? new[] { Safe(() => (double?)c.Radius * 2) ?? double.NaN }
+                                                : new[] { Safe(() => (double?)c.Width) ?? double.NaN, Safe(() => (double?)c.Height) ?? double.NaN };
+                        bool sizeReadable = found.All(v => !double.IsNaN(v));
+                        bool ok = sizeReadable && found.Zip(target, (a, b) => Math.Abs(a - b) <= MepRoutingRules.SizeToleranceFeet).All(x => x);
+                        allOk &= ok;
+                        rows.Add(new JObject
+                        {
+                            ["connector"] = c.Id,
+                            ["found"] = sizeReadable ? Arr(found) : null,
+                            ["expected"] = Arr(target),
+                            ["verified"] = ok
+                        });
+                    }
+                evidence = new JObject { ["connectors_checked"] = rows };
+                return touches && allOk;
             }
 
             private static JArray Arr(double[] v) => new JArray(v.Select(R));
@@ -1051,7 +1143,7 @@ namespace Horizun.Revit.Commands
                 return new JObject
                 {
                     ["fittings_removed_or_replaced"] = replaced, ["fittings_retyped"] = retyped, ["fittings_added"] = added,
-                    ["note"] = "Revit resizes, swaps or inserts fittings (transitions) at the runs' ends by the type's routing preferences; these are the elements the request did not name."
+                    ["note"] = "Revit resizes, swaps or inserts fittings (transitions) at the runs' ends by the type's routing preferences; these are the elements the request did not name. Retyped and added fittings are also checked in postconditions (fitting_size:<id>) against this resize's own target size - a mismatch fails the whole plan rather than only showing up here."
                 };
             }
 

@@ -823,7 +823,7 @@ namespace Horizun.Contracts
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""elements"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": {
       ""type"": ""object"", ""required"": [""kind""], ""properties"": {
-        ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""ceiling"", ""roof"", ""room"", ""family_instance"", ""structural_framing"", ""structural_column"", ""duct"", ""pipe"", ""conduit"", ""cable_tray"", ""fitting"", ""wall_opening"", ""slab_opening"", ""beam_system"", ""wall_foundation"", ""accessory_inline"", ""mep_system"", ""shaft"", ""room_separator""] },
+        ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""ceiling"", ""roof"", ""room"", ""family_instance"", ""sprinkler"", ""structural_framing"", ""structural_column"", ""duct"", ""pipe"", ""conduit"", ""cable_tray"", ""flex_pipe"", ""flex_duct"", ""fitting"", ""wall_opening"", ""slab_opening"", ""beam_system"", ""wall_foundation"", ""accessory_inline"", ""mep_system"", ""shaft"", ""room_separator"", ""space"", ""area"", ""area_boundary""] },
         ""name"": { ""type"": ""string"", ""description"": ""Level/grid name where supported. REQUIRED for kind=mep_system: an unnamed system is indistinguishable from the ones Revit invents from connectivity."" },
         ""elevation"": { ""type"": ""number"" },
         ""number"": { ""type"": ""string"", ""description"": ""kind='room': the room NUMBER, which is separate from its name and is the identity Revit requires to be unique. Set inside the creating transaction and re-read from the model afterwards."" },
@@ -7005,22 +7005,40 @@ namespace Horizun.Contracts
             // that way. Applied with flipHand() and verified by re-reading
             // HandFlipped; a family that cannot be flipped refuses the row.
             ["family_instance"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "structural_type", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm", "host_face", "top_level_id", "top_offset", "height" },
+            // A sprinkler is a family_instance restricted to OST_Sprinklers, same routes (level,
+            // hosted or face - most sprinklers are ceiling/pipe hosted, so host_id stays). The
+            // wall-side fields (facing_degrees/side_dead_band_mm/host_face) are dropped, and
+            // host_id's description is overridden below to something terse: the 512 KiB tools/list
+            // budget (GeometryProductionCompatibilityTests requires every published kind to have
+            // its OWN variant, so this cannot be folded into family_instance's).
+            ["sprinkler"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "host_id" },
             ["structural_column"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "rotation_degrees", "top_level_id", "top_offset", "height" },
             ["structural_framing"] = new[] { "start", "end", "type_id", "level_id", "structural_type" },
             ["duct"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
             ["pipe"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter" },
             ["conduit"] = new[] { "start", "end", "type_id", "level_id", "diameter" },
-            ["cable_tray"] = new[] { "start", "end", "type_id", "level_id" }
+            ["cable_tray"] = new[] { "start", "end", "type_id", "level_id" },
+            // FlexPipe.Create/FlexDuct.Create take a PATH (points), not a start/end pair.
+            ["flex_pipe"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter" },
+            ["flex_duct"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
+            // Space: a 2D point on a level, like room. Area/area_boundary: a POINT/PROFILE
+            // in an area plan VIEW, not a level - Revit finds the boundary through the view.
+            ["space"] = new[] { "point", "level_id" },
+            ["area"] = new[] { "point", "view_id" },
+            ["area_boundary"] = new[] { "profile", "view_id" }
         };
         public static string ValidateCreation(JObject item, string kind)
         {
+            // Checked AHEAD of the CreationFields lookup: "sprinkler" has no row of its own
+            // there (it shares family_instance's tools/list variant to stay inside the 512 KiB
+            // budget), so this requirement would be silently skipped by the early return below.
+            if ((kind == "family_instance" || kind == "sprinkler" || kind == "structural_column") && item["coordinate_mode"] == null)
+                return "coordinate_mode is required: absolute or level_offset. Legacy ambiguous Z placement is refused.";
             if (!CreationFields.TryGetValue(kind, out var fields)) return null; // handler owns typed fallback
             var allowed = new HashSet<string>(fields, StringComparer.Ordinal) { "kind", "parameters", "source_reference", "source_row" };
             foreach (var field in item.Properties())
                 if (!allowed.Contains(field.Name)) return field.Name + " is not applicable to kind '" + kind + "'.";
             if (item["parameters"] != null && !(item["parameters"] is JObject)) return "parameters must be an object.";
-            if ((kind == "family_instance" || kind == "structural_column") && item["coordinate_mode"] == null)
-                return "coordinate_mode is required: absolute or level_offset. Legacy ambiguous Z placement is refused.";
             return null;
         }
         internal static void AddCreationVariants(JObject schema)
@@ -7079,6 +7097,12 @@ namespace Horizun.Contracts
             props["view_id"] = new JObject { ["type"]="integer" };
             props["element_ids"] = new JObject { ["type"]="array",["minItems"]=1,["maxItems"]=2000,["items"]=new JObject { ["type"]="integer" } };
             props["displacement"] = props["start"].DeepClone();
+            props["points"] = new JObject
+            {
+                ["type"] = "array", ["minItems"] = 2, ["maxItems"] = 100,
+                ["items"] = new JObject { ["type"] = "array", ["minItems"] = 3, ["maxItems"] = 3, ["items"] = new JObject { ["type"] = "number" } },
+                ["description"] = "The flex path; ends included."
+            };
             props["desired_risers"]=new JObject { ["type"]="integer",["minimum"]=1,["maximum"]=1000 };
             props["tread_depth"]=new JObject { ["type"]="number",["exclusiveMinimum"]=0 };
             props["runs"]=JObject.Parse(@"{'type':'array','minItems':1,'maxItems':50,'items':{'type':'object','required':['start','end','width','expected_risers'],'properties':{'start':{'type':'array','minItems':3,'maxItems':3,'items':{'type':'number'}},'end':{'type':'array','minItems':3,'maxItems':3,'items':{'type':'number'}},'width':{'type':'number','exclusiveMinimum':0},'expected_risers':{'type':'integer','minimum':1}},'additionalProperties':false}}");
@@ -7091,11 +7115,36 @@ namespace Horizun.Contracts
             props["source_reference"]["description"]="Optional PDF/source trace stored as ExtensibleStorage on the element (not Comments). Page is one-based; region uses PDF points from top-left. Measurement property names refer to numeric postconditions, e.g. reference_face_elevation or height. Source dimensions are compared with independently measured model values; a mismatch refuses successful application.";
             foreach (var pair in CreationFields)
             {
-                var specific = new JObject { ["kind"] = new JObject { ["const"] = pair.Key }, ["parameters"] = props["parameters"].DeepClone(), ["source_reference"]=props["source_reference"].DeepClone(), ["source_row"]=props["source_row"].DeepClone() };
+                // tools/list is budgeted at 512 KiB (McpPrimitiveTests): source_reference alone
+                // clones to ~1.2 KB PER VARIANT, so the newest, least PDF-traced kinds skip it
+                // (and source_row, which only means anything alongside it) rather than push the
+                // whole tool over budget. ValidateCreation still allows both fields by name for
+                // every kind - this only affects what the compact, advertised schema documents.
+                bool leanKind = pair.Key == "flex_pipe" || pair.Key == "flex_duct" || pair.Key == "sprinkler" ||
+                                pair.Key == "space" || pair.Key == "area" || pair.Key == "area_boundary";
+                var specific = new JObject { ["kind"] = new JObject { ["const"] = pair.Key } };
+                if (!leanKind)
+                {
+                    specific["parameters"] = props["parameters"].DeepClone();
+                    specific["source_reference"] = props["source_reference"].DeepClone();
+                    specific["source_row"] = props["source_row"].DeepClone();
+                }
                 foreach (string field in pair.Value) specific[field] = props[field].DeepClone();
                 if (pair.Key == "beam_system") specific["profile"] = JObject.Parse(@"{'type':'array','minItems':3,'maxItems':12,'items':{'type':'array','minItems':2,'maxItems':2,'items':{'type':'number'}}}");
-                if (pair.Key == "room_separator") specific["profile"]["items"]["minItems"] = 2;
+                if (pair.Key == "room_separator" || pair.Key == "area_boundary") specific["profile"]["items"]["minItems"] = 2;
                 if(pair.Key=="wall_profile") specific["profile"]["description"]="One simple contour in a vertical plane, absolute internal XYZ. No holes. Revit base normalization is checked against the resulting world-space side-face silhouette.";
+                if (pair.Key == "area_boundary") specific["profile"]["description"] = "One open chain; one line per curve.";
+                if (pair.Key == "sprinkler")
+                {
+                    specific["host_id"]["description"] = "Host for a hosted/face sprinkler.";
+                    specific["coordinate_mode"]["description"] = "absolute or level_offset.";
+                }
+                if (pair.Key == "flex_duct") specific["width"]["description"] = "Rectangular flex duct, with height.";
+                if (pair.Key == "flex_pipe" || pair.Key == "flex_duct")
+                {
+                    specific["system_type_id"]["description"] = "The PipingSystemType/MechanicalSystemType.";
+                    ((JObject)specific["diameter"]).Remove("description");
+                }
                 var required = new JArray("kind");
                 string[] requiredFields;
                 switch (pair.Key)
@@ -7107,11 +7156,15 @@ namespace Horizun.Contracts
                     case "wall_profile": requiredFields = new[] { "profile", "level_id", "type_id" }; break;
                     case "wall_opening": requiredFields = new[] { "host_id" }; break;
                     case "room": requiredFields = new[] { "point", "level_id" }; break;
-                    case "family_instance": requiredFields = new[] { "point", "type_id", "coordinate_mode" }; break;
+                    case "family_instance": case "sprinkler": requiredFields = new[] { "point", "type_id", "coordinate_mode" }; break;
                     case "structural_column": requiredFields = new[] { "point", "type_id", "level_id", "coordinate_mode" }; break;
                     case "stairs": requiredFields = new[] { "level_id", "top_level_id", "type_id", "desired_risers", "tread_depth", "runs" }; break;
                     case "displacement": requiredFields = new[] { "view_id", "element_ids", "displacement" }; break;
                     case "duct": case "pipe": requiredFields = new[] { "start", "end", "type_id", "level_id", "system_type_id" }; break;
+                    case "flex_pipe": case "flex_duct": requiredFields = new[] { "points", "type_id", "level_id", "system_type_id" }; break;
+                    case "space": requiredFields = new[] { "point", "level_id" }; break;
+                    case "area": requiredFields = new[] { "point", "view_id" }; break;
+                    case "area_boundary": requiredFields = new[] { "profile", "view_id" }; break;
                     case "cable_tray": requiredFields = new[] { "start", "end", "level_id" }; break;
                     case "fitting": requiredFields = new[] { "fitting", "elements" }; break;
                     case "slab_opening": requiredFields = new[] { "host_id", "center" }; break;
@@ -7126,8 +7179,9 @@ namespace Horizun.Contracts
                 foreach (string field in requiredFields) required.Add(field);
                 if (specific["point"] != null)
                 {
-                    specific["point"]["minItems"] = pair.Key == "room" ? 2 : 3;
-                    specific["point"]["maxItems"] = pair.Key == "room" ? 2 : 3;
+                    bool point2D = pair.Key == "room" || pair.Key == "space" || pair.Key == "area";
+                    specific["point"]["minItems"] = point2D ? 2 : 3;
+                    specific["point"]["maxItems"] = point2D ? 2 : 3;
                 }
                 if (pair.Key == "wall_profile" || pair.Key == "roof") specific["profile"]["maxItems"] = 1;
                 variants.Add(new JObject { ["type"] = "object", ["properties"] = specific, ["required"] = required, ["additionalProperties"] = false });

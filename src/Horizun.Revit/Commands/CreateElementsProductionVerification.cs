@@ -43,7 +43,7 @@ namespace Horizun.Revit.Commands
                         {
                             Index = plan.Index, Kind = plan.Kind, Id = element.Id, Plan = plan, Batch = created,
                             ExpectedTypeId = plan.Type?.Id,
-                            ExpectedStructuralType = plan.Kind == "family_instance" || plan.Kind == "structural_framing" || plan.Kind == "structural_column"
+                            ExpectedStructuralType = plan.Kind == "family_instance" || plan.Kind == "sprinkler" || plan.Kind == "structural_framing" || plan.Kind == "structural_column"
                                 ? (StructuralType?)plan.StructuralType : null,
                             ExpectedConnected = plan.FittingMembers,
                             ExpectedInlineConnections = plan.Kind == "accessory_inline",
