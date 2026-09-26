@@ -341,6 +341,56 @@ The reply's `result` carries `length_mm`, `bends`, `polyline_mm`, `segment_ids` 
 `elbow_ids`; a failed search returns `no_route: <reason> (blocking region: <name>)`
 instead of a token, naming the obstacle that closed every path.
 
+**`slope` (gravity pipe runs).** `element_ids` names the run's pipes (the fittings
+joining them come along), or one seed pipe with `walk: true` follows the connected
+network through pipe fittings (by category, OST_PipeFitting), up to 200 pipes plus
+fittings. Accessories, fixtures, equipment and unnamed pipes are boundaries, never
+walked through; their connections are listed as `external_connections` and must
+still be connected afterwards, and a plan that would MOVE an end connected to one is
+refused by name (hold that end, name the element, or disconnect it). A pipe with a
+tap (a connection along its length) is refused. `slope_percent` is the grade (2.0 = 2%).
+`fixed_end` holds one open end at its current elevation:
+
+- `upstream` / `downstream` - only for a run with exactly two open ends, and only
+  when a connector reports flow direction (a calculated system); otherwise refused.
+  Readings that contradict each other (both ends In, or both Out) are refused.
+- `<element_id>` - the pipe (or fitting) owning one open end. Direction comes from
+  flow; when flow does not read (or contradicts the other end) it is refused - high
+  and low give opposite slopes, so the bridge does not guess.
+- `<element_id>:high` / `<element_id>:low` - the caller states whether the held end
+  is the upstream end or the outlet. A branched run held at a high end needs flow
+  to name the one outlet; otherwise hold the outlet with `:low`.
+
+Every point sits slope x its horizontal path length to the outlet above the outlet,
+so a tee's branch drains toward the main whichever end is held. Fittings move as
+rigid bodies (their legs keep their rise), so pipes carry the whole drop at exactly
+the target slope. Pipes steeper than 45 degrees are risers and keep their rise
+(`risers_kept`). `min_clearance` (in `units`) refuses the run, naming the point, if
+any point would land below the highest level at or below the held end plus that
+clearance; without it, a point the re-grade would drag from above that level to
+below it is refused. The rehearsal shows the held end, the outlet, target
+elevations of every pipe end and fitting centre. Apply moves each fitting
+vertically by its target minus its centre re-read at that moment, sets each pipe's
+LocationCurve, regenerates, and reconnects a connector pair that separated but still
+coincides (listed in `reconnected`); then it re-reads, in `units`, the held end,
+every pipe end against its planned elevation, every pipe's signed slope (outlet
+side lower, within 0.05 percentage points), every fitting centre, `min_clearance`,
+every connector pair recorded before and every fitting's connected count, and rolls
+back naming the element otherwise. The confirmation token binds every pipe's and
+fitting's geometry and connections: a change between dry run and apply is
+`stale_plan`. Revit has no pipe slope API (no `SlopeType` for pipes;
+`PipeSettings.GetPipeSlopes` only lists preset slopes). AutoRouteFailures has an
+`AttemptToConnectNonSlopingElementToSlopedPipeWarning` and an `...Error`; the
+Warning does not fail a commit, so a separated fitting is caught only by the
+post-commit connector re-read, and how elbows follow moved ends is measured by the
+`pipe-slope` live probe (connector origins).
+
+**Resumen (español).** `slope` da pendiente a una red de tubería por gravedad desde
+un extremo fijo (`fixed_end`), con los accesorios siguiendo a los tubos; cada punto
+queda a pendiente x distancia horizontal hasta la salida, un ramal de tee drena hacia
+la principal, y la aplicación relee pendientes y conexiones o revierte nombrando el
+elemento.
+
 **Resumen (español).** `horizun_mep_routing` lee y edita las preferencias de
 enrutamiento (reglas por grupo con rangos de tamaño, unión preferida), los segmentos
 de tubería y los catálogos de tamaños de ducto, conduit y bandeja; cambia el tamaño de
