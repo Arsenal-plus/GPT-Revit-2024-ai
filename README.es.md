@@ -4,7 +4,7 @@
 
 Horizun Revit MCP es un servidor MCP y add-in de Windows gratuito y de código
 abierto para **Autodesk Revit 2023–2027**. Su catálogo completo contiene
-**122 herramientas** <!--inventory:tools--> con **405 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+**122 herramientas** <!--inventory:tools--> con **414 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 para modelado arquitectónico y estructural, MEP, familias paramétricas, planos,
 CAD a BIM, auditoría, cantidades, Excel, Power BI y exportación.
 
@@ -30,7 +30,7 @@ el runtime del servidor y los add-ins.
 | Superficie | Qué ofrece | Dónde comprobarlo |
 |---|---|---|
 | Entradas MCP | **122 herramientas** <!--inventory:tools-->, incluidas **47 de solo lectura** <!--inventory:reads--> y **75 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
-| Acciones internas | **405 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
+| Acciones internas | **414 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
 | Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
 | Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
 | Planos y entregables | 24 acciones de vistas/láminas, 10 acciones de anotación, tablas nativas y distribución de láminas | [Producción de planos](docs/PLANIMETRY-PRODUCTION.md) |
@@ -377,7 +377,7 @@ Una herramienta MCP puede ejecutar muchas acciones. Crear un muro, una tubería
 y una escalera son opciones de `horizun_create_elements`; crear una sección y
 colocar una tabla son acciones diferentes de `horizun_manage_views`.
 
-La tabla contiene **405 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+La tabla contiene **414 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 en 26 herramientas compuestas. Cada opción se cuenta una vez por herramienta,
 propiedad selectora y valor, incluidos selectores anidados. Las rutas repetidas
 del esquema `oneOf` se cuentan una sola vez. Algunos selectores afinan otra
@@ -397,7 +397,7 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_query_classification` | `operation` | `keynote_table`, `assembly_code`, `family_lookup_tables`, `unused_codes`, `missing_codes` |
 | `horizun_model_diff` | `operation` | `snapshot`, `list`, `compare`, `colorize`, `explain`, `record_quality`, `quality_trend` |
 | `horizun_undo` | `operation` | `list`, `undo_last` |
-| `horizun_create_elements` | `kind` | `level`, `grid`, `wall`, `floor`, `ceiling`, `roof`, `room`, `family_instance`, `structural_framing`, `structural_column`, `duct`, `pipe`, `conduit`, `cable_tray`, `fitting`, `wall_opening`, `slab_opening`, `beam_system`, `wall_foundation`, `accessory_inline`, `mep_system`, `shaft`, `room_separator`, `wall_profile`, `displacement`, `stairs` |
+| `horizun_create_elements` | `kind` | `level`, `grid`, `wall`, `floor`, `ceiling`, `roof`, `room`, `family_instance`, `sprinkler`, `structural_framing`, `structural_column`, `duct`, `pipe`, `conduit`, `cable_tray`, `flex_pipe`, `flex_duct`, `fitting`, `wall_opening`, `slab_opening`, `beam_system`, `wall_foundation`, `accessory_inline`, `mep_system`, `shaft`, `room_separator`, `space`, `area`, `area_boundary`, `wall_profile`, `displacement`, `stairs` |
 | `horizun_create_elements` | `fitting` | `elbow`, `union`, `transition`, `tee`, `takeoff`, `cross` |
 | `horizun_create_family` | `kind` | `extrusion`, `blend`, `revolution`, `sweep`, `swept_blend`, `pipe`, `duct`, `electrical`, `conduit`, `cable_tray`, `symbolic`, `model` |
 | `horizun_manage_materials` | `operation` | `create`, `duplicate`, `update` |
@@ -426,7 +426,7 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_manage_cad_links` | `operation` | `list`, `add`, `reload`, `repoint` |
 | `horizun_query_cad` | `mode` | `instances`, `layers`, `geometry`, `coverage`, `profile`, `blocks` |
 | `horizun_connect_mep` | `operation` | `connect`, `disconnect` |
-| `horizun_coordination` | `operation` | `list`, `update`, `export`, `import`, `import_navisworks`, `show`, `evidence` |
+| `horizun_coordination` | `operation` | `list`, `update`, `export`, `import`, `import_navisworks`, `show`, `evidence`, `navisworks_readiness`, `prepare_navisworks`, `navisworks_status` |
 | `horizun_manage_links` | `operation` | `list`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path` |
 | `horizun_plan_mep` | `operation` | `route_run`, `network_census` |
 | `horizun_plan_mep` | `kind` | `pipe`, `duct` |
@@ -451,7 +451,7 @@ herramientas MCP adicionales de primer nivel.
 
 Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
-registra **1506 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+registra **1519 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
 entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
 por lo que esa cifra no se utiliza como número de herramientas.
 

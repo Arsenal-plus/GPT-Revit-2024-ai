@@ -3,14 +3,14 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "28606cc81969096f910b0fefd988d196bcee73991d91e555886fce9e031824a9",
-  "generated_from_contract_hash": "3d09a122643fb1319c7968bd",
+  "generated_from_server_sha": "0fae2f229e2936fe1284bb185f2781f206099c12b9ebe77b91ae8123c7059d0c",
+  "generated_from_contract_hash": "feb0aff355f8856d63bdb40f",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "2fee37dda19eca37d571dd86beb972b22e15696e",
+  "code_candidate_commit": "92a251c667eb6826d853b03f14d940b6863851ed",
   "code_candidate_version": "2.0.5",
   "code_candidate_stamp_source": "product_version",
   "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "2fee37dda19eca37d571dd86beb972b22e15696e",
+  "source_tree_head_at_generation": "92a251c667eb6826d853b03f14d940b6863851ed",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
@@ -19,8 +19,8 @@
     "reads": 47,
     "writes": 75,
     "destructive": 20,
-    "operations": 405,
-    "enumerated_variants": 1506
+    "operations": 414,
+    "enumerated_variants": 1519
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -101,7 +101,7 @@
       "destructive": false,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 4,
+      "enumerated_variants": 6,
       "operation_detail": []
     },
     {
@@ -140,8 +140,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 32,
-      "enumerated_variants": 325,
+      "operations": 38,
+      "enumerated_variants": 333,
       "operation_detail": [
         {
           "property": "kind",
@@ -155,12 +155,15 @@
             "roof",
             "room",
             "family_instance",
+            "sprinkler",
             "structural_framing",
             "structural_column",
             "duct",
             "pipe",
             "conduit",
             "cable_tray",
+            "flex_pipe",
+            "flex_duct",
             "fitting",
             "wall_opening",
             "slab_opening",
@@ -170,6 +173,9 @@
             "mep_system",
             "shaft",
             "room_separator",
+            "space",
+            "area",
+            "area_boundary",
             "wall_profile",
             "displacement",
             "stairs"
@@ -1638,8 +1644,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 7,
-      "enumerated_variants": 13,
+      "operations": 10,
+      "enumerated_variants": 16,
       "operation_detail": [
         {
           "property": "operation",
@@ -1651,7 +1657,10 @@
             "import",
             "import_navisworks",
             "show",
-            "evidence"
+            "evidence",
+            "navisworks_readiness",
+            "prepare_navisworks",
+            "navisworks_status"
           ],
           "source_read_confirmed": true
         }
