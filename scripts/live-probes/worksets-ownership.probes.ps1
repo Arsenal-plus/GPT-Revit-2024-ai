@@ -6,7 +6,10 @@
 # WorksharingUtils.GetCheckoutStatus) and accept relinquish_after=true to give
 # everything back and re-measure. Needs a workshared model: on one that is not
 # (the HZ_WRITE fixture) every case is reported not_covered with the reason, the
-# same way the existing groups-worksets probe handles it.
+# same way the existing groups-worksets probe handles it - unless the run names a
+# closed-workset fixture, then opened DETACHED as the disposable workshared model
+# (see workshared-fixture.lib.ps1) and closed without saving afterwards.
+. (Join-Path $PSScriptRoot 'workshared-fixture.lib.ps1')
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'worksets-ownership'
     Catalog = @(
@@ -33,10 +36,17 @@ $script:HzProbeModules += [pscustomobject]@{
 
         $ws = & $Ctx.Call $W @{ operation = 'list'; target_document = $doc }
         $wcode = if ($ws.data) { $ws.data.code } elseif ($ws.structured) { $ws.structured.code } else { $null }
+        $fixture = $null
         if ($ws.isError -and $wcode -eq 'not_workshared') {
-            foreach ($n in $names) { Case $n $W 'not_covered' "'$doc' is not workshared; ownership_effect has nothing to measure here" }
-            return $cases.ToArray()
+            $fixture = Enter-HzWorksharedFixture $Ctx 'own'
+            if (-not $fixture.Title) {
+                foreach ($n in $names) { Case $n $W 'not_covered' ("'$doc' is not workshared and " + $fixture.Why) }
+                return $cases.ToArray()
+            }
+            $doc = $fixture.Title
+            $ws = & $Ctx.Call $W @{ operation = 'list'; target_document = $doc }
         }
+        try {
         if ($ws.isError -or $null -eq $ws.data.worksets) {
             foreach ($n in $names) { Case $n $W 'unverified' ('worksets: list neither listed nor refused typed: ' + $ws.text) }
             return $cases.ToArray()
@@ -76,9 +86,9 @@ $script:HzProbeModules += [pscustomobject]@{
         # ---- move_elements: needs a free host element. Reuses horizun_list_elements
         # the same way the groups-worksets probe discovers free walls, and moves it
         # back afterward so the fixture is left as found.
-        $walls = & $Ctx.Call 'horizun_list_elements' @{ category = 'OST_Walls'; include_links = $false; max_rows = 50 }
-        $free = @(@($walls.data.rows) | Where-Object { $_.source_kind -eq 'host' } | Select-Object -First 1 | ForEach-Object { [long]$_.element_id })
-        if ($free.Count -eq 0) { Case $names[2] $W 'not_covered' 'no host wall found to move' }
+        $freeId = Get-HzFreeHostElement $Ctx
+        $free = @(if ($freeId) { $freeId })
+        if ($free.Count -eq 0) { Case $names[2] $W 'not_covered' 'no free host element found to move' }
         else {
             $mv = & $Ctx.Apply $W @{ operation = 'move_elements'; target_document = $doc; workset_id = $wid; element_ids = @($free[0]); relinquish_after = $true } 'own-move'
             $origin = if ($mv.dry -and $mv.dry.data) { @($mv.dry.data.plan.move)[0].from_workset_id } else { $null }
@@ -92,5 +102,7 @@ $script:HzProbeModules += [pscustomobject]@{
         }
 
         return $cases.ToArray()
+        }
+        finally { if ($fixture -and $fixture.Title) { $null = Exit-HzWorksharedFixture $Ctx $fixture 'own' } }
     }
 }

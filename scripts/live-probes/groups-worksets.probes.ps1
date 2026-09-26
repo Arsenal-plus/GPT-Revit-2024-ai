@@ -3,7 +3,9 @@
 # document; creates its own group from walls it finds, redefines it, and removes
 # every group type it created. Worksets need a workshared model: on one that is not
 # (the HZ_WRITE fixture) the typed refusal is probed and the write cases are
-# reported not_covered with the reason.
+# reported not_covered with the reason - unless the run names a closed-workset fixture,
+# opened DETACHED as the disposable workshared model (workshared-fixture.lib.ps1).
+. (Join-Path $PSScriptRoot 'workshared-fixture.lib.ps1')
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'groups-worksets'
     Catalog = @(
@@ -87,32 +89,47 @@ $script:HzProbeModules += [pscustomobject]@{
         }
 
         # ---- worksets -------------------------------------------------------------
+        # create, rename and move one element into the new workset and back, on $target.
+        function Invoke-WsWrites($target, $freeId) {
+            $name = 'HZ_PROBE_WS_' + $Ctx.RunId
+            $cr = & $Ctx.Apply $W @{ operation = 'create'; target_document = $target; name = $name } 'ws-create'
+            $detail = 'on ' + $target + ' | create: ' + (Why $cr)
+            $okAll = Ok $cr
+            if ($okAll) {
+                $wid = [int]$cr.answer.data.workset_id
+                $rn = & $Ctx.Apply $W @{ operation = 'rename'; target_document = $target; workset_id = $wid; name = ($name + '_R') } 'ws-rename'
+                $okAll = Ok $rn; $detail += ' | rename: ' + (Why $rn)
+                if ($okAll -and $freeId) {
+                    $mv = & $Ctx.Apply $W @{ operation = 'move_elements'; target_document = $target; workset_id = $wid; element_ids = @($freeId) } 'ws-move'
+                    $okAll = Ok $mv; $detail += ' | move: ' + (Why $mv)
+                    $origin = @($mv.dry.data.plan.move)[0].from_workset_id
+                    if ($okAll -and $null -ne $origin) { $null = & $Ctx.Apply $W @{ operation = 'move_elements'; target_document = $target; workset_id = [int]$origin; element_ids = @($freeId) } 'ws-move-back' }
+                }
+                elseif ($okAll) { $okAll = $false; $detail += ' | move: no free host element to move' }
+            }
+            Case 'worksets: create, rename and move an element on a workshared model' $W $(if ($okAll) { 'pass' } else { 'fail' }) ($detail + ' (a created workset cannot be deleted typed; the document is never saved)')
+        }
+
         $ws = & $Ctx.Call $W @{ operation = 'list'; target_document = $doc }
         $wcode = if ($ws.data) { $ws.data.code } elseif ($ws.structured) { $ws.structured.code } else { $null }
         if ($ws.isError -and $wcode -eq 'not_workshared') {
             $wr = & $Ctx.Call $W @{ operation = 'create'; target_document = $doc; name = 'HZ_PROBE_WS'; dry_run = $true }
             $wrcode = if ($wr.data) { $wr.data.code } elseif ($wr.structured) { $wr.structured.code } else { $null }
             Case 'worksets: a model that is not workshared is refused typed (not_workshared)' $W $(if ($wr.isError -and $wrcode -eq 'not_workshared') { 'pass' } else { 'fail' }) "list and create both refused: create code=$wrcode"
-            Case 'worksets: create, rename and move an element on a workshared model' $W 'not_covered' "'$doc' is not workshared; the run brings no disposable workshared fixture"
+            # The write document is not workshared: open the year's closed-workset fixture
+            # DETACHED as the disposable workshared model, and close it without saving.
+            $fixture = Enter-HzWorksharedFixture $Ctx 'grp'
+            if (-not $fixture.Title) {
+                Case 'worksets: create, rename and move an element on a workshared model' $W 'not_covered' ("'$doc' is not workshared and " + $fixture.Why)
+            }
+            else {
+                try { Invoke-WsWrites $fixture.Title (Get-HzFreeHostElement $Ctx) }
+                finally { $null = Exit-HzWorksharedFixture $Ctx $fixture 'grp' }
+            }
         }
         elseif (-not $ws.isError -and $null -ne $ws.data.worksets) {
             Case 'worksets: a model that is not workshared is refused typed (not_workshared)' $W 'not_covered' "'$doc' is workshared, so the refusal cannot be provoked here"
-            $name = 'HZ_PROBE_WS_' + $Ctx.RunId
-            $cr = & $Ctx.Apply $W @{ operation = 'create'; target_document = $doc; name = $name } 'ws-create'
-            $detail = 'create: ' + (Why $cr)
-            $okAll = Ok $cr
-            if ($okAll) {
-                $wid = [int]$cr.answer.data.workset_id
-                $rn = & $Ctx.Apply $W @{ operation = 'rename'; target_document = $doc; workset_id = $wid; name = ($name + '_R') } 'ws-rename'
-                $okAll = Ok $rn; $detail += ' | rename: ' + (Why $rn)
-                if ($okAll -and $free.Count -gt 0) {
-                    $mv = & $Ctx.Apply $W @{ operation = 'move_elements'; target_document = $doc; workset_id = $wid; element_ids = @($free[0]) } 'ws-move'
-                    $okAll = Ok $mv; $detail += ' | move: ' + (Why $mv)
-                    $origin = @($mv.dry.data.plan.move)[0].from_workset_id
-                    if ($okAll -and $null -ne $origin) { $null = & $Ctx.Apply $W @{ operation = 'move_elements'; target_document = $doc; workset_id = [int]$origin; element_ids = @($free[0]) } 'ws-move-back' }
-                }
-            }
-            Case 'worksets: create, rename and move an element on a workshared model' $W $(if ($okAll) { 'pass' } else { 'fail' }) ($detail + ' (a created workset cannot be deleted typed; the document is never saved)')
+            Invoke-WsWrites $doc $(if ($free.Count -gt 0) { $free[0] } else { Get-HzFreeHostElement $Ctx })
         }
         else {
             Case 'worksets: a model that is not workshared is refused typed (not_workshared)' $W 'fail' ("list neither listed nor refused typed: " + $ws.text)

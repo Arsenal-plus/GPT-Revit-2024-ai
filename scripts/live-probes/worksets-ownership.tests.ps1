@@ -65,4 +65,47 @@ Check 'a moved element is moved back' ($ctx.State.applies.Contains('own-move-bac
 $by = Run-Module (New-Ctx $false $true $false)
 Check 'move_elements is not_covered without a free wall' ($by[$catalog[2]].Outcome -eq 'not_covered')
 
+# E. write model not workshared, but the run names a closed-workset fixture: it is
+# opened DETACHED, the three cases run on it, and it is closed without saving.
+$fxDir = Join-Path $env:TEMP ('hz-own-fx-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $fxDir | Out-Null
+Set-Content -LiteralPath (Join-Path $fxDir 'HZ_WRITE.rvt') -Value 'rvt' -Encoding ascii
+Set-Content -LiteralPath (Join-Path $fxDir 'HZ_CLOSED_L.rvt') -Value 'rvt' -Encoding ascii
+$fxState = @{ calls = New-Object System.Collections.Generic.List[string]; applies = New-Object System.Collections.Generic.List[string] }
+$fxCall = {
+    param($tool, $arguments)
+    $fxState.calls.Add($tool + ':' + [string]$arguments.operation + ':' + [string]$arguments.target_document)
+    switch ($tool) {
+        'horizun_health' { return @{ isError = $false; data = [pscustomobject]@{ open_documents = @([pscustomobject]@{ title = 'HZ_WRITE'; path = (Join-Path $fxDir 'HZ_WRITE.rvt') }) } } }
+        'horizun_document_session' {
+            if ($arguments.operation -eq 'open') { return @{ isError = $false; data = [pscustomobject]@{ title = 'HZ_CLOSED_L_detached' } } }
+            if ($arguments.operation -eq 'close' -and $arguments.dry_run) { return @{ isError = $false; data = [pscustomobject]@{ confirmation_token = 'tok' } } }
+            if ($arguments.operation -eq 'close') { return @{ isError = $false; data = [pscustomobject]@{ closed = $true } } }
+        }
+        'horizun_open_document' { return @{ isError = $false; data = [pscustomobject]@{ confirmed_active = $true } } }
+        'horizun_list_elements' {
+            if ($arguments.category -eq 'OST_DuctCurves') { return @{ isError = $false; data = [pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 777; source_kind = 'host' }) } } }
+            return @{ isError = $false; data = [pscustomobject]@{ rows = @() } }
+        }
+        'horizun_manage_worksets' {
+            if ($arguments.target_document -eq 'HZ_CLOSED_L_detached') { return @{ isError = $false; data = [pscustomobject]@{ worksets = @([pscustomobject]@{ workset_id = 0 }) } } }
+            return @{ isError = $true; text = 'not workshared'; data = [pscustomobject]@{ code = 'not_workshared' } }
+        }
+    }
+    return @{ isError = $true; text = 'unexpected tool ' + $tool }
+}.GetNewClosure()
+$fxApply = {
+    param($tool, $arguments, $key)
+    $fxState.applies.Add($key + '@' + [string]$arguments.target_document)
+    $data = [pscustomobject]@{ workset_id = 42; ownership_effect = [pscustomobject]@{ measured = $true; elements_examined = 1; elements_newly_owned_by_me = 0 } }
+    if ($key -eq 'own-rename') { $data | Add-Member relinquish_after ([pscustomobject]@{ attempted = $true; elements_still_owned_by_me = 0 }) }
+    $dry = @{ data = [pscustomobject]@{ plan = [pscustomobject]@{ move = @([pscustomobject]@{ from_workset_id = 0 }) } } }
+    return @{ stage = 'apply'; answer = @{ isError = $false; data = $data; text = 'ok' }; dry = $dry }
+}.GetNewClosure()
+$fxCtx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = 'r2'; WriteGate = $false; ClosedWorksetDocument = 'HZ_CLOSED_L'; Call = $fxCall; Apply = $fxApply }
+$by = Run-Module $fxCtx
+Check 'fixture: all three cases pass on the detached workshared copy' (@($catalog | Where-Object { $by[$_].Outcome -ne 'pass' }).Count -eq 0)
+Check 'fixture: every write targeted the detached copy, not the write model' (@($fxState.applies | Where-Object { $_ -notlike '*@HZ_CLOSED_L_detached' }).Count -eq 0)
+Check 'fixture: the write model is re-activated and the copy closed' ($fxState.calls.Contains('horizun_open_document::') -and $fxState.calls.Contains('horizun_document_session:close:HZ_CLOSED_L_detached'))
+Remove-Item -LiteralPath $fxDir -Recurse -Force -ErrorAction SilentlyContinue
 if ($fails) { "worksets-ownership probe tests: $fails FAILED"; exit 1 } else { 'worksets-ownership probe tests: ALL PASS'; exit 0 }
