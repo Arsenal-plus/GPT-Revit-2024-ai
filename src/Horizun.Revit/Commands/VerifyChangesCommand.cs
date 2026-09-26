@@ -59,7 +59,7 @@ namespace Horizun.Revit.Commands
             bool includeAnnotation = request.Value<bool?>("include_annotation") ?? false;
             var ruleErrors = new List<string>();
             List<ClearanceZoneRules.Rule> clearanceRules = request["clearance_rules"] is JArray rulesArr
-                ? ClearanceZoneRules.Parse(rulesArr, ruleErrors) : null;
+                ? ClearanceZoneRules.Parse(rulesArr, ruleErrors, ClearanceRulesSource.CanonicalCategory) : null;
             if (ruleErrors.Count > 0) return CommandResult.Fail(string.Join(" ", ruleErrors));
             List<long> explicitViewIds = null;
             if (request["view_ids"] != null)
@@ -157,8 +157,10 @@ namespace Horizun.Revit.Commands
             // automatic after-write pass reads (ClearanceRulesSource.cs), so an on-demand
             // look never judges less than the write it follows did.
             string clearanceOrigin = clearanceRules != null ? "argument" : null;
-            if (clearanceRules == null) clearanceRules = ClearanceRulesSource.Load(doc, out clearanceOrigin);
+            List<string> fileRuleErrors = null;
+            if (clearanceRules == null) clearanceRules = ClearanceRulesSource.Load(doc, out clearanceOrigin, out fileRuleErrors);
             SpatialCoherence.Outcome outcome = SpatialCoherence.Check(doc, subjects, 5000, budgetS * 1000, clearanceRules: clearanceRules);
+            if (fileRuleErrors != null) outcome.ClearanceRuleErrors.AddRange(fileRuleErrors);
             JObject check = SpatialCoherence.ToJson(outcome, maxFindings);
             if (clearanceOrigin != null) check["clearance_rules_source"] = clearanceOrigin;
             string headline = SpatialCoherence.Headline(outcome);

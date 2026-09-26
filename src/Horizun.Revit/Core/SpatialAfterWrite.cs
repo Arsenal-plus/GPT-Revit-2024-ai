@@ -160,8 +160,9 @@ namespace Horizun.Revit.Core
                     // project-context.json, or a machine-wide default file, never compiled in
                     // (ClearanceRulesSource.cs documents the precedence). Neither present is the
                     // ordinary case and costs one failed File.Exists check.
-                    List<ClearanceZoneRules.Rule> clearanceRules = ClearanceRulesSource.Load(doc, out string clearanceOrigin);
+                    List<ClearanceZoneRules.Rule> clearanceRules = ClearanceRulesSource.Load(doc, out string clearanceOrigin, out List<string> clearanceErrors);
                     SpatialCoherence.Outcome o = SpatialCoherence.Check(doc, subjects, MaxSubjects, BudgetMs, clearanceRules: clearanceRules);
+                    o.ClearanceRuleErrors.AddRange(clearanceErrors);
                     JObject check = SpatialCoherence.ToJson(o, 25);
                     check["scope"] = "elements this call added or modified (" + changed.Added.Count + " added, " + changed.Modified.Count + " modified)";
                     if (clearanceOrigin != null) check["clearance_rules_source"] = clearanceOrigin;

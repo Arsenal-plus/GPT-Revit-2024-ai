@@ -232,5 +232,105 @@ namespace Horizun.Core.Tests
         {
             Assert.Equal(K.None, ClearanceZoneRules.Classify("OST_ElectricalEquipment", new HashSet<string>(), "OST_Cameras", false, 5.0).Kind);
         }
+
+        // ---- review fixes: typed values, known categories, face-based fronts, floor-based zones ----
+
+        [Fact]
+        public void Parse_refuses_wrongly_typed_values_by_index_and_never_throws()
+        {
+            var raw = JArray.Parse("[" +
+                "{\"category\":\"OST_ElectricalEquipment\",\"depth_mm\":\"900mm\"}," +
+                "{\"category\":\"OST_ElectricalEquipment\",\"depth_mm\":900,\"height_mm\":{}}," +
+                "{\"category\":\"OST_ElectricalEquipment\",\"depth_mm\":900,\"width_extra_mm\":null}," +
+                "{\"category\":{\"a\":1},\"depth_mm\":900}," +
+                "{\"category\":\"OST_ElectricalEquipment\",\"depth_mm\":null}," +
+                "{\"category\":\"OST_ElectricalEquipment\",\"depth_mm\":900,\"face\":7}]");
+            var errors = new List<string>();
+            List<ClearanceZoneRules.Rule> rules = ClearanceZoneRules.Parse(raw, errors);
+            Assert.Single(rules);
+            Assert.Equal(0, rules[0].WidthExtraMm);
+            Assert.Equal(5, errors.Count);
+            Assert.StartsWith("clearance_rules[0].depth_mm", errors[0]);
+            Assert.StartsWith("clearance_rules[1].height_mm", errors[1]);
+            Assert.StartsWith("clearance_rules[3].category", errors[2]);
+            Assert.StartsWith("clearance_rules[4].depth_mm", errors[3]);
+            Assert.StartsWith("clearance_rules[5].face", errors[4]);
+        }
+
+        [Fact]
+        public void Parse_with_a_canonicalizer_refuses_a_misspelled_or_miscased_category_by_index()
+        {
+            var raw = JArray.Parse("[{\"category\":\"OST_ElectricalEquipment\",\"depth_mm\":900}," +
+                                   "{\"category\":\"OST_ElectricalEquipments\",\"depth_mm\":900}," +
+                                   "{\"category\":\"OST_electricalequipment\",\"depth_mm\":900}]");
+            var errors = new List<string>();
+            List<ClearanceZoneRules.Rule> rules = ClearanceZoneRules.Parse(raw, errors, c => c == "OST_ElectricalEquipment" ? c : null);
+            Assert.Single(rules);
+            Assert.Equal(2, errors.Count);
+            Assert.Contains("clearance_rules[1].category 'OST_ElectricalEquipments'", errors[0]);
+            Assert.Contains("clearance_rules[2].category", errors[1]);
+        }
+
+        [Fact]
+        public void FrontFrame_face_hosted_on_a_wall_looks_out_along_transform_Z_not_its_vertical_facing()
+        {
+            // Measured shape of a face-hosted panel on a wall's +Y face: family X along the
+            // wall, family Z = the face normal, so FacingOrientation (family Y) is vertical.
+            Assert.True(ClearanceZoneRules.FrontFrame(true, (0, 0, 1), (0, 1, 0), (1, 0, 0), true,
+                out double fx, out double fy, out double hx, out double hy, out string why));
+            Assert.Null(why);
+            Assert.Equal(0, fx, 9); Assert.Equal(1, fy, 9);
+            Assert.Equal(1, hx, 9); Assert.Equal(0, hy, 9);
+        }
+
+        [Fact]
+        public void FrontFrame_a_device_rotated_in_its_wall_face_still_looks_out_of_the_wall()
+        {
+            // Rotated 45 degrees in the face: facing and hand both have horizontal parts ALONG
+            // the wall - using either would run the zone along the wall instead of out of it.
+            double r = System.Math.Sqrt(0.5);
+            Assert.True(ClearanceZoneRules.FrontFrame(true, (r, 0, r), (0, -1, 0), (r, 0, -r), true,
+                out double fx, out double fy, out double hx, out double hy, out _));
+            Assert.Equal(0, fx, 9); Assert.Equal(-1, fy, 9);
+            Assert.Equal(-1, hx, 9); Assert.Equal(0, hy, 9);
+        }
+
+        [Fact]
+        public void FrontFrame_face_based_on_a_floor_keeps_its_own_horizontal_facing()
+        {
+            Assert.True(ClearanceZoneRules.FrontFrame(true, (1, 0, 0), (0, 0, 1), (0, -1, 0), true,
+                out double fx, out double fy, out _, out _, out _));
+            Assert.Equal(1, fx, 9); Assert.Equal(0, fy, 9);
+        }
+
+        [Fact]
+        public void FrontFrame_nothing_horizontal_is_not_measured_for_a_front_rule_but_a_top_rule_still_gets_a_frame()
+        {
+            Assert.False(ClearanceZoneRules.FrontFrame(true, (0, 0, 1), (0, 0, -1), (0, 1, 0), true,
+                out _, out _, out _, out _, out string why));
+            Assert.False(string.IsNullOrEmpty(why));
+            Assert.True(ClearanceZoneRules.FrontFrame(true, (0, 0, 1), (0, 0, -1), (0, 1, 0), false,
+                out double fx, out double fy, out double hx, out double hy, out _));
+            Assert.Equal(0, hx, 9); Assert.Equal(1, hy, 9);
+            Assert.Equal(-1, fx, 9); Assert.Equal(0, fy, 9);
+        }
+
+        [Fact]
+        public void Footprints_of_a_wall_mounted_panel_start_at_its_floor_and_reach_its_top()
+        {
+            // Panel underside 4 ft above its level, top at 6 ft: a 900 mm cabinet on the floor
+            // in front of it must fall inside the zone.
+            var ext = new ClearanceZoneRules.Extents(-0.2, 0.2, -1, 1, 4, 6);
+            var fps = ClearanceZoneRules.Footprints(Rule(depthMm: 900, heightMm: 2000), ext, 0.0);
+            Assert.Single(fps);
+            Assert.Equal(0, fps[0].MinZ, 9);
+            Assert.Equal(ClearanceZoneRules.FeetFromMm(2000), fps[0].MaxZ, 9);
+            // Taller than height_mm above the floor: the zone reaches the equipment's own top.
+            var tall = ClearanceZoneRules.Footprints(Rule(depthMm: 900, heightMm: 2000), new ClearanceZoneRules.Extents(-0.2, 0.2, -1, 1, 4, 10), 0.0);
+            Assert.Equal(10, tall[0].MaxZ, 9);
+            // A floor ABOVE the underside (a level set high) never lifts the zone.
+            var high = ClearanceZoneRules.Footprints(Rule(depthMm: 900, heightMm: 2000), ext, 5.0);
+            Assert.Equal(4, high[0].MinZ, 9);
+        }
     }
 }
