@@ -1939,3 +1939,13 @@ member and its own source wall or ceiling, and two members of the same framed so
 EXPECTED intersections (reason "framing inside its own source, or members of one framed
 source"), read from the marker: studs inside the wall they frame and tracks meeting studs
 are what was asked for. A member touching anything else is still reported.
+
+**Live probe** (`scripts/live-probes/framing.probes.ps1`, offline twin
+`framing.tests.ps1`). On its own level it authors a line-based Generic Model member,
+frames an own compound wall with a door and a window (rehearsal, verified apply, second
+apply `already_applied`, read, remove), then an own ceiling 600 mm under an own floor
+(rehearsal and verified apply: `inside_boundary` matched and every hanger's support is
+that floor, by id) and a second ceiling with nothing above (rehearsal: every station
+`no_support_above`, no hanger planned). The ceiling framing is removed with
+`operation=remove` before the staging is deleted, because its members are not hosted by
+the ceiling.
