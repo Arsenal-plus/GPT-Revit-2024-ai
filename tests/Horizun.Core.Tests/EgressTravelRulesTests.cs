@@ -55,16 +55,42 @@ namespace Horizun.Core.Tests
         }
 
         [Theory]
-        [InlineData(24.9, 25.0, null, "passes")]
-        [InlineData(25.0, 25.0, null, "passes")]
-        [InlineData(25.1, 25.0, null, "fails")]
-        [InlineData(12.0, null, null, "measured")]
-        [InlineData(null, 25.0, null, "not_decidable")]
-        [InlineData(10.0, 25.0, "room is on another level", "not_assessable")]
-        [InlineData(null, 25.0, "no exit on this level", "not_assessable")]
-        public void A_room_is_judged_against_the_callers_limit(double? measured, double? max, string notAssessable, string expected)
+        // lower, upper, max, not_assessable -> outcome
+        [InlineData(24.0, 24.9, 25.0, null, "passes")]
+        [InlineData(24.0, 25.0, 25.0, null, "passes")]
+        [InlineData(25.1, 26.0, 25.0, null, "fails")]
+        [InlineData(25.1, null, 25.0, null, "fails")]
+        [InlineData(12.0, null, null, null, "measured")]
+        [InlineData(null, null, 25.0, null, "not_decidable")]
+        [InlineData(10.0, null, 25.0, "room is on another level", "not_assessable")]
+        [InlineData(null, null, 25.0, "no exit on this level", "not_assessable")]
+        // THE NEAR-LIMIT CASE the lower bound exists for: the routed sample is under the
+        // limit but nothing bounds the true farthest point from above - not a pass.
+        [InlineData(44.95, null, 45.0, null, "not_decidable")]
+        [InlineData(44.95, 45.25, 45.0, null, "not_decidable")]
+        public void A_room_is_judged_against_the_callers_limit(double? lower, double? upper, double? max, string notAssessable, string expected)
         {
-            Assert.Equal(expected, EgressTravelRules.Evaluate(measured, max, notAssessable));
+            Assert.Equal(expected, EgressTravelRules.Evaluate(lower, upper, max, notAssessable));
+        }
+
+        [Fact]
+        public void Convexity_is_read_from_the_turns_and_an_L_is_not_convex()
+        {
+            var rect = new[] { new PlanPoint(0, 0), new PlanPoint(10, 0), new PlanPoint(10, 5), new PlanPoint(5, 5), new PlanPoint(0, 5) };
+            Assert.True(EgressTravelRules.IsConvex(rect));   // a collinear vertex does not break it
+            var l = new[] { new PlanPoint(0, 0), new PlanPoint(10, 0), new PlanPoint(10, 2), new PlanPoint(2, 2), new PlanPoint(2, 10), new PlanPoint(0, 10) };
+            Assert.False(EgressTravelRules.IsConvex(l));
+            Assert.False(EgressTravelRules.IsConvex(new[] { new PlanPoint(0, 0), new PlanPoint(1, 1) }));
+        }
+
+        [Fact]
+        public void The_upper_bound_is_the_best_routed_sample_plus_its_reach_to_the_farthest_vertex()
+        {
+            var rect = new[] { new PlanPoint(0, 0), new PlanPoint(4, 0), new PlanPoint(4, 3), new PlanPoint(0, 3) };
+            // Centre (2,1.5) routed at 10, reach 2.5 -> 12.5; corner (0.3,0.3) routed at 11, reach |(4,3)-(0.3,0.3)| = 4.58.. -> 15.58.
+            double? u = EgressTravelRules.UpperBound(new List<(PlanPoint, double)> { (new PlanPoint(2, 1.5), 10), (new PlanPoint(0.3, 0.3), 11) }, rect);
+            Assert.Equal(12.5, u.Value, 9);
+            Assert.Null(EgressTravelRules.UpperBound(new List<(PlanPoint, double)>(), rect));
         }
 
         [Fact]

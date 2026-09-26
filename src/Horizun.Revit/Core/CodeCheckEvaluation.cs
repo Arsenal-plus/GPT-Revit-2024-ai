@@ -159,15 +159,19 @@ namespace Horizun.Revit.Core
             return set.Passes(rule, exists, p?.Text) ? "passes" : "fails";
         }
 
+        /// <summary>The Measures key a travel_distance_m rule's own routed value is stored under.</summary>
+        public static string TravelKey(Requirement rule) => "travel_distance_m#" + (rule?.Id ?? "");
+
         private static MeasuredValue MeasureFor(Requirement rule, CheckedElement e)
         {
             if (rule.AssertionMeasure == "travel_distance_m")
             {
-                // Populated by CodeCheckCommand.AttachTravelDistance (Revit-side) ONLY when the
-                // rule's own config names a route_view_id and an exits selector - this evaluator
-                // stays pure and knows nothing about Revit. No config, no measurement: that is a
-                // not_decidable, never a guessed straight line passed off as a travel distance.
-                e.Measures.TryGetValue("travel_distance_m", out MeasuredValue tm);
+                // Populated by CodeCheckCommand.AttachTravelDistance (Revit-side) ONLY when THIS
+                // rule's own config names a route_view_id and an exits selector, under a key of the
+                // rule's own (TravelKey): two rules with different exits are two measurements, and a
+                // rule without a config never borrows another rule's routes. This evaluator stays
+                // pure. No config, no measurement: not_decidable, never a guessed straight line.
+                e.Measures.TryGetValue(TravelKey(rule), out MeasuredValue tm);
                 return tm ?? MeasuredValue.None(
                     "no travel_distance_m was computed for this room: the rule's config must name " +
                     "route_view_id (a floor plan view) and exits (parameter/value, mark_prefix, or " +

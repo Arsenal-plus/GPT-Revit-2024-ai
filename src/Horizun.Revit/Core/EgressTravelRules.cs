@@ -17,11 +17,17 @@
 // returned). It is not "the farthest point of room X". For each room this bridge
 // therefore routes a small set of candidates - the room's boundary corners pulled
 // inward, its location point, and any whole-plan longest-path start that falls in
-// the room - and keeps the longest. In a convex room the distance from a door is a
-// convex function whose maximum sits at a corner, so the inset corners bound the
-// true farthest point to within the inset; a non-convex room can hide a farther
-// point, which is why the basis says "farthest of N sampled points" and never
-// "the farthest point".
+// the room - and keeps the longest. That number is a LOWER BOUND on the room's true
+// farthest travel distance, never the value itself: the sampled points are points a
+// person can stand on, so the true worst is at least as long, and it may be longer
+// (distance to the nearest of several doors is not convex; a non-convex room hides
+// points). A lower bound above the limit is a certain fail. A pass needs an UPPER
+// bound under the limit too, and there is one only in a room that is a convex polygon
+// of straight walls with no island and every sample routed: any point p in it walks
+// straight to a routed sample c inside the room, so travel(p) <= travel(c) + |p - c|,
+// and |p - c| over a convex polygon is largest at a vertex (UpperBound). The straight
+// walk assumes the room's interior is clear between p and c; that assumption is
+// stated in every reply that uses the bound.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -106,16 +112,59 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// One room against the caller's limit. not_assessable wins over everything (the
-        /// measurement does not apply: another level, a stair); no value is not_decidable
-        /// (never a pass); no limit is "measured" (a number, no verdict).
+        /// One room against the caller's limit. <paramref name="lowerM"/> is the longest routed
+        /// sample (the true farthest is at least that); <paramref name="upperM"/> is UpperBound's
+        /// number, or null when the room admits none. not_assessable wins over everything (the
+        /// measurement does not apply: another level, a stair); no value is not_decidable (never
+        /// a pass); no limit is "measured" (a number, no verdict); a lower bound over the limit is
+        /// a certain fail; a pass needs the upper bound under the limit; anything else is
+        /// not_decidable, because the true farthest point may still exceed it.
         /// </summary>
-        public static string Evaluate(double? measuredM, double? maxM, string notAssessableReason)
+        public static string Evaluate(double? lowerM, double? upperM, double? maxM, string notAssessableReason)
         {
             if (!string.IsNullOrEmpty(notAssessableReason)) return NotAssessable;
-            if (!measuredM.HasValue || double.IsNaN(measuredM.Value)) return NotDecidable;
+            if (!lowerM.HasValue || double.IsNaN(lowerM.Value)) return NotDecidable;
             if (!maxM.HasValue) return Measured;
-            return measuredM.Value <= maxM.Value + 1e-9 ? Passes : Fails;
+            if (lowerM.Value > maxM.Value + 1e-9) return Fails;
+            return upperM.HasValue && upperM.Value <= maxM.Value + 1e-9 ? Passes : NotDecidable;
+        }
+
+        /// <summary>
+        /// True for a simple polygon whose turns all go the same way (collinear vertices allowed).
+        /// Fewer than three distinct vertices is not a polygon, so not convex.
+        /// </summary>
+        public static bool IsConvex(IList<PlanPoint> polygon)
+        {
+            if (polygon == null || polygon.Count < 3) return false;
+            int sign = 0, n = polygon.Count;
+            for (int i = 0; i < n; i++)
+            {
+                PlanPoint a = polygon[i], b = polygon[(i + 1) % n], c = polygon[(i + 2) % n];
+                double cross = (b.X - a.X) * (c.Y - b.Y) - (b.Y - a.Y) * (c.X - b.X);
+                if (Math.Abs(cross) < 1e-9) continue;
+                int s = cross > 0 ? 1 : -1;
+                if (sign == 0) sign = s;
+                else if (s != sign) return false;
+            }
+            return sign != 0;
+        }
+
+        /// <summary>
+        /// An upper bound on the travel distance from ANY point of a convex room: the smallest
+        /// routed(c) + max over vertices |v - c| among the routed samples c (all in one unit).
+        /// Null when nothing routed or the room has no vertex. Valid only for a convex room whose
+        /// interior is clear - the caller checks convexity and says the rest.
+        /// </summary>
+        public static double? UpperBound(IList<(PlanPoint point, double distance)> routed, IList<PlanPoint> vertices)
+        {
+            if (routed == null || routed.Count == 0 || vertices == null || vertices.Count == 0) return null;
+            double best = double.MaxValue;
+            foreach (var (c, d) in routed)
+            {
+                double reach = vertices.Max(v => v.DistanceTo(c));
+                if (d + reach < best) best = d + reach;
+            }
+            return best;
         }
 
         /// <summary>

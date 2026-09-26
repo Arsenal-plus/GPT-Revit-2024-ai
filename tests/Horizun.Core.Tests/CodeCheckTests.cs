@@ -179,20 +179,42 @@ namespace Horizun.Core.Tests
             Assert.Contains("route_view_id", (string)r["findings"][0]["reason"]);
         }
 
+        private static MeasuredValue Lower(double v, double? upper) =>
+            new MeasuredValue { Value = v, Bound = "lower", Upper = upper, Basis = "measured_travel_path" };
+
         [Fact]
-        public void A_routed_travel_distance_passes_or_fails_the_rule_and_multi_level_stays_undecided()
+        public void A_routed_travel_distance_is_a_lower_bound_that_passes_only_under_a_proven_ceiling()
         {
             RequirementSet s = Load("[{ 'id': 't', 'selector': { 'category': 'OST_Rooms' }, 'assertion': { 'measure': 'travel_distance_m', 'operator': 'lte', 'value': 45 } }]");
+            string key = CodeCheckRules.TravelKey(s.Rules[0]);
             var near = new CheckedElement { Id = 1, CategoryToken = "OST_Rooms" };
-            near.Measures["travel_distance_m"] = MeasuredValue.Exact(12.4, "measured_travel_path");
+            near.Measures[key] = Lower(12.4, 15.0);
             var far = new CheckedElement { Id = 2, CategoryToken = "OST_Rooms" };
-            far.Measures["travel_distance_m"] = MeasuredValue.Exact(51.0, "measured_travel_path");
+            far.Measures[key] = Lower(51.0, null);
             var upstairs = new CheckedElement { Id = 3, CategoryToken = "OST_Rooms" };
-            upstairs.Measures["travel_distance_m"] = MeasuredValue.None("not_assessable: no declared exit door is on level 'L2'.");
-            JObject r = CodeCheckRules.Evaluate(s, new[] { near, far, upstairs }, 50, true);
+            upstairs.Measures[key] = MeasuredValue.None("not_assessable: no declared exit matched on level 'L2'.");
+            // The near-limit case: a sample routes at 44.95 m but the corner itself may be 45.2 m.
+            var nearLimit = new CheckedElement { Id = 4, CategoryToken = "OST_Rooms" };
+            nearLimit.Measures[key] = Lower(44.95, null);
+            JObject r = CodeCheckRules.Evaluate(s, new[] { near, far, upstairs, nearLimit }, 50, true);
             Assert.Equal(1, r["totals"].Value<int>("passes"));
             Assert.Equal(1, r["totals"].Value<int>("fails"));
+            Assert.Equal(2, r["totals"].Value<int>("not_decidable"));
+        }
+
+        [Fact]
+        public void Each_travel_rule_reads_only_its_own_measurement()
+        {
+            // Rule a has a config (its routes were attached under its key); rule b has none and
+            // must stay not_decidable instead of borrowing a's exits and views.
+            RequirementSet s = Load("[{ 'id': 'a', 'selector': { 'category': 'OST_Rooms' }, 'assertion': { 'measure': 'travel_distance_m', 'operator': 'lte', 'value': 60 } }," +
+                                    " { 'id': 'b', 'selector': { 'category': 'OST_Rooms' }, 'assertion': { 'measure': 'travel_distance_m', 'operator': 'lte', 'value': 22 } }]");
+            var room = new CheckedElement { Id = 1, CategoryToken = "OST_Rooms" };
+            room.Measures[CodeCheckRules.TravelKey(s.Rules[0])] = Lower(30.0, 35.0);
+            JObject r = CodeCheckRules.Evaluate(s, new[] { room }, 50, true);
+            Assert.Equal(1, r["totals"].Value<int>("passes"));
             Assert.Equal(1, r["totals"].Value<int>("not_decidable"));
+            Assert.Equal(0, r["totals"].Value<int>("fails"));
         }
 
         [Fact]

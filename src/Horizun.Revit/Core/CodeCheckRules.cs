@@ -37,6 +37,11 @@ namespace Horizun.Revit.Core
         public double? Value;
         /// <summary>exact | upper (true value &lt;= Value) | lower (true value &gt;= Value).</summary>
         public string Bound = "exact";
+        /// <summary>
+        /// With Bound=lower only: a proven ceiling as well (true value &lt;= Upper), or null.
+        /// A lower bound alone can only fail a maximum; a pass needs this ceiling under it.
+        /// </summary>
+        public double? Upper;
         /// <summary>Why there is no value. Non-null makes every assertion on it not_decidable.</summary>
         public string Unavailable;
         public string Basis;
@@ -100,7 +105,7 @@ namespace Horizun.Revit.Core
             { "stair_run_width_mm", "narrowest run's actual run width; handrails not deducted." },
             { "space_illuminance_lx", "the Space's Average Estimated Illumination as Revit computed it; 0 or empty = not computed." },
             { "exit_count_minus_required", "per level: doors matching config.exit_door minus the exits config.required_exits asks for the level's occupant load." },
-            { "travel_distance_m", "per room, in metres, routed with Revit's path-of-travel service when the rule's config names route_view_id and exits; not_decidable without one; multi-level rooms report not_assessable." }
+            { "travel_distance_m", "per room, metres, a LOWER bound routed with Revit's path of travel when the rule's own config names route_view_id and exits; passes only under a proven ceiling; else not_decidable (reason prefixed not_assessable: for multi-level egress)." }
         };
 
         public static IEnumerable<string> MeasureNames => Measures.Keys;
@@ -176,7 +181,9 @@ namespace Horizun.Revit.Core
             // lower: true >= v. Certain fail when even v is above the maximum.
             if (aboveHi(v)) return "fails";
             if (double.IsPositiveInfinity(hi) && !belowLo(v)) return "passes";
-            reason = "the measure is a LOWER BOUND (" + Fmt(v) + "); the true value may be larger. " + (m.Basis ?? "");
+            if (m.Upper.HasValue && !aboveHi(m.Upper.Value) && !belowLo(v)) return "passes";
+            reason = "the measure is a LOWER BOUND (" + Fmt(v) + (m.Upper.HasValue ? ", proven ceiling " + Fmt(m.Upper.Value) : ", no proven ceiling") +
+                     "); the true value may be larger. " + (m.Basis ?? "");
             return "not_decidable";
         }
 
