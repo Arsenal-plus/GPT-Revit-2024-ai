@@ -634,6 +634,10 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRoutingRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SlopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\HangerRules.cs" />
+    <!-- horizun_framing: stud/track/opening layout of a wall and the clipped grid of a
+         suspended ceiling, Revit-free (the ceiling reuses HangerRules for its hangers). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallFramingRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CeilingFramingRules.cs" />
     <!-- Field audit 2026-09-25: rule-based mass type change, template/SPF audit,
          warning root-cause classification, edited-wall-profile drift. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\TypeChangeRuleRules.cs" />
