@@ -155,9 +155,16 @@ namespace Horizun.Revit.Core
                 string headline = null;
                 if (subjects.Count > 0)
                 {
-                    SpatialCoherence.Outcome o = SpatialCoherence.Check(doc, subjects, MaxSubjects, BudgetMs);
+                    // Equipment maintenance/access clearance rules for the AUTOMATIC pass have
+                    // no caller argument to read from: they come from the project's own
+                    // project-context.json, or a machine-wide default file, never compiled in
+                    // (ClearanceRulesSource.cs documents the precedence). Neither present is the
+                    // ordinary case and costs one failed File.Exists check.
+                    List<ClearanceZoneRules.Rule> clearanceRules = ClearanceRulesSource.Load(doc, out string clearanceOrigin);
+                    SpatialCoherence.Outcome o = SpatialCoherence.Check(doc, subjects, MaxSubjects, BudgetMs, clearanceRules: clearanceRules);
                     JObject check = SpatialCoherence.ToJson(o, 25);
                     check["scope"] = "elements this call added or modified (" + changed.Added.Count + " added, " + changed.Modified.Count + " modified)";
+                    if (clearanceOrigin != null) check["clearance_rules_source"] = clearanceOrigin;
                     check["see_it"] = "horizun_verify_changes captures an image of these elements with the findings highlighted";
                     data["spatial_check"] = check;
                     headline = SpatialCoherence.Headline(o);

@@ -203,18 +203,24 @@ namespace Horizun.Revit.Core
         // scale invented here.
 
         /// <summary>Never an obstacle to a clearance zone: floors/ceilings/roofs a person
-        /// stands on or under, the structural frame overhead, railings.</summary>
+        /// stands on or under, the structural frame overhead, railings, and doors/windows -
+        /// an opening in the zone is the access route itself, the same exclusion the door
+        /// clear zone makes (SpatialCoherenceRules.Clearance).</summary>
         private static readonly HashSet<string> NotAnObstacle = new HashSet<string>(StringComparer.Ordinal)
         {
             "OST_Floors", "OST_Ceilings", "OST_Roofs", "OST_StructuralFraming", "OST_StructuralFoundation",
-            "OST_Railings", "OST_StairsRailing"
+            "OST_Railings", "OST_StairsRailing", "OST_Doors", "OST_Windows"
         };
 
-        /// <summary>Immovable by nature: always an error, never a warning.</summary>
+        /// <summary>Blocks the zone outright: always an error, never a warning. The door
+        /// clear zone's immovable set (walls, columns, stairs, curtain panels) plus other
+        /// EQUIPMENT - a cabinet or unit standing in front of a panel is the field defect
+        /// the rule exists to catch, not a piece of furniture someone can push aside.</summary>
         private static readonly HashSet<string> AlwaysBlocks = new HashSet<string>(StringComparer.Ordinal)
         {
             "OST_Walls", "OST_StructuralColumns", "OST_Columns", "OST_Stairs",
-            "OST_CurtainWallPanels", "OST_CurtainWallMullions"
+            "OST_CurtainWallPanels", "OST_CurtainWallMullions",
+            "OST_ElectricalEquipment", "OST_MechanicalEquipment", "OST_SpecialityEquipment"
         };
 
         /// <summary>

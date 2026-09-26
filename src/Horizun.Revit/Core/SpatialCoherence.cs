@@ -325,6 +325,7 @@ namespace Horizun.Revit.Core
             var ruleCategories = new HashSet<string>(StringComparer.Ordinal);
             foreach (ClearanceZoneRules.Rule r in rules) if (r.Category != null) ruleCategories.Add(r.Category);
             var subjectIds = new HashSet<long>(subjects.Select(e => Rid.Value(e.Id)));
+            List<LinkView> links = includeLinks ? LoadedLinks(doc) : null;
             foreach (Element e in subjects)
             {
                 if (clock.ElapsedMilliseconds > budgetMs) { o.Partial = true; o.PartialWhy = "the time budget ran out during the equipment clearance pass"; return; }
@@ -335,12 +336,12 @@ namespace Horizun.Revit.Core
                 if (!(fi.Location is LocationPoint lp)) continue;
                 XYZ facing = fi.FacingOrientation, hand = fi.HandOrientation;
                 if (facing == null || hand == null || facing.IsZeroLength() || hand.IsZeroLength()) continue;
-                BoundingBoxXYZ bb = null;
-                try { bb = fi.get_BoundingBox(null); } catch { }
-                if (bb == null) continue;
-                var corners = new List<(double X, double Y, double Z)>();
-                for (int c = 0; c < 8; c++)
-                    corners.Add(((c & 1) == 0 ? bb.Min.X : bb.Max.X, (c & 2) == 0 ? bb.Min.Y : bb.Max.Y, (c & 4) == 0 ? bb.Min.Z : bb.Max.Z));
+                // The instance's own solids, tessellated, give its EXACT extent in its own
+                // facing/hand frame; the world-aligned bounding box is only the fallback (a
+                // symbol-only family), because at 45 degrees it inflates the front face by
+                // up to 41% and would push the zone off the equipment.
+                List<(double X, double Y, double Z)> corners = OwnFramePoints(fi, cache);
+                if (corners.Count == 0) continue;
                 ClearanceZoneRules.Extents ext;
                 try { ext = ClearanceZoneRules.Project(lp.Point.X, lp.Point.Y, facing.X, facing.Y, hand.X, hand.Y, corners); }
                 catch { continue; }
@@ -370,8 +371,82 @@ namespace Horizun.Revit.Core
                         if (!pairs.Add("clear-eq:" + eid + "|" + ib)) continue;
                         o.Findings.Add(new Finding { Verdict = v, A = e, B = b, SharedVolumeFt3 = shared });
                     }
+                    // Obstacles in loaded links, the same way AgainstLinks carries a changed
+                    // solid into a link: the zone moves into the link's coordinates and is
+                    // queried there. Only for ruled equipment this call changed - a link is
+                    // not edited here, so it can only ever be the obstacle - and judged by
+                    // category alone, since host/join relations do not cross files.
+                    if (links == null || !subjectIds.Contains(eid)) continue;
+                    foreach (LinkView l in links)
+                    {
+                        Solid moved;
+                        try { moved = SolidUtils.CreateTransformed(zone, l.ToLink); } catch { continue; }
+                        foreach (Element b in ZoneObstacles(l.Doc, moved))
+                        {
+                            if (!IsPhysical(b)) continue;
+                            double? shared = Shared(new List<Solid> { moved }, Solids(b, l.Cache));
+                            SpatialCoherenceRules.Verdict v = ClearanceZoneRules.Classify(category, ruleCategories, CategoryKey(b), false, shared);
+                            if (v.Kind == SpatialCoherenceRules.Kind.None) continue;
+                            if (!pairs.Add("clear-eq:" + eid + "|" + l.Name + "|" + Rid.Value(b.Id))) continue;
+                            v.Reason += " (in link '" + l.Name + "')";
+                            o.Findings.Add(new Finding { Verdict = v, A = e, B = b, SharedVolumeFt3 = shared, LinkB = l.Name });
+                        }
+                    }
                 }
             }
+        }
+
+        private sealed class LinkView
+        {
+            public string Name;
+            public Document Doc;
+            public Transform ToLink;
+            public Dictionary<long, List<Solid>> Cache = new Dictionary<long, List<Solid>>();
+        }
+
+        /// <summary>Every LOADED link with its host-to-link transform. Unloaded links are
+        /// already reported by AgainstLinks (LinksSkipped); they are not re-listed here.</summary>
+        private static List<LinkView> LoadedLinks(Document doc)
+        {
+            var list = new List<LinkView>();
+            try
+            {
+                foreach (RevitLinkInstance link in new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
+                {
+                    try
+                    {
+                        Document linked = link.GetLinkDocument();
+                        if (linked == null) continue;
+                        list.Add(new LinkView { Name = SafeName(link), Doc = linked, ToLink = link.GetTotalTransform().Inverse });
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        /// <summary>Points on the instance's own solids (edge tessellation, world
+        /// coordinates), or its bounding-box corners when it has no solid.</summary>
+        private static List<(double X, double Y, double Z)> OwnFramePoints(FamilyInstance fi, Dictionary<long, List<Solid>> cache)
+        {
+            var pts = new List<(double X, double Y, double Z)>();
+            foreach (Solid s in Solids(fi, cache))
+            {
+                try
+                {
+                    foreach (Edge edge in s.Edges)
+                        foreach (XYZ p in edge.Tessellate()) pts.Add((p.X, p.Y, p.Z));
+                }
+                catch { }
+            }
+            if (pts.Count > 0) return pts;
+            BoundingBoxXYZ bb = null;
+            try { bb = fi.get_BoundingBox(null); } catch { }
+            if (bb == null) return pts;
+            for (int c = 0; c < 8; c++)
+                pts.Add(((c & 1) == 0 ? bb.Min.X : bb.Max.X, (c & 2) == 0 ? bb.Min.Y : bb.Max.Y, (c & 4) == 0 ? bb.Min.Z : bb.Max.Z));
+            return pts;
         }
 
         private static string SafeFamilyName(FamilyInstance fi)
