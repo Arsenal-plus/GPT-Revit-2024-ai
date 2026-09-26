@@ -22,6 +22,7 @@ $realProgramData = $env:ProgramData
 $env:ProgramData = $fakeData
 
 function New-State {
+    $script:readExtra = 0
     $script:nextId = 7000; $script:applies = 0; $script:removed = $false; $script:deleted = $null; $script:sent = @{}
     $script:floorId = $null; $script:ceilings = @(); $script:removeTargets = @()
 }
@@ -78,7 +79,7 @@ $fakeCall = {
                         openings = @([pscustomobject]@{ id = '7004'; read_from = 'rough' }, [pscustomobject]@{ id = '7005'; read_from = 'nominal' }) }) } }) $false ''
             }
             'read' {
-                $n = 30; $planes = 30; if ($script:removed) { $n = 0; $planes = 0 }
+                $n = 30 + $script:readExtra; $planes = 30; if ($script:removed) { $n = 0; $planes = 0 }
                 return Reply ([pscustomobject]@{ operation = 'read'; member_count = $n; work_plane_count = $planes; sources = @() }) $false ''
             }
             'ceiling' {
@@ -94,7 +95,9 @@ $fakeCall = {
 $script:wallApply = {
     param($arguments)
     $script:applies++
+    $state = 'verified_applied'; if ($script:applies -gt 1) { $state = 'no_op' }
     Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = ($script:applies -gt 1)
+        application = [pscustomobject]@{ state = $state; fully_applied = $true }
         postconditions = [pscustomobject]@{ all_verified = $true }
         evidence = [pscustomobject]@{ endpoint_read = @('location_curve'); source_joins_undone = 0; sources = @([pscustomobject]@{ source_id = 7003; already_applied = ($script:applies -gt 1)
             planned = 30; found = 30; max_endpoint_deviation_mm = 0.0; stud_crossings = 0; inserts_checked = 2; inserts_changed = 0; joined_to_source = 0 }) } }) $false ''
@@ -165,7 +168,7 @@ try {
     $script:wallApply = {
         param($arguments)
         $script:applies++
-        Reply ([pscustomobject]@{ already_applied = $false; postconditions = [pscustomobject]@{ all_verified = $true }
+        Reply ([pscustomobject]@{ already_applied = $false; application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
             evidence = [pscustomobject]@{ sources = @([pscustomobject]@{ found = 30; stud_crossings = 1; inserts_checked = 2; inserts_changed = 0 }) } }) $false ''
     }
     $badBy = RunBy $ctx
@@ -177,11 +180,29 @@ try {
     $script:wallApply = {
         param($arguments)
         $script:applies++
-        Reply ([pscustomobject]@{ already_applied = $false; postconditions = [pscustomobject]@{ all_verified = $true }
+        Reply ([pscustomobject]@{ already_applied = $false; application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
             evidence = [pscustomobject]@{ sources = @([pscustomobject]@{ found = 30; stud_crossings = 0; inserts_checked = 2; inserts_changed = 0 }) } }) $false ''
     }
     $dblBy = RunBy $ctx
     Check 'a second apply that is not already_applied fails' ($dblBy[$n[2]].Outcome -eq 'fail')
+
+    # ---- an idempotent apply declared 'uncertain' is a fail ----
+    New-State
+    $script:wallApply = {
+        param($arguments)
+        $script:applies++
+        Reply ([pscustomobject]@{ already_applied = ($script:applies -gt 1); application = [pscustomobject]@{ state = $(if ($script:applies -gt 1) { 'uncertain' } else { 'verified_applied' }) }
+            postconditions = [pscustomobject]@{ all_verified = $true }
+            evidence = [pscustomobject]@{ sources = @([pscustomobject]@{ found = 30; stud_crossings = 0; inserts_checked = 2; inserts_changed = 0 }) } }) $false ''
+    }
+    $unsureBy = RunBy $ctx
+    Check 'an idempotent apply declared uncertain fails' (($unsureBy[$n[1]].Outcome -eq 'pass') -and ($unsureBy[$n[2]].Outcome -eq 'fail'))
+
+    # ---- read counting more members than the plan (a doubled apply) is a fail ----
+    New-State
+    $script:readExtra = 30
+    $surplusBy = RunBy $ctx
+    Check 'read finding more members than planned fails' ($surplusBy[$n[3]].Outcome -eq 'fail')
 
     # ---- hangers carried by something that is not the staged floor are a fail ----
     New-State

@@ -350,5 +350,29 @@ namespace Horizun.Core.Tests
             plan.Members[1].X0 += 1;
             Assert.NotEqual(a, FramingPlanSignature.Of(plan.Members));
         }
+
+        [Fact]
+        public void Header_sill_and_blocking_types_left_out_are_named_in_the_warnings()
+        {
+            var input = Wall(3000);
+            input.Openings.Add(new WallOpeningSpan { Id = "win", Start = 1000, End = 1800, Sill = 900, Head = 2100 });
+            input.Blocking.Add(new BlockingRow { Height = 600 });
+            WallFramingPlan plan = WallFramingRules.Plan(input, Budget);
+            AssertSound(plan, input);
+            Assert.Contains("header_type_defaulted:track", plan.Warnings);
+            Assert.Contains("sill_type_defaulted:track", plan.Warnings);
+            Assert.Contains("blocking_type_defaulted:stud", plan.Warnings);
+        }
+
+        [Fact]
+        public void A_track_piece_shorter_than_revit_accepts_is_dropped_and_named()
+        {
+            var input = Wall(3000);
+            input.Openings.Add(new WallOpeningSpan { Id = "door", Start = 1000, End = 2999.5, Sill = 0, Head = 2100 });
+            WallFramingPlan plan = WallFramingRules.Plan(input, Budget);
+            Assert.All(plan.Members.Where(m => !FramingRoles.IsVertical(m.Role)),
+                m => Assert.True(Math.Abs(m.X1 - m.X0) >= WallFramingRules.MinPieceMm, m.Role + " of " + Math.Abs(m.X1 - m.X0) + " mm"));
+            Assert.Contains(plan.Warnings, x => x.StartsWith("short_piece_dropped:track@", StringComparison.Ordinal));
+        }
     }
 }

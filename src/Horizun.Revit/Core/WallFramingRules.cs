@@ -179,6 +179,12 @@ namespace Horizun.Revit.Core
     public static class WallFramingRules
     {
         private const double Tol = 1e-6;
+        /// <summary>
+        /// The shortest horizontal piece planned, mm. Revit refuses a line below its short-curve
+        /// tolerance (~0.8 mm) only at apply time, so a shorter piece would pass the rehearsal and
+        /// then fail the write; it is dropped here and named in the warnings instead.
+        /// </summary>
+        public const double MinPieceMm = 1.0;
 
         private sealed class Vertical
         {
@@ -326,14 +332,18 @@ namespace Horizun.Revit.Core
             double cursor = 0;
             foreach (WallOpeningSpan o in openings.Where(o => o.Sill <= zb + Tol))
             {
-                if (o.Start - cursor > Tol) plan.Members.Add(Horizontal(FramingRoles.Track, input.BottomTrackTypeKey, cursor, o.Start, tb / 2, -1));
+                if (o.Start - cursor >= MinPieceMm) plan.Members.Add(Horizontal(FramingRoles.Track, input.BottomTrackTypeKey, cursor, o.Start, tb / 2, -1));
+                else if (o.Start - cursor > Tol) plan.Warnings.Add("short_piece_dropped:track@" + Math.Round(cursor, 1));
                 cursor = Math.Max(cursor, o.End);
             }
-            if (L - cursor > Tol) plan.Members.Add(Horizontal(FramingRoles.Track, input.BottomTrackTypeKey, cursor, L, tb / 2, -1));
+            if (L - cursor >= MinPieceMm) plan.Members.Add(Horizontal(FramingRoles.Track, input.BottomTrackTypeKey, cursor, L, tb / 2, -1));
+            else if (L - cursor > Tol) plan.Warnings.Add("short_piece_dropped:track@" + Math.Round(cursor, 1));
             plan.Members.Add(Horizontal(FramingRoles.Track, input.TopTrackTypeKey ?? input.BottomTrackTypeKey, 0, L, H - tt / 2, -1));
 
-            // Headers between the kings, sills between the jacks.
+            // Headers between the kings, sills between the jacks. A header or sill type the spec
+            // leaves out falls back to the track's type, and says so: the prompt asks rather than guesses.
             double jackW = input.JackStuds ? w : 0;
+            bool headerDefaulted = false, sillDefaulted = false;
             bool headerOnLine = false, sillOnLine = false;
             for (int i = 0; i < openings.Count; i++)
             {
@@ -345,17 +355,22 @@ namespace Horizun.Revit.Core
                     plan.Members.Add(Horizontal(FramingRoles.Header, input.HeaderTypeKey ?? input.TopTrackTypeKey ?? input.BottomTrackTypeKey,
                         Math.Max(0, o.Start - jackW), Math.Min(L, o.End + jackW), o.Head + hd / 2, i));
                     headerOnLine |= hd <= Tol;
+                    headerDefaulted |= input.HeaderTypeKey == null;
                 }
                 if (!(o.Sill > zb + Tol)) continue;
                 if (!SillFits(o, zb, sd)) { plan.Warnings.Add("sill_does_not_fit_above_bottom_track:" + o.Id); continue; }
                 plan.Members.Add(Horizontal(FramingRoles.Sill, input.SillTypeKey ?? input.BottomTrackTypeKey, o.Start, o.End, o.Sill - sd / 2, i));
                 sillOnLine |= sd <= Tol;
+                sillDefaulted |= input.SillTypeKey == null;
             }
+            if (headerDefaulted) plan.Warnings.Add("header_type_defaulted:" + (input.TopTrackTypeKey ?? input.BottomTrackTypeKey));
+            if (sillDefaulted) plan.Warnings.Add("sill_type_defaulted:" + input.BottomTrackTypeKey);
             if (headerOnLine) plan.Warnings.Add("no_header_depth:header_axis_on_head_line");
             if (sillOnLine) plan.Warnings.Add("no_sill_depth:sill_axis_on_sill_line");
 
             // Blocking: split at every vertical spanning the row's height, interrupted across voids.
             List<Vertical> verticals = accepted.Concat(cripples).ToList();
+            bool blockingDefaulted = false;
             for (int r = 0; r < rows; r++)
             {
                 BlockingRow row = input.Blocking[r];
@@ -367,12 +382,15 @@ namespace Horizun.Revit.Core
                 {
                     double a = xs[k - 1] + w / 2, b = xs[k] - w / 2;
                     if (b - a <= Tol) continue;
+                    if (b - a < MinPieceMm) { plan.Warnings.Add("short_piece_dropped:blocking@" + Math.Round(a, 1)); continue; }
                     double mid = (a + b) / 2;
                     // The framed void: the opening plus its header and sill depths.
                     if (openings.Any(o => mid > o.Start && mid < o.End && h > o.Sill - sd - Tol && h < o.Head + hd + Tol)) continue;
+                    if (row.TypeKey == null) blockingDefaulted = true;
                     plan.Members.Add(Horizontal(FramingRoles.Blocking, row.TypeKey ?? input.StudTypeKey, a, b, h, r));
                 }
             }
+            if (blockingDefaulted) plan.Warnings.Add("blocking_type_defaulted:" + input.StudTypeKey);
 
             if (plan.Members.Count > maxMembers) { plan.Members.Clear(); plan.Refusal = "over_budget"; }
             return plan;

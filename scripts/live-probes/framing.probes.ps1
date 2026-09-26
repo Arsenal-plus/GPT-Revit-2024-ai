@@ -71,9 +71,12 @@ $script:HzProbeModules += [pscustomobject]@{
             $rfa = Join-Path $Ctx.ScratchRoot ('HZ_STUD_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa')
             $fam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $rft.FullName; output_path = $rfa
                     units = 'mm'; overwrite = $true; load_into_project = $true; types = @(@{ name = 'HZ_STUD_92'; values = @{} })
-                    forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 92
-                                 profile = @(, @(@(0, -20, 0), @(1000, -20, 0), @(1000, 20, 0), @(0, 20, 0))) }) } ($run + '-fr-family')
-            if ($fam.stage -eq 'apply' -and -not $fam.answer.isError -and $fam.answer.data.loaded_family) { $member = [long]@($fam.answer.data.loaded_family.symbol_ids)[0] }
+                    forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'yz'; depth = 1000
+                                 profile = @(, @(@(0, -20, -20.65), @(0, 20, -20.65), @(0, 20, 20.65), @(0, -20, 20.65))) }) } ($run + '-fr-family')
+            if ($fam.stage -eq 'apply' -and -not $fam.answer.isError -and $fam.answer.data.loaded_family) {
+                $member = [long]@($fam.answer.data.loaded_family.symbol_ids)[0]
+                if ($fam.answer.data.loaded_family.family_id) { [void]$created.Add([long]$fam.answer.data.loaded_family.family_id) }   # the authored family goes at cleanup too
+            }
         }
         $level = Create @(@{ kind = 'level'; name = "HZ_FR_$run"; elevation = $E }) 'level'
         $wall = $null; $door = $null; $window = $null
@@ -118,25 +121,28 @@ $script:HzProbeModules += [pscustomobject]@{
             $ev = $null
             if ($a.answer.data) { $ev = @($a.answer.data.evidence.sources)[0] }
             if ($a.stage -ne 'apply' -or $a.answer.isError -or $a.answer.data.postconditions.all_verified -ne $true -or -not $ev) { Case $catalog[1] $T 'fail' ('apply: ' + (Short $a.answer)) }
+            elseif ([string]$a.answer.data.application.state -ne 'verified_applied') { Case $catalog[1] $T 'fail' "application.state '$($a.answer.data.application.state)', expected verified_applied" }
             elseif ([int]$ev.stud_crossings -ne 0 -or [int]$ev.inserts_changed -ne 0 -or [int]$ev.inserts_checked -ne 2 -or [int]$ev.found -ne $planned) {
                 Case $catalog[1] $T 'fail' "crossings $($ev.stud_crossings), inserts changed $($ev.inserts_changed) of $($ev.inserts_checked), found $($ev.found) of $planned" }
             else { $applied = $true; Case $catalog[1] $T 'pass' ("$($ev.found) members re-read, max endpoint deviation $($ev.max_endpoint_deviation_mm) mm, read by " + (@($a.answer.data.evidence.endpoint_read) -join ',') + ", joins with the wall undone $($a.answer.data.evidence.source_joins_undone)") }
             if (-not $applied) { Case $catalog[2] $T 'not_covered' 'the first apply did not verify' }
             else {
                 $b = & $Ctx.Apply $T $wallArgs ($run + '-fr-apply-again')
-                if ($b.stage -eq 'apply' -and -not $b.answer.isError -and $b.answer.data.already_applied -eq $true -and $b.answer.data.postconditions.all_verified -eq $true) { Case $catalog[2] $T 'pass' 'already_applied, the existing members re-read against the plan' }
+                if ($b.stage -eq 'apply' -and -not $b.answer.isError -and $b.answer.data.already_applied -eq $true -and $b.answer.data.postconditions.all_verified -eq $true -and [string]$b.answer.data.application.state -eq 'no_op') { Case $catalog[2] $T 'pass' 'already_applied (application no_op), the existing members re-read against the plan' }
                 else { Case $catalog[2] $T 'fail' ('second apply: ' + (Short $b.answer)) }
             }
         }
 
         # ==== 4: read, 5: remove ===========================================================
+        $wallFramingGone = $true
         if (-not $applied) { Case $catalog[3] $T 'not_covered' 'nothing was applied'; Case $catalog[4] $T 'not_covered' 'nothing was applied' }
         else {
             $r = & $Ctx.Call $T @{ operation = 'read'; target_document = $doc; element_ids = @($wall) }
-            if (-not $r.isError -and [int]$r.data.member_count -ge $planned) { Case $catalog[3] $T 'pass' "$($r.data.member_count) marked element(s) for wall $wall" }
+            if (-not $r.isError -and [int]$r.data.member_count -eq $planned) { Case $catalog[3] $T 'pass' "$($r.data.member_count) marked element(s) for wall $wall" }
             else { Case $catalog[3] $T 'fail' ('read: ' + (Short $r)) }
             $rm = & $Ctx.Apply $T @{ operation = 'remove'; target_document = $doc; element_ids = @($wall) } ($run + '-fr-remove')   # not $x: names are case-insensitive and $X is the staging origin the ceiling cases reuse
             $after = & $Ctx.Call $T @{ operation = 'read'; target_document = $doc; element_ids = @($wall) }
+            $wallFramingGone = ($rm.stage -eq 'apply' -and -not $rm.answer.isError -and $rm.answer.data.postconditions.all_verified -eq $true)
             if ($rm.stage -eq 'apply' -and -not $rm.answer.isError -and $rm.answer.data.postconditions.all_verified -eq $true -and ([int]$after.data.member_count + [int]$after.data.work_plane_count) -eq 0) { Case $catalog[4] $T 'pass' ("removed $(@($rm.answer.data.evidence.removed_ids).Count) element(s); read finds none") }
             else { Case $catalog[4] $T 'fail' ('remove: ' + (Short $rm.answer) + ' / read after: ' + $after.data.member_count) }
         }
@@ -234,7 +240,8 @@ $script:HzProbeModules += [pscustomobject]@{
         # ==== 9: cleanup ==================================================================
         # The ceiling's members are not hosted by it: deleting the ceiling would orphan
         # them, so operation=remove runs first whenever an apply committed.
-        $notes = @(); $framingGone = $true
+        $notes = @(); $framingGone = $wallFramingGone
+        if (-not $wallFramingGone) { $notes += 'the wall framing was not removed' }
         if ($cCommitted) {
             $cx = & $Ctx.Apply $T @{ operation = 'remove'; target_document = $doc; element_ids = @($ceilingA) } ($run + '-fr-ceiling-remove')
             $framingGone = ($cx.stage -eq 'apply' -and -not $cx.answer.isError -and $cx.answer.data.postconditions.all_verified -eq $true)

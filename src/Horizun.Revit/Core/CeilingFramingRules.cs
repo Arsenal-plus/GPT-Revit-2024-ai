@@ -124,7 +124,11 @@ namespace Horizun.Revit.Core
                     for (int i = 0; i < loop.Count; i++)
                     {
                         double[] p = loop[i], q = loop[(i + 1) % loop.Count];
-                        if (Math.Abs(q[0] - p[0]) + Math.Abs(q[1] - p[1]) <= Tol) continue;
+                        if (Math.Sqrt((q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1])) < WallFramingRules.MinPieceMm)
+                        {
+                            if (Math.Abs(q[0] - p[0]) + Math.Abs(q[1] - p[1]) > Tol) plan.Warnings.Add("short_piece_dropped:perimeter@" + Math.Round(p[0], 1) + "," + Math.Round(p[1], 1));
+                            continue;
+                        }
                         plan.Members.Add(new FramingMember { Role = FramingRoles.Perimeter, TypeKey = input.PerimeterTypeKey, X0 = p[0], Y0 = p[1], X1 = q[0], Y1 = q[1] });
                     }
 
@@ -256,7 +260,7 @@ namespace Horizun.Revit.Core
                 }
             us.Sort();
             for (int i = 0; i + 1 < us.Count; i += 2)
-                if (us[i + 1] - us[i] > Tol) yield return new[] { us[i], us[i + 1] };
+                if (us[i + 1] - us[i] >= WallFramingRules.MinPieceMm) yield return new[] { us[i], us[i + 1] };   // shorter: Revit refuses it at apply
         }
 
         private static double Extent(IReadOnlyList<double[]> loop, double angle)

@@ -63,7 +63,8 @@ namespace Horizun.Revit.Commands
                     members.Add(row);
                 }
                 var counts = new JObject();
-                foreach (IGrouping<string, KeyValuePair<Element, FramingMark>> r in g.GroupBy(p => p.Value.Role).OrderBy(r => r.Key, StringComparer.Ordinal))
+                foreach (IGrouping<string, KeyValuePair<Element, FramingMark>> r in g.Where(p => p.Value.Role != FramingMarker.WorkPlaneRole)
+                                                                                     .GroupBy(p => p.Value.Role).OrderBy(r => r.Key, StringComparer.Ordinal))
                     counts[r.Key] = r.Count();
                 bySource.Add(new JObject
                 {
@@ -74,6 +75,7 @@ namespace Horizun.Revit.Commands
                     ["spec_hashes"] = new JArray(g.Select(p => p.Value.SpecHash).Distinct().ToArray()),
                     ["plan_signatures"] = new JArray(g.Select(p => p.Value.PlanSignature).Distinct().ToArray()),
                     ["count_by_role"] = counts,
+                    ["work_plane_count"] = g.Count(p => p.Value.Role == FramingMarker.WorkPlaneRole),
                     ["members"] = members
                 });
             }

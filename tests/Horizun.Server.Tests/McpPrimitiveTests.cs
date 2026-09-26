@@ -182,6 +182,8 @@ namespace Horizun.Server.Tests
                     ["messages"][0]["content"]["text"];
                 Assert.Contains("horizun_framing operation=" + kind, text);
                 Assert.Contains("dry_run=true", text);
+                Assert.Contains("confirmation_token", text);
+                Assert.Contains("dry_run=false", text);
                 Assert.Contains("101,102", text);
                 Assert.Contains("MILLIMETRES", text);
                 Assert.Contains(kind == "wall" ? "cripple_spacing_mm" : "max_length_mm", text);

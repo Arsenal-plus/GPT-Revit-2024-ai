@@ -468,7 +468,7 @@ namespace Horizun.Server
                         "4) A value the detail does not show or you cannot read is ASKED, with the options the detail allows and what each changes - " +
                         "never filled from a guess or a typical value. 5) Show the complete spec as JSON with, for each value, where in the detail it came from, " +
                         "and get it confirmed. 6) Call horizun_framing operation=" + kind + " with dry_run=true; show counts per role, warnings and the openings it read. " +
-                        "7) Only after the person agrees, apply with the confirmation_token and an idempotency_key, and report the postconditions as re-read. " +
+                        "7) Only after the person agrees, call again with dry_run=false, the confirmation_token and an idempotency_key; report the postconditions as re-read. " +
                         "A refusal names the field to fix; framing from another spec must be removed (operation=remove) before a new one.";
                     break;
                 }

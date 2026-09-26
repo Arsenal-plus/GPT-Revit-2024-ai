@@ -19,7 +19,8 @@
 //
 // Defaults are geometric, never an organisation's rule: stud.start = wall_start,
 // layer = core, king_studs = 1, jack_studs = true, the top track = the bottom
-// track's type, hanger.max_length_mm = 3000, hanger.end_offset_mm = half the
+// track's type, a header / sill / blocking type left out = the track's / bottom
+// track's / stud's type (each named in the plan's warnings), hanger.max_length_mm = 3000, hanger.end_offset_mm = half the
 // hanger spacing (the same centred-strip logic the grid uses), drop_mm = 0.
 //
 // The spec hash (canonical JSON, keys sorted) is what the marker on every member
@@ -59,7 +60,7 @@ namespace Horizun.Revit.Core
         public double? StudWidthMm { get; set; }
         public long BottomTrackTypeId { get; set; }
         public long TopTrackTypeId { get; set; }
-        /// <summary>Null: the command measures the track type's thickness.</summary>
+        /// <summary>Null is refused by the command: no section parameter says which size is the thickness under a stud.</summary>
         public double? TrackThicknessMm { get; set; }
         public int KingStuds { get; set; } = 1;
         public bool JackStuds { get; set; } = true;
