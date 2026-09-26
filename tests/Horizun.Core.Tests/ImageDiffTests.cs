@@ -106,6 +106,34 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Default_dilation_still_drops_a_single_pixel_speck()
+        {
+            // One raw pixel dilated by the default radius 2 is a 25-pixel block (9 at a corner),
+            // always >= the default minRegionPixels 8: the threshold must be judged on RAW pixels.
+            int w = 30, h = 30;
+            int[] before = Solid(White, w, h);
+            int[] after = (int[])before.Clone();
+            after[15 * w + 15] = Black;
+            after[0] = Black; // and one in the corner
+            ImageDiffResult r = ImageDiff.Compare(before, after, w, h);
+            Assert.Empty(r.Regions);
+            Assert.Equal(2, r.ChangedPixelCount);
+        }
+
+        [Fact]
+        public void Default_dilation_keeps_a_real_change_and_reports_its_raw_count()
+        {
+            int w = 30, h = 30;
+            int[] before = Solid(White, w, h);
+            int[] after = (int[])before.Clone();
+            for (int y = 10; y < 13; y++) for (int x = 10; x < 13; x++) after[y * w + x] = Black; // 3x3 = 9 raw
+            ImageDiffResult r = ImageDiff.Compare(before, after, w, h);
+            ImageDiffRegion region = Assert.Single(r.Regions);
+            Assert.Equal(9, region.RawPixelCount);
+            Assert.Equal(49, region.PixelCount); // 7x7 after dilation by 2
+        }
+
+        [Fact]
         public void Overlay_paints_only_masked_pixels_and_leaves_the_rest_untouched()
         {
             int w = 4, h = 4;

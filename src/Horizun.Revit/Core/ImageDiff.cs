@@ -4,18 +4,18 @@
 // horizun_verify_changes (operation=compare_to) - the pixel math behind
 // before/after visual diffing, Revit-free so it is unit-testable on plain net8.
 //
-// Deliberately no `using System.Drawing` and no `using Autodesk.*` here: PNG
-// decode/encode is the add-in's job (VerifyChangesSnapshot.cs, which is allowed
-// System.Drawing because it never runs in this test project). This file only
-// ever sees raw ARGB pixels as packed 32-bit ints (0xAARRGGBB, matching
-// System.Drawing.Color.ToArgb() and Bitmap's Format32bppArgb once its BGRA
-// bytes are read back as a little-endian int) plus width/height - arrays a
-// unit test can build by hand.
+// Deliberately no imaging and no `using Autodesk.*` here: PNG decode/encode is
+// the add-in's job (VerifyChangesSnapshot.cs decodes with WPF's
+// PngBitmapDecoder to Bgra32, whose bytes read as little-endian ints are
+// 0xAARRGGBB). This file only ever sees those packed 32-bit ints plus
+// width/height - arrays a unit test can build by hand.
 //
 // Pipeline: per-pixel threshold -> square dilation (a one-pixel building edge
 // should not vanish because its own antialiasing sits just under the
 // threshold on one side) -> 4-connected labelling into regions, each with a
-// pixel bounding box and its own pixel count so a caller can drop specks.
+// pixel bounding box and its RAW (undilated) pixel count, so a caller can drop
+// specks: a single raw pixel dilated by r becomes a (2r+1)^2 block, which a
+// threshold on the dilated count would never drop.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -26,7 +26,10 @@ namespace Horizun.Revit.Core
     public sealed class ImageDiffRegion
     {
         public int MinX, MinY, MaxX, MaxY;
+        /// <summary>Pixels of the (dilated) connected component - the region's footprint.</summary>
         public int PixelCount;
+        /// <summary>Raw above-threshold pixels inside the component; minRegionPixels is judged on this.</summary>
+        public int RawPixelCount;
     }
 
     public sealed class ImageDiffResult
@@ -55,8 +58,9 @@ namespace Horizun.Revit.Core
         /// even with nothing moved, so 0 would flag noise as change. dilateRadius grows
         /// the raw mask by that many pixels (Chebyshev/square) before labelling, so a
         /// thin edge does not fragment into many tiny regions. minRegionPixels drops
-        /// specks (isolated antialiasing) from Regions without changing ChangedPixelRatio,
-        /// which is always measured on the RAW (undilated) mask.
+        /// specks (isolated antialiasing) from Regions without changing ChangedPixelRatio;
+        /// both are judged on the RAW (undilated) mask - a region survives only when it
+        /// holds at least minRegionPixels raw changed pixels, whatever the dilation.
         /// </summary>
         public static ImageDiffResult Compare(int[] before, int[] after, int width, int height,
             int threshold = 24, int dilateRadius = 2, int minRegionPixels = 8)
@@ -80,7 +84,7 @@ namespace Horizun.Revit.Core
             }
 
             bool[] dilated = dilateRadius == 0 ? raw : Dilate(raw, width, height, dilateRadius);
-            List<ImageDiffRegion> regions = Label(dilated, width, height, minRegionPixels);
+            List<ImageDiffRegion> regions = Label(dilated, width, height, minRegionPixels, raw);
 
             return new ImageDiffResult
             {
@@ -134,11 +138,17 @@ namespace Horizun.Revit.Core
             return false;
         }
 
-        /// <summary>4-connected labelling into bounding boxes, iterative BFS (no recursion depth risk on a large mask).</summary>
-        public static List<ImageDiffRegion> Label(bool[] mask, int width, int height, int minRegionPixels)
+        /// <summary>
+        /// 4-connected labelling into bounding boxes, iterative BFS (no recursion depth risk on a
+        /// large mask). raw (optional, same size) is the undilated mask: each region counts its raw
+        /// pixels and is kept only when that count reaches minRegionPixels. Without raw the
+        /// component's own size is used.
+        /// </summary>
+        public static List<ImageDiffRegion> Label(bool[] mask, int width, int height, int minRegionPixels, bool[] raw = null)
         {
             if (mask == null) throw new ArgumentNullException(nameof(mask));
             if (mask.Length != (long)width * height) throw new ArgumentException("mask.Length must equal width*height.");
+            if (raw != null && raw.Length != mask.Length) throw new ArgumentException("raw.Length must equal mask.Length.");
             var visited = new bool[mask.Length];
             var regions = new List<ImageDiffRegion>();
             var stack = new Stack<int>();
@@ -147,12 +157,13 @@ namespace Horizun.Revit.Core
                 if (!mask[start] || visited[start]) continue;
                 visited[start] = true;
                 stack.Push(start);
-                int minX = start % width, maxX = minX, minY = start / width, maxY = minY, count = 0;
+                int minX = start % width, maxX = minX, minY = start / width, maxY = minY, count = 0, rawCount = 0;
                 while (stack.Count > 0)
                 {
                     int idx = stack.Pop();
                     int x = idx % width, y = idx / width;
                     count++;
+                    if (raw == null || raw[idx]) rawCount++;
                     if (x < minX) minX = x; if (x > maxX) maxX = x;
                     if (y < minY) minY = y; if (y > maxY) maxY = y;
                     if (x > 0) TryPush(mask, visited, width, idx - 1, stack);
@@ -160,8 +171,8 @@ namespace Horizun.Revit.Core
                     if (y > 0) TryPush(mask, visited, width, idx - width, stack);
                     if (y < height - 1) TryPush(mask, visited, width, idx + width, stack);
                 }
-                if (count >= minRegionPixels)
-                    regions.Add(new ImageDiffRegion { MinX = minX, MinY = minY, MaxX = maxX, MaxY = maxY, PixelCount = count });
+                if (rawCount >= minRegionPixels)
+                    regions.Add(new ImageDiffRegion { MinX = minX, MinY = minY, MaxX = maxX, MaxY = maxY, PixelCount = count, RawPixelCount = rawCount });
             }
             regions.Sort((a, b) => b.PixelCount.CompareTo(a.PixelCount));
             return regions;
