@@ -26,10 +26,10 @@ $script:HzProbeModules += [pscustomobject]@{
         $created = New-Object System.Collections.ArrayList
         function Short($a) { $t = [string]$a.text; if ($t.Length -gt 400) { $t.Substring(0, 400) } else { $t } }
         function Applied($r) { $r.stage -eq 'apply' -and -not $r.answer.isError -and $r.answer.data }
-        function FirstType($category) {
-            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 200 }
-            if (-not $q.data) { return $null }
-            return @($q.data.rows | Where-Object { $_.is_element_type }) | Select-Object -First 1
+        function Types($category) {
+            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 500 }
+            if (-not $q.data) { return @() }
+            return @($q.data.rows | Where-Object { $_.is_element_type })
         }
         function Create($element, $key) {
             $r = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @($element) } ($run + '-egr-' + $key)
@@ -43,8 +43,32 @@ $script:HzProbeModules += [pscustomobject]@{
         # ---- staging: own level, plan, walls, door, room. MEASURED coordinates in mm. ----
         $E = 97000.0; $X = 760000.0; $Y = 0.0; $W = 6000.0; $D = 4000.0
         $levelId = Create @{ kind = 'level'; name = "HZ_EGR_$run"; elevation = $E } 'level'
-        $wallType = FirstType 'OST_Walls'
-        $doorType = FirstType 'OST_Doors'
+        # A curtain or stacked wall would take the door as a panel, not as a hosted opening.
+        $wallType = @(Types 'OST_Walls' | Where-Object { -not ($_.family -match 'Curtain|cortina|Stacked|apilad' -or $_.type -match 'Curtain|cortina') }) | Select-Object -First 1
+        $doorType = Types 'OST_Doors' | Select-Object -First 1
+        $doorWhy = ''
+        if (-not $doorType) {
+            # MEASURED (spatial-coherence.probes.ps1): the write fixture carries no door family.
+            # Bring ONE door type from this Revit's own Autodesk template, learning its exact
+            # name from the refusal that lists what the template holds.
+            # TemplateRoot exists only for the offline tests; a live run always uses Revit's own.
+            $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
+            $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte', 'English-Imperial\Default-Multi-Discipline.rte', 'English\Default-Multi-Discipline_Metric.rte') |
+                ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+            if (-not $tpl) { $doorWhy = ' no door type and no Autodesk template under ' + $tplRoot }
+            else {
+                $probe = & $Ctx.Call 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @('__hz_probe_no_such_type__') }
+                $listed = [regex]::Match([string]$probe.text, 'Types there[^:]*:\s*(.+)$', 'Singleline')
+                $name = if ($listed.Success) { (($listed.Groups[1].Value -split ' \| ')[0] -replace '\s*(\.\.\.)?\.?\s*$', '').Trim() } else { $null }
+                if (-not $name) { $doorWhy = ' the template listed no door type: ' + (Short $probe) }
+                else {
+                    $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @($name); duplicate_types = 'use_destination' } ($run + '-egr-doortype')
+                    $doorType = Types 'OST_Doors' | Select-Object -First 1
+                    if ($doorType) { [void]$created.Add([long]$doorType.element_id) }
+                    else { $doorWhy = " copying '$name' gave no door type: stage=" + $cp.stage + ' ' + (Short $cp.answer) }
+                }
+            }
+        }
         $planId = $null
         if ($levelId) {
             $mv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; units = 'mm'
@@ -60,14 +84,17 @@ $script:HzProbeModules += [pscustomobject]@{
                                     level_id = $levelId; type_id = $wallType.element_id } "wall$k"
             }
         }
+        # create_elements has no 'door' kind: a door is a family_instance hosted on its wall
+        # (the same row spatial-coherence.probes.ps1 stages and live-verifies).
         $doorPoint = @(($X + $W / 2), $Y, $E)
         $doorId = if ($walls.Count -eq 4 -and $walls[0] -and $doorType) {
-            Create @{ kind = 'door'; host_id = $walls[0]; point = $doorPoint; level_id = $levelId; type_id = $doorType.element_id } 'door'
+            Create @{ kind = 'family_instance'; type_id = $doorType.element_id; point = $doorPoint; coordinate_mode = 'absolute'
+                      level_id = $levelId; host_id = $walls[0] } 'door'
         } else { $null }
         $roomId = if ($doorId) { Create @{ kind = 'room'; point = @(($X + $W / 2), ($Y + $D / 2), $E); level_id = $levelId } 'room' } else { $null }
 
         if (-not ($planId -and $doorId -and $roomId)) {
-            $why = "staging incomplete: level=$levelId plan=$planId walls=$(@($walls | Where-Object { $_ }).Count) door=$doorId room=$roomId"
+            $why = "staging incomplete: level=$levelId plan=$planId walls=$(@($walls | Where-Object { $_ }).Count) door=$doorId room=$roomId" + $doorWhy
             for ($i = 0; $i -lt 3; $i++) { Case $catalog[$i] $tools[$i] 'unverified' $why }
         }
         else {
