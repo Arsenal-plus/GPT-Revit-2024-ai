@@ -108,8 +108,19 @@ $script:HzProbeModules += [pscustomobject]@{
                     Case 2 'not_covered' ("the fixture lacks what this case needs (plan=" + $plan.view_id + ', text_type=' + $textType.element_id + ')')
                 }
                 else {
+                    # AN OWN PLAN OF THE OWN LEVEL, NO CROP. The overlap check compares what a
+                    # view SHOWS; MEASURED 2026-09-26 (Revit 2023) the first fixture plan was a
+                    # cropped callout, the notes landed outside what it shows and nothing was
+                    # compared - and its crop_box is in the view's own coordinates, so aiming at
+                    # its centre from model coordinates missed too.
                     $viewId = [long]$plan.view_id
                     $px = $X; $py = $Y + 45000.0
+                    if ($levelId) {
+                        $pv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(@{ operation = 'create_floor_plan'; level_id = [long]$levelId; name = "HZ_SESSION_PLAN_$run"; key = 'splan' }) } ($run + '-st-plan')
+                        if ($pv.stage -eq 'apply' -and -not $pv.answer.isError -and $pv.answer.data.aliases.splan) {
+                            $viewId = [long]$pv.answer.data.aliases.splan; [void]$created.Add($viewId)
+                        }
+                    }
                     $an = & $Ctx.Apply 'horizun_annotate' @{ target_document = $doc
                         actions = @(
                             @{ operation = 'text'; view_id = $viewId; point = @($px, $py); text = "HZ_OVL_A_$run"; text_type_id = [long]$textType.element_id }

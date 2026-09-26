@@ -1702,6 +1702,7 @@ namespace Horizun.Contracts
         ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""area_scheme_id"": { ""type"": ""integer"", ""description"": ""create_area_plan: the AreaScheme the plan belongs to."" },
+        ""area_scheme_name"": { ""type"": ""string"", ""description"": ""create_area_plan: the scheme by name, e.g. Gross Building; a refusal lists the schemes."" },
         ""parent_view_id"": { ""type"": ""integer"", ""description"": ""create_callout: the view the callout is drawn in."" },
         ""parent_view_key"": { ""type"": ""string"" },
         ""phase_id"": { ""type"": ""integer"", ""description"": ""set_phase: the Phase the view shows."" },

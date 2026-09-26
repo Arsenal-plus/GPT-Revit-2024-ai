@@ -79,6 +79,28 @@ $script:HzProbeModules += [pscustomobject]@{
         if ($qv.data) { $plan = @($qv.data.rows | Where-Object { $_.view_type -eq 'FloorPlan' -and $_.is_template -ne $true })[0] }
         $qw = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Walls'); max_rows = 1 }
         if ($qw.data) { $wall = @($qw.data.rows)[0] }
+        # STAGED WHEN THE FIXTURE HAS NO WALL. MEASURED 2026-09-26: the 2023-2027 HVAC write
+        # models hold no host wall, and their plans show only linked content, so the
+        # precedence report, color_by_value and hide_elements had nothing of their own to
+        # act on. An own level, an own wall on it and an own plan of that level give all
+        # three a wall the view really shows; they are deleted last, level after its views.
+        $staged = New-Object System.Collections.Generic.List[long]
+        if (-not $wall) {
+            $sE = 97000.0; $sX = 990000.0
+            $sl = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'level'; name = "HZ_VG_LV_$tag"; elevation = $sE }) } 'vg-stage-level'
+            $slId = if (Applied $sl) { [long]@($sl.answer.data.rows)[0].element_id } else { $null }
+            if ($slId) {
+                $sw = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'wall'; start = @($sX, 0, $sE); end = @(($sX + 4000), 0, $sE); level_id = $slId; height = 3000 }) } 'vg-stage-wall'
+                $swId = if (Applied $sw) { [long]@($sw.answer.data.rows)[0].element_id } else { $null }
+                $sp = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(@{ operation = 'create_floor_plan'; level_id = $slId; name = "HZ_VG_PLAN_$tag"; key = 'vgplan' }) } 'vg-stage-plan'
+                $spId = if (Applied $sp -and $sp.answer.data.aliases) { [long]$sp.answer.data.aliases.vgplan } else { $null }
+                foreach ($id in @($swId, $spId, $slId)) { if ($id) { $staged.Add($id) } }
+                if ($swId -and $spId) {
+                    $wall = [pscustomobject]@{ element_id = $swId }
+                    $plan = [pscustomobject]@{ view_id = $spId; view_type = 'FloorPlan'; is_template = $false }
+                }
+            }
+        }
 
         $dup = $null; $f1 = $null; $f2 = $null; $tpl = $null
         if (-not $plan) {
@@ -290,8 +312,24 @@ $script:HzProbeModules += [pscustomobject]@{
         else {
             # ---- color_by_value: each legend value's OVERRIDE COLOUR is re-read, not
             # ---- only that a filter got attached and made visible ---------------------
+            # The legend is built from what the VIEW shows, so colour a category the own
+            # view really shows (an HVAC fixture has no walls; MEASURED 2026-09-26: an empty
+            # view is now refused in the rehearsal, before any token).
+            # WALLS SHOWN AGAIN FIRST. Case 4 hid the Walls category on this very view (and the
+            # template round trip keeps it hidden), and a hidden category hides its elements:
+            # color_by_value then finds no wall to colour, and hide_elements would read a wall
+            # "not visible" that its own hide did not hide (MEASURED 2026-09-26).
+            $unhide = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
+                    @{ operation = 'set_category_visibility'; view_id = $dup; category = 'OST_Walls'; hidden = $false }) } 'vg-unhide-walls'
+            $unhideNote = if (Applied $unhide) { '' } else { ' (walls could not be shown again on the own view: ' + (Short $unhide.answer) + ')' }
+            $cbvCategory = $null
+            foreach ($c in @('OST_Walls', 'OST_DuctCurves', 'OST_PipeCurves', 'OST_MechanicalEquipment', 'OST_Floors', 'OST_StructuralColumns', 'OST_Doors')) {
+                $seen = & $Ctx.Call 'horizun_query_model' @{ target_document = $doc; scope = 'view'; view_id = $dup; categories = @($c); include_types = $false; include_links = $false; max_rows = 1 }
+                if ($seen.data -and ([int]$seen.data.matched_total -gt 0 -or @($seen.data.rows).Count -gt 0)) { $cbvCategory = $c; break }
+            }
+            if (-not $cbvCategory) { $cbvCategory = 'OST_Walls' }
             $cbv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
-                    @{ operation = 'color_by_value'; view_id = $dup; categories = @('OST_Walls'); parameter = 'ALL_MODEL_MARK'
+                    @{ operation = 'color_by_value'; view_id = $dup; categories = @($cbvCategory); parameter = 'ALL_MODEL_MARK'
                        filter_prefix = "HZ_CBV_$tag" }) } 'vg-color-by-value'
             if (Applied $cbv) {
                 $row = @($cbv.answer.data.rows)[0]
@@ -304,7 +342,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 }
                 else { Out-Case 13 'fail' ('overrides_verified: ' + ($ov | ConvertTo-Json -Compress -Depth 5)) }
             }
-            else { Out-Case 13 'fail' (Short $cbv.answer) }
+            else { Out-Case 13 'fail' ((Short $cbv.answer) + $unhideNote) }
 
             # ---- hide_elements (temporary): the SPECIFIC requested id must read
             # ---- not-visible in the view's temporary mode, not only that the mode is on
@@ -333,6 +371,9 @@ $script:HzProbeModules += [pscustomobject]@{
         }
 
         # ---- cleanup ------------------------------------------------------------------------
+        # The staged wall, plan and level go LAST (in that order): the level would take
+        # every view of it with it, and a view already gone is not "deleted" by the call.
+        foreach ($id in $staged) { $created.Add($id) }
         if ($created.Count -eq 0) { Out-Case 12 'unverified' 'nothing was created' }
         else {
             $del = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = @($created.ToArray()); id_cap = 50 } 'vg-cleanup'

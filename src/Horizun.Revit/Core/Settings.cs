@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP - original Horizun code.
 //
 // The few things that must be switched on deliberately.
@@ -135,12 +135,7 @@ namespace Horizun.Revit.Core
             {
                 FileState state;
                 JObject o = Read(out state);
-                if (state == FileState.Malformed) return "read_only"; // an unreadable choice never elevates
-                string p = o?.Value<string>("permission_profile");
-                if (string.IsNullOrWhiteSpace(p)) return "safe_write";
-                p = p.ToLowerInvariant();
-                return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
-                    ? p : "read_only"; // malformed privilege never elevates
+                return ProfileFrom(o, state);
             }
         }
 
@@ -272,7 +267,13 @@ namespace Horizun.Revit.Core
                          "Only horizun_health remains available to report that state; resume from the Revit ribbon.";
                 return false;
             }
-            JObject settings = Read();
+            // ONE read decides the whole admission, so the profile and the reason given for
+            // it come from the same bytes (a second read could disagree with the first).
+            JObject settings = Read(out FileState settingsState, out string settingsFailure);
+            string fellClosed = settingsState == FileState.Malformed
+                ? " (" + Path() + " did not decide this: " + settingsFailure + ". An unreadable or malformed " +
+                  "choice never elevates, so read_only applies whatever the file says; retry once the file reads.)"
+                : "";
             HashSet<string> denied = Strings(settings?["denied_tools"] as JArray);
             HashSet<string> allowed = Strings(settings?["allowed_tools"] as JArray);
             if (denied.Contains(contract.Name))
@@ -292,7 +293,7 @@ namespace Horizun.Revit.Core
                 { reason = ToolPacks.HiddenReason(contract.Name, packs); return false; }
             }
 
-            string profile = PermissionProfile;
+            string profile = ProfileFrom(settings, settingsState);
             JToken persistentUiToken = settings?["execute_python_ui_granted"];
             bool persistentUiGrant = persistentUiToken != null &&
                                      persistentUiToken.Type == JTokenType.Boolean &&
@@ -314,7 +315,7 @@ namespace Horizun.Revit.Core
             {
                 reason = contract.Name + " is hidden/refused by permission_profile=read_only in " + Path() +
                          ": read_only changes nothing - not the model, not the document session, and nothing " +
-                         "written outside it.";
+                         "written outside it." + fellClosed;
                 return false;
             }
             if (!humanPythonGrant && profile == "safe_write" &&
@@ -339,7 +340,7 @@ namespace Horizun.Revit.Core
                 reason = "horizun_execute_python requires explicit permission_profile=unsafe_code and " +
                          "enable_execute_python=true in " + Path() + ", OR a persistent owner grant made from " +
                          "Revit's Python ON/OFF button. It is OFF on a fresh install. Only the machine's owner " +
-                         "may grant that privilege, and it remains OFF until that owner does so.";
+                         "may grant that privilege, and it remains OFF until that owner does so." + fellClosed;
                 return false;
             }
             return true;
@@ -512,17 +513,57 @@ namespace Horizun.Revit.Core
         /// </summary>
         private enum FileState { Absent, Readable, Malformed }
 
-        private static JObject Read(out FileState state)
+        private static JObject Read(out FileState state) => Read(out state, out string ignored);
+
+        // A SHARING VIOLATION IS NOT A CHOICE. MEASURED 2026-09-26: a call refused as
+        // "permission_profile=read_only in settings.json" while the file said unsafe_code
+        // before and after - the read had failed for an instant, fell closed (right), and
+        // the refusal then claimed the file SAID read_only (wrong). An I/O failure is
+        // retried briefly; one that persists still falls closed, and 'failure' names it so
+        // no refusal attributes to the owner a setting the owner never wrote.
+        private static JObject Read(out FileState state, out string failure)
         {
-            try
+            failure = null;
+            string p = Path();
+            for (int attempt = 1; ; attempt++)
             {
-                string p = Path();
-                if (!File.Exists(p)) { state = FileState.Absent; return new JObject(); }
-                JObject o = JObject.Parse(File.ReadAllText(p));
-                state = FileState.Readable;
-                return o;
+                try
+                {
+                    if (!File.Exists(p)) { state = FileState.Absent; return new JObject(); }
+                    string text = File.ReadAllText(p);
+                    try { JObject o = JObject.Parse(text); state = FileState.Readable; return o; }
+                    catch (Exception parse)
+                    {
+                        state = FileState.Malformed;
+                        failure = "it is not valid JSON (" + parse.Message + ")";
+                        return new JObject();
+                    }
+                }
+                catch (Exception io) when (io is IOException || io is UnauthorizedAccessException)
+                {
+                    if (attempt < 5) { System.Threading.Thread.Sleep(40); continue; }
+                    state = FileState.Malformed;
+                    failure = "it could not be read after " + attempt + " attempts (" + io.GetType().Name + ": " + io.Message + ")";
+                    return new JObject();
+                }
+                catch (Exception other)
+                {
+                    state = FileState.Malformed;
+                    failure = "it could not be read (" + other.GetType().Name + ": " + other.Message + ")";
+                    return new JObject();
+                }
             }
-            catch { state = FileState.Malformed; return new JObject(); }
+        }
+
+        /// <summary>The profile one read of the file decides, and why when it fell closed.</summary>
+        private static string ProfileFrom(JObject o, FileState state)
+        {
+            if (state == FileState.Malformed) return "read_only"; // an unreadable choice never elevates
+            string p = o?.Value<string>("permission_profile");
+            if (string.IsNullOrWhiteSpace(p)) return "safe_write";
+            p = p.ToLowerInvariant();
+            return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
+                ? p : "read_only"; // malformed privilege never elevates
         }
 
         private static JObject Read()

@@ -155,6 +155,26 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// A captured "loc" translated by (dx, dy, dz), in the SAME shape it was captured in.
+        /// Two shapes are persisted: a curve as [[x,y,z],[x,y,z]] and a point as a flat
+        /// [x,y,z] - UndoCapture writes a point with `new JArray(P(point))`, and a single
+        /// JArray argument is Newtonsoft's COPY constructor, not a one-item array. MEASURED
+        /// 2026-09-26: a run_shift over a network holding an elbow (a LocationPoint) died on
+        /// the flat shape ("Cannot access child value on JValue") and rolled back. The flat
+        /// shape is kept rather than "fixed": undo journals on disk compare against it.
+        /// Null when the token is neither shape.
+        /// </summary>
+        public static JToken ShiftLoc(JToken loc, double dx, double dy, double dz)
+        {
+            if (!(loc is JArray a) || a.Count == 0) return null;
+            bool Numeric(JToken t) => t.Type == JTokenType.Float || t.Type == JTokenType.Integer;
+            if (a.Count == 3 && a.All(Numeric))
+                return new JArray((double)a[0] + dx, (double)a[1] + dy, (double)a[2] + dz);
+            if (!a.All(p => p is JArray q && q.Count == 3 && q.All(Numeric))) return null;
+            return new JArray(a.Select(p => (JToken)new JArray((double)p[0] + dx, (double)p[1] + dy, (double)p[2] + dz)));
+        }
+
+        /// <summary>
         /// Two recorded states agree: numbers within the tolerance, everything else exact.
         /// A null on one side and not the other is a disagreement - never "close enough".
         /// </summary>

@@ -36,12 +36,33 @@ $script:HzProbeModules += [pscustomobject]@{
         $doc = $Ctx.Document; $run = $Ctx.RunId
         $created = New-Object System.Collections.ArrayList
         function Short($a) { $t = [string]$a.text; if ($t.Length -gt 400) { $t.Substring(0, 400) } else { $t } }
-        function Verified($r) { $r.stage -eq 'apply' -and -not $r.answer.isError -and $r.answer.data -and $r.answer.data.postconditions.all_verified -eq $true }
+        # THE REAL REPLY SHAPE (MEASURED 2026-09-26): create_elements carries no top-level
+        # postconditions - its verdict is application.state and verification.verified; the
+        # per-row postconditions live on each row. mep_routing resize carries state and
+        # postconditions at the top. Checking a field the reply does not have made every
+        # creation read as unverified.
+        function Verified($r) {
+            if ($r.stage -ne 'apply' -or $r.answer.isError -or -not $r.answer.data) { return $false }
+            $d = $r.answer.data
+            if ($d.application -and $d.application.state) { return ($d.application.state -eq 'verified_applied') }
+            return ($d.postconditions.all_verified -eq $true)
+        }
         function Why($r) { if ($r.stage -ne 'apply') { 'the rehearsal issued no token: ' + (Short $r.answer) } else { Short $r.answer } }
         function Types($category) {
             $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 500 }
             if (-not $q.data) { return @() }
             return @($q.data.rows | Where-Object { $_.is_element_type })
+        }
+        # A system TYPE to create a run with. MEASURED 2026-09-26, Revit 2023 (HZ23_BASE): the
+        # piping/duct system types answer no category query while their instances do, and an
+        # instance's type_id is the system type.
+        function SystemType($category) {
+            $t = Types $category | Select-Object -First 1
+            if ($t) { return $t }
+            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $false; include_links = $false; max_rows = 5 }
+            $inst = @(if ($q.data) { $q.data.rows | Where-Object { $_.type_id } }) | Select-Object -First 1
+            if ($inst) { return [pscustomobject]@{ element_id = [long]$inst.type_id } }
+            return $null
         }
         function Instances($category, $max) {
             $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $false; include_links = $false; max_rows = $max }
@@ -68,29 +89,40 @@ $script:HzProbeModules += [pscustomobject]@{
         $levelId = $lvOut.Id
 
         # ==== 1: sprinkler ==================================================================
+        # STAGED, NEVER ASSUMED. An HVAC fixture carries no sprinkler family; Autodesk's own
+        # plumbing template of the run's year does (MEASURED 2026-09-26: 'M_Sprinkler - Pendent -
+        # Hosted: 15 mm Pendent', face-based). Copy it with the typed copy, then host it on an
+        # own floor's top face at a point INSIDE that floor - a fixture ceiling far from the
+        # point is a face the symbol cannot sit on (2023: no_face_carries_this_point).
         $sprinklerType = Types 'OST_Sprinklers' | Select-Object -First 1
+        $sprinklerNote = $null
+        if (-not $sprinklerType -and $levelId) {
+            $tpl = "C:\ProgramData\Autodesk\RVT $($Ctx.Year)\Templates\English\Plumbing-Default_Metric.rte"
+            if (-not (Test-Path -LiteralPath $tpl)) { $sprinklerNote = "no plumbing template at $tpl" }
+            else {
+                $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); type_names = @('M_Sprinkler - Pendent - Hosted: 15 mm Pendent'); category = 'OST_Sprinklers'; duplicate_types = 'use_destination' } ($run + '-ekf-spr-type')
+                $sprinklerType = Types 'OST_Sprinklers' | Select-Object -First 1
+                if (-not $sprinklerType) { $sprinklerNote = 'the sprinkler type could not be copied from the template: ' + (Why $cp) }
+            }
+        }
         if (-not $levelId -or -not $sprinklerType) {
-            Case $catalog[0] $tools[0] 'not_covered' "no own level ($levelId) or no sprinkler type in the fixture"
+            Case $catalog[0] $tools[0] 'not_covered' ("no own level ($levelId) or no sprinkler type: " + $sprinklerNote)
         }
         else {
-            $point = @($X, $Y, $E)
-            $sp = Create @(@{ kind = 'sprinkler'; point = $point; type_id = $sprinklerType.element_id; level_id = $levelId; coordinate_mode = 'absolute' }) 'sprinkler'
-            if (-not (Verified $sp.Reply)) {
-                # A sprinkler family that MUST be hosted (work-plane based) refuses a level-only
-                # placement by name; retry on a ceiling if the fixture offers one, else not_covered.
-                $ceiling = Instances 'OST_Ceilings' 5 | Select-Object -First 1
-                if ($ceiling) {
-                    $sp = Create @(@{ kind = 'sprinkler'; point = $point; type_id = $sprinklerType.element_id; level_id = $levelId; coordinate_mode = 'absolute'; host_id = [long]$ceiling.element_id }) 'sprinkler-hosted'
-                }
+            $sx = $X + 5000; $sy = $Y
+            $fl = Create @(@{ kind = 'floor'; level_id = $levelId; profile = @(,@(@($sx, $sy, $E), @(($sx + 4000), $sy, $E), @(($sx + 4000), ($sy + 4000), $E), @($sx, ($sy + 4000), $E))) }) 'spr-floor'
+            if (-not (Verified $fl.Reply) -or -not $fl.Id) { Case $catalog[0] $tools[0] 'not_covered' ('no own floor to host the sprinkler on: ' + (Why $fl.Reply)) }
+            else {
+                $point = @(($sx + 2000), ($sy + 2000), $E)
+                $sp = Create @(@{ kind = 'sprinkler'; point = $point; type_id = $sprinklerType.element_id; level_id = $levelId; coordinate_mode = 'absolute'; host_id = [long]$fl.Id }) 'sprinkler'
                 if (-not (Verified $sp.Reply)) { Case $catalog[0] $tools[0] 'fail' (Why $sp.Reply) }
-                else { Case $catalog[0] $tools[0] 'pass' ("sprinkler $($sp.Id) hosted on ceiling $($ceiling.element_id), position/type/level re-read") }
+                else { Case $catalog[0] $tools[0] 'pass' ("sprinkler $($sp.Id) ($($sprinklerType.family)) hosted on own floor $($fl.Id) at $($point -join ','), position/type/level re-read") }
             }
-            else { Case $catalog[0] $tools[0] 'pass' ("sprinkler $($sp.Id) at $($point -join ','), position/type/level re-read") }
         }
 
         # ==== 2/3: flex_pipe / flex_duct ====================================================
-        $flexPipeType = Types 'OST_PipeCurves' | Where-Object { $_.family -match 'Flex' -or $_.type -match 'Flex' } | Select-Object -First 1
-        $pipingSystem = Types 'OST_PipingSystem' | Select-Object -First 1
+        $flexPipeType = Types 'OST_FlexPipeCurves' | Select-Object -First 1
+        $pipingSystem = SystemType 'OST_PipingSystem'
         if (-not $levelId -or -not $flexPipeType -or -not $pipingSystem) {
             Case $catalog[1] $tools[1] 'not_covered' "no own level, no flex pipe type or no piping system type in the fixture"
         }
@@ -101,14 +133,22 @@ $script:HzProbeModules += [pscustomobject]@{
             else { Case $catalog[1] $tools[1] 'fail' (Why $fp.Reply) }
         }
 
-        $flexDuctType = Types 'OST_DuctCurves' | Where-Object { $_.family -match 'Flex' -or $_.type -match 'Flex' } | Select-Object -First 1
-        $ductSystem = Types 'OST_DuctSystem' | Select-Object -First 1
+        # FlexPipeType/FlexDuctType carry their OWN categories (MEASURED 2026-09-26): asking
+        # OST_PipeCurves/OST_DuctCurves for a Flex family finds nothing. Prefer a round flex
+        # duct so the resize case below has a round catalog to move through.
+        $flexDuctType = @(Types 'OST_FlexDuctCurves' | Sort-Object { if ($_.family -match 'Round') { 0 } else { 1 } }) | Select-Object -First 1
+        # A catalog size, so the resize case can go away AND come back (the round duct
+        # catalog of an imperial-based fixture holds 152.4, not 150; MEASURED 2026-09-26).
+        $cat = & $Ctx.Call 'horizun_mep_routing' @{ operation = 'read'; target_document = $doc; units = 'mm' }
+        $roundSizes = @(if ($cat.data -and $cat.data.duct_sizes) { @($cat.data.duct_sizes.round) | ForEach-Object { [double]$_.nominal } })
+        $flexDiameter = if ($roundSizes.Count -gt 0) { $roundSizes | Sort-Object { [math]::Abs($_ - 150) } | Select-Object -First 1 } else { 150 }
+        $ductSystem = SystemType 'OST_DuctSystem'
         if (-not $levelId -or -not $flexDuctType -or -not $ductSystem) {
             Case $catalog[2] $tools[2] 'not_covered' "no own level, no flex duct type or no duct system type in the fixture"
         }
         else {
             $points = @(@($X, ($Y + 4000), $E), @(($X + 1500), ($Y + 4200), $E), @(($X + 3000), ($Y + 4000), $E))
-            $fd = Create @(@{ kind = 'flex_duct'; points = $points; type_id = $flexDuctType.element_id; level_id = $levelId; system_type_id = $ductSystem.element_id; diameter = 150 }) 'flex-duct'
+            $fd = Create @(@{ kind = 'flex_duct'; points = $points; type_id = $flexDuctType.element_id; level_id = $levelId; system_type_id = $ductSystem.element_id; diameter = $flexDiameter }) 'flex-duct'
             if (-not (Verified $fd.Reply)) {
                 # This flex duct type may be rectangular, in which case diameter is the wrong
                 # section for it - Revit's own "no settable parameter" refusal names that, and
@@ -122,24 +162,45 @@ $script:HzProbeModules += [pscustomobject]@{
         # ==== 4: space =======================================================================
         if (-not $levelId) { Case $catalog[3] $tools[3] 'not_covered' 'no own level to place a space on' }
         else {
-            $sPoint = @(($X + 10000), $Y)
+            # BOTH SHAPES A SPACE CAN TAKE. Unbounded (a free point: Revit creates it with area
+            # 0 and it is reported, not refused) and ENCLOSED by four own walls, where the
+            # point must re-read as inside the space (IsPointInSpace) and the area must be > 0.
+            $sPoint = @(($X + 10000), ($Y + 8000))
             $sp2 = Create @(@{ kind = 'space'; point = $sPoint; level_id = $levelId }) 'space'
-            if (Verified $sp2.Reply) {
-                $row = $sp2.Row
-                Case $catalog[3] $tools[3] 'pass' ("space $($sp2.Id): level re-read; area_sqft=$($row.area_sqft), area_enclosed=$($row.area_enclosed)")
+            $wx = $X + 10000; $wy = $Y
+            $corners = @(@($wx, $wy, $E), @(($wx + 4000), $wy, $E), @(($wx + 4000), ($wy + 4000), $E), @($wx, ($wy + 4000), $E))
+            $walls = @(for ($i = 0; $i -lt 4; $i++) { @{ kind = 'wall'; start = $corners[$i]; end = $corners[($i + 1) % 4]; level_id = $levelId; height = 3000 } })
+            $wl = Create $walls 'space-walls'
+            if ($wl.Reply.stage -eq 'apply' -and $wl.Reply.answer.data) { foreach ($wr in @($wl.Reply.answer.data.rows)) { if ($wr.element_id) { [void]$created.Add([long]$wr.element_id) } } }
+            $sp3 = if (Verified $wl.Reply) { Create @(@{ kind = 'space'; point = @(($wx + 2000), ($wy + 2000)); level_id = $levelId }) 'space-enclosed' } else { $null }
+            if (-not (Verified $sp2.Reply)) { Case $catalog[3] $tools[3] 'fail' ('unbounded: ' + (Why $sp2.Reply)) }
+            elseif (-not $sp3) { Case $catalog[3] $tools[3] 'fail' ('the four enclosing walls were not created: ' + (Why $wl.Reply)) }
+            elseif (-not (Verified $sp3.Reply)) { Case $catalog[3] $tools[3] 'fail' ('enclosed: ' + (Why $sp3.Reply)) }
+            elseif ($sp2.Row.area_enclosed -ne $false -or $sp3.Row.area_enclosed -ne $true) {
+                Case $catalog[3] $tools[3] 'fail' ("area_enclosed read unbounded=$($sp2.Row.area_enclosed) enclosed=$($sp3.Row.area_enclosed); expected false and true")
             }
-            else { Case $catalog[3] $tools[3] 'fail' (Why $sp2.Reply) }
+            else {
+                Case $catalog[3] $tools[3] 'pass' ("unbounded space $($sp2.Id) area 0 reported; enclosed space $($sp3.Id) inside 4 own walls: area_sqft=$($sp3.Row.area_sqft), point re-read inside")
+            }
         }
 
         # ==== 5: area_boundary + area ========================================================
-        $scheme = Instances 'OST_AreaSchemes' 20 | Select-Object -First 1
+        # AN AREA SCHEME HAS NO QUERYABLE CATEGORY (MEASURED 2026-09-26: query_model with
+        # OST_AreaSchemes matches nothing). The discovery path is the refusal itself: a
+        # create_area_plan rehearsal without a scheme lists the document's schemes by id.
+        $schemeId = $null
+        if ($levelId) {
+            $ask = & $Ctx.Call 'horizun_manage_views' @{ target_document = $doc; dry_run = $true; actions = @(@{ operation = 'create_area_plan'; level_id = $levelId }) }
+            $m = [regex]::Match([string]$ask.text, "Schemes: '[^']*' \(id (\d+)\)")
+            if ($m.Success) { $schemeId = [long]$m.Groups[1].Value }
+        }
         $areaViewId = $null
-        if (-not $levelId -or -not $scheme) {
-            Case $catalog[4] $tools[4] 'not_covered' "no own level or no AreaScheme in the fixture"
+        if (-not $levelId -or -not $schemeId) {
+            Case $catalog[4] $tools[4] 'not_covered' "no own level, or the create_area_plan refusal listed no AreaScheme"
         }
         else {
             $av = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; units = 'mm'
-                    actions = @(@{ operation = 'create_area_plan'; level_id = $levelId; area_scheme_id = [long]$scheme.element_id; key = 'ekf-areaview' }) } ($run + '-ekf-areaview')
+                    actions = @(@{ operation = 'create_area_plan'; level_id = $levelId; area_scheme_id = $schemeId; key = 'ekf-areaview' }) } ($run + '-ekf-areaview')
             $avRow = if ($av.stage -eq 'apply' -and -not $av.answer.isError -and $av.answer.data) { @($av.answer.data.rows) | Select-Object -First 1 }
             if ($av.stage -ne 'apply' -or $av.answer.isError -or -not $avRow -or -not $avRow.element_id) {
                 Case $catalog[4] $tools[4] 'fail' ("create_area_plan: " + (Why $av))
@@ -148,8 +209,10 @@ $script:HzProbeModules += [pscustomobject]@{
                 $areaViewId = [long]$avRow.element_id; [void]$created.Add($areaViewId)
                 $ax = $X + 20000; $ay = $Y
                 $loop = @(@($ax, $ay, $E), @(($ax + 4000), $ay, $E), @(($ax + 4000), ($ay + 4000), $E), @($ax, ($ay + 4000), $E), @($ax, $ay, $E))
-                $segments = for ($i = 0; $i -lt ($loop.Count - 1); $i++) { ,@($loop[$i], $loop[$i + 1]) }
-                $ab = Create @(@{ kind = 'area_boundary'; profile = @(,$segments); view_id = $areaViewId }) 'area-boundary'
+                # profile = chains of POINTS (a polyline per chain), not of segment pairs -
+                # the shape room_separator and area_boundary share (MEASURED 2026-09-26: pairs
+                # are refused in the rehearsal, "point/start/end must contain 3 XYZ coordinates").
+                $ab = Create @(@{ kind = 'area_boundary'; profile = @(,$loop); view_id = $areaViewId }) 'area-boundary'
                 if (-not (Verified $ab.Reply)) { Case $catalog[4] $tools[4] 'fail' ('area_boundary: ' + (Why $ab.Reply)) }
                 else {
                     $ar = Create @(@{ kind = 'area'; point = @(($ax + 2000), ($ay + 2000)); view_id = $areaViewId }) 'area'
@@ -172,7 +235,9 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $before) { Case $catalog[5] $tools[5] 'fail' ('read: ' + (Short $rd)) }
             else {
                 $round = ($null -ne $before.size.diameter)
-                $catalogList = if ($isDuct) { @($rd.data.duct_sizes.round | ForEach-Object { [double]$_.nominal }) } else { @() }
+                # The catalog comes from a read WITHOUT element_ids (an element read lists no
+                # catalog; MEASURED 2026-09-26) - taken once, above, as $roundSizes.
+                $catalogList = if ($isDuct) { $roundSizes } else { @() }
                 if (-not $round -or $catalogList.Count -lt 2) {
                     # No catalog to pick a second size from without live reads this module cannot
                     # fake; a rectangular flex duct or a one-size catalog is not_covered, not a fail.

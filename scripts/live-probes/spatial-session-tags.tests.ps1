@@ -63,7 +63,13 @@ function New-Fake([string]$mode) {
             $sc = [pscustomobject]@{ status = 'clean'; scope = 'data-only write: 1 element(s) whose bounding box moved' }
             return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true; spatial_check = $sc })) }
         }
+        if ($tool -eq 'horizun_manage_views') {
+            # The probe's own uncropped plan of its own level (MEASURED 2026-09-26: a cropped fixture callout hid the notes).
+            $s.PlanId = $s.Next; $s.Next++
+            return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ aliases = [pscustomobject]@{ splan = $s.PlanId } })) }
+        }
         if ($tool -eq 'horizun_annotate') {
+            $s.NoteViews = @($a.actions | ForEach-Object { [long]$_.view_id })
             $id1 = $s.Next; $s.Next++; $id2 = $s.Next; $s.Next++
             $s.TextIds = @($id1, $id2)
             $rows = @([pscustomobject]@{ element_id = $id1 }, [pscustomobject]@{ element_id = $id2 })
@@ -82,7 +88,11 @@ function Outcomes($h) { @(& $module.Run $h.Ctx) }
 $h = New-Fake 'ok'; $r = Outcomes $h
 Check ($r.Count -eq 4) 'four cases, one per catalog entry'
 Check (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0) ('everything passes: ' + (($r | ForEach-Object { $_.Outcome }) -join ','))
-Check ($h.State.Deleted.Count -eq 7) 'level, two duplicate walls, the far wall, the offset wall and both text notes are deleted'
+Check ($h.State.Deleted.Count -eq 8) 'level, own plan, two duplicate walls, the far wall, the offset wall and both text notes are deleted'
+Check ($h.State.PlanId -and @($h.State.NoteViews | Where-Object { $_ -ne $h.State.PlanId }).Count -eq 0) 'both notes go on the probe''s own plan, never on a fixture view'
+$delOrder = @($h.State.Deleted)
+$planAt = -1; for ($i = 0; $i -lt $delOrder.Count; $i++) { if ([long]$delOrder[$i] -eq [long]$h.State.PlanId) { $planAt = $i } }
+Check (($planAt -ge 0) -and ($planAt -lt ($delOrder.Count - 1))) 'the own plan is deleted before its level (the level goes last)'
 
 $h = New-Fake 'session-blind'; $r = Outcomes $h
 Check ($r[0].Outcome -eq 'fail') 'scope=session that does NOT surface the earlier duplicate fails the session case'

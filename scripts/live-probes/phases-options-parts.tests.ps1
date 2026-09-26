@@ -7,8 +7,12 @@ $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'phases-options-pa
 $fails = 0
 function Check($name, $ok) { if ($ok) { "  PASS  $name" } else { "  FAIL  $name"; $script:fails++ } }
 
-function New-Fake([bool]$withOptions, [bool]$breakDissolve) {
-    $state = @{ calls = @(); applies = @(); nextWall = 900; created = 1; demolished = -1; parts = @(); deleted = @() }
+# $sample: what the year's Autodesk sample answers when the write model has no design
+# options - 'options' (reads them), 'empty' (a sample with none, like 2023's), or
+# 'close_fails'. The close of an UNMODIFIED sample is rehearsed WITHOUT a token, exactly as
+# the bridge answers it (MEASURED 2026-09-26): the probe must close it anyway.
+function New-Fake([bool]$withOptions, [bool]$breakDissolve, [string]$sample = 'options') {
+    $state = @{ calls = @(); applies = @(); nextWall = 900; created = 1; demolished = -1; parts = @(); deleted = @(); closeArgs = $null; sampleOpen = $false }
     $call = {
         param($tool, $a)
         $state.calls += "$tool/$($a.operation)"
@@ -18,7 +22,10 @@ function New-Fake([bool]$withOptions, [bool]$breakDissolve) {
                 switch ($a.operation) {
                     'list' {
                         $pres = [pscustomobject]@{ new = 'overridden'; existing = 'by_category'; demolished = 'hidden'; temporary = 'hidden' }
-                        $opts = if ($withOptions) { @([pscustomobject]@{ id = 50; option_set_id = 40; is_primary = $true }, [pscustomobject]@{ id = 51; option_set_id = 40; is_primary = $false }) } else { @() }
+                        $fromSample = $a.target_document -eq 'Snowdon Towers Sample Architectural'
+                        $opts = if ($fromSample -and $sample -ne 'empty') { @([pscustomobject]@{ id = 60; option_set_id = 41; is_primary = $true }, [pscustomobject]@{ id = 61; option_set_id = 41; is_primary = $false }) }
+                                elseif ($fromSample) { @() }
+                                elseif ($withOptions) { @([pscustomobject]@{ id = 50; option_set_id = 40; is_primary = $true }, [pscustomobject]@{ id = 51; option_set_id = 40; is_primary = $false }) } else { @() }
                         return & $ok @{ read_only = $true; phases = @([pscustomobject]@{ index = 0; id = 1 }, [pscustomobject]@{ index = 1; id = 2 })
                                         phase_filters = @([pscustomobject]@{ id = 7; presentation = $pres }); design_options = $opts; design_options_writable = $false }
                     }
@@ -33,6 +40,17 @@ function New-Fake([bool]$withOptions, [bool]$breakDissolve) {
                 if ($a.operation -eq 'list') { return & $ok @{ elements = @([pscustomobject]@{ part_ids = $state.parts }) } }
             }
             'horizun_list_elements' { return & $ok @{ rows = @([pscustomobject]@{ element_id = 30 }) } }
+            'horizun_health' { return & $ok @{ open_documents = @([pscustomobject]@{ title = 'HZ_WRITE'; path = 'C:\hz-live\HZ_WRITE.rvt' }) } }
+            'horizun_open_document' { return & $ok @{ opened = $true; confirmed_active = $true } }
+            'horizun_document_session' {
+                if ($a.operation -eq 'open') { $state.sampleOpen = $true; return & $ok @{ title = 'Snowdon Towers Sample Architectural' } }
+                if ($a.operation -eq 'close' -and $a.dry_run -eq $true) { return & $ok @{ closed = $false; is_modified = $false; would_discard_unsaved = $false } }
+                if ($a.operation -eq 'close') {
+                    $state.closeArgs = $a
+                    if ($sample -eq 'close_fails') { return @{ isError = $true; data = $null; text = 'close refused' } }
+                    $state.sampleOpen = $false; return & $ok @{ closed = $true }
+                }
+            }
             'horizun_query_model' { return & $ok @{ rows = @([pscustomobject]@{ is_element_type = $true; family = 'Basic Wall'; element_id = 31 }) } }
         }
         return @{ isError = $true; data = $null; text = "fake: no answer for $tool" }
@@ -73,10 +91,23 @@ Check 'all six cases pass on a healthy fake' ((@($r.Values | Where-Object { $_ -
 Check 'the phases of the probe wall are restored' ($f.state.created -eq 1 -and $f.state.demolished -eq -1)
 Check 'the three probe walls are deleted' (@($f.state.deleted).Count -eq 3)
 
-# No design options: not_covered with a reason, never a fail or a pass.
-$f = New-Fake $false $false
+# No design options in the write model: the year's sample is opened, read and CLOSED.
+$dopt = 'design options: list reports option sets, options and the primary'
+$f = New-Fake $false $false 'options'
 $r = Outcomes (& $module.Run $f.ctx)
-Check 'a document without design options is not_covered' ($r['design options: list reports option sets, options and the primary'] -eq 'not_covered')
+Check 'options read from the sample pass' ($r[$dopt] -eq 'pass')
+Check 'the unmodified sample is closed without a token' ((-not $f.state.sampleOpen) -and $f.state.closeArgs -and $f.state.closeArgs.dry_run -eq $false -and -not $f.state.closeArgs.ContainsKey('confirmation_token'))
+
+# A sample with no design options either (Revit 2023): not_covered with a reason, and still closed.
+$f = New-Fake $false $false 'empty'
+$r = Outcomes (& $module.Run $f.ctx)
+Check 'a sample without design options is not_covered, never a fail' ($r[$dopt] -eq 'not_covered')
+Check 'that sample is closed too' (-not $f.state.sampleOpen)
+
+# A sample the probe could not close fails the case: it keeps its links open behind it.
+$f = New-Fake $false $false 'close_fails'
+$r = Outcomes (& $module.Run $f.ctx)
+Check 'a sample left open fails the case' ($r[$dopt] -eq 'fail')
 
 # A dissolve that rolls back fails the parts case and still cleans up.
 $f = New-Fake $true $true

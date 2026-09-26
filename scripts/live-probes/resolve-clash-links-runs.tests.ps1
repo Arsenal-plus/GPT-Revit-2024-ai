@@ -24,6 +24,10 @@ function New-Fake([string]$mode) {
             'horizun_health' { return & $reply ([pscustomobject]@{ open_documents = @([pscustomobject]@{ title = $s.Doc; path = $s.Src }) }) }
             'horizun_query_model' {
                 if ($a.include_types) {
+                    # An MEP fixture has no structural column family until the probe copies one.
+                    if (@($a.categories) -contains 'OST_StructuralColumns' -and $s.Mode -eq 'no-column-type' -and -not $s.ColumnTypeCopied) {
+                        return & $reply ([pscustomobject]@{ rows = @() })
+                    }
                     return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 999; is_element_type = $true }) })
                 }
                 if ($a.include_links) {
@@ -33,8 +37,8 @@ function New-Fake([string]$mode) {
                     return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 77; source_kind = 'link'; is_element_type = $false; bounding_box = $bb }) })
                 }
                 if (@($a.categories) -contains 'OST_Levels') {
-                    $bb = [pscustomobject]@{ min = @(0.0, 0.0, 0.0); max = @(0.0, 0.0, 0.0) }
-                    return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 5; bounding_box = $bb }) })
+                    # The REAL shape (MEASURED 2026-09-26): a level has no bounding box.
+                    return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 5; bounding_box = $null }) })
                 }
                 return & $reply $null $true
             }
@@ -77,6 +81,7 @@ function New-Fake([string]$mode) {
         $ok = { param($d) @{ stage = 'apply'; answer = [pscustomobject]@{ isError = $false; data = $d; text = 'ok' } } }
         switch ($tool) {
             'horizun_manage_links' { return & $ok ([pscustomobject]@{ link_type_id = 900; link_instance_id = 901 }) }
+            'horizun_copy_between_documents' { $s.ColumnTypeCopied = $true; $s.CopyArgs = $a; return & $ok ([pscustomobject]@{ application = [pscustomobject]@{ state = 'verified_applied' } }) }
             'horizun_delete_verified' { $s.Deleted += @($a.ids); return & $ok ([pscustomobject]@{ ok = $true }) }
             'horizun_create_elements' {
                 $id = $s.Next; $s.Next++
@@ -86,6 +91,7 @@ function New-Fake([string]$mode) {
                 elseif ($key -like '*-b-p2') { $s.Pipe2 = $id }
                 elseif ($key -like '*-b-elbow') { $s.Elbow = $id }
                 elseif ($key -like '*-b-col') { $s.Column = $id }
+                elseif ($key -like '*-b-level') { $s.Level = $id; $s.LevelArgs = $a.elements[0] }
                 return & $ok ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) })
             }
             'horizun_resolve_clash' {
@@ -128,6 +134,16 @@ $cases3 = @(& $module.Run $h.Ctx)
 Check 'no linked element at all: cases 0 and 1 are not_covered' (($cases3[0].Outcome -eq 'not_covered') -and ($cases3[1].Outcome -eq 'not_covered'))
 Check 'scenario (a) cleanup still removes the link type even with nothing else created' ($cases3[2].Outcome -eq 'pass')
 Check 'scenario (b) is unaffected' (@($cases3 | Select-Object -Skip 3 | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
+
+Check 'scenario (b) stands on an OWN level with a known elevation, deleted with the rest' (
+    $f.State.Level -and ($f.State.LevelArgs.kind -eq 'level') -and ([double]$f.State.LevelArgs.elevation -gt 0) -and (@($f.State.Deleted) -contains $f.State.Level))
+Check 'the link source file is KEPT for the harness-documents manifest to declare' (@(Get-ChildItem -LiteralPath $f.Ctx.ScratchRoot -Filter 'HZ_RCLINKSRC_*.rvt' -ErrorAction SilentlyContinue).Count -eq 1)
+
+$k = New-Fake 'no-column-type'
+$cases5 = @(& $module.Run $k.Ctx)
+Check 'a fixture without column types copies one from the year''s structural template, and (b) passes' (
+    $k.State.ColumnTypeCopied -and ([string]$k.State.CopyArgs.source_path -like '*/Templates/English/Structural Analysis-DefaultMetric.rte') -and
+    (@($cases5 | Select-Object -Skip 3 | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0))
 
 $i = New-Fake 'ok'; $i.Ctx.WriteGate = $true
 $cases4 = @(& $module.Run $i.Ctx)

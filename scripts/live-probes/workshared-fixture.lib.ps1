@@ -53,11 +53,19 @@ function Exit-HzWorksharedFixture($Ctx, $Fixture, [string]$Lane) {
         expected_version = [string]$Ctx.Year; idempotency_key = ('fixture-back-' + $Lane + '-' + $Ctx.RunId)
     }
     $dry = & $Ctx.Call 'horizun_document_session' @{ operation = 'close'; target_document = $Fixture.Title; discard_unsaved = $true; dry_run = $true }
-    if ($dry.isError -or -not $dry.data.confirmation_token) { return ('close dry run refused: ' + [string]$dry.text) }
-    $cl = & $Ctx.Call 'horizun_document_session' @{
+    if ($dry.isError -or -not $dry.data) { return ('close dry run refused: ' + [string]$dry.text) }
+    # A CLOSE THAT DISCARDS NOTHING NEEDS NO TOKEN. MEASURED 2026-09-26: an unmodified
+    # document (a sample opened only to be read) rehearses with would_discard_unsaved=false
+    # and no confirmation_token - "call again with dry_run=false". Treating the missing
+    # token as a refusal left the sample open with its six links, and the matrix driver
+    # then refused to close a Revit holding documents it had not opened.
+    $closeArgs = @{
         operation = 'close'; target_document = $Fixture.Title; discard_unsaved = $true; dry_run = $false
-        confirmation_token = $dry.data.confirmation_token; idempotency_key = ('fixture-close-' + $Lane + '-' + $Ctx.RunId)
+        idempotency_key = ('fixture-close-' + $Lane + '-' + $Ctx.RunId)
     }
+    if ($dry.data.confirmation_token) { $closeArgs['confirmation_token'] = $dry.data.confirmation_token }
+    elseif ($dry.data.would_discard_unsaved -ne $false) { return ('close dry run issued no token for a close that would discard changes: ' + [string]$dry.text) }
+    $cl = & $Ctx.Call 'horizun_document_session' $closeArgs
     $reactivated = -not $back.isError
     if ($cl.isError -or $cl.data.closed -ne $true) { return ('close failed: ' + [string]$cl.text) }
     return ('fixture closed without saving; write document re-activated=' + $reactivated)

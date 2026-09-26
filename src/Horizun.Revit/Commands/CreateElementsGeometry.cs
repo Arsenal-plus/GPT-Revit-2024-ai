@@ -189,6 +189,12 @@ namespace Horizun.Revit.Commands
                 ElementTransformUtils.RotateElement(doc, instance.Id, Line.CreateBound(p.Start, p.Start + XYZ.BasisZ), p.Rotation - point.Rotation);
         }
 
+        // A spatial element's committed area in square feet, 0 when unbounded or unreadable.
+        private static double SpatialAreaNow(Element e)
+        {
+            try { return e is SpatialElement spatial ? spatial.Area : 0; } catch { return 0; }
+        }
+
         // The lowest and highest Z of the element's real solids, in project feet, or
         // null when it publishes no solid geometry. Reported as evidence beside the
         // governed elevation, never asserted: a wall attached to a floor legitimately
@@ -653,7 +659,12 @@ namespace Horizun.Revit.Commands
             // creation). This adds what those do not - whether the placement point
             // still reads as INSIDE the enclosed region via Space.IsPointInSpace, at a
             // height inside the space's own vertical range rather than an arbitrary one.
-            if (p.Kind == "space" && p.Level != null)
+            // ONLY FOR AN ENCLOSED SPACE. MEASURED in Revit 2023-2027: a space placed where
+            // no boundary closes around the point is created with Area 0 and
+            // IsPointInSpace answers false for every point, because an unbounded space has
+            // no volume to be inside of. That case is legitimate and REPORTED (area_enclosed
+            // below), so asserting inside-ness there would refuse every unbounded space.
+            if (p.Kind == "space" && p.Level != null && SpatialAreaNow(e) > 0)
             {
                 Exact("point_inside_space", true, () =>
                 {

@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - views and sheets as one dependency-aware atomic batch.
 // -----------------------------------------------------------------------------
 using System;
@@ -388,8 +388,7 @@ namespace Horizun.Revit.Commands
                     case "place_schedule": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); Reference<ViewSchedule>(doc, a, "schedule_id", "schedule_key", known); Point(a["point"]); break;
                     case "create_area_plan":
                         Need<Level>(doc, a, "level_id");
-                        if (!(Need<Element>(doc, a, "area_scheme_id") is AreaScheme))
-                            throw new ArgumentException("area_scheme_id must identify an AreaScheme");
+                        AreaSchemeOf(doc, a);
                         break;
                     case "create_callout":
                         Reference<View>(doc, a, "parent_view_id", "parent_view_key", known);
@@ -686,7 +685,7 @@ namespace Horizun.Revit.Commands
             }
             if (op == "create_area_plan")
             {
-                ViewPlan view = ViewPlan.CreateAreaPlan(doc, Need<Element>(doc, a, "area_scheme_id").Id,
+                ViewPlan view = ViewPlan.CreateAreaPlan(doc, AreaSchemeOf(doc, a).Id,
                                                         Need<Level>(doc, a, "level_id").Id);
                 SetName(view, a); return view;
             }
@@ -1176,6 +1175,35 @@ namespace Horizun.Revit.Commands
             }
             catch { return null; }
         }
+        // AN AREA SCHEME HAS NO CATEGORY A QUERY CAN NAME. MEASURED 2026-09-26: query_model
+        // with OST_AreaSchemes matches nothing even though every project carries at least
+        // one scheme, so an id the caller cannot discover is not a usable argument on its
+        // own. area_scheme_name resolves by name, and any refusal lists the schemes the
+        // document really holds - the discovery path is the refusal itself.
+        private static AreaScheme AreaSchemeOf(Document doc, JObject a)
+        {
+            List<AreaScheme> schemes = new FilteredElementCollector(doc).OfClass(typeof(AreaScheme)).Cast<AreaScheme>().ToList();
+            string available = schemes.Count == 0 ? "none"
+                : string.Join(", ", schemes.Select(s => "'" + s.Name + "' (id " + Rid.Value(s.Id) + ")"));
+            if (a["area_scheme_id"] != null)
+            {
+                long raw = a.Value<long?>("area_scheme_id") ?? -1;
+                AreaScheme byId = Rid.CanRepresent(raw) ? doc.GetElement(Rid.Make(raw)) as AreaScheme : null;
+                if (byId == null)
+                    throw new ArgumentException("area_scheme_id " + raw + " is not an AreaScheme in this document. Schemes: " + available + ".");
+                return byId;
+            }
+            string name = a.Value<string>("area_scheme_name");
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                AreaScheme byName = schemes.FirstOrDefault(s => string.Equals(s.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (byName == null)
+                    throw new ArgumentException("no AreaScheme is named '" + name + "'. Schemes: " + available + ".");
+                return byName;
+            }
+            throw new ArgumentException("create_area_plan needs area_scheme_id or area_scheme_name. Schemes: " + available + ".");
+        }
+
         private static void SetName(View view, JObject a) { string name = a.Value<string>("name"); if (!string.IsNullOrWhiteSpace(name)) view.Name = name; }
         private static BoundingBoxXYZ SectionBox(JObject a, double scale)
         {

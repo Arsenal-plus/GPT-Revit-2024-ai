@@ -84,9 +84,20 @@ $script:HzProbeModules += [pscustomobject]@{
                     $primaryPerSet = $sets.Count -gt 0
                     foreach ($s in $sets) { if (@($fxOptions | Where-Object { $_.option_set_id -eq $s -and $_.is_primary }).Count -ne 1) { $primaryPerSet = $false } }
                     $ok = -not $ol.isError -and $fxOptions.Count -gt 0 -and $primaryPerSet -and $ol.data.design_options_writable -eq $false
-                    $cases += Case $names[3] $P $(if ($ok) { 'pass' } else { 'fail' }) ("{0}: {1} options in {2} sets, one primary per set={3}" -f $fx.Title, $fxOptions.Count, $sets.Count, $primaryPerSet)
+                    if (-not $ol.isError -and $ol.data -and $fxOptions.Count -eq 0) {
+                        # MEASURED 2026-09-26: Revit 2023's rac_advanced_sample_project carries no
+                        # design options, so that year has nothing to read - not a failure of list.
+                        $dcase = @{ Outcome = 'not_covered'; Detail = ('{0} (the only sample of this year) carries no design options, so list has none to report' -f $fx.Title) }
+                    }
+                    else {
+                        $dcase = @{ Outcome = $(if ($ok) { 'pass' } else { 'fail' }); Detail = ("{0}: {1} options in {2} sets, one primary per set={3}" -f $fx.Title, $fxOptions.Count, $sets.Count, $primaryPerSet) }
+                    }
                 }
-                finally { $null = Exit-HzWorksharedFixture $Ctx $fx 'dopt' }
+                finally { $closed = Exit-HzWorksharedFixture $Ctx $fx 'dopt' }
+                # A sample left open keeps its links open too, and the matrix driver then
+                # refuses to close a Revit that holds documents it did not open.
+                if ($closed -notlike 'fixture closed*') { $dcase.Outcome = 'fail'; $dcase.Detail += '; the sample was NOT closed: ' + $closed }
+                $cases += Case $names[3] $P $dcase.Outcome $dcase.Detail
             }
         }
         else {

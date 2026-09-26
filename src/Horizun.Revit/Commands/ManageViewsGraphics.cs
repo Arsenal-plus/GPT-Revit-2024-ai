@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - graphic control: view filters, overrides, temporary
 // hide/isolate, and colour by parameter value. Original Horizun code.
 //
@@ -125,6 +125,13 @@ namespace Horizun.Revit.Commands
                         throw new ArgumentException(
                             "max_values must be 1..60. Beyond that the legend stops being readable and the " +
                             "palette repeats so often that two colours mean nothing.");
+                    // NOTHING TO COLOUR IS KNOWN BEFORE ANY WRITE. The values come from the
+                    // elements the view shows; a view that shows none of these categories
+                    // would commit an empty legend, which the post-commit check rightly
+                    // refuses - so say it here, in the rehearsal, and issue no token.
+                    // (A view created earlier in this same batch is checked at apply.)
+                    if (view != null && DistinctValues(doc, view, categories, parameter).Count == 0)
+                        throw new ArgumentException(NothingToColour(view, categories));
                     break;
                 }
 
@@ -281,6 +288,7 @@ namespace Horizun.Revit.Commands
             // from a list somebody typed colours the values they remembered and
             // leaves the rest grey, which is exactly the case a reviewer needs to see.
             List<string> values = DistinctValues(doc, view, categories, parameter);
+            if (values.Count == 0) throw new InvalidOperationException(NothingToColour(view, categories));
             values.Sort(StringComparer.Ordinal);   // deterministic: same model, same colours
 
             var legend = new JArray();
@@ -901,6 +909,19 @@ namespace Horizun.Revit.Commands
                 return (doc.GetElement(id) as ParameterElement)?.Name;
             }
             catch { return null; }
+        }
+
+        private static string NothingToColour(View view, ICollection<ElementId> categories)
+        {
+            string names = string.Join(", ", categories.Select(id =>
+            {
+                try { return Category.GetCategory(view.Document, id)?.Name ?? Rid.Value(id).ToString(); }
+                catch { return Rid.Value(id).ToString(); }
+            }));
+            return "color_by_value found nothing to colour: view '" + view.Name + "' (id " + Rid.Value(view.Id) +
+                   ") shows no element of " + names + ". The legend is built from the values the view's own " +
+                   "elements carry, so an empty view would commit filters that colour nothing. Choose a view " +
+                   "that shows these categories, or categories this view shows. Nothing was written.";
         }
 
         private static List<string> DistinctValues(Document doc, View view, ICollection<ElementId> categories,
