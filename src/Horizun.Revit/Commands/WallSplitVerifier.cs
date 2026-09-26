@@ -517,6 +517,29 @@ namespace Horizun.Revit.Commands
             InsertSnapshot before = snapshot.Insert;
             if (before == null) return "no insert snapshot was taken, so nothing can be compared.";
 
+            // A NESTED SHARED COMPONENT BELONGS TO ITS OWNER, NOT TO THE WALL. MEASURED
+            // 2026-09-26 (Revit 2026, M_Fixed windows): the window's nested muntins and trims
+            // come back as separate elements; when the host thins to its core Revit
+            // regenerates the window, and one muntin read "hosted by 0" - its placement is the
+            // owner's to decide. Every wall with such a window rolled back on it. Its identity,
+            // its type and its owner are what can be held to account; the owner's own verifier
+            // already checks that every nested component kept its identity.
+            if (before.SuperComponentId != 0)
+            {
+                long ownerNow = Safe(() => after.SuperComponent == null ? 0 : Rid.Value(after.SuperComponent.Id), 0L);
+                long symbolNow = Safe(() => after.Symbol == null ? 0 : Rid.Value(after.Symbol.Id), 0L);
+                check["nested_in"] = before.SuperComponentId;
+                check["owner_preserved"] = ownerNow == before.SuperComponentId;
+                check["symbol_preserved"] = symbolNow == before.SymbolId;
+                check["placement_owned_by"] = "the owning family instance (verified on its own entry)";
+                if (ownerNow != before.SuperComponentId)
+                    return WallSplitCodes.VerifyInsertSubcomponents + "|it is nested in " + ownerNow + " and was nested in " +
+                           before.SuperComponentId + ".";
+                if (symbolNow != before.SymbolId)
+                    return WallSplitCodes.VerifyInsertIdentity + "|its type changed during the conversion.";
+                return null;
+            }
+
             long hostId = Safe(() => after.Host == null ? 0 : Rid.Value(after.Host.Id), 0L);
             check["host_id"] = hostId;
             check["host_is_carrier"] = hostId == Rid.Value(carrier.Id);
@@ -756,6 +779,20 @@ namespace Horizun.Revit.Commands
                         row["parameter_kind"] = WallLayerRules.KindOf(key).ToString();
                         allowed.Add(row);
                     }
+                    else if (IsDerivedFromHost(after, parameter))
+                    {
+                        // A HOSTED FAMILY'S READ-ONLY VALUE FOLLOWS ITS HOST. MEASURED 2026-09-26
+                        // (Revit 2026, M_Fixed windows): 'Wall Thickness' and 'Extension Jamb' are
+                        // read-only in the project - a family reporting parameter and a formula
+                        // on it - and follow the host, which this conversion makes one layer
+                        // thick by design. Every wall with such a window rolled back on it. A
+                        // WRITABLE parameter that changes is still a defect; position, sill and
+                        // head are verified separately and must not move.
+                        row["allowed_because"] =
+                            "read-only in the project (a family reporting parameter, a formula or a computed value): it is derived from the host, whose thickness this conversion reduces to the core layer by design; position, sill and head are verified separately";
+                        row["parameter_kind"] = "DerivedFromHost";
+                        allowed.Add(row);
+                    }
                     else if (IsVerifiedRebarShapeParameter(after, parameter, check))
                     {
                         // Revit owns the dimensional parameters named by the active
@@ -794,6 +831,16 @@ namespace Horizun.Revit.Commands
                 : WallSplitCodes.VerifyParameterMismatch + "|it came out with " + changed.Count +
                   " parameter(s) this conversion has no reason to change: " +
                   string.Join(", ", changed.Children<JObject>().Select(c => c.Value<string>("parameter")));
+        }
+
+        private static bool IsDerivedFromHost(Element after, Parameter parameter)
+        {
+            try
+            {
+                return after is FamilyInstance fi && (fi.Host != null || fi.SuperComponent != null) && parameter.IsReadOnly &&
+                       WallLayerRules.HostedDerivedMayChange(WallSplitFacts.StableParameterKey(parameter));
+            }
+            catch { return false; }
         }
 
         private static bool IsVerifiedRebarShapeParameter(Element after, Parameter parameter, JObject check)

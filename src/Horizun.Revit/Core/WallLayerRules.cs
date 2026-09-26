@@ -1039,6 +1039,31 @@ namespace Horizun.Revit.Core
         /// because "we do not copy it" would confuse two different questions - the copier
         /// not writing something is no reason for it to change by itself.
         /// </summary>
+        /// <summary>
+        /// May a READ-ONLY parameter of a family HOSTED on the carrier change? The caller has
+        /// already established read-only-in-the-project (a family reporting parameter, a
+        /// formula, a computed value): those follow the host, whose thickness the conversion
+        /// changes by design (MEASURED 2026-09-26: a window's 'Wall Thickness' and 'Extension
+        /// Jamb'). Never the ones that say WHERE or WHAT the element is - host, level, phase,
+        /// family/type, sill, head, elevation - even when Revit shows them read-only: a change
+        /// there is a moved or re-typed element, not a derived value.
+        /// </summary>
+        public static bool HostedDerivedMayChange(string stableKey)
+        {
+            if (string.IsNullOrEmpty(stableKey)) return false;
+            return !HostedIdentityKeys.Contains(stableKey);
+        }
+
+        private static readonly HashSet<string> HostedIdentityKeys = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "bip:HOST_ID_PARAM", "bip:INSTANCE_SILL_HEIGHT_PARAM", "bip:INSTANCE_HEAD_HEIGHT_PARAM",
+            "bip:INSTANCE_ELEVATION_PARAM", "bip:INSTANCE_FREE_HOST_OFFSET_PARAM", "bip:FAMILY_LEVEL_PARAM",
+            "bip:INSTANCE_REFERENCE_LEVEL_PARAM", "bip:INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM", "bip:SCHEDULE_LEVEL_PARAM",
+            "bip:PHASE_CREATED", "bip:PHASE_DEMOLISHED", "bip:ELEM_FAMILY_AND_TYPE_PARAM", "bip:ELEM_FAMILY_PARAM",
+            "bip:ELEM_TYPE_PARAM", "bip:SYMBOL_ID_PARAM", "bip:ELEM_PARTITION_PARAM", "bip:DESIGN_OPTION_ID",
+            "bip:INSTANCE_MOVES_WITH_GRID_PARAM"
+        };
+
         public static bool MayChangeWithoutExplanation(string stableKey)
         {
             ParameterKind kind = KindOf(stableKey);
