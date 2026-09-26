@@ -300,6 +300,47 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_cripple_over_a_door_is_cut_around_a_vent_stacked_above_it()
+        {
+            var input = Wall(3000);
+            input.Openings.Add(new WallOpeningSpan { Id = "door", Start = 1000, End = 1900, Sill = 0, Head = 2100 });
+            input.Openings.Add(new WallOpeningSpan { Id = "vent", Start = 1200, End = 1700, Sill = 2300, Head = 2500 });
+            WallFramingPlan plan = WallFramingRules.Plan(input, Budget);
+            AssertSound(plan, input);
+
+            Assert.Contains("cripple_cut_by_opening:door:vent", plan.Warnings);
+            var cripples = plan.Members.Where(m => m.Role == FramingRoles.Cripple).ToList();
+            // Door-to-vent and vent-to-top pieces at 1200 and 1600, each planned once.
+            Assert.Equal(4, cripples.Count);
+            Assert.Equal(2, cripples.Count(m => Math.Abs(m.Z0 - 2100) < 1e-6 && Math.Abs(m.Z1 - 2300) < 1e-6));
+            Assert.Equal(2, cripples.Count(m => Math.Abs(m.Z0 - 2500) < 1e-6 && Math.Abs(m.Z1 - 2700) < 1e-6));
+            Assert.DoesNotContain(plan.Warnings, w => w.StartsWith("cripple_overlaps_member_dropped", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Cripples_at_a_spacing_barely_above_the_stud_width_never_overlap()
+        {
+            var input = Wall(3000);
+            input.CrippleSpacing = 50;
+            input.Openings.Add(new WallOpeningSpan { Id = "win", Start = 1000, End = 1101, Sill = 900, Head = 2000 });
+            WallFramingPlan plan = WallFramingRules.Plan(input, Budget);
+            AssertSound(plan, input);
+
+            Assert.Contains("cripple_overlaps_member_dropped:win", plan.Warnings);
+            Assert.Equal(2, Count(plan, FramingRoles.Cripple));
+        }
+
+        [Fact]
+        public void The_re_read_crossing_test_forgives_round_off_but_not_a_member_in_the_void()
+        {
+            var door = new List<WallOpeningSpan> { new WallOpeningSpan { Id = "door", Start = 1000, End = 1900, Sill = 0, Head = 2100 } };
+            double jack = 1000 - W / 2;
+            Assert.True(WallFramingRules.CrossesOpening(jack + 0.0005, 0, 2100, W, door));
+            Assert.False(WallFramingRules.CrossesOpening(jack + 0.0005, 0, 2100, W, door, 1.0));
+            Assert.True(WallFramingRules.CrossesOpening(jack + 5, 0, 2100, W, door, 1.0));
+        }
+
+        [Fact]
         public void The_signature_changes_when_a_member_moves_and_not_on_sub_rounding_noise()
         {
             var plan = WallFramingRules.Plan(Wall(3000), Budget);

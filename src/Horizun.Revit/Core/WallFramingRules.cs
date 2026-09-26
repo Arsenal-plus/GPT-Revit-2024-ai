@@ -36,6 +36,9 @@
 //    overlap (closer than one StudWidth while their heights overlap). Conflicts
 //    resolve by priority: jack > king > end stud > layout stud; the loser is
 //    dropped (a dropped king between two close openings is REPORTED, not hidden).
+//    A cripple that meets ANOTHER opening's framed void (a vent stacked over a
+//    door) is cut around it; a cripple overlapping a member already placed (a
+//    cripple_spacing barely above the stud width) is dropped - both named.
 //  * TRACKS run the full length at the base and at the top; the bottom track is
 //    cut across every opening whose sill is at the base (a door).
 //  * BLOCKING rows are split at every vertical member that spans their height,
@@ -310,8 +313,8 @@ namespace Horizun.Revit.Core
                 else xs = removedByOpening.Where(x => x - w / 2 >= o.Start - Tol && x + w / 2 <= o.End + Tol).Distinct().ToList();
                 foreach (double x in xs.OrderBy(x => x))
                 {
-                    if (header) cripples.Add(new Vertical { X = x, Z0 = o.Head + hd, Z1 = zt, Role = FramingRoles.Cripple, Opening = i });
-                    if (sill) cripples.Add(new Vertical { X = x, Z0 = zb, Z1 = o.Sill - sd, Role = FramingRoles.Cripple, Opening = i });
+                    if (header) AddCripple(cripples, accepted, openings, i, x, o.Head + hd, zt, w, zb, zt, hd, sd, plan.Warnings);
+                    if (sill) AddCripple(cripples, accepted, openings, i, x, zb, o.Sill - sd, w, zb, zt, hd, sd, plan.Warnings);
                 }
             }
 
@@ -375,6 +378,50 @@ namespace Horizun.Revit.Core
             return plan;
         }
 
+        /// <summary>
+        /// One cripple of opening <paramref name="own"/> at x over [z0, z1]. It never runs through
+        /// ANOTHER opening's framed void (a vent stacked over a door): it is cut into the pieces
+        /// outside that void (sill and header depths included), named. A piece that would overlap a
+        /// vertical already placed is dropped, named - unless it is the very same piece another
+        /// opening already planned (door-to-vent cripples are planned from both sides).
+        /// </summary>
+        private static void AddCripple(List<Vertical> cripples, List<Vertical> accepted, List<WallOpeningSpan> openings, int own,
+                                       double x, double z0, double z1, double w, double zb, double zt, double hd, double sd, List<string> warnings)
+        {
+            var pieces = new List<double[]> { new[] { z0, z1 } };
+            for (int j = 0; j < openings.Count; j++)
+            {
+                WallOpeningSpan o = openings[j];
+                if (j == own || !(x + w / 2 > o.Start + Tol && x - w / 2 < o.End - Tol)) continue;
+                double lo = Math.Max(zb, o.Sill > zb + Tol ? o.Sill - sd : o.Sill), hi = Math.Min(zt, o.Head < zt - Tol ? o.Head + hd : o.Head);
+                var next = new List<double[]>();
+                foreach (double[] p in pieces)
+                {
+                    if (p[1] <= lo + Tol || p[0] >= hi - Tol) { next.Add(p); continue; }
+                    if (lo - p[0] > Tol) next.Add(new[] { p[0], lo });
+                    if (p[1] - hi > Tol) next.Add(new[] { hi, p[1] });
+                    AddOnce(warnings, "cripple_cut_by_opening:" + openings[own].Id + ":" + o.Id);
+                }
+                pieces = next;
+            }
+            foreach (double[] p in pieces)
+            {
+                Vertical clash = accepted.Concat(cripples).FirstOrDefault(a => Math.Abs(a.X - x) < w - Tol && a.Z0 < p[1] - Tol && p[0] < a.Z1 - Tol);
+                if (clash != null)
+                {
+                    bool samePiece = clash.Role == FramingRoles.Cripple && Math.Abs(clash.X - x) <= Tol && Math.Abs(clash.Z0 - p[0]) <= Tol && Math.Abs(clash.Z1 - p[1]) <= Tol;
+                    if (!samePiece) AddOnce(warnings, "cripple_overlaps_member_dropped:" + openings[own].Id);
+                    continue;
+                }
+                cripples.Add(new Vertical { X = x, Z0 = p[0], Z1 = p[1], Role = FramingRoles.Cripple, Opening = own });
+            }
+        }
+
+        private static void AddOnce(List<string> warnings, string w)
+        {
+            if (!warnings.Contains(w)) warnings.Add(w);
+        }
+
         /// <summary>A header below a head under the top track fits when head + depth reaches no higher than the top track.</summary>
         private static bool HeaderFits(WallOpeningSpan o, double zt, double depth) => o.Head < zt - Tol && o.Head + depth <= zt + Tol;
 
@@ -406,9 +453,17 @@ namespace Horizun.Revit.Core
 
         /// <summary>True when a vertical member at x, w wide, spanning [z0, z1], enters any opening's void.</summary>
         public static bool CrossesOpening(double x, double z0, double z1, double w, IEnumerable<WallOpeningSpan> openings)
+            => CrossesOpening(x, z0, z1, w, openings, Tol);
+
+        /// <summary>
+        /// The same test with a slack: how far a member may reach into a void before it counts.
+        /// The post-commit re-read passes its endpoint tolerance, because a jack flush with the
+        /// jamb, read back a micron inside it, is round-off - not a stud through the opening.
+        /// </summary>
+        public static bool CrossesOpening(double x, double z0, double z1, double w, IEnumerable<WallOpeningSpan> openings, double slack)
         {
             foreach (WallOpeningSpan o in openings)
-                if (x + w / 2 > o.Start + Tol && x - w / 2 < o.End - Tol && z1 > o.Sill + Tol && z0 < o.Head - Tol)
+                if (x + w / 2 > o.Start + slack && x - w / 2 < o.End - slack && z1 > o.Sill + slack && z0 < o.Head - slack)
                     return true;
             return false;
         }

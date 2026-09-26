@@ -164,8 +164,9 @@ namespace Horizun.Revit.Commands
 
             string txName = op == "remove" ? "Horizun: remove framing" : "Horizun: framing";
             var evidence = new JObject();
+            List<long> removedIds = toRemove?.Select(p => Rid.Value(p.Key.Id)).ToList();
             Func<Document, PostconditionCheck> verify = op == "remove"
-                ? (Func<Document, PostconditionCheck>)(d => VerifyRemoved(d, toRemove, SourceIds(request), evidence))
+                ? (Func<Document, PostconditionCheck>)(d => VerifyRemoved(d, removedIds, SourceIds(request), evidence))
                 : op == "ceiling" ? (Func<Document, PostconditionCheck>)(d => VerifyCeilings(d, plans, evidence))
                 : d => VerifyWalls(d, plans, evidence);
             PostconditionCheck check;
@@ -504,9 +505,11 @@ namespace Horizun.Revit.Commands
                     double[] f0 = fw.ToFrame(ends[0]), f1 = fw.ToFrame(ends[1]);
                     maxExcess = Math.Max(maxExcess, Math.Max(0, Math.Max(Math.Abs(f0[1]), Math.Abs(f1[1])) - fw.LayerWidthMm / 2));
                     // A cripple sits inside the opening's width but above its head or below its sill,
-                    // so the same test (the void's x AND z ranges) holds for every vertical role.
+                    // so the same test (the void's x AND z ranges) holds for every vertical role. The
+                    // slack is the endpoint tolerance: a jack flush with the jamb, read back a hair
+                    // inside it, is round-off; one that really entered the void fails member_endpoints too.
                     if (FramingRoles.IsVertical(m.Role) &&
-                        WallFramingRules.CrossesOpening((f0[0] + f1[0]) / 2, Math.Min(f0[2], f1[2]), Math.Max(f0[2], f1[2]), p.StudWidthMm, fw.OpeningsMm))
+                        WallFramingRules.CrossesOpening((f0[0] + f1[0]) / 2, Math.Min(f0[2], f1[2]), Math.Max(f0[2], f1[2]), p.StudWidthMm, fw.OpeningsMm, EndpointToleranceMm))
                     { crossings++; srcCross++; }
                 }
                 maxDev = Math.Max(maxDev, srcDev);
@@ -537,14 +540,18 @@ namespace Horizun.Revit.Commands
             return check;
         }
 
-        private static PostconditionCheck VerifyRemoved(Document doc, List<KeyValuePair<Element, FramingMark>> removed, HashSet<long> sources, JObject evidence)
+        /// <summary>
+        /// Re-reads by the ids captured BEFORE the delete: a deleted Element's wrapper is no longer a
+        /// valid object, so reading its Id after the commit throws instead of answering "gone".
+        /// </summary>
+        private static PostconditionCheck VerifyRemoved(Document doc, List<long> removedIds, HashSet<long> sources, JObject evidence)
         {
             var check = new PostconditionCheck("members_absent", "markers_absent");
-            int still = removed.Count(p => doc.GetElement(p.Key.Id) != null);
+            int still = removedIds.Count(id => doc.GetElement(Rid.Make(id)) != null);
             int marked = FramingMarker.Find(doc, sources).Count;
             check.Compare("members_absent", 0, still);
             check.Compare("markers_absent", 0, marked);
-            evidence["removed_ids"] = new JArray(removed.Select(p => Rid.Value(p.Key.Id)));
+            evidence["removed_ids"] = new JArray(removedIds);
             evidence["sources"] = new JArray(sources.OrderBy(s => s));
             return check;
         }
