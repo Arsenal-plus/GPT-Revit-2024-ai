@@ -57,7 +57,9 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($add.stage -ne 'apply' -or $add.answer.isError) { foreach ($i in 0..1) { Case $i 'unverified' ('the link could not be added: ' + (Short $add.answer)) }; throw 'HZ_STOP_A' }
             $linkTypeId = [long]$add.answer.data.link_type_id
 
-            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Walls', 'OST_Floors', 'OST_StructuralColumns', 'OST_Columns'); include_links = $true; include_bounding_box = $true; max_rows = 500 }
+            # Any PHYSICAL linked element with height will do; an MEP write model (MEASURED 2026-09-26:
+            # the 2023-2027 HVAC fixtures) links no wall, floor or column, but does link equipment.
+            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Walls', 'OST_Floors', 'OST_StructuralColumns', 'OST_Columns', 'OST_MechanicalEquipment'); include_links = $true; include_bounding_box = $true; max_rows = 500 }
             $linkEl = @($q.data.rows | Where-Object { $_.source_kind -eq 'link' -and -not $_.is_element_type -and $_.bounding_box -and
                     ([double]$_.bounding_box.max[2] - [double]$_.bounding_box.min[2]) -gt 200 }) | Select-Object -First 1
             if (-not $linkEl) { foreach ($i in 0..1) { Case $i 'not_covered' 'the linked copy exposes no physical element with a usable bounding box' }; throw 'HZ_STOP_A' }
@@ -121,22 +123,42 @@ $script:HzProbeModules += [pscustomobject]@{
                 if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case 2 'pass' ('deleted ' + ($idsA -join ',')) }
                 else { Case 2 'fail' ('left in the disposable document: ' + ($idsA -join ',') + ' - ' + (Short $del.answer)) }
             }
-            if ($src -and (Test-Path -LiteralPath $src)) { Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue }
+            # THE SOURCE FILE STAYS. MEASURED 2026-09-26 in all four years: deleting the link
+            # type does not unload the linked document - Revit keeps it in memory while the
+            # delete can still be undone - and the harness-documents manifest declares only
+            # files that EXIST in the scratch folder. With the file removed, the matrix driver
+            # met a loaded 'HZ_RCLINKSRC_*' nobody declared and left the Revit running as
+            # foreign. Kept, it is declared, adopted as the harness's own link, and goes when
+            # the write document closes. The scratch folder is the harness's disposable one.
         }
 
         # ---- scenario (b): a connected pipe-elbow-pipe network crosses a column --------
         $created_b = New-Object System.Collections.ArrayList
         try {
-            # A level has no readable "elevation" field on horizun_list_elements - its
-            # bounding box (via query_model) gives the same Z, since a level datum has no
-            # height of its own.
-            $lv = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Levels'); include_bounding_box = $true; max_rows = 20; include_links = $false }
-            $lvRow = if ($lv.data) { @($lv.data.rows | Where-Object { $_.bounding_box }) } else { @() }
-            $level = if ($lvRow.Count -gt 0) { $lvRow[0].element_id } else { $null }
-            $levelZ = if ($lvRow.Count -gt 0) { [double]$lvRow[0].bounding_box.min[2] } else { $null }
+            # AN OWN LEVEL, SO ITS ELEVATION IS KNOWN. MEASURED 2026-09-26: query_model gives
+            # a level no bounding box (a datum has no extent), so reading an existing level's
+            # Z from one found nothing and scenario (b) never ran in any year.
+            $levelZ = 96000.0
+            $rl = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'
+                elements = @(@{ kind = 'level'; name = ('HZ_RCLR_' + ($run -replace '[^A-Za-z0-9]', '')); elevation = $levelZ }) } ($run + '-rclr-b-level')
+            $level = if ($rl.stage -eq 'apply' -and -not $rl.answer.isError) { [long]@($rl.answer.data.rows)[0].element_id } else { $null }
+            if ($level) { [void]$created_b.Add($level) }
             $pipeType = Find-Type 'OST_PipeCurves'; $system = Find-Type 'OST_PipingSystem'; $columnType = Find-Type 'OST_StructuralColumns'
-            if (-not $level -or -not $pipeType -or -not $system -or -not $columnType -or $levelZ -eq $null) {
-                foreach ($i in 3..4) { Case $i 'not_covered' "'$doc' has no level (with elevation), pipe type, piping system or structural column type to stage the network" }
+            # STAGED, NEVER ASSUMED: an MEP fixture carries no structural column family, and
+            # Autodesk's structural template of the run's year does (MEASURED 2026-09-26:
+            # 'M_Concrete-Rectangular-Column: 300 x 450mm'). The typed copy brings the type in.
+            $columnNote = $null
+            if (-not $columnType) {
+                $tpl = "C:\ProgramData\Autodesk\RVT $($Ctx.Year)\Templates\English\Structural Analysis-DefaultMetric.rte"
+                if (-not (Test-Path -LiteralPath $tpl)) { $columnNote = "no structural template at $tpl" }
+                else {
+                    $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); type_names = @('M_Concrete-Rectangular-Column: 300 x 450mm'); category = 'OST_StructuralColumns'; duplicate_types = 'use_destination' } ($run + '-rclr-b-coltype')
+                    $columnType = Find-Type 'OST_StructuralColumns'
+                    if (-not $columnType) { $columnNote = 'the column type could not be copied from the template: ' + (Short $cp.answer) }
+                }
+            }
+            if (-not $level -or -not $pipeType -or -not $system -or -not $columnType) {
+                foreach ($i in 3..4) { Case $i 'not_covered' ("'$doc' gave no own level ($level), pipe type ($pipeType), piping system ($system) or structural column type ($columnType) to stage the network " + $columnNote) }
                 throw 'HZ_STOP_B'
             }
             $bx = 900000.0; $by = 0.0; $bz = $levelZ + 300.0
@@ -157,7 +179,7 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $elbow) { foreach ($i in 3..4) { Case $i 'unverified' ('the elbow fitting could not be created: ' + (Short $rf.answer)) }; throw 'HZ_STOP_B' }
 
             $rc = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'
-                elements = @(@{ kind = 'structural_column'; point = @(($bx + 2000), ($by + 1000)); level_id = [long]$level; type_id = [long]$columnType }) } ($run + '-rclr-b-col')
+                elements = @(@{ kind = 'structural_column'; point = @(($bx + 2000), ($by + 1000), 0); coordinate_mode = 'level_offset'; level_id = [long]$level; type_id = [long]$columnType }) } ($run + '-rclr-b-col')
             $column = if ($rc.stage -eq 'apply' -and -not $rc.answer.isError) { [long]@($rc.answer.data.rows)[0].element_id } else { $null }
             if ($column) { [void]$created_b.Add($column) }
             if (-not $column) { foreach ($i in 3..4) { Case $i 'unverified' ('the column could not be created: ' + (Short $rc.answer)) }; throw 'HZ_STOP_B' }

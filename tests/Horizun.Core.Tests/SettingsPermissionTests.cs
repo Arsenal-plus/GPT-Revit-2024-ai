@@ -274,6 +274,50 @@ namespace Horizun.Core.Tests
                 Assert.Equal("invalid-settings-file", Settings.RetentionValue("job_retention_days")));
         }
 
+        // A sharing violation for an instant is retried; one that outlasts the retries still
+        // falls closed, but the refusal says the FILE did not decide it (MEASURED 2026-09-26: a
+        // refusal once claimed "permission_profile=read_only in settings.json" while the file
+        // said unsafe_code before and after).
+        [Fact]
+        public void A_briefly_locked_settings_file_is_retried_not_read_as_read_only()
+        {
+            WithSettings("{ \"permission_profile\": \"full_write\" }", () =>
+            {
+                var contract = Contract.Find("horizun_create_elements");
+                var hold = new FileStream(HorizunPaths.SettingsPath(), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                var release = System.Threading.Tasks.Task.Run(() => { System.Threading.Thread.Sleep(60); hold.Dispose(); });
+                bool allowed = Settings.IsToolAllowed(contract, out string reason);
+                release.Wait();
+                Assert.True(allowed, "a lock shorter than the retry window must not refuse: " + reason);
+            });
+        }
+
+        [Fact]
+        public void A_settings_file_that_stays_locked_falls_closed_and_says_the_file_did_not_decide()
+        {
+            WithSettings("{ \"permission_profile\": \"full_write\" }", () =>
+            {
+                var contract = Contract.Find("horizun_create_elements");
+                using (new FileStream(HorizunPaths.SettingsPath(), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    Assert.False(Settings.IsToolAllowed(contract, out string reason));
+                    Assert.Contains("permission_profile=read_only", reason);
+                    Assert.Contains("did not decide this", reason);
+                    Assert.Contains("could not be read", reason);
+                }
+            });
+        }
+
+        [Fact]
+        public void A_malformed_settings_file_names_the_parse_failure_in_the_refusal()
+        {
+            WithSettings("{ this is not json", () =>
+            {
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_create_elements"), out string reason));
+                Assert.Contains("not valid JSON", reason);
+            });
+        }
+
         private static void WithSettings(string json, Action action)
         {
             using (new EnvGuard())

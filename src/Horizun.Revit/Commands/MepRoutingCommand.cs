@@ -289,13 +289,13 @@ namespace Horizun.Revit.Commands
                     .OrderBy(s => Rid.Value(s.Id)).Take(MaxListed).Select(s => SegmentJson(doc, s, u, false)));
                 var duct = new JObject();
                 foreach (DuctShape shape in new[] { DuctShape.Round, DuctShape.Rectangular, DuctShape.Oval })
-                    duct[shape.ToString().ToLowerInvariant()] = SizesJson(DuctSizes(doc, shape), u);
+                    duct[shape.ToString().ToLowerInvariant()] = SizesJson(DuctSizes(doc, shape), u, true);
                 result["duct_sizes"] = duct;
                 var conduit = new JObject();
                 foreach (KeyValuePair<string, List<ConduitRow>> kv in ConduitStandards(doc))
                     conduit[kv.Key] = new JArray(kv.Value.Select(c => c.Json(u)));
                 result["conduit_standards"] = conduit;
-                result["cable_tray_sizes"] = SizesJson(CableTrayList(doc), u);
+                result["cable_tray_sizes"] = SizesJson(CableTrayList(doc), u, true);
             }
             return CommandResult.Ok(result);
         }
@@ -350,10 +350,17 @@ namespace Horizun.Revit.Commands
             return o;
         }
 
-        private static JArray SizesJson(IEnumerable<MEPSize> sizes, Units u)
+        // NOMINAL ONLY FOR DUCT AND CABLE-TRAY CATALOGS. MEASURED 2026-09-26 in Revit 2026:
+        // every DuctSizes entry carries Inner/OuterDiameter = 12 ft whatever its nominal
+        // (3657.6 mm beside a 76.2 mm duct) and every CableTraySizes entry carries 0, because
+        // those catalogs define a nominal size and nothing else. Echoing either constant would
+        // read as a wall thickness nobody set.
+        private static JArray SizesJson(IEnumerable<MEPSize> sizes, Units u, bool nominalOnly = false)
             => new JArray((sizes ?? Enumerable.Empty<MEPSize>()).OrderBy(s => s.NominalDiameter).Select(s => new JObject
             {
-                ["nominal"] = u.Out(s.NominalDiameter), ["inner"] = u.Out(s.InnerDiameter), ["outer"] = u.Out(s.OuterDiameter),
+                ["nominal"] = u.Out(s.NominalDiameter),
+                ["inner"] = nominalOnly ? JValue.CreateNull() : (JToken)u.Out(s.InnerDiameter),
+                ["outer"] = nominalOnly ? JValue.CreateNull() : (JToken)u.Out(s.OuterDiameter),
                 ["used_in_size_lists"] = s.UsedInSizeLists, ["used_in_sizing"] = s.UsedInSizing
             }));
 

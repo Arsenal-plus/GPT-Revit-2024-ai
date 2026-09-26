@@ -657,9 +657,13 @@ namespace Horizun.Revit.Commands
 
         private static JObject Shift(JObject state, XYZ v)
         {
-            if (state == null || !(state["loc"] is JArray loc)) return null;
+            if (state == null) return null;
+            // Both captured shapes (a curve's pair of points, a point's flat triple) - see
+            // UndoRules.ShiftLoc for why a point is flat and must stay so.
+            JToken shifted = UndoRules.ShiftLoc(state["loc"], v.X, v.Y, v.Z);
+            if (shifted == null) return null;
             var o = (JObject)state.DeepClone();
-            o["loc"] = new JArray(loc.Select(p => (JToken)new JArray((double)p[0] + v.X, (double)p[1] + v.Y, (double)p[2] + v.Z)));
+            o["loc"] = shifted;
             return o;
         }
 

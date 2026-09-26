@@ -16,10 +16,10 @@ New-Item -ItemType Directory -Path $scratch | Out-Null
 # filters on the own view, not two). $dwgMode: 'rows' (the table has rows), 'empty_refused'
 # (the default seeds are empty and the tool refuses; AIA gives rows), 'empty_json' (the
 # pre-fix behaviour: a created setup whose json holds no rows).
-function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwgMode = 'rows') {
+function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwgMode = 'rows', [bool]$noWall = $false) {
     $state = @{ calls = New-Object System.Collections.Generic.List[string]; persist = $persist
                 order = New-Object System.Collections.Generic.List[long]; disabled = New-Object System.Collections.Generic.List[long]
-                inherited = @($inherited); dwgMode = $dwgMode; sentOrder = $null; aia = $null
+                inherited = @($inherited); dwgMode = $dwgMode; sentOrder = $null; aia = $null; noWall = $noWall; explained = $null; hidden = $null; colored = $null
                 names = New-Object System.Collections.Generic.List[string] }
     $call = {
         param($tool, $arguments)
@@ -28,11 +28,16 @@ function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwg
             'horizun_query_planimetry' { return @{ isError = $false; data = [pscustomobject]@{ rows = @(
                 [pscustomobject]@{ view_id = 100; view_type = 'FloorPlan'; is_template = $true },
                 [pscustomobject]@{ view_id = 101; view_type = 'FloorPlan'; is_template = $false }) } } }
-            'horizun_query_model' { return @{ isError = $false; data = [pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 555 }) } } }
+            'horizun_query_model' {
+                # MEASURED 2026-09-26: the HVAC write models hold no host wall; a view-scoped
+                # query of the own staged plan does see the staged one.
+                if ($state.noWall -and $arguments.scope -ne 'view') { return @{ isError = $false; data = [pscustomobject]@{ matched_total = 0; rows = @() } } }
+                return @{ isError = $false; data = [pscustomobject]@{ matched_total = 1; rows = @([pscustomobject]@{ element_id = 555 }) } } }
             'horizun_get_schedule_data' { return @{ isError = $false; data = [pscustomobject]@{ body = @() } } }
             'horizun_manage_views' {
                 $op = $arguments.actions[0].operation
                 if ($op -eq 'explain_graphics') {
+                    $state.explained = [long]$arguments.actions[0].element_ids[0]
                     # Every filter on the view, in its CURRENT order - inherited ones included.
                     $layers = @([pscustomobject]@{ source = 'element' })
                     foreach ($fid in $state.order) { $layers += [pscustomobject]@{ source = 'filter'; filter_id = $fid; enabled = ($state.disabled -notcontains $fid) } }
@@ -74,7 +79,8 @@ function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwg
                 $state.disabled.Add([long]$arguments.actions[1].filter_id)
                 return (& $ok @{ rows = @([pscustomobject]@{ graphics = [pscustomobject]@{ order = @($state.order.ToArray()) } }) })
             }
-            'vg-category' { return (& $ok @{ actions_verified = 1 }) }
+            'vg-category' { $state.wallsHidden = $true; return (& $ok @{ actions_verified = 1 }) }
+            'vg-unhide-walls' { $state.wallsHidden = $false; return (& $ok @{ actions_verified = 1 }) }
             'vg-tpl-create' { return (& $ok @{ aliases = [pscustomobject]@{ tpl = 300 } }) }
             'vg-tpl-apply' { return (& $ok @{ actions_verified = 2 }) }
             'vg-tpl-remove' { return (& $ok @{ actions_verified = 1 }) }
@@ -110,7 +116,14 @@ function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwg
                 Set-Content -LiteralPath $arguments.output_path -Value 'AC1032-2'
                 return (& $ok @{ files_verified = 1 })
             }
+            'vg-stage-level' { return (& $ok @{ rows = @([pscustomobject]@{ element_id = 700 }); application = [pscustomobject]@{ state = 'verified_applied' } }) }
+            'vg-stage-wall' { return (& $ok @{ rows = @([pscustomobject]@{ element_id = 701 }); application = [pscustomobject]@{ state = 'verified_applied' } }) }
+            'vg-stage-plan' { return (& $ok @{ aliases = [pscustomobject]@{ vgplan = 702 }; actions_verified = 1 }) }
             'vg-color-by-value' {
+                $state.colored = @($arguments.actions[0].categories)[0]
+                if ($state.wallsHidden -and $state.colored -eq 'OST_Walls') {
+                    return @{ stage = 'dry_run'; answer = @{ isError = $true; data = $null; text = "color_by_value found nothing to colour: view 'HZ_VG' shows no element of Walls." } }
+                }
                 $legend = @([pscustomobject]@{ value = 'HZ'; filter_id = 600; rgb = '#E6194B' })
                 $byValue = @([pscustomobject]@{ value = 'HZ'; requested_rgb = '#E6194B'; found_rgb = '#E6194B'; visible = $true; matches = $true })
                 $row = [pscustomobject]@{
@@ -120,6 +133,7 @@ function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwg
                 return (& $ok @{ rows = @($row) })
             }
             'vg-hide-temp' {
+                $state.hidden = [long]$arguments.actions[0].element_ids[0]
                 $wallId = [long]$arguments.actions[0].element_ids[0]
                 $byElement = @([pscustomobject]@{ element_id = $wallId; measured = $true; hidden = $true; matches = $true })
                 $row = [pscustomobject]@{
@@ -197,6 +211,17 @@ Check 'the DWG write names OST_Walls, not a display name that follows the langua
 $f = New-Fake $true @(150) 'empty_json'
 $by = Invoke-Module $f $false 'r-8'
 Check 'a created setup with an empty table is a failure' ($by['views-vg: DWG setup create and layer table read to json'].Outcome -eq 'fail')
+
+# 9) MEASURED 2026-09-26: no host wall in the fixture. The probe stages an own level, wall and
+#    plan; every wall case acts on the STAGED wall, and the staged three are deleted last.
+$f = New-Fake $true @(150) 'rows' $true
+$by = Invoke-Module $f $false 'r-9'
+$notPass = @($names | Where-Object { $by[$_].Outcome -ne 'pass' })
+Check ('with no fixture wall every case still passes (' + ($notPass -join '; ') + ')') ($notPass.Count -eq 0)
+Check 'the own staged plan is the one duplicated' ($f.state.source -eq 702)
+Check 'precedence, colour and hide all act on the staged wall' (($f.state.explained -eq 701) -and ($f.state.hidden -eq 701) -and ($f.state.colored -eq 'OST_Walls'))
+Check 'the Walls category is shown again before colour and hide run on the own view' (-not $f.state.wallsHidden)
+Check 'the staged wall, plan and level are deleted last, level after its views' ($by['views-vg: cleanup deletes everything the module created'].Detail -match '701,702,700$')
 
 Get-ChildItem -LiteralPath $scratch -File | ForEach-Object { Remove-Item -LiteralPath $_.FullName }
 Remove-Item -LiteralPath $scratch

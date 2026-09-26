@@ -163,4 +163,51 @@ namespace Horizun.Core.Tests
             finally { System.IO.File.Delete(path); }
         }
     }
+
+    // The captured "loc" of a moved element, translated in the shape it was captured in.
+    public class UndoLocShiftTests
+    {
+        [Fact]
+        public void A_single_JArray_argument_is_the_copy_constructor_which_is_why_a_point_loc_is_flat()
+        {
+            // The fact the shape rests on: new JArray(JArray) COPIES, it does not nest.
+            var point = new JArray(1.0, 2.0, 3.0);
+            JArray loc = new JArray(point);
+            Assert.Equal(3, loc.Count);
+            Assert.Equal(JTokenType.Float, loc[0].Type);
+        }
+
+        [Fact]
+        public void A_flat_point_loc_shifts_as_one_point_and_stays_flat()
+        {
+            JToken shifted = UndoRules.ShiftLoc(new JArray(1.0, 2.0, 3.0), 10, 20, -1.3);
+            Assert.True(UndoRules.StatesMatch(new JArray(11.0, 22.0, 1.7), shifted));
+            Assert.Equal(JTokenType.Float, ((JArray)shifted)[0].Type);
+        }
+
+        [Fact]
+        public void A_curve_loc_shifts_both_endpoints_and_stays_nested()
+        {
+            var curve = new JArray(new JArray(0.0, 0.0, 0.0), new JArray(4.0, 0.0, 0.0));
+            JToken shifted = UndoRules.ShiftLoc(curve, 0, 0, -1.3155);
+            var expected = new JArray(new JArray(0.0, 0.0, -1.3155), new JArray(4.0, 0.0, -1.3155));
+            Assert.True(UndoRules.StatesMatch(expected, shifted));
+        }
+
+        [Fact]
+        public void Integer_coordinates_are_numbers_too()
+        {
+            Assert.True(UndoRules.StatesMatch(new JArray(2.0, 3.0, 4.0), UndoRules.ShiftLoc(new JArray(1, 2, 3), 1, 1, 1)));
+        }
+
+        [Fact]
+        public void Anything_else_is_not_a_location()
+        {
+            Assert.Null(UndoRules.ShiftLoc(null, 1, 1, 1));
+            Assert.Null(UndoRules.ShiftLoc(new JValue(5), 1, 1, 1));
+            Assert.Null(UndoRules.ShiftLoc(new JArray(), 1, 1, 1));
+            Assert.Null(UndoRules.ShiftLoc(new JArray(1.0, 2.0), 1, 1, 1));
+            Assert.Null(UndoRules.ShiftLoc(new JArray(new JArray(1.0, 2.0)), 1, 1, 1));
+            Assert.Null(UndoRules.ShiftLoc(new JArray("a", "b", "c"), 1, 1, 1));
+        }    }
 }
