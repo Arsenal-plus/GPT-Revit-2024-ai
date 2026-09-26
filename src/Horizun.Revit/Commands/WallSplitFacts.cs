@@ -205,6 +205,8 @@ namespace Horizun.Revit.Commands
         public double Rotation;
         public bool RotationRead;
         public int SubComponentCount;
+        /// <summary>Non-zero for a NESTED shared component: the family instance that owns it.</summary>
+        public long SuperComponentId;
         public List<long> SubComponentSymbolIds = new List<long>();
         public List<string> SubComponentUniqueIds = new List<string>();
         public BoundingBoxXYZ Bounds;
@@ -1977,6 +1979,7 @@ namespace Horizun.Revit.Commands
 
             try { snapshot.SymbolId = instance.Symbol == null ? 0 : Rid.Value(instance.Symbol.Id); } catch { }
             try { snapshot.HostId = instance.Host == null ? 0 : Rid.Value(instance.Host.Id); } catch { }
+            try { snapshot.SuperComponentId = instance.SuperComponent == null ? 0 : Rid.Value(instance.SuperComponent.Id); } catch { }
             try { snapshot.LevelId = instance.LevelId == null ? 0 : Rid.Value(instance.LevelId); } catch { }
             try { snapshot.Point = (instance.Location as LocationPoint)?.Point; } catch { }
             try { snapshot.HandFlipped = instance.HandFlipped; } catch { }
