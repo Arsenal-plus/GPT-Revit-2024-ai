@@ -106,37 +106,62 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void ContainsCrossingWithClearance_skips_the_axis_the_run_travels_along()
+        public void FootprintHalfExtent_is_the_bare_section_for_a_square_on_crossing()
         {
-            // A wall along X, 200 mm thick in Y; a 100 mm pipe runs along Y through it at z=0.
-            // The opening re-reads as a thin rectangle in the wall's plane: 250 mm wide (X) and
-            // 250 mm high (Z), but only the wall's thickness in Y.
-            var opening = new ResolveBox(-125, -100, -125, 125, 100, 125);
-            double[] alongY = { 0, 1, 0 };
-            Assert.True(SleeveRules.ContainsCrossingWithClearance(opening, new double[] { 0, 0, 0 }, alongY, 50, 50, 50));
-            // The same margin fails once the pipe grows past it.
-            Assert.False(SleeveRules.ContainsCrossingWithClearance(opening, new double[] { 0, 0, 0 }, alongY, 80, 50, 50));
-            // Off-centre so the clearance is gone on one side.
-            Assert.False(SleeveRules.ContainsCrossingWithClearance(opening, new double[] { 40, 0, 0 }, alongY, 50, 50, 50));
+            // A 114.3 mm OD pipe along Y through a 200 mm wall whose normal is Y; opening axes X (along the wall) and Z.
+            double[] u = { 0, 1, 0 }, n = { 0, 1, 0 };
+            SleeveRules.DefaultSectionAxes(u, out double[] e1, out double[] e2);
+            Assert.Equal(57.15, SleeveRules.FootprintHalfExtent(u, n, new double[] { 1, 0, 0 }, e1, e2, true, 57.15, 200), 6);
+            Assert.Equal(57.15, SleeveRules.FootprintHalfExtent(u, n, new double[] { 0, 0, 1 }, e1, e2, true, 57.15, 200), 6);
         }
 
         [Fact]
-        public void ContainsCrossingWithClearance_checks_both_plan_axes_for_a_vertical_run()
+        public void FootprintHalfExtent_widens_a_skewed_crossing_by_section_over_cos_plus_thickness_drift()
         {
-            var floorCut = new ResolveBox(-100, -100, -150, 100, 100, 150);
-            double[] up = { 0, 0, 1 };
-            Assert.True(SleeveRules.ContainsCrossingWithClearance(floorCut, new double[] { 0, 0, 0 }, up, 50, 50, 50));
-            Assert.False(SleeveRules.ContainsCrossingWithClearance(floorCut, new double[] { 0, 0, 0 }, up, 50, 60, 50));
-            Assert.False(SleeveRules.ContainsCrossingWithClearance(null, new double[] { 0, 0, 0 }, up, 50, 50, 50));
+            // The same pipe at 45 degrees in plan through a 200 mm wall: along the wall the section
+            // spreads to r*sqrt(2) and the centre drifts 200 mm across the thickness (half each side).
+            double s = System.Math.Sqrt(0.5);
+            double[] u = { s, s, 0 }, n = { 0, 1, 0 };
+            SleeveRules.DefaultSectionAxes(u, out double[] e1, out double[] e2);
+            Assert.Equal(50 * System.Math.Sqrt(2) + 100, SleeveRules.FootprintHalfExtent(u, n, new double[] { 1, 0, 0 }, e1, e2, true, 50, 200), 6);
+            // Vertically nothing changes: the run is horizontal.
+            Assert.Equal(50, SleeveRules.FootprintHalfExtent(u, n, new double[] { 0, 0, 1 }, e1, e2, true, 50, 200), 6);
+            // Nearly parallel to the face: refused as NaN rather than sized to infinity.
+            Assert.True(double.IsNaN(SleeveRules.FootprintHalfExtent(new double[] { 1, 0.1, 0 }, n, new double[] { 1, 0, 0 }, e1, e2, true, 50, 200)));
         }
 
         [Fact]
-        public void FloorFootprint_keeps_round_and_squares_a_rectangle_to_its_larger_side()
+        public void FootprintHalfExtent_sizes_a_rectangle_on_its_axes_and_circumscribes_it_without_them()
         {
-            SleeveRules.FloorFootprint(160, 160, SleeveRules.ShapeRound, out double rx, out double ry);
-            Assert.Equal(160, rx); Assert.Equal(160, ry);
-            SleeveRules.FloorFootprint(450, 250, SleeveRules.ShapeRect, out double x, out double y);
-            Assert.Equal(450, x); Assert.Equal(450, y);
+            double[] up = { 0, 0, 1 }, n = { 0, 0, 1 };
+            // A vertical 400x400 (half 200) duct turned 45 degrees in plan: on known axes the X extent is 200*sqrt(2).
+            double s = System.Math.Sqrt(0.5);
+            Assert.Equal(200 * System.Math.Sqrt(2), SleeveRules.FootprintHalfExtent(up, n, new double[] { 1, 0, 0 }, new[] { s, s, 0 }, new[] { -s, s, 0 }, false, 200, 250), 6);
+            // Axes unknown: the circumscribed circle, safe for every rotation.
+            Assert.Equal(200 * System.Math.Sqrt(2), SleeveRules.FootprintHalfExtent(up, n, new double[] { 1, 0, 0 }, null, null, false, 200, 250), 6);
+            // Axis-aligned it is exactly the half side.
+            Assert.Equal(200, SleeveRules.FootprintHalfExtent(up, n, new double[] { 1, 0, 0 }, new double[] { 1, 0, 0 }, new double[] { 0, 1, 0 }, false, 200, 250), 6);
+        }
+
+        [Fact]
+        public void DirectionRefusal_gates_steep_runs_out_of_walls_and_flat_runs_out_of_floors()
+        {
+            Assert.Null(SleeveRules.DirectionRefusal(SleeveRules.RouteWallOpening, new double[] { 1, 0, 0.1 }));
+            Assert.Equal(SleeveRules.CodeTooSteepForWall, SleeveRules.DirectionRefusal(SleeveRules.RouteWallOpening, new double[] { 0.1, 0, 1 }));
+            Assert.Null(SleeveRules.DirectionRefusal(SleeveRules.RouteFloorOpening, new double[] { 0, 0, 1 }));
+            Assert.Equal(SleeveRules.CodeTooFlatForFloor, SleeveRules.DirectionRefusal(SleeveRules.RouteFloorOpening, new double[] { 1, 0, 0.02 }));
+            Assert.Null(SleeveRules.DirectionRefusal(SleeveRules.RouteSleeveOnly, new double[] { 1, 0, 0 }));
+        }
+
+        [Fact]
+        public void SameGeometry_refuses_a_drift_beyond_one_millimetre_or_a_shape_change()
+        {
+            double[] c = { 1000, 2000, 3000 };
+            Assert.True(SleeveRules.SameGeometry(c, 150, 150, "round", new double[] { 1000.5, 2000, 3000 }, 150.4, 150, "round"));
+            Assert.False(SleeveRules.SameGeometry(c, 150, 150, "round", new double[] { 1002, 2000, 3000 }, 150, 150, "round"));
+            Assert.False(SleeveRules.SameGeometry(c, 150, 150, "round", c, 250, 250, "round"));
+            Assert.False(SleeveRules.SameGeometry(c, 150, 150, "round", c, 150, 150, "rect"));
+            Assert.False(SleeveRules.SameGeometry(null, 150, 150, "round", c, 150, 150, "round"));
         }
 
         [Fact]

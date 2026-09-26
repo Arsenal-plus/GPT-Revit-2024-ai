@@ -5560,7 +5560,7 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_resolve_clash",
                 Command = "horizun_resolve_clash",
-                Description = @"Resolve horizun_clash ledger findings with verification. propose (read-only): shift or re-elevate the host MEP run the minimum + clearance - if it is connected, its whole eligible network moves as one (run_shift), or it is report-only naming the blocking connection; checked against host elements AND every loaded link. Structure, architecture, pinned runs and moves touching a third element (host or link) are report-only. apply: dry_run -> token -> TransactionGroup, re-detect on solids against host and links; the pair must vanish with no new clash or the group rolls back. Kept moves are undoable (horizun_undo); findings become resolved_by_model only by that measurement. propose_opening/apply_opening: run-vs-host pair a move cannot fix -> cut wall/floor/roof/ceiling or place a caller sleeve family (only route for framing/columns); solid re-check, finding stays open (opening_requested).",
+                Description = @"Resolve horizun_clash ledger findings with verification. propose (read-only): shift or re-elevate the host MEP run the minimum + clearance - if it is connected, its whole eligible network moves as one (run_shift), or it is report-only naming the blocking connection; checked against host elements AND every loaded link. Structure, architecture, pinned runs and moves touching a third element (host or link) are report-only. apply: dry_run -> token -> TransactionGroup, re-detect on solids against host and links; the pair must vanish with no new clash or the group rolls back. Kept moves are undoable (horizun_undo); findings become resolved_by_model only by that measurement. propose_opening/apply_opening: run-vs-host pair a move cannot fix -> cut wall/floor/roof/ceiling or place a caller sleeve family (framing/columns: sleeve only, by scope); solid re-check, finding stays open (opening_requested).",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -5573,6 +5573,7 @@ namespace Horizun.Contracts
     ""sleeve_type_id"": { ""type"": ""integer"", ""description"": ""apply_opening: caller sleeve family type placed at the crossing instead of a cut; required for framing/columns."" },
     ""approval_parameter"": { ""type"": ""string"", ""description"": ""apply_opening: text instance parameter marked on the created opening/sleeve."" },
     ""approval_value"": { ""type"": ""string"", ""description"": ""apply_opening: value for approval_parameter, e.g. 'pending structural approval'."" },
+    ""allow_structural"": { ""type"": ""boolean"", ""default"": false, ""description"": ""*_opening: true records that a person approved cutting/sleeving a STRUCTURAL host."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }
 }")

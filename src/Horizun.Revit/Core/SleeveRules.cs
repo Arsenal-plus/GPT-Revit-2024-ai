@@ -6,25 +6,27 @@
 // between an MEP run and a wall/floor/roof/framing/column cannot be resolved by
 // moving the run (ClashResolveRules already covers the move path): instead of
 // relocating anything, the run keeps its line and the HOST gets an opening (or,
-// for framing/columns the API cannot cut, a sleeve family only).
+// for framing/columns, a caller-supplied sleeve family only - by scope, see
+// RouteSleeveOnly).
 //
-//   * THE CROSSING. The run's centreline (a segment, mm) against the host's own
-//     bounding box (mm, already how the rest of this bridge measures a host
-//     conservatively - see ResolveClashCommand.Box): a standard 3D slab
-//     (Liang-Barsky) clip gives the entry and exit point where the segment
-//     crosses the box, or a code saying why it does not cross at all. The
-//     midpoint of entry/exit is the crossing point a sleeve centres on.
-//   * THE SIZE. Opening size = the run's own outer cross-section (from
-//     MepFacts.TryProfile, mm) plus clearance_mm - round stays round (both
-//     dimensions equal, diameter-based), everything else is the rectangle the
-//     run's width/height describe.
+//   * THE CROSSING. The command layer intersects the run's centreline with the
+//     host's SOLIDS (Solid.IntersectWithCurve, segments inside); the host's
+//     bounding box is only a prefilter here (LineBoxIntersect), never the
+//     crossing itself - a rotated wall's box is not the wall.
+//   * THE SIZE. The run's OUTER section (outside diameter + insulation, read by
+//     the command layer) projected through the host along the run's direction:
+//     FootprintHalfExtent gives, per opening axis, how far the run's material
+//     reaches from the crossing across the host's full thickness - a skewed
+//     crossing is wider than the pipe (section / cos + thickness * tan). The
+//     opening is twice that plus clearance_mm.
 //   * THE ROUTE. Which Revit API call the command layer uses is a property of
-//     the HOST's kind alone: a wall gets a rectangular NewOpening(wall, pt1,
-//     pt2); a floor/roof/ceiling gets a boundary-loop NewOpening(host,
-//     CurveArray, bool); framing and columns get NEITHER - the API has no way to
-//     cut a beam or column except with a void-cutting family, so the only route
-//     is a sleeve family instance, and even that is a caller-supplied family
-//     (this bridge is organisation-neutral: no family is compiled in).
+//     the HOST's kind: a wall gets a rectangular NewOpening(wall, pt1, pt2); a
+//     floor/roof/ceiling gets a boundary-loop NewOpening(host, CurveArray,
+//     false) - a VERTICAL cut, so a vertical run through a sloped roof gets a
+//     vertical hole; framing and columns get a sleeve family only.
+//   * THE CHECK. The command layer verifies the clearance on solids after the
+//     commit (a clearance envelope around the run must not meet the host or the
+//     sleeve); nothing in this file claims a clearance it did not size.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -47,9 +49,14 @@ namespace Horizun.Revit.Core
 
         /// <summary>doc.Create.NewOpening(Wall, XYZ, XYZ) - a rectangular cut through a wall's full thickness.</summary>
         public const string RouteWallOpening = "wall_opening";
-        /// <summary>doc.Create.NewOpening(HostObject, CurveArray, bool) - a boundary-loop cut through a floor/roof/ceiling.</summary>
+        /// <summary>doc.Create.NewOpening(HostObject, CurveArray, false) - a vertical boundary-loop cut through a floor/roof/ceiling.</summary>
         public const string RouteFloorOpening = "floor_opening";
-        /// <summary>No cut is possible; only a caller-supplied sleeve family instance may be placed, uncut, at the crossing.</summary>
+        /// <summary>
+        /// Framing/columns: only a caller-supplied sleeve family instance. The API CAN cut a
+        /// beam, brace or column (Creation.Document.NewOpening(Element, CurveArray, eRefFace));
+        /// this operation deliberately does not offer that cut - cutting a structural member is
+        /// an engineer's sized penetration, not a clash fix.
+        /// </summary>
         public const string RouteSleeveOnly = "sleeve_only";
         /// <summary>Neither a cut nor a documented sleeve route exists for this host kind.</summary>
         public const string RouteRefused = "refused";
@@ -58,16 +65,26 @@ namespace Horizun.Revit.Core
         public const string CodeParallel = "run_parallel_to_host_face";
         public const string CodeNoProfile = "run_has_no_profile";
         public const string CodeNoHostBox = "host_has_no_bounding_box";
+        public const string CodeHostSolidUnreadable = "host_solid_unreadable";
         public const string CodeHostUnsupported = "host_kind_not_supported";
-        /// <summary>Framing/columns: the API has no cut for them (only a void-cutting family instance can), so a cut is refused by name.</summary>
-        public const string CodeCutRefused = "host_cannot_be_cut_by_api";
+        public const string CodeCurvedWall = "curved_wall_not_supported";
+        public const string CodeTooSteepForWall = "run_too_steep_for_wall_opening";
+        public const string CodeTooFlatForFloor = "run_too_flat_for_floor_opening";
+        public const string CodeNothingToCut = "nothing_to_cut";
+        public const string CodeGeometryChanged = "geometry_changed_since_propose";
+        /// <summary>Framing/columns: a cut is not offered by this operation (scope, not an API limit), so it is refused by name.</summary>
+        public const string CodeCutRefused = "member_cut_not_offered";
 
-        /// <summary>
-        /// The host kind that decides the route. `structural` is the caller's own
-        /// structural-significance read (a non-structural wall/floor still gets its normal
-        /// wall/floor route: structural-significance only matters for framing/columns, which
-        /// have no other route to begin with).
-        /// </summary>
+        /// <summary>A floor/roof/ceiling opening is planned only for a run at least this steep (|unit z|): 30 degrees above horizontal.</summary>
+        public const double MinVerticalComponentForFloorOpening = 0.5;
+        /// <summary>Below this |cos| between the run and the host normal the skewed footprint explodes; refused as parallel.</summary>
+        public const double MinNormalComponent = 0.25;
+        /// <summary>The clearance envelope is shrunk by this much so an exact-fit cut passes and anything short by more fails.</summary>
+        public const double EnvelopeToleranceMm = 0.5;
+        /// <summary>A proposal's bound geometry may drift this much (mm) before apply refuses it as changed.</summary>
+        public const double GeometryDriftToleranceMm = 1.0;
+
+        /// <summary>The host kind that decides the route.</summary>
         public static string HostKindOf(string builtInCategory)
         {
             switch (builtInCategory)
@@ -100,11 +117,24 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// Direction gate per route, on the run's unit direction: a wall opening only for a run
+        /// no steeper than PenetrationRules.MaxVerticalComponentForWallOpening, a floor/roof/
+        /// ceiling opening only for a run at least MinVerticalComponentForFloorOpening steep.
+        /// Null when the route accepts the direction, otherwise the refusal code.
+        /// </summary>
+        public static string DirectionRefusal(string route, double[] runDirection)
+        {
+            double[] u = Unit(runDirection);
+            if (u == null) return CodeParallel;
+            if (route == RouteWallOpening && Math.Abs(u[2]) > PenetrationRules.MaxVerticalComponentForWallOpening) return CodeTooSteepForWall;
+            if (route == RouteFloorOpening && Math.Abs(u[2]) < MinVerticalComponentForFloorOpening) return CodeTooFlatForFloor;
+            return null;
+        }
+
+        /// <summary>
         /// A 3D segment (mm) clipped against an axis-aligned box (Liang-Barsky slab method,
-        /// clipped to the segment's own [0,1] as well, so a run that only grazes the host near
-        /// one end is reported honestly rather than extrapolated). `code` explains a false
-        /// return: parallel-and-outside, or the segment simply never reaches the box within its
-        /// own length.
+        /// clipped to the segment's own [0,1] as well). Used ONLY as a cheap prefilter before the
+        /// solid intersection: a false return means the run cannot reach the host at all.
         /// </summary>
         public static bool LineBoxIntersect(double[] startMm, double[] endMm, ResolveBox box,
                                             out double[] entryMm, out double[] exitMm, out string code)
@@ -139,9 +169,9 @@ namespace Horizun.Revit.Core
             new[] { (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2 };
 
         /// <summary>
-        /// Opening/sleeve size: the run's own outer cross-section plus clearance_mm. Round stays
-        /// round (both dimensions equal, so a caller can build a circular boundary); a
-        /// rectangular or oval run always becomes a rectangular opening.
+        /// Opening/sleeve size for a run crossing its host square-on: the run's own outer
+        /// cross-section plus clearance_mm. Kept for the perpendicular case; a skewed crossing is
+        /// sized by FootprintHalfExtent.
         /// </summary>
         public static void OpeningSize(double runWidthMm, double runHeightMm, double clearanceMm, string runShape,
                                        out double openingWidthMm, out double openingHeightMm, out string shape)
@@ -153,47 +183,55 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Does `outer` contain `point` with at least `marginMm` of clearance on every side that
-        /// the run's own half cross-section would occupy around it? The check runs only on the
-        /// axes ACROSS the run: the axis the run travels along (|component| >= 0.5 of the unit
-        /// direction) is skipped, because an opening is as thin as its host there and a sleeve
-        /// is as long as it is. Vertical (Z) needs `halfHeightMm`; horizontal axes need
-        /// `halfWidthMm` (for a vertical run, plan Y uses `halfHeightMm` - see FloorFootprint,
-        /// which squares a rectangular section for exactly that reason). Used as the apply
-        /// postcondition: the built opening/sleeve must actually clear the run by the clearance
-        /// that was proposed, not merely overlap it. Conservative like every box check in this
-        /// bridge: exact on an axis-aligned opening, a safe under-estimate otherwise.
+        /// How far (mm) the run's material reaches from the crossing along the opening axis `a`
+        /// (unit, in the host's plane, perpendicular to the host normal `n`), over the host's full
+        /// `thicknessMm` measured along `n`. The run is `u`; its section is a circle of radius
+        /// `sectionHalfMm` when `round`, otherwise a square of half-side `sectionHalfMm` on the
+        /// section axes `e1`/`e2` (null axes: the circle circumscribing that square - an
+        /// unknown section rotation is sized for every rotation). Derivation: the section
+        /// projected along u onto the host plane has half-extent max over the section of x.v with
+        /// v = a - n (u.a)/(u.n) (v is perpendicular to u), i.e. r|v| = r sqrt(1 + k^2) for a circle, k = (u.a)/(u.n);
+        /// across the thickness the centre drifts t|k|, half of it on each side of the crossing.
+        /// NaN when the run is (nearly) parallel to the host face.
         /// </summary>
-        public static bool ContainsCrossingWithClearance(ResolveBox outer, double[] pointMm, double[] runDirection,
-                                                          double halfWidthMm, double halfHeightMm, double marginMm)
+        public static double FootprintHalfExtent(double[] u, double[] n, double[] a, double[] e1, double[] e2,
+                                                 bool round, double sectionHalfMm, double thicknessMm)
         {
-            if (outer == null || pointMm == null) return false;
-            double[] u = Unit(runDirection);
-            double[] min = { outer.MinX, outer.MinY, outer.MinZ };
-            double[] max = { outer.MaxX, outer.MaxY, outer.MaxZ };
-            bool vertical = u != null && Math.Abs(u[2]) >= 0.5;
-            for (int i = 0; i < 3; i++)
-            {
-                if (u != null && Math.Abs(u[i]) >= 0.5) continue;
-                double half = i == 2 ? halfHeightMm : (vertical && i == 1 ? halfHeightMm : halfWidthMm);
-                double need = half + marginMm;
-                if (min[i] > pointMm[i] - need + 1e-6 || max[i] < pointMm[i] + need - 1e-6) return false;
-            }
-            return true;
+            u = Unit(u); n = Unit(n); a = Unit(a);
+            if (u == null || n == null || a == null) return double.NaN;
+            double un = Dot(u, n);
+            if (Math.Abs(un) < MinNormalComponent) return double.NaN;
+            double k = Dot(u, a) / un;
+            double[] v = { a[0] - n[0] * k, a[1] - n[1] * k, a[2] - n[2] * k };
+            double[] x1 = Unit(e1), x2 = Unit(e2);
+            double section = round ? sectionHalfMm * Norm(v)
+                           : (x1 == null || x2 == null) ? sectionHalfMm * Math.Sqrt(2) * Norm(v)
+                           : sectionHalfMm * (Math.Abs(Dot(v, x1)) + Math.Abs(Dot(v, x2)));
+            return section + Math.Max(0, thicknessMm) * Math.Abs(k) / 2;
         }
 
         /// <summary>
-        /// Plan footprint (X by Y, mm) of a floor/roof/ceiling opening. A round run keeps its
-        /// diameter; a rectangular section is SQUARED to its larger side because this route does
-        /// not read the section's rotation in plan - an axis-aligned rectangle of the raw width
-        /// by height would miss a duct turned 90 degrees, and the postcondition would then (rightly)
-        /// roll the cut back. Over-size rather than a guess that fails.
+        /// Default section axes for a run: e1 horizontal and perpendicular to the run (plan X for a
+        /// vertical run), e2 = u x e1. Used when the connector's own coordinate system is unreadable.
         /// </summary>
-        public static void FloorFootprint(double openingWidthMm, double openingHeightMm, string shape, out double xMm, out double yMm)
+        public static void DefaultSectionAxes(double[] runDirection, out double[] e1, out double[] e2)
         {
-            if (shape == ShapeRound) { xMm = openingWidthMm; yMm = openingWidthMm; return; }
-            double side = Math.Max(openingWidthMm, openingHeightMm);
-            xMm = side; yMm = side;
+            double[] u = Unit(runDirection) ?? new double[] { 1, 0, 0 };
+            e1 = Math.Abs(u[2]) > 0.99 ? new double[] { 1, 0, 0 } : Unit(Cross(u, new double[] { 0, 0, 1 }));
+            e2 = Unit(Cross(u, e1));
+        }
+
+        /// <summary>
+        /// Does a proposal's bound geometry still match the live re-derivation? Crossing point and
+        /// both opening sizes within GeometryDriftToleranceMm, same shape.
+        /// </summary>
+        public static bool SameGeometry(double[] boundCrossing, double boundWidth, double boundHeight, string boundShape,
+                                        double[] liveCrossing, double liveWidth, double liveHeight, string liveShape)
+        {
+            if (boundCrossing == null || liveCrossing == null || boundCrossing.Length < 3 || liveCrossing.Length < 3) return false;
+            if (!string.Equals(boundShape, liveShape, StringComparison.Ordinal)) return false;
+            for (int i = 0; i < 3; i++) if (Math.Abs(boundCrossing[i] - liveCrossing[i]) > GeometryDriftToleranceMm) return false;
+            return Math.Abs(boundWidth - liveWidth) <= GeometryDriftToleranceMm && Math.Abs(boundHeight - liveHeight) <= GeometryDriftToleranceMm;
         }
 
         /// <summary>
@@ -208,12 +246,19 @@ namespace Horizun.Revit.Core
             return ClashResolveRules.NewPairs(before, after).Where(p => p != intended).ToList();
         }
 
-        private static double[] Unit(double[] d)
+        public static double[] Unit(double[] d)
         {
             if (d == null || d.Length < 3) return null;
             double len = Math.Sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
             return len < 1e-9 ? null : new[] { d[0] / len, d[1] / len, d[2] / len };
         }
+
+        public static double Dot(double[] a, double[] b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
+        public static double[] Cross(double[] a, double[] b) =>
+            new[] { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
+
+        private static double Norm(double[] v) => Math.Sqrt(Dot(v, v));
 
         public static string Describe(string hostKind, double widthMm, double heightMm, string shape) =>
             shape + " opening " + widthMm.ToString("0.#", CultureInfo.InvariantCulture) + "x" +
