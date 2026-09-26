@@ -95,21 +95,24 @@ namespace Horizun.Revit.Commands
                     "happened, and nothing here knows that.");
             var refused = new JArray();
             var changes = new List<Change>();
+            var unmatchedTopics = new List<BcfTopic>();
 
             foreach (BcfTopic topic in topics)
             {
                 CoordinationFinding finding;
                 if (!byGuid.TryGetValue(topic.Guid, out finding))
                 {
+                    unmatchedTopics.Add(topic);
                     unmatched.Add(new JObject
                     {
                         ["guid"] = topic.Guid,
                         ["title"] = topic.Title,
                         ["status"] = topic.Status,
                         ["comments"] = topic.Comments.Count,
-                        ["means"] = "no finding in this document's ledger has that topic guid. It was NOT " +
-                                    "created: a finding with no pair of elements is a row no detection run " +
-                                    "could ever resolve or regress."
+                        ["means"] = "no finding in this document's ledger has that topic guid - it is not one " +
+                                    "this ledger exported. Resolved and re-detected against its own viewpoint " +
+                                    "components below (external_reproduced/external_not_traceable/" +
+                                    "external_not_reproduced); NOT invented into a finding merely for being named here."
                     });
                     continue;
                 }
@@ -189,6 +192,16 @@ namespace Horizun.Revit.Commands
                 });
             }
 
+            // ---- topics THIS ledger does not recognize: resolve their own viewpoint
+            // components against the model and re-detect, exactly like import_navisworks. ----
+            JArray extNotTraceable, extReproduced, extNotReproduced;
+            List<CoordinationDetected> extDetected;
+            Dictionary<string, BcfTopic> extTopicByFindingId;
+            List<string> extLinksUnloaded;
+            string extMatchRule;
+            ResolveExternalBcfTopics(doc, unmatchedTopics, out extNotTraceable, out extReproduced,
+                out extNotReproduced, out extDetected, out extTopicByFindingId, out extLinksUnloaded, out extMatchRule);
+
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
             var summary = new JObject
             {
@@ -207,16 +220,26 @@ namespace Horizun.Revit.Commands
                     "'Closed' overwriting yesterday's re-detection leaves the ledger saying Closed about " +
                     "a clash that is still in the model.",
                 ["refused_transitions"] = refused,
+                ["external_reproduced"] = extReproduced,
+                ["external_not_reproduced"] = extNotReproduced,
+                ["external_not_traceable"] = extNotTraceable,
+                ["external_links_not_loaded"] = new JArray(extLinksUnloaded),
+                ["external_match_rule"] = extMatchRule,
                 ["means"] =
-                    "A returned topic NEVER sets resolved_by_model: that status is detection's verdict, and an " +
-                    "external tool saying 'Closed' means a person decided, which is closed_by_decision. Topics " +
-                    "this ledger does not know are reported, never invented into it."
+                    "A returned topic that matches one of THIS ledger's own exports NEVER sets " +
+                    "resolved_by_model: that status is detection's verdict, and an external tool saying " +
+                    "'Closed' means a person decided, which is closed_by_decision (see 'planned'/'unmatched' " +
+                    "above). A topic from ANY OTHER tool is resolved by its own viewpoint components and " +
+                    "RE-DETECTED (external_reproduced/external_not_reproduced/external_not_traceable): only a " +
+                    "reproduced pair becomes a finding, origin 'bcf', runComplete=false always - it never " +
+                    "resolves a finding by itself either."
             };
 
             if (dry)
             {
                 summary["dry_run"] = true;
                 summary["would_change"] = changes.Count;
+                summary["external_would_record"] = extDetected.Count;
                 return CommandResult.Ok(summary);
             }
 
@@ -238,6 +261,50 @@ namespace Horizun.Revit.Commands
                 }
             }
 
+            // runComplete is ALWAYS false: a spot-check over named topics is not a complete
+            // detection run over a category scope, and must never resolve anything.
+            CoordinationRules.Merge(findings, extDetected, nowUtc, runComplete: false, scopeKey: "bcf");
+            foreach (KeyValuePair<string, BcfTopic> kv in extTopicByFindingId)
+            {
+                CoordinationFinding finding;
+                if (!findings.TryGetValue(kv.Key, out finding)) continue; // Merge just added or refreshed it
+                BcfTopic topic = kv.Value;
+
+                string wantedStatus = MapStatus(topic.Status);
+                if (wantedStatus != null && wantedStatus != finding.Status)
+                {
+                    string why;
+                    if (CoordinationRules.CanTransition(finding.Status, wantedStatus, out why))
+                    {
+                        // Same conflict rule as a matched topic: a brand-new finding (UpdatedUtc
+                        // still null) can never conflict, since nothing local existed to disagree with.
+                        string localAt = finding.UpdatedUtc;
+                        string externalAt = LastExternalChange(topic);
+                        bool conflict = localAt != null && externalAt != null &&
+                                        string.CompareOrdinal(localAt, externalAt) > 0;
+                        if (!conflict || onConflict == "prefer_external")
+                        {
+                            CoordinationRules.AppendEvent(finding, "status",
+                                "imported from BCF '" + Path.GetFileName(path) + "' (external topic " +
+                                topic.Guid + "): " + finding.Status + " -> " + wantedStatus, nowUtc);
+                            finding.Status = wantedStatus;
+                            finding.UpdatedUtc = nowUtc;
+                        }
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(finding.Assignee) && !string.IsNullOrWhiteSpace(topic.AssignedTo))
+                {
+                    finding.Assignee = topic.AssignedTo;
+                    finding.UpdatedUtc = nowUtc;
+                }
+                foreach (BcfComment comment in topic.Comments)
+                    if (!AlreadyRecorded(finding, comment))
+                    {
+                        CoordinationRules.AppendEvent(finding, "comment", ImportedCommentText(comment), nowUtc);
+                        finding.UpdatedUtc = nowUtc;
+                    }
+            }
+
             CoordinationLedger.Save(ledgerPath, documentTitle ?? doc.Title, findings);
 
             // RE-READ. The ledger is a small file and the contract does not bend for
@@ -254,6 +321,12 @@ namespace Horizun.Revit.Commands
                 if (change.NewStatus != null && after.Status != change.NewStatus)
                     notVerified.Add(change.Finding.Id);
             }
+            foreach (string findingId in extTopicByFindingId.Keys)
+            {
+                CoordinationFinding after;
+                if (!reloaded.TryGetValue(findingId, out after) || after.ExternalSource != "bcf")
+                    notVerified.Add(findingId);
+            }
             if (notVerified.Count > 0)
                 return CommandResult.Fail(
                     "The ledger was written and re-reading it does not show " + notVerified.Count +
@@ -262,6 +335,7 @@ namespace Horizun.Revit.Commands
 
             summary["dry_run"] = false;
             summary["applied"] = changes.Count;
+            summary["external_recorded"] = extDetected.Count;
             summary["verified_by_reread"] = true;
             return CommandResult.Ok(summary);
         }
