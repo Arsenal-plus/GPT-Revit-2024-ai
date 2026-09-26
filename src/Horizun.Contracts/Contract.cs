@@ -5349,14 +5349,16 @@ namespace Horizun.Contracts
                 Description =
                     "MEP routing preferences and size catalogs. read: a pipe/duct type's rules per group (part, size ranges), " +
                     "segments (material, schedule, nominal/inner/outer sizes), duct, conduit and cable-tray catalogs. " +
-                    "set_rules, add_sizes, remove_sizes and resize: dry_run, then confirmation_token; apply re-reads rules, " +
-                    "catalog or sizes and rolls back on mismatch. resize takes catalog sizes only and reports fittings Revit " +
-                    "replaced or added. size_by_flow proposes sizes by velocity limit; writes nothing.",
+                    "set_rules, add_sizes, remove_sizes, resize and slope: dry_run, then confirmation_token; apply re-reads rules, " +
+                    "catalog, sizes or elevations and rolls back on mismatch. resize takes catalog sizes only and reports fittings " +
+                    "Revit replaced or added. slope moves a gravity pipe run's endpoints to a target grade from a fixed end " +
+                    "(element_ids + walk to follow fittings, slope_percent, fixed_end). size_by_flow proposes sizes by velocity " +
+                    "limit; writes nothing.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""size_by_flow""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""slope"", ""size_by_flow""] },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""in"", ""feet""], ""default"": ""mm"" },
     ""type_id"": { ""type"": ""integer"" }, ""segment_id"": { ""type"": ""integer"" },
     ""rules"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""group"", ""action""], ""properties"": {
@@ -5371,10 +5373,14 @@ namespace Horizun.Contracts
     ""sizes"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""nominal""], ""properties"": {
       ""nominal"": { ""type"": ""number"" }, ""inner"": { ""type"": ""number"" }, ""outer"": { ""type"": ""number"" }, ""bend_radius"": { ""type"": ""number"" }
     }, ""additionalProperties"": false } },
-    ""element_ids"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
+    ""element_ids"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""slope: the run's pipes, or one seed pipe with walk=true."" },
     ""system_id"": { ""type"": ""integer"" },
     ""diameter"": { ""type"": ""number"" }, ""width"": { ""type"": ""number"" }, ""height"": { ""type"": ""number"" },
     ""max_velocity"": { ""type"": ""number"", ""description"": ""m/s"" }, ""flow"": { ""type"": ""number"", ""description"": ""L/s; default: the element's flow"" },
+    ""walk"": { ""type"": ""boolean"", ""description"": ""slope: walk the network from one seed pipe through fittings (max 200 elements)."" },
+    ""slope_percent"": { ""type"": ""number"", ""description"": ""slope: grade to hold, e.g. 2.0 for 2%."" },
+    ""fixed_end"": { ""type"": ""string"", ""description"": ""slope: 'upstream', 'downstream', or the open-end pipe id to hold, optionally ':high' or ':low'."" },
+    ""min_clearance"": { ""type"": ""number"", ""description"": ""slope: refuse if any point lands below the floor under the held end plus this."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")
