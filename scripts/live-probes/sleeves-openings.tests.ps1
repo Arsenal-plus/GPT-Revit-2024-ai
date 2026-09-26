@@ -9,7 +9,7 @@ $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'sleeves-openings'
 
 function New-Fake([string]$mode) {
     $s = @{ Mode = $mode; Next = 100; Ids = @{}; Ledger = [ordered]@{}; Calls = New-Object System.Collections.ArrayList
-            Deleted = @(); BeamApplied = $false; Rehearsals = 0 }
+            Deleted = @(); BeamApplied = $false; Rehearsals = 0; Structural = $false; MissingStructural = $false }
     $reply = { param($data, $isError = $false, $text = 'fake') [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $pairs = @(
         @{ Fid = 'fw'; Pipe = 'pipe-wall';  Host = 'wall';  Kind = 'wall';  Route = 'wall_opening' }
@@ -35,13 +35,14 @@ function New-Fake([string]$mode) {
                 return & $reply ([pscustomobject]@{ rows = $rows })
             }
             'horizun_resolve_clash' {
+                if ($a.allow_structural -eq $true) { $s.Structural = $true } else { $s.MissingStructural = $true }
                 if ($a.operation -eq 'propose_opening') {
                     $rows = @(); $acts = @()
                     foreach ($p in $pairs) {
                         if (@($a.finding_ids) -notcontains $p.Fid) { continue }
                         $row = [pscustomobject]@{ finding_id = $p.Fid; status = 'proposed'; mep_element_id = $s.Ids[$p.Pipe]; host_element_id = $s.Ids[$p.Host]
                             host_kind = $p.Kind; route = $p.Route; crossing_point_mm = @(1, 2, 3); opening_width_mm = 214; opening_height_mm = 214; shape = 'round'; cut_refused = $null }
-                        if ($p.Kind -eq 'framing_or_column' -and $s.Mode -ne 'beam-cut-accepted') { $row.cut_refused = [pscustomobject]@{ code = 'host_cannot_be_cut_by_api' } }
+                        if ($p.Kind -eq 'framing_or_column' -and $s.Mode -ne 'beam-cut-accepted') { $row.cut_refused = [pscustomobject]@{ code = 'member_cut_not_offered' } }
                         $rows += $row
                         $acts += [pscustomobject]@{ finding_id = $p.Fid; mep_element_id = $row.mep_element_id; host_element_id = $row.host_element_id; host_kind = $p.Kind; route = $p.Route }
                     }
@@ -51,7 +52,7 @@ function New-Fake([string]$mode) {
                     $s.Rehearsals++
                     $act = @($a.proposals)[0]
                     $errs = @()
-                    if ($act.host_kind -eq 'framing_or_column' -and $s.Mode -ne 'beam-cut-accepted') { $errs += [pscustomobject]@{ finding_id = $act.finding_id; code = 'host_cannot_be_cut_by_api' } }
+                    if ($act.host_kind -eq 'framing_or_column' -and $s.Mode -ne 'beam-cut-accepted') { $errs += [pscustomobject]@{ finding_id = $act.finding_id; code = 'member_cut_not_offered' } }
                     $tok = if ($errs.Count -eq 0) { 'tok' } else { $null }
                     return & $reply ([pscustomobject]@{ dry_run = $true; errors = $errs; confirmation_token = $tok })
                 }
@@ -69,6 +70,7 @@ function New-Fake([string]$mode) {
                 return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) })) }
             }
             'horizun_resolve_clash' {
+                if ($a.allow_structural -eq $true) { $s.Structural = $true } else { $s.MissingStructural = $true }
                 $act = @($a.proposals)[0]
                 if ($act.host_kind -eq 'framing_or_column') { $s.BeamApplied = $true; return @{ stage = 'dry_run'; answer = (& $reply $null $true 'refused') } }
                 if ($s.Mode -eq 'apply-fails') { return @{ stage = 'apply'; answer = (& $reply $null $true 'Rolled back, nothing kept: a postcondition failed') } }
@@ -81,6 +83,11 @@ function New-Fake([string]$mode) {
                     findings_opening_requested = @($fid); findings_resolved_by_model = @() })) }
             }
             'horizun_delete_verified' { $s.Deleted = @($a.ids); return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true })) } }
+            'horizun_coordination' {
+                if ($a.operation -ne 'update' -or $a.status -ne 'closed_by_decision') { return @{ stage = 'dry_run'; answer = (& $reply $null $true 'unexpected update') } }
+                $s.Ledger[[string]$a.finding_id].status = 'closed_by_decision'
+                return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true })) }
+            }
         }
         return @{ stage = 'dry_run'; answer = (& $reply $null $true 'unexpected apply') }
     }.GetNewClosure()
@@ -97,7 +104,8 @@ Check 'every catalogued case is reported once' ($cases.Count -eq $module.Catalog
 Check 'names match the catalog exactly' (@($cases | Where-Object { $module.Catalog.Name -notcontains $_.Name }).Count -eq 0)
 Check 'all seven pass on a model that behaves' (@($cases | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
 Check 'the beam is never sent to apply, only rehearsed' ((-not $f.State.BeamApplied) -and $f.State.Rehearsals -eq 1)
-Check 'the wall finding stays open after the cut' ($f.State.Ledger['fw'].status -eq 'open')
+Check 'the cleanup closes exactly the probe''s own findings' ((@($f.State.Ledger.Keys | Where-Object { $f.State.Ledger[$_].status -eq 'closed_by_decision' }).Count -eq 3))
+Check 'every propose and apply carries the fixture''s structural approval' ($f.State.Structural -and -not $f.State.MissingStructural)
 Check 'the cleanup deletes the openings too, and the level last' ((@($f.State.Deleted).Count -eq 9) -and (@($f.State.Deleted)[-1] -eq $f.State.Ids['level']))
 
 $g = New-Fake 'no-framing'

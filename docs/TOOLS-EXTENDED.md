@@ -565,49 +565,78 @@ wall, floor, roof, ceiling, structural framing or column - the run keeps its lin
 the HOST gets an opening, or a sleeve. Pure geometry lives in `Core/SleeveRules.cs`.
 
 - **propose_opening** (read-only). Both sides must be host elements (a linked side is
-  `linked_element_not_writable`), exactly one an MEP run. The run's centreline is clipped
-  against the host's bounding box (entry, exit, `crossing_point_mm` = their midpoint);
-  the size is the run's outer section + `clearance_mm` (default 50, i.e. half on each
-  side); `shape` is `round` for a round run, `rect` otherwise. The route is a property of
-  the host kind: wall -> `wall_opening` (`Document.Create.NewOpening(wall, pt1, pt2)`,
-  always rectangular); floor/roof/ceiling -> `floor_opening`
-  (`NewOpening(host, CurveArray, true)`: a circular boundary for a round run, a
-  rectangle SQUARED to its larger side for a rectangular section, because the section's
-  plan rotation is not read); framing/column -> `sleeve_only`, with `cut_refused.code =
-  host_cannot_be_cut_by_api` - the API cannot cut a beam or column except with a
-  void-cutting family instance. Any other host category is `host_kind_not_supported`.
+  `linked_element_not_writable`), exactly one an MEP run. The crossing is where the run's
+  centreline passes through the host's SOLID (`Solid.IntersectWithCurve`, segments
+  inside; entry, exit, `crossing_point_mm` = their midpoint); the host's bounding box is
+  only a prefilter, so a rotated wall or a sloped roof gets the real crossing. A run that
+  no longer enters the solid (it already passes through an opening) is
+  `run_does_not_cross_host`. The size uses the run's OUTER section (`outer_section`): the
+  outside diameter (`RBS_PIPE_OUTER_DIAMETER` / conduit outer diameter) when larger than
+  the connector's nominal size, plus twice the thickest insulation; a rectangular/oval
+  section is squared to its larger side on the connector's axes (unreadable axes: sized
+  for every rotation). That section is projected through the host's MEASURED thickness
+  along the run, so a skewed crossing is sized `section/cos + thickness*tan`
+  (`SleeveRules.FootprintHalfExtent`), then `clearance_mm` (default 50, half per side) is
+  added. Routes by host kind: wall -> `wall_opening` (`NewOpening(wall, pt1, pt2)`, always
+  rectangular, straight walls only - a curved wall is `curved_wall_not_supported`, a run
+  steeper than |z| 0.85 is `run_too_steep_for_wall_opening`); floor/roof/ceiling ->
+  `floor_opening` (`NewOpening(host, CurveArray, false)`: a VERTICAL cut, circular for a
+  vertical round run; a run flatter than |z| 0.5 is `run_too_flat_for_floor_opening`);
+  framing/column -> `sleeve_only` with `cut_refused.code = member_cut_not_offered`. The API
+  CAN cut a beam, brace or column (`NewOpening(member, profile, eRefFace)`); this operation
+  deliberately does not, because a structural member's penetration is an engineer's sized
+  decision - only a sleeve family is placed. A STRUCTURAL wall/floor
+  (`WALL_STRUCTURAL_SIGNIFICANT` / `FLOOR_PARAM_IS_STRUCTURAL`) is refused as
+  `structural_host_requires_opt_in` unless `allow_structural=true` records that a person
+  approved the cut; the same flag is required to place a sleeve on any structural host,
+  since a sleeve's void may cut it. Any other host category is `host_kind_not_supported`.
 - **apply_opening**. `dry_run` (default) -> `confirmation_token` -> one TransactionGroup.
-  Every proposal is re-derived from the live model (pair still matches the finding, run
-  still crosses the host). Without `sleeve_type_id` a wall/floor/roof/ceiling is cut; a
+  Each proposal carries its `crossing_point_mm`, `opening_width_mm`,
+  `opening_height_mm` and `shape`, so the token binds the geometry the person saw; apply
+  re-derives everything from the live model and refuses a drift beyond 1 mm as
+  `geometry_changed_since_propose`. Before writing, the run must still meet the host on
+  solids (`nothing_to_cut` otherwise - a second pass over a finding that stays open never
+  stacks a second opening). Without `sleeve_type_id` a wall/floor/roof/ceiling is cut; a
   framing/column proposal is refused by name. With `sleeve_type_id` (a family type the
   caller loaded - nothing is compiled in) the family is placed by its own placement type:
-  wall-hosted on the host at the crossing, face-based on the host face the run enters,
-  line-based along entry->exit, anything else at the crossing point rotated about Z to a
-  horizontal run. A sleeve family with a void cuts its host through
-  `InstanceVoidCutUtils` when the host accepts it (`host_cut: true`). `approval_parameter`
-  + `approval_value` write a text mark (e.g. `pending structural approval`) on the created
-  element; a missing, read-only or non-text parameter rolls everything back.
+  hosted on the host at the crossing; face-based on the host face the run enters (an
+  instance host such as a steel beam is walked through `GetSymbolGeometry()` with its
+  transform, because instance-geometry references cannot host new elements); level-based
+  (`OneLevelBased`, e.g. a generic model) with `NewFamilyInstance(XYZ, symbol, Level, ...)`
+  on the run's reference level; line-based along entry->exit; anything else at the
+  crossing point. Point placements are rotated about Z to a horizontal run.
+  `approval_parameter` + `approval_value` write a text mark (e.g. `pending structural
+  approval`) on the created element; a missing, read-only or non-text parameter rolls
+  everything back.
 - **Postconditions**, re-read inside the group before it is kept: `created:<finding>`;
-  `contains_crossing:<finding>` - the opening's own boundary (`BoundaryRect` /
-  `BoundaryCurves`) or the sleeve's box clears the run by `clearance_mm/2` on the axes
-  ACROSS the run; `host_cleared:<finding>` - whenever the host was cut, a solid
-  re-detection (same `Detect` as apply) must find the run no longer meeting the host;
+  `clearance:<finding>` - a clearance envelope (the run's outer section grown by
+  `clearance_mm/2`, less 0.5 mm tolerance, from before the entry to past the exit) is
+  intersected with the cut host's solid and the sleeve's own solid and must meet no
+  material; nothing measurable (an uncut, void-only sleeve) is unreadable and rolls back;
+  `host_cleared:<finding>` (openings) - a solid re-detection must find the run no longer
+  meeting the host; `host_cut:<finding>` (sleeves) - MEASURED the same way, never assumed,
+  so a hosted sleeve whose void cuts on hosting reports `host_cut: true`;
+  `level:<finding>` and `at_crossing:<finding>` for a level-based or point-placed sleeve;
   `approval:<finding>`; and `no_new_clash` around the crossing (the sleeve inside its own
   host is the design, not a new clash; the sleeve against the run, a third element or a
-  loaded link is). Any failure rolls the whole group back. A kept apply records an undo
-  batch (`created`) for `horizun_undo`, and the finding gets an `opening_requested`
-  history entry but STAYS OPEN: only a later `horizun_clash record_findings=true`
-  measurement can resolve it. An uncut sleeve (no void) leaves the run inside the host
-  solid by design and the finding stays open for the structural decision.
+  loaded link is; an unreadable sleeve geometry makes detection incomplete). Any failure
+  rolls the whole group back and reports the rollback status read from Revit. A kept
+  apply records an undo batch (`created`) for `horizun_undo`, and the finding gets an
+  `opening_requested` history entry (with the measured host_cut) but STAYS OPEN: only a
+  later `horizun_clash record_findings=true` measurement can resolve it.
 - To measure live: the orientation of a point-placed sleeve depends on how its family
-  was modelled (caught by `contains_crossing`, not predicted), and face-based placement
-  on a sloped or curved host face is not built (it fails with the reason).
+  was modelled (caught by the clearance envelope, not predicted); whether a rectangular
+  duct connector's `CoordinateSystem` BasisX/BasisY are its section axes (the opening is
+  squared to the larger side either way); face-based placement on a sloped or curved host
+  face is not built (it fails with the reason).
 - Live probe: `scripts/live-probes/sleeves-openings.probes.ps1` (offline test
   `sleeves-openings.tests.ps1`) stages an own level with a pipe through a wall, a vertical
   pipe through a floor and a vertical pipe through a beam; it applies the wall and floor
-  cuts, reads the finding back as still `open` with its `opening_requested` entry, checks
-  the beam refusal by name in propose and in the apply rehearsal, and deletes everything.
-  The sleeve family path is not staged (no sleeve family ships with the fixtures).
+  cuts (with `allow_structural=true` as the fixture's recorded approval), reads the finding
+  back as still `open` with its `opening_requested` entry, checks the beam refusal by name
+  in propose and in the apply rehearsal, deletes everything and closes the probe's own
+  findings (`closed_by_decision`). The sleeve family path is not staged (no sleeve family
+  ships with the fixtures).
 
 ### horizun_undo
 

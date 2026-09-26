@@ -3,9 +3,12 @@
 # resolver cannot fix: a horizontal pipe through an own wall, a vertical pipe through
 # an own floor and a vertical pipe through an own beam. Records them in the ledger,
 # proposes openings, applies the wall and floor cuts (each re-read: the opening exists,
-# contains the crossing with the clearance, the run no longer meets the host solid and
-# the finding is only marked opening_requested - still open), checks that the beam cut
-# is refused by name in propose AND in the apply rehearsal, and deletes everything.
+# a clearance envelope around the run meets no host material, the run no longer meets the
+# host solid and the finding is only marked opening_requested - still open), checks that
+# the beam cut is refused by name in propose AND in the apply rehearsal, deletes everything
+# and closes the probe's own findings so the ledger does not keep pointing at them.
+# allow_structural=true is the fixture's recorded approval: whether an own wall/floor is
+# created structural depends on the template, and the refusal itself is unit-tested.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'sleeves-openings'
     Catalog = @(
@@ -14,8 +17,8 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'sleeves-openings: the wall finding stays open with an opening_requested history entry'; Tool = 'horizun_coordination' }
         @{ Name = 'sleeves-openings: propose_opening plans a round floor cut around a vertical own pipe'; Tool = 'horizun_resolve_clash' }
         @{ Name = 'sleeves-openings: apply_opening cuts the floor and re-reads host_cleared on solids'; Tool = 'horizun_resolve_clash' }
-        @{ Name = 'sleeves-openings: a beam cut is refused as host_cannot_be_cut_by_api in propose and apply'; Tool = 'horizun_resolve_clash' }
-        @{ Name = 'sleeves-openings: everything the probe created is deleted'; Tool = 'horizun_delete_verified' }
+        @{ Name = 'sleeves-openings: a beam cut is refused as member_cut_not_offered in propose and apply'; Tool = 'horizun_resolve_clash' }
+        @{ Name = 'sleeves-openings: everything the probe created is deleted and its findings closed'; Tool = 'horizun_delete_verified' }
     )
     Run     = {
         param($Ctx)
@@ -83,7 +86,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 $mine = @($pipeW, $pipeF, $pipeB | Where-Object { $_ })
                 for ($i = 0; $i -lt $ids.Count; $i += 50) {
                     $chunk = @($ids[$i..([Math]::Min($i + 49, $ids.Count - 1))])
-                    $p = & $Ctx.Call 'horizun_resolve_clash' @{ operation = 'propose_opening'; target_document = $doc; finding_ids = $chunk; clearance_mm = 50 }
+                    $p = & $Ctx.Call 'horizun_resolve_clash' @{ operation = 'propose_opening'; target_document = $doc; finding_ids = $chunk; clearance_mm = 50; allow_structural = $true }
                     if (-not $p -or -not $p.data) { continue }
                     $rows += @($p.data.proposals | Where-Object { $_.mep_element_id -and ($mine -contains [long]$_.mep_element_id) })
                     if ($p.data.next_arguments) { $actions += @($p.data.next_arguments.proposals) }
@@ -94,7 +97,7 @@ $script:HzProbeModules += [pscustomobject]@{
             function ApplyCut($row, $key) {
                 $act = ActionFor ([string]$row.finding_id)
                 if (-not $act) { return @{ ok = $false; detail = 'propose returned no action for ' + $row.finding_id } }
-                $ap = & $Ctx.Apply 'horizun_resolve_clash' @{ operation = 'apply_opening'; target_document = $doc; clearance_mm = 50; proposals = @($act) } ($run + '-so-' + $key)
+                $ap = & $Ctx.Apply 'horizun_resolve_clash' @{ operation = 'apply_opening'; target_document = $doc; clearance_mm = 50; allow_structural = $true; proposals = @($act) } ($run + '-so-' + $key)
                 $d = if ($ap.answer) { $ap.answer.data } else { $null }
                 $made = if ($d) { @($d.created) | Select-Object -First 1 } else { $null }
                 if ($made -and $made.created_element_id) { [void]$created.Add([long]$made.created_element_id) }
@@ -147,14 +150,14 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $pipeB) { Case 5 'not_covered' "no own beam (OST_StructuralFraming type) and pipe could be staged in '$doc'" }
             else {
                 $rb = RowFor $pipeB $beam
-                $namedInPropose = $rb -and $rb.host_kind -eq 'framing_or_column' -and $rb.route -eq 'sleeve_only' -and $rb.cut_refused.code -eq 'host_cannot_be_cut_by_api'
+                $namedInPropose = $rb -and $rb.host_kind -eq 'framing_or_column' -and $rb.route -eq 'sleeve_only' -and $rb.cut_refused.code -eq 'member_cut_not_offered'
                 $act = if ($rb) { ActionFor ([string]$rb.finding_id) } else { $null }
                 $namedInApply = $false; $applyText = 'no action to rehearse'
                 if ($act) {
                     # A rehearsal only (dry_run=true, no token): it must name the refusal and issue no token.
-                    $reh = & $Ctx.Call 'horizun_resolve_clash' @{ operation = 'apply_opening'; target_document = $doc; clearance_mm = 50; proposals = @($act); dry_run = $true }
+                    $reh = & $Ctx.Call 'horizun_resolve_clash' @{ operation = 'apply_opening'; target_document = $doc; clearance_mm = 50; allow_structural = $true; proposals = @($act); dry_run = $true }
                     $errs = if ($reh -and $reh.data) { @($reh.data.errors) } else { @() }
-                    $namedInApply = (@($errs | Where-Object { $_.code -eq 'host_cannot_be_cut_by_api' }).Count -ge 1) -and -not ($reh.data.confirmation_token)
+                    $namedInApply = (@($errs | Where-Object { $_.code -eq 'member_cut_not_offered' }).Count -ge 1) -and -not ($reh.data.confirmation_token)
                     $applyText = if ($reh) { (Json $errs) } else { 'no reply' }
                 }
                 Case 5 $(if ($namedInPropose -and $namedInApply) { 'pass' } else { 'fail' }) ("propose: " + (Json $rb.cut_refused) + " | apply rehearsal: " + $applyText)
@@ -166,8 +169,17 @@ $script:HzProbeModules += [pscustomobject]@{
             else {
                 [array]::Reverse($ids)   # newest first (openings before their hosts), the level last
                 $del = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = $ids; id_cap = 50 } ($run + '-so-delete')
-                if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case 6 'pass' ("deleted " + ($ids -join ',')) }
-                else { Case 6 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Short $del.answer)) }
+                # The probe's own findings would otherwise stay open, pointing at deleted elements.
+                $fids = @(@($rows) | Where-Object { $_ -and $_.finding_id } | ForEach-Object { [string]$_.finding_id } | Select-Object -Unique)
+                $notClosed = @()
+                foreach ($fid in $fids) {
+                    $c = & $Ctx.Apply 'horizun_coordination' @{ operation = 'update'; finding_id = $fid; status = 'closed_by_decision'; note = 'live probe fixture, deleted' } ($run + '-so-close-' + $fid)
+                    if (-not ($c.stage -eq 'apply' -and -not $c.answer.isError)) { $notClosed += $fid }
+                }
+                $deleted = $del.stage -eq 'apply' -and -not $del.answer.isError
+                if ($deleted -and $notClosed.Count -eq 0) { Case 6 'pass' ("deleted " + ($ids -join ',') + "; closed findings " + ($fids -join ',')) }
+                elseif (-not $deleted) { Case 6 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Short $del.answer)) }
+                else { Case 6 'fail' ('deleted, but these findings could not be closed: ' + ($notClosed -join ',')) }
             }
         }
         return $cases
