@@ -124,6 +124,10 @@ namespace Horizun.Revit.Core
         public double HangerEndOffsetMm { get; set; }
         /// <summary>From the ceiling's TOP face up to the mains' underside.</summary>
         public double DropMm { get; set; }
+        /// <summary>Section depths (optional): each member's axis sits half its depth above the face it bears on.</summary>
+        public double? MainDepthMm { get; set; }
+        public double? CrossDepthMm { get; set; }
+        public double? PerimeterDepthMm { get; set; }
 
         public IEnumerable<long> TypeIds()
         {
@@ -247,7 +251,8 @@ namespace Horizun.Revit.Core
             JObject main = r.Obj(c, "main", "spec.ceiling", true);
             if (main != null)
             {
-                r.Known(main, "spec.ceiling.main", "type_id", "spacing_mm", "direction");
+                r.Known(main, "spec.ceiling.main", "type_id", "spacing_mm", "direction", "depth_mm");
+                result.MainDepthMm = r.Mm(main, "depth_mm", "spec.ceiling.main", false, 0, 2000);
                 result.MainTypeId = r.Id(main, "type_id", "spec.ceiling.main", true) ?? 0;
                 result.MainSpacingMm = r.Mm(main, "spacing_mm", "spec.ceiling.main", true, MinSpacingMm, MaxSpacingMm) ?? 0;
                 JToken dir = main["direction"];
@@ -266,7 +271,8 @@ namespace Horizun.Revit.Core
             JObject cross = r.Obj(c, "cross", "spec.ceiling", false);
             if (cross != null)
             {
-                r.Known(cross, "spec.ceiling.cross", "type_id", "spacing_mm");
+                r.Known(cross, "spec.ceiling.cross", "type_id", "spacing_mm", "depth_mm");
+                result.CrossDepthMm = r.Mm(cross, "depth_mm", "spec.ceiling.cross", false, 0, 2000);
                 result.CrossTypeId = r.Id(cross, "type_id", "spec.ceiling.cross", true);
                 result.CrossSpacingMm = r.Mm(cross, "spacing_mm", "spec.ceiling.cross", true, MinSpacingMm, MaxSpacingMm) ?? 0;
             }
@@ -274,7 +280,8 @@ namespace Horizun.Revit.Core
             JObject perimeter = r.Obj(c, "perimeter", "spec.ceiling", false);
             if (perimeter != null)
             {
-                r.Known(perimeter, "spec.ceiling.perimeter", "type_id");
+                r.Known(perimeter, "spec.ceiling.perimeter", "type_id", "depth_mm");
+                result.PerimeterDepthMm = r.Mm(perimeter, "depth_mm", "spec.ceiling.perimeter", false, 0, 2000);
                 result.PerimeterTypeId = r.Id(perimeter, "type_id", "spec.ceiling.perimeter", true);
             }
 

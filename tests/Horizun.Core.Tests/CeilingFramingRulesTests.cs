@@ -170,5 +170,23 @@ namespace Horizun.Core.Tests
             Assert.Equal("unknown_direction", CeilingFramingRules.Plan(sideways, Budget).Refusal);
             Assert.Equal("over_budget", CeilingFramingRules.Plan(Ceiling(1, Rect), Budget).Refusal);
         }
+    
+        [Fact]
+        public void Inside_and_distance_outside_honour_holes_and_edges()
+        {
+            var loops = new List<List<double[]>>
+            {
+                new List<double[]> { new[] { 0.0, 0 }, new[] { 1000.0, 0 }, new[] { 1000.0, 500 }, new[] { 0.0, 500 } },
+                new List<double[]> { new[] { 400.0, 200 }, new[] { 600.0, 200 }, new[] { 600.0, 300 }, new[] { 400.0, 300 } }
+            };
+            Assert.True(CeilingFramingRules.Inside(loops, 100, 100));
+            Assert.False(CeilingFramingRules.Inside(loops, 500, 250));
+            Assert.Equal(0, CeilingFramingRules.DistanceOutside(loops, 100, 100));
+            Assert.Equal(50, CeilingFramingRules.DistanceOutside(loops, 500, 250), 6);
+            Assert.Equal(10, CeilingFramingRules.DistanceOutside(loops, 1010, 250), 6);
+            Assert.Equal(0, CeilingFramingRules.DistanceOutside(loops, 1000, 250), 6);
+            Assert.Equal(500000, CeilingFramingRules.Area(loops[0]), 6);
+            Assert.Equal(-500000, CeilingFramingRules.Area(new List<double[]>(loops[0].AsEnumerable().Reverse())), 6);
+        }
     }
 }

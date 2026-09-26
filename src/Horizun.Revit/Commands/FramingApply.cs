@@ -41,6 +41,7 @@ namespace Horizun.Revit.Commands
         public Element Source;
         public string Operation;
         public FramedWall Wall;
+        public FramedCeiling Ceiling;
         public List<FramingMember> Members = new List<FramingMember>();
         public readonly List<string> Warnings = new List<string>();
         public string Signature;
@@ -55,6 +56,8 @@ namespace Horizun.Revit.Commands
         /// <summary>Model axis of plan member i.</summary>
         public Func<FramingMember, Line> Axis;
         public XYZ PlaneSpan;
+        /// <summary>Per-member work-plane span for line-based members (ceilings); PlaneSpan when null.</summary>
+        public Func<FramingMember, XYZ> Span;
         /// <summary>Type key -> symbol, and role|type key -> how it places (shared across the call's sources).</summary>
         public Dictionary<string, FamilySymbol> Symbols;
         public Dictionary<string, FramingPlacementKind> Kinds;
@@ -67,7 +70,7 @@ namespace Horizun.Revit.Commands
 
         private static readonly string[] HashScope = { "operation", "element_ids", "view_id", "spec", "target_document" };
 
-        /// <summary>operation wall | remove (ceiling lands in FramingCeiling.cs).</summary>
+        /// <summary>operation wall | ceiling | remove (the ceiling's reading, rays and checks are in FramingCeiling.cs).</summary>
         private CommandResult ApplyFraming(UIApplication app, JObject request, string op)
         {
             WallFramingSpec wallSpec = null;
@@ -77,6 +80,15 @@ namespace Horizun.Revit.Commands
                 wallSpec = FramingSpecRules.ParseWall(request["spec"], out List<FramingSpecError> errors);
                 if (wallSpec == null || errors.Count > 0)
                     return CommandResult.FailWithDetail("spec.wall is invalid: " + string.Join("; ", errors.Select(e => e.ToString())) + ". Nothing was read or written.",
+                        new JObject { ["code"] = "invalid_spec", ["write_started"] = false, ["errors"] = new JArray(errors.Select(e => new JObject { ["path"] = e.Path, ["code"] = e.Code, ["detail"] = e.Detail })) });
+                specHash = FramingSpecRules.Hash(request["spec"]);
+            }
+            CeilingFramingSpec ceilingSpec = null;
+            if (op == "ceiling")
+            {
+                ceilingSpec = FramingSpecRules.ParseCeiling(request["spec"], out List<FramingSpecError> errors);
+                if (ceilingSpec == null || errors.Count > 0)
+                    return CommandResult.FailWithDetail("spec.ceiling is invalid: " + string.Join("; ", errors.Select(e => e.ToString())) + ". Nothing was read or written.",
                         new JObject { ["code"] = "invalid_spec", ["write_started"] = false, ["errors"] = new JArray(errors.Select(e => new JObject { ["path"] = e.Path, ["code"] = e.Code, ["detail"] = e.Detail })) });
                 specHash = FramingSpecRules.Hash(request["spec"]);
             }
@@ -100,7 +112,7 @@ namespace Horizun.Revit.Commands
                 }
                 else
                 {
-                    plans = PlanWalls(doc, request, wallSpec, specHash);
+                    plans = op == "ceiling" ? PlanCeilings(doc, request, ceilingSpec, specHash) : PlanWalls(doc, request, wallSpec, specHash);
                     signature = string.Join(",", plans.Select(p => Rid.Value(p.Source.Id).ToString(CultureInfo.InvariantCulture) + ":" + p.Signature));
                 }
             }
@@ -126,7 +138,7 @@ namespace Horizun.Revit.Commands
                     resolved.Elements.Add(ModelEditRunner.Planned(p.Key, PlannedAction.Delete, request));
             string hash = DocumentGate.PlanHash(request, HashScope) + "|" + FramingPlanSignature.Of(new[] { new FramingMember { Role = op, TypeKey = signature } });
 
-            JObject summary = op == "remove" ? RemoveSummary(toRemove) : WallSummary(plans);
+            JObject summary = op == "remove" ? RemoveSummary(toRemove) : op == "ceiling" ? CeilingSummary(plans) : WallSummary(plans);
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             if (dryRun)
             {
@@ -151,6 +163,7 @@ namespace Horizun.Revit.Commands
             var evidence = new JObject();
             Func<Document, PostconditionCheck> verify = op == "remove"
                 ? (Func<Document, PostconditionCheck>)(d => VerifyRemoved(d, toRemove, SourceIds(request), evidence))
+                : op == "ceiling" ? (Func<Document, PostconditionCheck>)(d => VerifyCeilings(d, plans, evidence))
                 : d => VerifyWalls(d, plans, evidence);
             PostconditionCheck check;
             using (var group = new TransactionGroup(doc, txName))
@@ -343,14 +356,14 @@ namespace Horizun.Revit.Commands
             View planeView = null;
             string sourceUid = p.Source.UniqueId;
             long sid = Rid.Value(p.Source.Id);
-            Level level = p.Wall?.Level;
+            Level level = p.Wall?.Level ?? p.Ceiling?.Level;
             for (int i = 0; i < p.Members.Count; i++)
             {
                 FramingMember m = p.Members[i];
                 FamilySymbol sym = p.Symbols[m.TypeKey];
                 FramingPlacementKind kind = p.Kinds[m.Role + "|" + m.TypeKey];
                 if (kind == FramingPlacementKind.LineBased && planeView == null) planeView = WorkPlaneView(doc);
-                FamilyInstance fi = PlaceMember(doc, sym, kind, p.Axis(m), level, p.PlaneSpan, planeView, out ReferencePlane plane);
+                FamilyInstance fi = PlaceMember(doc, sym, kind, p.Axis(m), level, p.Span?.Invoke(m) ?? p.PlaneSpan, planeView, out ReferencePlane plane);
                 if (fi == null) throw new InvalidOperationException(m.Role + " " + i + ": Revit returned no instance.");
                 var mark = new FramingMark { SourceId = sid, SourceUniqueId = sourceUid, Role = m.Role, Index = i, SpecHash = p.SpecHash, PlanSignature = p.Signature, Operation = p.Operation };
                 FramingMarker.Write(fi, mark);

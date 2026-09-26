@@ -143,6 +143,50 @@ namespace Horizun.Revit.Core
             return plan;
         }
 
+        /// <summary>Signed area of a loop (shoelace): the command puts the largest loop first.</summary>
+        public static double Area(IReadOnlyList<double[]> loop)
+        {
+            double a = 0;
+            for (int i = 0, n = loop.Count; i < n; i++)
+            {
+                double[] p = loop[i], q = loop[(i + 1) % n];
+                a += p[0] * q[1] - q[0] * p[1];
+            }
+            return a / 2;
+        }
+
+        /// <summary>Even-odd inside test over every loop (holes included), half-open edges as in the clipping.</summary>
+        public static bool Inside(IReadOnlyList<List<double[]>> loops, double x, double y)
+        {
+            bool inside = false;
+            foreach (List<double[]> loop in loops)
+                for (int i = 0, n = loop.Count; i < n; i++)
+                {
+                    double[] a = loop[i], b = loop[(i + 1) % n];
+                    if ((a[1] <= y) == (b[1] <= y)) continue;
+                    double xi = a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
+                    if (x < xi) inside = !inside;
+                }
+            return inside;
+        }
+
+        /// <summary>0 inside the boundary; otherwise the distance to its nearest edge (0 on an edge). The verification's test.</summary>
+        public static double DistanceOutside(IReadOnlyList<List<double[]>> loops, double x, double y)
+        {
+            if (Inside(loops, x, y)) return 0;
+            double best = double.MaxValue;
+            foreach (List<double[]> loop in loops)
+                for (int i = 0, n = loop.Count; i < n; i++)
+                {
+                    double[] a = loop[i], b = loop[(i + 1) % n];
+                    double dx = b[0] - a[0], dy = b[1] - a[1], len2 = dx * dx + dy * dy;
+                    double t = len2 <= 0 ? 0 : Math.Max(0, Math.Min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / len2));
+                    double ex = a[0] + t * dx - x, ey = a[1] + t * dy - y;
+                    best = Math.Min(best, Math.Sqrt(ex * ex + ey * ey));
+                }
+            return best;
+        }
+
         /// <summary>The angle (radians) of the longer side of the loop's minimum-area rectangle over its own edge directions.</summary>
         public static double LongAxisAngle(IReadOnlyList<double[]> loop)
         {
