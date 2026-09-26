@@ -66,7 +66,9 @@ $script:HzProbeModules += [pscustomobject]@{
             return $cases.ToArray()
         }
 
-        $req = @{ target_document = $doc; source_path = $lib; type_names = @($typeName) }
+        # use_destination: a write model that already holds the family's patterns or
+        # materials must not turn this case into a collision refusal (measured 2026-09-26).
+        $req = @{ target_document = $doc; source_path = $lib; type_names = @($typeName); duplicate_types = 'use_destination' }
         if ($category) { $req.category = $category }
         $c = & $Ctx.Apply $C $req 'cbd-source-path'
         $ok = $c.stage -eq 'apply' -and -not $c.answer.isError -and $c.answer.data -and $c.answer.data.host_verified -eq $true -and
