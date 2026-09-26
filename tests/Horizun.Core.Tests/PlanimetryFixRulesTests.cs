@@ -629,7 +629,7 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void A_non_rectangular_crop_is_a_capability_question_not_a_typo()
+        public void A_non_rectangular_crop_is_named_by_the_loop_key()
         {
             JObject crop = Crop(0, 0, 100, 50);
             crop["loop"] = new JArray(new JArray(0, 0), new JArray(10, 0), new JArray(10, 10));
@@ -639,6 +639,83 @@ namespace Horizun.Core.Tests
 
         private static JObject Crop(double minX, double minY, double maxX, double maxY)
             => new JObject { ["min"] = new JArray(minX, minY), ["max"] = new JArray(maxX, maxY) };
+
+        private static JObject Loop(params double[][] points)
+            => new JObject { ["loop"] = new JArray(points.Select(p => (JToken)new JArray(p[0], p[1]))) };
+
+        [Fact]
+        public void A_polygon_loop_of_at_least_three_points_is_accepted()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }, new[] { 100.0, 50.0 }, new[] { 0.0, 50.0 }), out points);
+            Assert.Null(error);
+            Assert.Equal(4, points.Count);
+            Assert.Equal(0.0, points[0][0]); Assert.Equal(0.0, points[0][1]);
+            Assert.Equal(0.0, points[3][0]); Assert.Equal(50.0, points[3][1]);
+        }
+
+        [Fact]
+        public void A_polygon_loop_needs_at_least_three_points()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }), out points);
+            Assert.NotNull(error);
+            Assert.Null(points);
+        }
+
+        [Fact]
+        public void A_polygon_loop_with_an_unknown_key_is_refused()
+        {
+            JObject crop = Loop(new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }, new[] { 100.0, 50.0 });
+            crop["min"] = new JArray(0, 0);
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(crop, out points);
+            Assert.NotNull(error);
+            Assert.Contains("unknown key 'min'", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void An_explicit_closing_point_equal_to_the_first_is_dropped()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }, new[] { 100.0, 50.0 }, new[] { 0.0, 0.0 }), out points);
+            Assert.Null(error);
+            Assert.Equal(3, points.Count);
+        }
+
+        [Fact]
+        public void Two_consecutive_coincident_points_are_refused()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }, new[] { 100.0, 50.0 }), out points);
+            Assert.NotNull(error);
+            Assert.Contains("coincide", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_degenerate_collinear_loop_is_refused()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 50.0, 0.0 }, new[] { 100.0, 0.0 }), out points);
+            Assert.NotNull(error);
+            Assert.Contains("no area", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_polygon_point_with_the_wrong_shape_is_refused_by_index()
+        {
+            JObject crop = new JObject { ["loop"] = new JArray(
+                new JArray(0, 0), new JArray(100, 0), new JArray(1, 2, 3)) };
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(crop, out points);
+            Assert.NotNull(error);
+            Assert.Contains("crop.loop[2]", error, StringComparison.Ordinal);
+        }
 
         [Fact]
         public void The_default_tolerance_is_a_tenth_of_a_millimetre_in_internal_feet()

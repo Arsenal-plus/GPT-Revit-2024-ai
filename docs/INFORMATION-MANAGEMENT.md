@@ -495,8 +495,29 @@ PropertySet:	Org_TypeData	T	IfcWall,IfcSlab
 
 The exporter writes a property only when its Revit parameter has a value. A
 property missing from an element therefore means an empty parameter **or** a
-mapping the exporter did not apply; the file cannot tell those apart, and the
-GlobalIds in the report are where to look.
+mapping the exporter did not apply; the file ALONE cannot tell those apart.
+
+**The model is read too, before the export, to tell them apart.** Before
+exporting, `horizun_deliver_ifc` reads the mapped Revit parameter on the
+elements in scope for every declared property (resolved from the mapping's IFC
+classes to a Revit category by a built-in table covering common architecture,
+structure and MEP classes) and counts `has_value` / `empty` / `parameter_missing`
+- a class this bridge has no category for is reported `category_unmapped`,
+never guessed. After the export, the `pset_mapping` gate's evidence carries a
+`model_comparison` array, one entry per mapping row, classifying it as
+`exported` (the file carries it - necessarily from an element that had a
+value), `empty_in_model` (the parameter had no value - **not** an exporter
+fault), `not_applied` (a value existed in the model but the file carries the
+property for fewer entities than the model had values for - the exporter did
+not apply the mapping) or `parameter_missing` (the named parameter does not
+exist on the element at all). `exported` and `not_applied` are **aggregate**
+counts: no IFC GlobalId correlates a model element to its file entity without
+recomputing the exporter's own GUID algorithm, which this bridge does not
+carry, so a `population_mismatch_note` is added per row whenever the model
+census and the file's own count of candidate entities disagree - naming the
+mismatch rather than trusting the aggregate silently. The GlobalIds in
+`missing_examples` (the file-only check) are still where to look for which
+elements to fix.
 
 ### Naming
 
@@ -514,7 +535,15 @@ coordenadas), se relee la cabecera (`FILE_SCHEMA` y cierre `END-ISO-10303-21`),
 se valida el IDS **sobre el IFC exportado**, se busca en el archivo cada
 propiedad del mapeo con cobertura *n de m* y GlobalIds de los faltantes, y
 opcionalmente se escribe un BCF con un tema por especificación fallada, releído
-estructuralmente. El pre-chequeo del modelo es solo orientativo y nunca decide.
+estructuralmente. Antes de exportar también se lee el MODELO: el parámetro de
+Revit de cada propiedad declarada, por categoría resuelta desde las clases IFC
+del mapeo, contando `has_value`/`empty`/`parameter_missing`. Cruzado con el
+archivo, cada fila del mapeo queda clasificada en `model_comparison` como
+`exported`, `empty_in_model` (parámetro vacío - no es culpa del exportador),
+`not_applied` (había valor en el modelo pero el exportador no lo aplicó) o
+`parameter_missing` (el parámetro no existe en el elemento) - algo que el
+archivo solo, sin el modelo, no puede distinguir. El pre-chequeo del modelo
+(el `precheck` con IDS) sigue siendo solo orientativo y nunca decide.
 `deliverable_ready` es `true` solo si pasan todos los gates solicitados. El
 ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
 modelo y no escribe nada. El archivo de mapeo es el mismo formato del
@@ -995,7 +1024,7 @@ Coherence adds rules, reported like every other finding:
 | `loin_unknown_ifc_entity` | error | `ifc_entity` is not an entity of the schema(s) the requirement targets (its `ifc_versions`, else `delivery.ifc.version`, else IFC4 **and** IFC4X3_ADD2). The message says where the name does exist. |
 | `loin_entity_version_specific` | warning | No version declared and the entity exists in only one of IFC4 / IFC4X3_ADD2. |
 | `loin_bounds_conflict`, `loin_bounds_inverted`, `loin_bounds_on_non_numeric` | error | Bounds that cannot be written or cannot be satisfied. |
-| `loin_unit_not_ids_default` | warning | Bounds in a unit other than the IFC default (SI); they will not be translated. |
+| `loin_unit_not_ids_default` | warning | Bounds in a unit that is not the IFC default (SI) and not a length/area/volume unit `ids_from_loin` converts; they will not be translated. |
 | `loin_pattern_anchor` | warning | An XML Schema pattern always matches the whole value; `^` and `$` are literal characters there. |
 | `loin_property_repeated`, `loin_applies_to_empty` | warning | Redundant or unanchored requirements. |
 
@@ -1019,14 +1048,24 @@ translates the alphanumerical part into an **IDS 1.0** file (namespace
 | `alphanumeric.properties` | requirement `<property>` with `dataType` (upper case), cardinality, `uri`, and a value: one allowed value → `simpleValue`; several → `xs:enumeration`; `pattern` → `xs:pattern`; bounds → `xs:minInclusive` … on `xs:double`/`xs:integer` |
 | single common purpose / milestone | `<info><purpose>` / `<milestone>` |
 
-**Never invented.** Everything IDS cannot express is returned in `not_translated`,
-one line per item with `handling` (`omitted` or `description_text`) and why:
-every geometry aspect, every documentation item, the actors (carried only as
-description text), a Revit category, free-text identification and notes, a
-classification URI in applicability, bounds in a non-default unit (IDS values are
-in the IFC default unit and this bridge does not convert), and whole requirements
-that cannot become a checkable specification (no IFC version, no entity or
-classification, or nothing alphanumerical with an optional occurrence).
+**Length, area and volume bounds are converted, not dropped.** A bound whose
+`unit` is a length, area or volume spelling other than the IFC default (SI) - `mm`,
+`cm`, `dm`, `km`, `in`, `ft`, `yd` for length; `mm2`/`cm2`/`dm2`/`km2`/`ft2`/`in2`
+for area; `mm3`/`cm3`/`dm3`/`l`/`km3`/`ft3`/`in3` for volume - is converted to
+`m`/`m2`/`m3` before it is written, with the factor and the before/after values
+reported in `converted_units`. This is the SI default, not the actual IFC file's
+declared units, which `ids_from_loin` has no file to read at translation time.
+
+**Never invented.** Everything else IDS cannot express is returned in
+`not_translated`, one line per item with `handling` (`omitted` or
+`description_text`) and why: every geometry aspect, every documentation item, the
+actors (carried only as description text), a Revit category, free-text
+identification and notes, a classification URI in applicability, bounds in a unit
+that is neither the IFC default nor a length/area/volume unit this bridge
+converts (IDS values are in the IFC default unit, and converting a unit this
+bridge does not recognise would write a number nobody specified), and whole
+requirements that cannot become a checkable specification (no IFC version, no
+entity or classification, or nothing alphanumerical with an optional occurrence).
 
 **Proved before it is reported.** The generated XML is validated against the
 published **ids.xsd 1.0.0**, embedded verbatim (`schemas/ids/ids-1.0.xsd`); the
@@ -1059,6 +1098,10 @@ alfanumérica a **IDS 1.0** y **lista, sin inventar**, lo que IDS no puede
 expresar (geometría, documentación, actores, categoría de Revit, límites en otra
 unidad). El archivo se valida contra el `ids.xsd` 1.0 embebido y con el lector
 IDS del propio puente; ensaya por defecto y, al escribir, relee y vuelve a validar.
+Los límites en longitud, área o volumen dados en otra unidad (mm, cm, ft, ft2,
+l...) SÍ se convierten al default IFC (m/m2/m3), con el factor y el valor antes/
+después reportados en `converted_units`; cualquier otra unidad no reconocida
+sigue sin convertirse y se lista igual en `not_translated`.
 
 ## bSDD lookup
 

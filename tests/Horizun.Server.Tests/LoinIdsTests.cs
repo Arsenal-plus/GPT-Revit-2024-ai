@@ -13,7 +13,10 @@
 //     admit nothing);
 //   * the alphanumerical part becomes IDS facets, and EVERYTHING else is listed as
 //     not translated - geometry aspect by aspect, documentation, actors, a Revit
-//     category, bounds in a non-default unit - never approximated into a facet;
+//     category, bounds in a unit this bridge cannot convert - never approximated
+//     into a facet. Length/area/volume bounds in a non-default unit ARE converted
+//     to the IFC default (SI), and the conversion is reported in converted_units;
+//     every other non-default unit is still left out and listed;
 //   * the IDS is valid against the published ids.xsd 1.0 AND clean for the IDS
 //     reader the bridge's validators use; a file that passes one and not the other
 //     is caught;
@@ -164,6 +167,22 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void A_length_area_or_volume_unit_does_not_warn_but_an_unconvertible_one_does()
+        {
+            JObject doc = Context();
+            var width = (JObject)doc["loin"]["requirements"][0]["alphanumeric"]["properties"][2];
+            width["unit"] = "cm";   // length: convertible, no warning
+            var thermal = (JObject)doc["loin"]["requirements"][0]["alphanumeric"]["properties"][3];
+            thermal["unit"] = "psi";   // pressure, not length/area/volume, not IFC-default: still a warning
+
+            JObject reply = Call(new JObject { ["operation"] = "validate", ["path"] = Write(doc) });
+            var findings = ((JArray)reply["coherence"]).OfType<JObject>().Where(f => (string)f["rule"] == "loin_unit_not_ids_default").ToList();
+            Assert.DoesNotContain(findings, f => ((string)f["pointer"]).Contains("/properties/2/"));
+            JObject psiFinding = findings.Single(f => ((string)f["pointer"]).Contains("/properties/3/"));
+            Assert.Contains("psi", (string)psiFinding["message"]);
+        }
+
+        [Fact]
         public void The_schema_refuses_a_malformed_loin_by_pointer()
         {
             JObject doc = Context();
@@ -243,10 +262,18 @@ namespace Horizun.Server.Tests
             Assert.Contains("W-01:applies_to.revit_category", aspects);
             Assert.Contains("W-01:alphanumeric.identification", aspects);
             Assert.Equal("description_text", (string)skipped.Single(s => (string)s["aspect"] == "actors")["handling"]);
-            // Bounds in mm are not converted into the IFC default unit.
-            Assert.Contains(skipped, s => (string)s["requirement_id"] == "D-01" && ((string)s["aspect"]).EndsWith("NominalHeight.bounds"));
             // A Revit category alone has no IDS applicability: the whole requirement is listed.
             Assert.Contains(skipped, s => (string)s["requirement_id"] == "R-01" && (string)s["aspect"] == "requirement");
+
+            // The mm bound IS a length unit: converted to the IFC default (m), not left out.
+            var converted = ((JArray)reply["converted_units"]).OfType<JObject>().ToList();
+            JObject heightConversion = converted.Single(c => (string)c["requirement_id"] == "D-01" && ((string)c["aspect"]).EndsWith("NominalHeight.bounds"));
+            Assert.Equal("mm", (string)heightConversion["from_unit"]);
+            Assert.Equal("m", (string)heightConversion["to_unit"]);
+            Assert.Equal(0.001, (double)heightConversion["factor"]);
+            Assert.Equal(2000.0, (double)heightConversion["original"]["min_inclusive"]);
+            Assert.Equal(2.0, (double)heightConversion["converted"]["min_inclusive"]);
+            Assert.DoesNotContain(skipped, s => (string)s["requirement_id"] == "D-01" && ((string)s["aspect"]).EndsWith("NominalHeight.bounds"));
 
             // And the file says what the LOIN said, read by the bridge's own IDS reader.
             var xml = new XmlDocument();
@@ -279,7 +306,37 @@ namespace Horizun.Server.Tests
             Assert.Equal("Uniclass 2015", door.Applicability.Classifications[0].System.Simple);
             Assert.Equal("Pr_30_59_24", door.Applicability.Classifications[0].Value.Simple);
             IdsPropertyFacet height = door.Requirements.Properties.Single(p => p.BaseName.Simple == "NominalHeight");
-            Assert.Null(height.Value);   // its only rule was the mm bound, which was not translated
+            Assert.Equal(2.0, height.Value.MinInclusive);   // 2000 mm, converted to the IFC default (m)
+        }
+
+        [Fact]
+        public void Area_and_volume_bounds_are_also_converted_to_the_ifc_default()
+        {
+            JObject doc = JObject.Parse(@"{
+              ""schema_version"": 1,
+              ""project"": { ""code"": ""HZ01"" },
+              ""delivery"": { ""ifc"": { ""version"": ""IFC4"" } },
+              ""loin"": { ""requirements"": [{
+                ""id"": ""S-01"",
+                ""applies_to"": { ""ifc_entity"": ""IfcSlab"" },
+                ""alphanumeric"": { ""properties"": [
+                  { ""property_set"": ""Qto_SlabBaseQuantities"", ""name"": ""GrossArea"", ""data_type"": ""IfcAreaMeasure"", ""min_inclusive"": 500000, ""unit"": ""cm2"" },
+                  { ""property_set"": ""Qto_SlabBaseQuantities"", ""name"": ""GrossVolume"", ""data_type"": ""IfcVolumeMeasure"", ""max_inclusive"": 353.147, ""unit"": ""ft3"" }
+                ] }
+              }] }
+            }");
+            JObject reply = Call(new JObject { ["operation"] = "ids_from_loin", ["path"] = Write(doc) });
+            var converted = ((JArray)reply["converted_units"]).OfType<JObject>().ToList();
+
+            JObject area = converted.Single(c => ((string)c["aspect"]).Contains("GrossArea"));
+            Assert.Equal("cm2", (string)area["from_unit"]);
+            Assert.Equal("m2", (string)area["to_unit"]);
+            Assert.Equal(50.0, (double)area["converted"]["min_inclusive"]);   // 500000 cm2 = 50 m2
+
+            JObject volume = converted.Single(c => ((string)c["aspect"]).Contains("GrossVolume"));
+            Assert.Equal("ft3", (string)volume["from_unit"]);
+            Assert.Equal("m3", (string)volume["to_unit"]);
+            Assert.Equal(10.0, (double)volume["converted"]["max_inclusive"], 2);   // 353.147 ft3 ~ 10 m3
         }
 
         [Fact]

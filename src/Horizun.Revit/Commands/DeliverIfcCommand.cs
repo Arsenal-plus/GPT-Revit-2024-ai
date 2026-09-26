@@ -234,6 +234,12 @@ namespace Horizun.Revit.Commands
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, resolvedPlan, null);
             if (refusal != null) return refusal;
 
+            // ---- 1b. the model, read BEFORE anything is exported -------------------
+            // Read now, so the file's later coverage check (step 4) can tell an EMPTY
+            // Revit parameter apart from a mapping the exporter did not apply - a
+            // distinction the exported file alone cannot make (see PsetMapping.cs).
+            List<PsetMapping.ModelCensusRow> modelCensus = mapping == null ? null : ComputeModelCensus(doc, mapping, 10);
+
             // ---- 2. the export ----------------------------------------------------
             FileStamp before = Stamp(ifcPath);
             bool apiAccepted;
@@ -330,7 +336,22 @@ namespace Horizun.Revit.Commands
                 if (parsed == null)
                     gates.Add(new DeliveryGate { Name = "pset_mapping", Requested = true, Status = DeliveryGateStatus.NotDecidable,
                                                  Reason = "the exported file could not be parsed: " + parseError });
-                else gates.Add(PsetMapping.Verify(mapping, parsed, minCoverage, 10, out rows));
+                else
+                {
+                    DeliveryGate mappingGate = PsetMapping.Verify(mapping, parsed, minCoverage, 10, out rows);
+                    // Merged with the BEFORE-export read (step 1b): per row, exported /
+                    // empty_in_model / not_applied / parameter_missing, told apart where the
+                    // file's coverage alone cannot (see PsetMapping.CombineWithModel).
+                    mappingGate.Evidence["model_comparison"] = PsetMapping.CombineWithModel(rows, modelCensus);
+                    mappingGate.Evidence["model_comparison_means"] =
+                        "Per row: exported (the file carries it), empty_in_model (the Revit parameter had no " +
+                        "value - NOT an exporter fault), not_applied (a value existed in the model but the file " +
+                        "carries the property for fewer entities than the model has values for), " +
+                        "parameter_missing (the named Revit parameter does not exist on the element at all). " +
+                        "exported/not_applied are aggregate counts - see population_mismatch_note per row when " +
+                        "the model census and the file's own candidate count disagree.";
+                    gates.Add(mappingGate);
+                }
             }
 
             // ---- 5. BCF of the IDS failures ---------------------------------------
@@ -574,5 +595,149 @@ namespace Horizun.Revit.Commands
 
         private static string SafeUid(Element e) { try { return e?.UniqueId; } catch { return null; } }
         private static string SafeName(Element e) { try { return e?.Name; } catch { return "<unreadable>"; } }
+
+        // =====================================================================
+        // The model, read BEFORE the export (step 1b) - a heuristic IFC class -> Revit
+        // category resolution, so the mapping's declared properties can be read from the
+        // LIVE model and later compared with what the exported file carries.
+        // =====================================================================
+
+        /// <summary>
+        /// Common architecture/structure/MEP IFC classes mapped onto the Revit category
+        /// (or categories) Revit's own exporter most often produces them from. NOT
+        /// exhaustive - a class outside this table is reported category_unmapped, never
+        /// guessed, and the file's own coverage check (step 4) still runs regardless.
+        /// </summary>
+        private static readonly Dictionary<string, BuiltInCategory[]> IfcClassCategories =
+            new Dictionary<string, BuiltInCategory[]>(StringComparer.Ordinal)
+        {
+            ["IFCWALL"] = new[] { BuiltInCategory.OST_Walls },
+            ["IFCWALLSTANDARDCASE"] = new[] { BuiltInCategory.OST_Walls },
+            ["IFCWALLELEMENTEDCASE"] = new[] { BuiltInCategory.OST_Walls },
+            ["IFCCURTAINWALL"] = new[] { BuiltInCategory.OST_Walls, BuiltInCategory.OST_CurtainWallPanels },
+            ["IFCSLAB"] = new[] { BuiltInCategory.OST_Floors },
+            ["IFCROOF"] = new[] { BuiltInCategory.OST_Roofs },
+            ["IFCCOLUMN"] = new[] { BuiltInCategory.OST_Columns, BuiltInCategory.OST_StructuralColumns },
+            ["IFCBEAM"] = new[] { BuiltInCategory.OST_StructuralFraming },
+            ["IFCMEMBER"] = new[] { BuiltInCategory.OST_StructuralFraming },
+            ["IFCPLATE"] = new[] { BuiltInCategory.OST_StructuralFraming },
+            ["IFCFOOTING"] = new[] { BuiltInCategory.OST_StructuralFoundation },
+            ["IFCPILE"] = new[] { BuiltInCategory.OST_StructuralFoundation },
+            ["IFCSTAIR"] = new[] { BuiltInCategory.OST_Stairs },
+            ["IFCSTAIRFLIGHT"] = new[] { BuiltInCategory.OST_StairsRuns },
+            ["IFCRAMP"] = new[] { BuiltInCategory.OST_Ramps },
+            ["IFCRAILING"] = new[] { BuiltInCategory.OST_Railings },
+            ["IFCDOOR"] = new[] { BuiltInCategory.OST_Doors },
+            ["IFCWINDOW"] = new[] { BuiltInCategory.OST_Windows },
+            ["IFCCOVERING"] = new[] { BuiltInCategory.OST_Ceilings },
+            ["IFCFURNITURE"] = new[] { BuiltInCategory.OST_Furniture },
+            ["IFCFURNISHINGELEMENT"] = new[] { BuiltInCategory.OST_FurnitureSystems },
+            ["IFCSPACE"] = new[] { BuiltInCategory.OST_Rooms },
+            ["IFCDUCTSEGMENT"] = new[] { BuiltInCategory.OST_DuctCurves },
+            ["IFCPIPESEGMENT"] = new[] { BuiltInCategory.OST_PipeCurves },
+            ["IFCCABLECARRIERSEGMENT"] = new[] { BuiltInCategory.OST_Conduit, BuiltInCategory.OST_CableTray },
+            ["IFCFLOWTERMINAL"] = new[] { BuiltInCategory.OST_DuctTerminal, BuiltInCategory.OST_PlumbingFixtures },
+            ["IFCSANITARYTERMINAL"] = new[] { BuiltInCategory.OST_PlumbingFixtures },
+            ["IFCELECTRICALAPPLIANCE"] = new[] { BuiltInCategory.OST_ElectricalEquipment },
+            ["IFCFLOWFITTING"] = new[] { BuiltInCategory.OST_DuctFitting, BuiltInCategory.OST_PipeFitting }
+        };
+
+        /// <summary>
+        /// For every declared property, the LIVE model's own count: has_value / empty /
+        /// parameter_missing, over the elements (or, for a 'T' level set, their distinct
+        /// TYPES) resolved from the set's IFC classes via IfcClassCategories. A set whose
+        /// classes resolve to no known category is CategoryUnmapped, never guessed.
+        /// </summary>
+        private static List<PsetMapping.ModelCensusRow> ComputeModelCensus(Document doc, PsetMappingFile mapping, int maxExamples)
+        {
+            var rows = new List<PsetMapping.ModelCensusRow>();
+            foreach (PsetMappingSet set in mapping.Sets)
+            {
+                var categories = new HashSet<BuiltInCategory>();
+                var unmapped = new List<string>();
+                foreach (string cls in set.Entities)
+                {
+                    string upper = (cls ?? "").Trim().ToUpperInvariant();
+                    string baseClass = upper.EndsWith("TYPE", StringComparison.Ordinal) ? upper.Substring(0, upper.Length - 4)
+                                      : upper.EndsWith("STYLE", StringComparison.Ordinal) ? upper.Substring(0, upper.Length - 5)
+                                      : upper;
+                    BuiltInCategory[] cats;
+                    if (IfcClassCategories.TryGetValue(baseClass, out cats))
+                        foreach (BuiltInCategory c in cats) categories.Add(c);
+                    else unmapped.Add(cls);
+                }
+
+                var scopeElements = new List<Element>();
+                if (categories.Count > 0)
+                {
+                    var filter = new ElementMulticategoryFilter(categories.ToList());
+                    List<Element> instances = new FilteredElementCollector(doc).WherePasses(filter)
+                        .WhereElementIsNotElementType().ToElements().ToList();
+                    if (set.Level == 'T')
+                    {
+                        var seenTypeIds = new HashSet<long>();
+                        foreach (Element inst in instances)
+                        {
+                            ElementId typeId;
+                            try { typeId = inst.GetTypeId(); } catch { continue; }
+                            if (typeId == null || typeId == ElementId.InvalidElementId) continue;
+                            if (!seenTypeIds.Add(Rid.Value(typeId))) continue;
+                            Element t = doc.GetElement(typeId);
+                            if (t != null) scopeElements.Add(t);
+                        }
+                    }
+                    else scopeElements = instances;
+                }
+
+                foreach (PsetMappingProperty property in set.Properties)
+                {
+                    var row = new PsetMapping.ModelCensusRow { PropertySet = set.Name, Property = property.Name };
+                    if (categories.Count == 0)
+                    {
+                        row.CategoryUnmapped = true;
+                        row.UnmappedReason = "no Revit category is known for: " + string.Join(", ", unmapped) +
+                            "; the model was not read for this property, so exported/empty_in_model/not_applied/" +
+                            "parameter_missing are unknown here. Only the exported file's own coverage is known.";
+                        rows.Add(row);
+                        continue;
+                    }
+                    if (unmapped.Count > 0) row.PartiallyUnmappedClasses = unmapped;
+                    string paramName = property.RevitParameter ?? property.Name;
+                    row.Total = scopeElements.Count;
+                    foreach (Element el in scopeElements)
+                    {
+                        Parameter p;
+                        try { p = el.LookupParameter(paramName); } catch { p = null; }
+                        if (p == null)
+                        {
+                            row.ParameterMissing++;
+                            if (row.ParameterMissingExamples.Count < maxExamples) row.ParameterMissingExamples.Add(ElementExample(el));
+                            continue;
+                        }
+                        bool hasValue;
+                        try
+                        {
+                            // A String parameter reporting HasValue with only whitespace is,
+                            // for the exporter's purposes, empty: it writes no property from it.
+                            hasValue = p.HasValue && !(p.StorageType == StorageType.String && string.IsNullOrWhiteSpace(p.AsString()));
+                        }
+                        catch { hasValue = false; }
+                        if (hasValue) row.HasValue++;
+                        else
+                        {
+                            row.Empty++;
+                            if (row.EmptyExamples.Count < maxExamples) row.EmptyExamples.Add(ElementExample(el));
+                        }
+                    }
+                    rows.Add(row);
+                }
+            }
+            return rows;
+        }
+
+        private static JObject ElementExample(Element el) => new JObject
+        {
+            ["unique_id"] = SafeUid(el), ["element_id"] = Rid.Value(el.Id), ["name"] = SafeName(el)
+        };
     }
 }

@@ -1212,3 +1212,61 @@ back wall. With the 3 L opening threshold, a fixed 0.6 m zone, walk-through door
 (≥ 1.80 m) and a bounding-box prefilter, the same pass finished in 24 s with one finding -
 a chute hatch against its hopper whose volume Revit could not measure, now a warning.
 A column in a doorway (51 L) and one 0.7 m in front of a door still come back as errors.
+
+## horizun_fix_planimetry: non-rectangular (polygon) crops
+
+`set_crop` accepts `crop.loop` - a closed polygon of at least 3 `[x, y]`
+view-plane points - as an alternative to `crop.min`/`crop.max`. It is refused BY
+NAME (not as a capability gap) on a view whose
+`ViewCropRegionShapeManager.CanHaveShape` is false; a rectangle is unaffected by
+this and still goes through `View.CropBox`.
+
+- **The polygon is written through `SetCropShape(CurveLoop)`, then cleaned up in
+  the same transaction.** `SetCropShape` was MEASURED (Revit 2026, 2026-08-25, on
+  a rectangular loop, the live gate) to install a crop-region sketch and create
+  two non-view-specific `Dimension` elements as a side effect - elements that were
+  still there after the shape was removed again. A command whose contract is that
+  it writes only what it names cannot leave those behind, so `Apply` diffs the
+  document's `Dimension` elements immediately before and after `SetCropShape`,
+  and deletes whatever appeared, before the transaction that holds them ever
+  commits. The assumption behind this - that those dimensions are UI witnesses of
+  the sketch's constraints and not the shape's geometry, so removing them leaves
+  the polygon intact - is UNVERIFIED beyond the rectangular-loop measurement above;
+  it has NOT been measured live for an actual polygon loop. If it is wrong, the
+  rehearsal's and the apply's own re-read of the shape (vertex by vertex, see
+  below) simply fails the postcondition and the whole batch rolls back - it can
+  never silently report success over a broken shape or a model that kept the
+  extra elements. `scripts/live-probes/fix-planimetry.probes.ps1` needs a case
+  that actually sets a polygon crop and inspects the model's `Dimension` count
+  before/after to close this gap.
+- **Verification compares vertices, not a bounding box.** `crop_shape`'s postcondition
+  re-reads `ViewCropRegionShapeManager.GetCropShape()`'s loop and matches every
+  requested vertex to a distinct read vertex within the batch's tolerance
+  (default 0.1 mm, well inside the 1 mm this feature targets) - unordered, since
+  Revit is free to start or wind the loop however it likes. A rectangle's crop
+  still compares as a bounding box, unchanged.
+
+## horizun_deliver_ifc: telling an empty parameter apart from a dropped mapping
+
+`model_comparison` (inside the `pset_mapping` gate's evidence) merges a
+BEFORE-export read of the model with the AFTER-export coverage check, per
+declared property: `exported`, `empty_in_model`, `not_applied`,
+`parameter_missing`. The model-side read resolves each mapping row's IFC
+classes to a Revit category through a built-in table
+(`DeliverIfcCommand.IfcClassCategories`) covering common architecture,
+structure and MEP classes (walls, slabs, columns, beams, doors, windows,
+stairs, railings, spaces, ducts, pipes, cable trays, flow terminals,
+electrical appliances...). A class outside that table makes the ROW
+`category_unmapped` - the model is not read for it, and only the file's own
+coverage (unaffected) is known.
+
+`exported` and `not_applied` are **aggregate** counts, not element-matched: no
+IFC GlobalId correlates a specific model element to its file entity without
+recomputing the exporter's own GUID algorithm (this bridge does not carry
+that algorithm). The arithmetic (`not_applied = max(0, has_value - carrying)`)
+holds as long as the model census and the file's coverage check are counting
+the SAME population; a `population_mismatch_note` on the row says so whenever
+the heuristic category resolution and the file's own IFC-class count disagree,
+rather than trusting the aggregate silently. `PsetMapping.CombineWithModel`
+(Revit-free) does the merge; `DeliverIfcCommand.ComputeModelCensus` (Revit-
+side) builds the per-row model counts.

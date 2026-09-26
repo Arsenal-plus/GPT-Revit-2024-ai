@@ -347,8 +347,8 @@ namespace Horizun.Revit.Core
             minX = minY = maxX = maxY = 0;
             var o = token as JObject;
             if (o == null) return "'crop' must be an object with min and max.";
-            // A caller asking for a non-rectangular crop is a CAPABILITY question, not a
-            // typo, and is answered before this - see NonRectangularCrop.
+            // A caller asking for a non-rectangular crop is answered by PolygonCropError
+            // instead - see NonRectangularCrop.
             foreach (JProperty p in o.Properties())
                 if (p.Name != "min" && p.Name != "max" && p.Name != "loop")
                     return "'crop' has unknown key '" + p.Name + "'. Known: min, max.";
@@ -361,17 +361,62 @@ namespace Horizun.Revit.Core
             return null;
         }
 
-        /// <summary>True when the caller asked for a crop shape this phase cannot
-        /// reproduce safely. The refusal is BY CAPABILITY - a script could build the
-        /// loop - so it earns the standard fallback contract, unlike a typo.</summary>
+        /// <summary>True when the caller named a polygon shape (crop.loop) rather than a
+        /// rectangle (crop.min/max). The KEY's presence is the request, not its value:
+        /// `"loop": null` used to fall through to the rectangular path and be silently
+        /// ignored - which this file's own rule calls a request the caller believes was
+        /// honoured.</summary>
         public static bool NonRectangularCrop(JToken token)
         {
-            // The KEY's presence is the request, not its value. `"loop": null` used to
-            // fall through to the rectangular path and be silently ignored - which this
-            // file's own rule calls a request the caller believes was honoured.
             var o = token as JObject;
             return o != null && o.Property("loop") != null;
         }
+
+        /// <summary>A non-rectangular crop: a closed polygon of at least 3 [x, y]
+        /// view-plane points in the call's units. An explicit closing point equal to
+        /// the first is accepted and dropped (CurveLoop closes itself); consecutive
+        /// coincident points and a degenerate (zero-area / collinear) loop are refused,
+        /// because both would ask Revit to build a shape from a line, not a region.</summary>
+        public static string PolygonCropError(JToken token, out List<double[]> points)
+        {
+            points = null;
+            var o = token as JObject;
+            if (o == null) return "'crop' must be an object with 'loop'.";
+            foreach (JProperty p in o.Properties())
+                if (p.Name != "loop")
+                    return "'crop' has unknown key '" + p.Name + "' for a polygon crop (crop.loop present). Known: loop.";
+            var arr = o["loop"] as JArray;
+            if (arr == null || arr.Count < 3)
+                return "'crop.loop' must be an array of at least 3 [x, y] points.";
+            var list = new List<double[]>();
+            for (int i = 0; i < arr.Count; i++)
+            {
+                double x, y;
+                string e = PointError("crop.loop[" + i + "]", arr[i], out x, out y);
+                if (e != null) return e;
+                list.Add(new[] { x, y });
+            }
+            if (list.Count > 3 && PointsCoincide(list[0], list[list.Count - 1]))
+                list.RemoveAt(list.Count - 1);   // an explicit closing point; the loop closes itself
+            if (list.Count < 3)
+                return "'crop.loop' must have at least 3 distinct points once a repeated closing point is dropped.";
+            for (int i = 0; i < list.Count; i++)
+                if (PointsCoincide(list[i], list[(i + 1) % list.Count]))
+                    return "'crop.loop' has two consecutive points that coincide (index " + i + ").";
+            double area2 = 0;
+            for (int i = 0; i < list.Count; i++)
+            {
+                double[] p1 = list[i], p2 = list[(i + 1) % list.Count];
+                area2 += p1[0] * p2[1] - p2[0] * p1[1];
+            }
+            if (Math.Abs(area2) < 1e-9)
+                return "'crop.loop' encloses no area - its points are collinear or the polygon is degenerate.";
+            points = list;
+            return null;
+        }
+
+        private static bool PointsCoincide(double[] a, double[] b)
+            => Math.Abs(a[0] - b[0]) < 1e-9 && Math.Abs(a[1] - b[1]) < 1e-9;
 
         /// <summary>The declared default tolerance for geometric postconditions: 0.1 mm in
         /// internal feet - the same canonical grid the before-values are rounded to.</summary>

@@ -232,6 +232,106 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// What the MODEL says about one declared property, read BEFORE the export - the
+        /// half the exported file alone cannot tell apart (see the header comment). Built
+        /// Revit-side (a Revit category has to be resolved from the mapping's IFC classes,
+        /// which this file does not touch) and combined with a Row here, purely.
+        /// </summary>
+        public sealed class ModelCensusRow
+        {
+            public string PropertySet, Property;
+            /// <summary>True when none of the property set's IFC classes resolve to a known
+            /// Revit category - the model was not read for this property at all.</summary>
+            public bool CategoryUnmapped;
+            public string UnmappedReason;
+            /// <summary>Some, not all, of the set's IFC classes had no known category - Total
+            /// undercounts the model's real population for this property.</summary>
+            public List<string> PartiallyUnmappedClasses;
+            public int Total, HasValue, Empty, ParameterMissing;
+            public readonly List<JObject> EmptyExamples = new List<JObject>();
+            public readonly List<JObject> ParameterMissingExamples = new List<JObject>();
+        }
+
+        /// <summary>
+        /// Merges a file Row with what the model showed for the SAME property before the
+        /// export, into the four-way classification the exporter's own behaviour cannot
+        /// distinguish on its own: EXPORTED (the file carries it - necessarily from an
+        /// element that had a value), EMPTY_IN_MODEL (the parameter had no value - not an
+        /// exporter fault), NOT_APPLIED (a value existed in the model but fewer file
+        /// entities carry the property than the model has values for - the exporter did not
+        /// write it), PARAMETER_MISSING (the named parameter does not exist on the element
+        /// at all). exported/not_applied are AGGREGATE counts, not element-matched: no IFC
+        /// GlobalId correlates a model element to its file entity without recomputing the
+        /// exporter's own GUID algorithm, which this bridge does not carry. The arithmetic
+        /// holds because the exporter can only ever write a property from an element that
+        /// had a value, so carrying &lt;= has_value for the SAME population; a
+        /// population_mismatch_note says when the model census and the file's own count of
+        /// candidate entities disagree, which is when that assumption is weakest.
+        /// </summary>
+        public static JArray CombineWithModel(IEnumerable<Row> fileRows, IEnumerable<ModelCensusRow> modelRows)
+        {
+            var byKey = new Dictionary<string, ModelCensusRow>(StringComparer.Ordinal);
+            if (modelRows != null)
+                foreach (ModelCensusRow m in modelRows) byKey[m.PropertySet + "\u001f" + m.Property] = m;
+
+            var combined = new JArray();
+            foreach (Row row in fileRows)
+            {
+                var o = new JObject
+                {
+                    ["property_set"] = row.PropertySet,
+                    ["property"] = row.Property,
+                    ["entities"] = row.Entities,
+                    ["file"] = new JObject
+                    {
+                        ["expected"] = row.Expected, ["carrying"] = row.Carrying, ["status"] = row.Status
+                    }
+                };
+                ModelCensusRow m;
+                if (!byKey.TryGetValue(row.PropertySet + "\u001f" + row.Property, out m))
+                {
+                    o["model"] = JValue.CreateNull();
+                    o["exported"] = JValue.CreateNull(); o["empty_in_model"] = JValue.CreateNull();
+                    o["not_applied"] = JValue.CreateNull(); o["parameter_missing"] = JValue.CreateNull();
+                    o["classification_reason"] = "no model census was taken for this property; only the exported " +
+                                                 "file's coverage above is known.";
+                }
+                else if (m.CategoryUnmapped)
+                {
+                    o["model"] = new JObject { ["category_unmapped"] = true, ["reason"] = m.UnmappedReason };
+                    o["exported"] = JValue.CreateNull(); o["empty_in_model"] = JValue.CreateNull();
+                    o["not_applied"] = JValue.CreateNull(); o["parameter_missing"] = JValue.CreateNull();
+                    o["classification_reason"] = "none of this property's IFC classes resolve to a known Revit " +
+                                                 "category, so the model was not read for it; only the exported " +
+                                                 "file's coverage above is known.";
+                }
+                else
+                {
+                    o["model"] = new JObject
+                    {
+                        ["total"] = m.Total, ["has_value"] = m.HasValue, ["empty"] = m.Empty,
+                        ["parameter_missing"] = m.ParameterMissing,
+                        ["empty_examples"] = new JArray(m.EmptyExamples),
+                        ["parameter_missing_examples"] = new JArray(m.ParameterMissingExamples)
+                    };
+                    if (m.PartiallyUnmappedClasses != null && m.PartiallyUnmappedClasses.Count > 0)
+                        o["model"]["partially_unmapped_classes"] = new JArray(m.PartiallyUnmappedClasses);
+                    o["exported"] = row.Carrying;
+                    o["empty_in_model"] = m.Empty;
+                    o["not_applied"] = Math.Max(0, m.HasValue - row.Carrying);
+                    o["parameter_missing"] = m.ParameterMissing;
+                    if (m.Total != row.Expected)
+                        o["population_mismatch_note"] = "the model census found " + m.Total + " element(s) by " +
+                            "Revit category for this row; the exported file's own coverage check found " +
+                            row.Expected + " candidate entities. The category match is a heuristic, so exported/" +
+                            "not_applied above are aggregate, not element-matched, counts.";
+                }
+                combined.Add(o);
+            }
+            return combined;
+        }
+
+        /// <summary>
         /// For every declared property: how many of the entities the set is declared for
         /// carry it in the file. An occurrence is credited with its type's sets, exactly as
         /// the IDS evaluator reads them; a TYPE class named in the mapping (IfcWallType) is
