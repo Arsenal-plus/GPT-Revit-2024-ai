@@ -667,6 +667,31 @@ the sets and tests) reported the result Resolved - 0 active issues. Two traps it
   counted three of them as elements a move "would touch" and refused every lateral
   shift; cameras, viewers, section boxes and MEP system elements are now outside what
   both the spatial check and the resolver treat as physical.
+- **Navisworks reads a view named with "Navisworks" before `{3D}`.** With `{3D}` at
+  Fine and a 3D view called "HZ Navisworks b3b1d996" at Medium, both pipes arrived as
+  lines again and the Hard test found nothing. Renaming only that view brought them
+  back as solids (1587 and 1787 triangles). `show` named its own view
+  "Horizun - Navisworks <date>" by default, so the product planted the view that
+  spoiled the next export. Now:
+  - `show` defaults to "Horizun - Coordination <date>" and refuses any `view_name`
+    containing "Navisworks";
+  - `navisworks_readiness` judges every 3D view whose name contains "Navisworks"
+    (listed in `candidate_views`);
+  - `prepare_navisworks` sets every one of those views to Fine.
+
+**The loop, closed without re-running Navisworks (measured the same day).** Second
+round on the same model:
+1. `navisworks_readiness` caught the Medium view (`not_ready`, naming it).
+2. `prepare_navisworks` set it to Fine and re-read it.
+3. A new pipe through the column was detected in Navisworks (76 mm), handed off,
+   imported (reproduced), shown in "Horizun - Coordination <date>", and moved 338 mm
+   by `resolve_clash`.
+4. `navisworks_status` suggested `resolved` for it.
+5. `navis_set_status` applied that suggestion in Navisworks, verified by re-reading
+   the document. The analysis then held zero active issues.
+
+The status travels from Revit's measured verdict back to the coordination model;
+nobody types it.
 
 #### Resumen (español)
 
