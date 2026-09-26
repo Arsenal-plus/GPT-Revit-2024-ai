@@ -21,9 +21,14 @@
 // to the outlet of different lengths demand two heights at the node where they
 // meet), so ComputeTargets refuses with the node named instead of picking one.
 //
-// VERTICAL / ZERO-LENGTH EDGES. Below MinHorizontalLengthFeet an edge has no
-// slope to give; it keeps its ORIGINAL rise (a riser stays the riser it was,
-// it does not collapse to zero length) and is reported as skipped.
+// RISERS AND RIGID EDGES KEEP THEIR RISE. An edge is a riser when it is steeper
+// than SteepRiseRatio (45 degrees) or shorter in plan than MinHorizontalLengthFeet:
+// classified by ANGLE, not by an absolute plan length, because a 3 m riser drawn
+// with 5 mm of plan offset is still a riser - re-grading it to slope_percent would
+// flatten it to a near-level 5 mm stub and drop everything above it by 3 m. A
+// riser keeps its ORIGINAL rise and is reported as skipped. A Rigid edge (a
+// fitting's leg, centre to connector) always keeps its original rise too: Revit
+// moves a fitting as one body, so its connectors cannot take separate slopes.
 //
 // UNITS. Every length and elevation here is in feet, Revit's internal unit -
 // the command that owns this converts once, at the edges.
@@ -45,18 +50,31 @@ namespace Horizun.Revit.Core
         /// as vertical/zero-length: skipped, keeping its original rise.</summary>
         public const double MinHorizontalLengthFeet = 0.01;
 
+        /// <summary>|rise| / horizontal at or above this (tan 45 degrees) makes an edge a
+        /// riser that keeps its original rise instead of being re-graded.</summary>
+        public const double SteepRiseRatio = 1.0;
+
+        /// <summary>True when an edge is a riser by angle: steeper than 45 degrees, or
+        /// too short in plan to carry a slope.</summary>
+        public static bool IsRiser(double horizontalLengthFeet, double riseFeet)
+            => horizontalLengthFeet < MinHorizontalLengthFeet || Math.Abs(riseFeet) >= SteepRiseRatio * horizontalLengthFeet * (1 - 1e-9);
+
         public sealed class Edge
         {
             public readonly string Id;
             public readonly string FromNode;
             public readonly string ToNode;
             public readonly double HorizontalLengthFeet;
-            /// <summary>Original Z(ToNode) - Z(FromNode). Used only when the edge is vertical/zero-length.</summary>
+            /// <summary>Original Z(ToNode) - Z(FromNode). Kept when the edge is a riser or rigid.</summary>
             public readonly double RiseFeet;
+            /// <summary>A fitting leg: always keeps RiseFeet, whatever its angle.</summary>
+            public readonly bool Rigid;
             public Edge(string id, string fromNode, string toNode, double horizontalLengthFeet)
-                : this(id, fromNode, toNode, horizontalLengthFeet, 0.0) { }
+                : this(id, fromNode, toNode, horizontalLengthFeet, 0.0, false) { }
             public Edge(string id, string fromNode, string toNode, double horizontalLengthFeet, double riseFeet)
-            { Id = id; FromNode = fromNode; ToNode = toNode; HorizontalLengthFeet = horizontalLengthFeet; RiseFeet = riseFeet; }
+                : this(id, fromNode, toNode, horizontalLengthFeet, riseFeet, false) { }
+            public Edge(string id, string fromNode, string toNode, double horizontalLengthFeet, double riseFeet, bool rigid)
+            { Id = id; FromNode = fromNode; ToNode = toNode; HorizontalLengthFeet = horizontalLengthFeet; RiseFeet = riseFeet; Rigid = rigid; }
         }
 
         public sealed class EdgeResult
@@ -66,7 +84,7 @@ namespace Horizun.Revit.Core
             public string NearNode, FarNode;
             public double NearElevationFeet, FarElevationFeet;
             public double HorizontalLengthFeet;
-            public bool Skipped; // vertical/zero-length: no slope applied, original rise kept
+            public bool Skipped; // riser or rigid: no slope applied, original rise kept
         }
 
         public sealed class TargetResult
@@ -78,6 +96,10 @@ namespace Horizun.Revit.Core
             public List<EdgeResult> Edges = new List<EdgeResult>();
             /// <summary>Set when the floor check ran: floor elevation + clearance, feet.</summary>
             public double? MinAllowedElevationFeet;
+            /// <summary>Set when the floor check refused: the lowest node and its target, feet,
+            /// as data so the caller can name it and format it in its own units.</summary>
+            public string LowestNode;
+            public double LowestElevationFeet;
         }
 
         /// <summary>
@@ -126,7 +148,7 @@ namespace Horizun.Revit.Core
                         r.Error = "the network is not a tree: node " + far + " is reached by more than one path (loop through edge " + e.Id + ").";
                         return r;
                     }
-                    bool vertical = e.HorizontalLengthFeet < MinHorizontalLengthFeet;
+                    bool vertical = e.Rigid || IsRiser(e.HorizontalLengthFeet, e.RiseFeet);
                     double rise = vertical ? (far == e.ToNode ? e.RiseFeet : -e.RiseFeet) : ratio * e.HorizontalLengthFeet;
                     h[far] = h[node] + rise;
                     order.Add(new EdgeResult { EdgeId = e.Id, NearNode = node, FarNode = far, HorizontalLengthFeet = e.HorizontalLengthFeet, Skipped = vertical });
@@ -157,6 +179,7 @@ namespace Horizun.Revit.Core
                 var lowest = r.NodeElevationFeet.OrderBy(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).First();
                 if (lowest.Value < minAllowed - 1e-9)
                 {
+                    r.LowestNode = lowest.Key; r.LowestElevationFeet = lowest.Value;
                     r.Error = "node " + lowest.Key + " would land at " + lowest.Value.ToString("0.####", CultureInfo.InvariantCulture) +
                         " ft, below the floor plus min_clearance (" + minAllowed.ToString("0.####", CultureInfo.InvariantCulture) + " ft).";
                     r.NodeElevationFeet.Clear(); r.Edges = new List<EdgeResult>();
@@ -168,21 +191,23 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>Measured slope of a segment compared to the target within
-        /// SlopeToleranceRatio. Vertical/zero-length segments (below MinHorizontalLengthFeet)
-        /// always pass - there is no slope to measure on them.</summary>
+        /// SlopeToleranceRatio, SIGNED: the near (downstream, outlet-side) end must be the
+        /// lower one, so a pipe draining backwards at the right magnitude fails.
+        /// Vertical/zero-length segments (below MinHorizontalLengthFeet) always pass -
+        /// there is no slope to measure on them.</summary>
         public static bool SlopeWithinTolerance(double horizontalLengthFeet, double nearElevationFeet, double farElevationFeet,
             double expectedSlopePercent)
         {
             if (horizontalLengthFeet < MinHorizontalLengthFeet) return true;
-            double measuredRatio = Math.Abs(nearElevationFeet - farElevationFeet) / horizontalLengthFeet;
+            double measuredRatio = (farElevationFeet - nearElevationFeet) / horizontalLengthFeet;
             double expectedRatio = expectedSlopePercent / 100.0;
             return Math.Abs(measuredRatio - expectedRatio) <= SlopeToleranceRatio;
         }
 
         /// <summary>Parses fixed_end: "upstream", "downstream", "&lt;element_id&gt;",
         /// "&lt;element_id&gt;:high" or "&lt;element_id&gt;:low". Returns false with an error otherwise.
-        /// held: null for the bare element form (direction then comes from flow, or the
-        /// held end is assumed high); true = held end is the high/upstream end.</summary>
+        /// held: null for the bare element form (direction then comes from flow, and the
+        /// command refuses when flow does not read); true = held end is the high/upstream end.</summary>
         public static bool TryParseFixedEnd(string raw, out string word, out long elementId, out bool? heldIsHigh, out string error)
         {
             word = null; elementId = 0; heldIsHigh = null; error = null;

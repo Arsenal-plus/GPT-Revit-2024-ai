@@ -8,6 +8,7 @@
 // loops and disconnected runs refused by name; and the fixed_end grammar.
 // -----------------------------------------------------------------------------
 using System.Collections.Generic;
+using System.Linq;
 using Horizun.Revit.Core;
 using Xunit;
 using Edge = Horizun.Revit.Core.SlopeRules.Edge;
@@ -153,10 +154,61 @@ namespace Horizun.Core.Tests
         [Fact]
         public void Slope_tolerance_accepts_within_005_percentage_points_and_rejects_beyond()
         {
-            Assert.True(SlopeRules.SlopeWithinTolerance(100, 0, -2.0, 2.0));
-            Assert.True(SlopeRules.SlopeWithinTolerance(100, 0, -2.04, 2.0));
-            Assert.False(SlopeRules.SlopeWithinTolerance(100, 0, -2.06, 2.0));
+            // near = the outlet-side end, far = the upstream end: far sits higher.
+            Assert.True(SlopeRules.SlopeWithinTolerance(100, 0, 2.0, 2.0));
+            Assert.True(SlopeRules.SlopeWithinTolerance(100, 0, 2.04, 2.0));
+            Assert.False(SlopeRules.SlopeWithinTolerance(100, 0, 2.06, 2.0));
             Assert.True(SlopeRules.SlopeWithinTolerance(0.001, 0, -5, 2.0)); // vertical: nothing to measure
+        }
+
+        [Fact]
+        public void Slope_tolerance_rejects_a_pipe_draining_backwards_at_the_right_magnitude()
+        {
+            // The upstream end LOWER than the outlet end by exactly 2 percent: right size, wrong way.
+            Assert.False(SlopeRules.SlopeWithinTolerance(100, 0, -2.0, 2.0));
+            Assert.False(SlopeRules.SlopeWithinTolerance(100, 5.0, 3.0, 2.0));
+        }
+
+        [Fact]
+        public void A_riser_with_a_few_millimetres_of_plan_offset_keeps_its_rise()
+        {
+            // A 3 m (9.84 ft) riser drawn with 5 mm (0.0164 ft) of plan offset: by an absolute
+            // plan-length rule it is a sloped pipe and flattens to ~0.0003 ft; by angle it is a riser.
+            Assert.True(SlopeRules.IsRiser(0.0164, -9.84));
+            Assert.True(SlopeRules.IsRiser(1.0, 1.0));     // a 45 degree offset
+            Assert.False(SlopeRules.IsRiser(10.0, 0.5));   // 5 percent: a sloped pipe
+            var edges = new List<Edge> { new Edge("run", "A", "B", 10), new Edge("riser", "B", "C", 0.0164, 9.84) };
+            var r = SlopeRules.ComputeTargets(edges, "C", 20.0, 2.0, "A", null, null);
+            Assert.True(r.Ok, r.Error);
+            Assert.Equal(20.0 - 9.84, r.NodeElevationFeet["B"], 6);   // the riser kept its 9.84 ft
+            Assert.Equal(20.0 - 9.84 - 0.2, r.NodeElevationFeet["A"], 6);
+            Assert.True(r.Edges.Single(e => e.EdgeId == "riser").Skipped);
+        }
+
+        [Fact]
+        public void A_rigid_fitting_leg_keeps_its_original_rise_so_connectors_move_with_the_centre()
+        {
+            // pipe1 A-P1, elbow legs P1-E and E-P2 (0.5 ft each, flat), pipe2 P2-B.
+            var edges = new List<Edge>
+            {
+                new Edge("pipe1", "A", "P1", 10), new Edge("leg1", "E", "P1", 0.5, 0.0, true),
+                new Edge("leg2", "E", "P2", 0.5, 0.0, true), new Edge("pipe2", "P2", "B", 10)
+            };
+            var r = SlopeRules.ComputeTargets(edges, "A", 10.0, 2.0, "B", null, null);
+            Assert.True(r.Ok, r.Error);
+            Assert.Equal(r.NodeElevationFeet["E"], r.NodeElevationFeet["P1"], 9);
+            Assert.Equal(r.NodeElevationFeet["E"], r.NodeElevationFeet["P2"], 9);
+            Assert.Equal(10.0 - 0.4, r.NodeElevationFeet["B"], 9); // only the pipes carry the drop
+        }
+
+        [Fact]
+        public void The_floor_refusal_names_the_lowest_node_as_data()
+        {
+            var edges = new List<Edge> { new Edge("s1", "A", "B", 100) };
+            var r = SlopeRules.ComputeTargets(edges, "A", 1.0, 2.0, "B", 0.0, 0.0);
+            Assert.False(r.Ok);
+            Assert.Equal("B", r.LowestNode);
+            Assert.Equal(-1.0, r.LowestElevationFeet, 9);
         }
 
         [Theory]
