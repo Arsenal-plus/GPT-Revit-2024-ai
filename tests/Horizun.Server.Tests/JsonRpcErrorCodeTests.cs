@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -311,6 +312,19 @@ namespace Horizun.Server.Tests
             var init = ExchangeRaw(
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
             Assert.Equal(ServerInstructions.Head, (string)init[0]["result"]["instructions"]);
+        }
+
+        [Fact]
+        public void Resource_templates_are_listed_and_a_variant_is_readable_on_the_wire()
+        {
+            // Program.cs is not linked here: only the built server proves the method is wired.
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"resources/templates/list\",\"params\":{}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"resources/read\",\"params\":{\"uri\":\"horizun://contract/tools/horizun_document_session/save\"}}");
+            JObject list = replies.Single(r => (int?)r["id"] == 21);
+            Assert.Equal(2, ((JArray)list["result"]["resourceTemplates"]).Count);
+            JObject read = replies.Single(r => (int?)r["id"] == 22);
+            Assert.Equal("save", (string)JObject.Parse((string)read["result"]["contents"][0]["text"])["value"]);
         }
 
         [Fact]

@@ -107,9 +107,25 @@ namespace Horizun.Server
             }
             else if (type == "ref/resource")
             {
-                RequiredString(reference, "uri", "ref");
-                throw new McpError(-32602,
-                    "Horizun exposes no parameterised resource templates, so ref/resource completion is unavailable.");
+                string uri = RequiredString(reference, "uri", "ref");
+                if ((uri == McpResources.ToolTemplate || uri == McpResources.VariantTemplate) && argumentName == "tool")
+                    candidates = uri == McpResources.VariantTemplate
+                        ? ContractVariants.All.Select(s => s.Tool).Distinct()
+                        : Horizun.Contracts.Contract.All.Select(c => c.Name);
+                else if (uri == McpResources.VariantTemplate && argumentName == "variant")
+                {
+                    // The tool already chosen narrows the values; without one, every site's.
+                    JToken tool = (contextArguments as JObject)?["tool"];
+                    string chosen = tool != null && tool.Type == JTokenType.String ? (string)tool : null;
+                    candidates = ContractVariants.All
+                        .Where(s => chosen == null || s.Tool == chosen)
+                        .SelectMany(s => s.Values).Distinct();
+                }
+                else
+                    throw new McpError(-32602,
+                        "ref/resource completion covers " + McpResources.ToolTemplate + " (tool) and " +
+                        McpResources.VariantTemplate + " (tool, variant); nothing to complete for '" +
+                        argumentName + "' of '" + uri + "'.");
             }
             else
                 throw new McpError(-32602,

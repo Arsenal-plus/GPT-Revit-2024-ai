@@ -1229,11 +1229,9 @@ namespace Horizun.Server
                     return McpCompletions.Complete(prms);
 
                 case "resources/templates/list":
-                    // No templated resources: every horizun:// URI this server serves is
-                    // a fixed one. An empty list is the answer, and it still has to be an
-                    // ANSWER - a client that gets "method not found" for a list method the
-                    // spec requires cannot tell that apart from a broken server.
-                    return new JObject { ["resourceTemplates"] = new JArray() };
+                    // One tool's contract row and one variant of a discriminated tool:
+                    // where a model reads the exact schema tools/list abridges.
+                    return new JObject { ["resourceTemplates"] = McpResources.Templates() };
 
                 case "logging/setLevel":
                     // Removed in 2026-07-28: the level is a per-request _meta field now, and

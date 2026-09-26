@@ -7,6 +7,7 @@
 // binary and the shared contract, so it cannot drift from what tools/list advertises.
 // -----------------------------------------------------------------------------
 using System;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -16,7 +17,12 @@ namespace Horizun.Server
     internal static class McpResources
     {
         private const string GuidanceUri = "horizun://guidance/typed-first";
-        private const string ContractUri = "horizun://contract/tools";
+        internal const string ContractUri = "horizun://contract/tools";
+        // One tool, or one variant of one tool, of the same contract. Served here, not
+        // contract rows, so Contract.Hash does not move when they change.
+        internal const string ContractToolPrefix = ContractUri + "/";
+        internal const string ToolTemplate = ContractUri + "/{tool}";
+        internal const string VariantTemplate = ContractUri + "/{tool}/{variant}";
         private const string SecurityUri = "horizun://security/current-profile";
         private const string BuildUri = "horizun://build/identity";
         private const string WorkflowsUri = "horizun://workflows/bim-production";
@@ -81,7 +87,15 @@ namespace Horizun.Server
                     return AppContent(uri, McpAppResources.Html(), McpAppResources.ResourceMeta());
                 case ImpactPreviewApp.Uri:
                     return AppContent(uri, ImpactPreviewApp.Html(), ImpactPreviewApp.ResourceMeta());
-                default: throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");
+                default:
+                    // The exact contract URI matched above; only its children reach here.
+                    if (uri.StartsWith(ContractToolPrefix, StringComparison.Ordinal))
+                    {
+                        mime = "application/json";
+                        text = ContractPartText(uri);
+                        break;
+                    }
+                    throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");
             }
             return new JObject
             {
@@ -126,23 +140,86 @@ namespace Horizun.Server
 
         private static string ToolsetText() => ToolsetReport.Document().ToString(Formatting.Indented);
 
+        /// <summary>
+        /// The resource templates: one tool's contract row, and one variant of a tool whose
+        /// schema is a discriminated union. They exist because tools/list advertises an
+        /// abridged copy (see Tools.CompactSchema); these serve the contract's own objects.
+        /// </summary>
+        internal static JArray Templates()
+        {
+            string sites = string.Join(", ", ContractVariants.All.Select(v => v.Tool + " (" + v.Discriminator + ")"));
+            return new JArray
+            {
+                new JObject
+                {
+                    ["uriTemplate"] = ToolTemplate,
+                    ["name"] = "tool-contract-row",
+                    ["title"] = "One tool's contract",
+                    ["description"] = "The exact contract row of one tool, as " + ContractUri + " holds it: the full " +
+                        "input_schema with every description untruncated. Read it when a tools/list schema is abridged.",
+                    ["mimeType"] = "application/json"
+                },
+                new JObject
+                {
+                    ["uriTemplate"] = VariantTemplate,
+                    ["name"] = "tool-contract-variant",
+                    ["title"] = "One variant of a tool's contract",
+                    ["description"] = "The exact schema of one discriminated variant, verbatim from the contract, " +
+                        "with the fields it requires. {variant} is the discriminator value. Variants exist for: " + sites + ".",
+                    ["mimeType"] = "application/json"
+                }
+            };
+        }
+
+        /// <summary>horizun://contract/tools/{tool} and .../{tool}/{variant}. Names are
+        /// [a-z0-9_]; anything else, and any unknown value, is -32602 naming what is valid.</summary>
+        private static string ContractPartText(string uri)
+        {
+            string[] parts = uri.Substring(ContractToolPrefix.Length).Split('/');
+            if (parts.Length > 2 || parts.Any(p => p.Length == 0 || p.Any(ch => !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '_'))))
+                throw new McpError(-32602, "Invalid contract URI '" + uri + "': expected " + ToolTemplate + " or " +
+                    VariantTemplate + ", each name of [a-z0-9_].");
+            Horizun.Contracts.CommandContract c = Horizun.Contracts.Contract.Find(parts[0]);
+            if (c == null)
+                throw new McpError(-32602, "Unknown tool '" + parts[0] + "' in '" + uri + "'. Valid tools: " +
+                    string.Join(", ", Horizun.Contracts.Contract.All.Select(x => x.Name)) + ".");
+            if (parts.Length == 1) return Row(c).ToString(Formatting.Indented);
+
+            var sites = ContractVariants.For(c.Name).ToList();
+            if (sites.Count == 0)
+                throw new McpError(-32602, "'" + c.Name + "' has no discriminated variants; its whole schema is at " +
+                    ContractToolPrefix + c.Name + ".");
+            // More than one site in one tool resolves to the first that knows the value;
+            // ContractTemplateTests pins today's sites (one per tool) so a second is deliberate.
+            VariantSite site = sites.FirstOrDefault(v => v.BranchIndex.ContainsKey(parts[1]));
+            if (site == null)
+                throw new McpError(-32602, "Unknown " + string.Join("/", sites.Select(v => v.Discriminator).Distinct()) +
+                    " '" + parts[1] + "' for " + c.Name + ". Valid values: " +
+                    string.Join(", ", sites.SelectMany(v => v.Values)) + ".");
+            return site.Describe(parts[1]).ToString(Formatting.Indented);
+        }
+
+        /// <summary>One contract row: the whole-contract document and the per-tool read
+        /// share it, so the two can never disagree about a tool.</summary>
+        internal static JObject Row(Horizun.Contracts.CommandContract c) => new JObject
+        {
+            ["name"] = c.Name,
+            ["command"] = c.Command,
+            ["description"] = c.Description,
+            ["effect"] = c.Effect.ToString(),
+            ["destructive"] = c.Destructive,
+            ["open_world"] = c.OpenWorld,
+            ["toolsets"] = new JArray(c.Toolsets ?? new string[0]),
+            ["external_content"] = c.ExternalContent,
+            ["input_schema"] = c.InputSchema?.DeepClone(),
+            ["output_schema"] = c.OutputSchema?.DeepClone()
+        };
+
         private static string ContractText()
         {
             var rows = new JArray();
             foreach (Horizun.Contracts.CommandContract c in Horizun.Contracts.Contract.All)
-                rows.Add(new JObject
-                {
-                    ["name"] = c.Name,
-                    ["command"] = c.Command,
-                    ["description"] = c.Description,
-                    ["effect"] = c.Effect.ToString(),
-                    ["destructive"] = c.Destructive,
-                    ["open_world"] = c.OpenWorld,
-                    ["toolsets"] = new JArray(c.Toolsets ?? new string[0]),
-                    ["external_content"] = c.ExternalContent,
-                    ["input_schema"] = c.InputSchema?.DeepClone(),
-                    ["output_schema"] = c.OutputSchema?.DeepClone()
-                });
+                rows.Add(Row(c));
             return new JObject
             {
                 ["protocol_version"] = Horizun.Contracts.Contract.ProtocolVersion,
