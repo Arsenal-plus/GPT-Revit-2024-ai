@@ -96,20 +96,28 @@ namespace Horizun.Revit.Core
             }
             plan.MainAngleRad = theta;
 
-            // Bound first: the number of lines in each direction, as doubles.
+            // Bound first: the number of grid lines and boundary edges, as doubles, before
+            // anything is clipped; the pieces are then counted as they are clipped. (Bounding
+            // lines x edges instead refused a curved ceiling whose tessellated arcs add edges,
+            // not pieces: 15 x 10 m with 250 edges plans a few hundred members.)
             double mainLines = Extent(loops[0], theta + Math.PI / 2) / input.MainSpacing;
             double crossLines = input.CrossSpacing > 0 ? Extent(loops[0], theta) / input.CrossSpacing : 0;
             int edges = loops.Sum(l => l.Count);
-            if ((mainLines + crossLines + 2) * Math.Max(1, edges / 2.0) + edges > maxMembers) { plan.Refusal = "over_budget"; return plan; }
+            if (mainLines + crossLines + edges > maxMembers) { plan.Refusal = "over_budget"; return plan; }
 
-            var mains = GridSegments(loops, theta, input.MainSpacing);
+            var mains = GridSegments(loops, theta, input.MainSpacing, maxMembers);
             if (mains.Count == 0) { plan.Refusal = "no_main_inside_boundary"; return plan; }
+            if (mains.Count > maxMembers) { plan.Refusal = "over_budget"; return plan; }
             foreach (double[] m in mains)
                 plan.Members.Add(new FramingMember { Role = FramingRoles.Main, TypeKey = input.MainTypeKey, X0 = m[0], Y0 = m[1], X1 = m[2], Y1 = m[3] });
 
             if (input.CrossSpacing > 0)
-                foreach (double[] c in GridSegments(loops, theta + Math.PI / 2, input.CrossSpacing))
+            {
+                List<double[]> cross = GridSegments(loops, theta + Math.PI / 2, input.CrossSpacing, maxMembers - plan.Members.Count);
+                if (plan.Members.Count + cross.Count > maxMembers) { plan.Members.Clear(); plan.Refusal = "over_budget"; return plan; }
+                foreach (double[] c in cross)
                     plan.Members.Add(new FramingMember { Role = FramingRoles.Cross, TypeKey = input.CrossTypeKey, X0 = c[0], Y0 = c[1], X1 = c[2], Y1 = c[3] });
+            }
 
             if (input.PerimeterTypeKey != null)
                 foreach (List<double[]> loop in loops)
@@ -211,8 +219,9 @@ namespace Horizun.Revit.Core
         /// <summary>
         /// The segments of the "centred strips" grid of lines running at angle theta,
         /// spacing apart, clipped to the loops (even-odd). Each segment is {x0,y0,x1,y1}.
+        /// Stops once more than cap segments exist (the caller then refuses over_budget).
         /// </summary>
-        public static List<double[]> GridSegments(IReadOnlyList<List<double[]>> loops, double theta, double spacing)
+        public static List<double[]> GridSegments(IReadOnlyList<List<double[]>> loops, double theta, double spacing, int cap = int.MaxValue)
         {
             var result = new List<double[]>();
             double c = Math.Cos(theta), s = Math.Sin(theta);
@@ -227,6 +236,7 @@ namespace Horizun.Revit.Core
                 double v = vmin + edge + k * spacing;
                 foreach (double[] seg in Clip(loops, c, s, v))
                     result.Add(new[] { seg[0] * c - v * s, seg[0] * s + v * c, seg[1] * c - v * s, seg[1] * s + v * c });
+                if (result.Count > cap) break; // the caller refuses over_budget; nothing more is allocated
             }
             return result;
         }

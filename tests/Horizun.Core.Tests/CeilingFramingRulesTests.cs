@@ -168,7 +168,9 @@ namespace Horizun.Core.Tests
             var sideways = Ceiling(1200, Rect);
             sideways.Direction = "diagonal";
             Assert.Equal("unknown_direction", CeilingFramingRules.Plan(sideways, Budget).Refusal);
-            Assert.Equal("over_budget", CeilingFramingRules.Plan(Ceiling(1, Rect), Budget).Refusal);
+            // The bound counts members: 1 mm mains in the 6 x 4 m Rect are 4004 members, inside 5000
+            // (the spec reader's 10 mm minimum is what refuses that unit slip); a 6 x 6 m square is 6004.
+            Assert.Equal("over_budget", CeilingFramingRules.Plan(Ceiling(1, Loop(0, 0, 6000, 0, 6000, 6000, 0, 6000)), Budget).Refusal);
         }
     
         [Fact]
@@ -187,6 +189,34 @@ namespace Horizun.Core.Tests
             Assert.Equal(0, CeilingFramingRules.DistanceOutside(loops, 1000, 250), 6);
             Assert.Equal(500000, CeilingFramingRules.Area(loops[0]), 6);
             Assert.Equal(-500000, CeilingFramingRules.Area(new List<double[]>(loops[0].AsEnumerable().Reverse())), 6);
+        }
+
+        [Fact]
+        public void A_curved_ceiling_with_many_tessellated_edges_is_not_refused_over_budget()
+        {
+            // 15 x 10 m with its long side replaced by a shallow arc of 240 chords: the old
+            // bound (lines x edges) refused it; the plan itself has a few hundred members.
+            var loop = new List<double[]> { new[] { 0.0, 0 }, new[] { 15000.0, 0 } };
+            for (int k = 1; k < 240; k++)
+            {
+                double x = 15000 - k * 15000.0 / 240;
+                loop.Add(new[] { x, 10000 + 500 * Math.Sin(Math.PI * x / 15000) });
+            }
+            loop.Add(new[] { 0.0, 10000 });
+            var input = new CeilingFramingInput
+            {
+                Loops = new List<List<double[]>> { loop }, Direction = "long", MainSpacing = 1200, MainTypeKey = "main",
+                CrossSpacing = 400, CrossTypeKey = "cross", PerimeterTypeKey = "perim",
+                HangerSpacing = 1200, HangerEndOffset = 600, HangerTypeKey = "hanger",
+            };
+            CeilingFramingPlan plan = CeilingFramingRules.Plan(input, 5000);
+            Assert.Null(plan.Refusal);
+            Assert.InRange(plan.Members.Count, 300, 1000);
+            Assert.Equal(loop.Count, plan.CountByRole()[FramingRoles.Perimeter]);
+
+            // A tiny budget still refuses, and before the grid is fully allocated.
+            Assert.Equal("over_budget", CeilingFramingRules.Plan(input, 100).Refusal);
+            Assert.True(CeilingFramingRules.GridSegments(input.Loops, 0, 10, 50).Count <= 52);
         }
     }
 }
