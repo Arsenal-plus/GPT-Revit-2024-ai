@@ -663,23 +663,30 @@ namespace Horizun.Contracts
                 Name = "horizun_verify_changes",
                 Command = "horizun_verify_changes",
                 Description =
-                    "LOOK AT WHAT WAS JUST MODELLED. Spatial coherence check of the elements the previous Horizun write " +
+                    "LOOK AT WHAT WAS JUST MODELLED. Spatial coherence check of the elements a Horizun write " +
                     "added or modified in this document (or the element_ids you name): every model solid they share with " +
                     "another element is measured and judged - a door or window blocked by a column, wall or fixture, a " +
                     "duplicate of the same type, MEP through structure, unjoined overlaps - while hosts, joins, MEP " +
-                    "connections and the structural frame are expected. Returns the findings AND an image (temporary " +
-                    "isometric 3D view, always rolled back: blue changed, red errors, orange warnings). Every typed write " +
-                    "already carries a spatial_check; call this after a modelling batch, look at the image, and do not " +
-                    "report the work as done while errors remain.",
+                    "connections and the structural frame are expected. scope=last_write (default) checks only the most " +
+                    "recent write; scope=session unions every write since Revit started (or since_utc), capped at 2000 " +
+                    "ids. include_annotation=true also checks whether tags/text notes in the relevant view(s) overlap " +
+                    "each other or another tag of the same host - a defect the solid check cannot see. Returns the " +
+                    "findings AND an image (temporary isometric 3D view, always rolled back: blue changed, red errors, " +
+                    "orange warnings). Every typed write already carries a spatial_check; call this after a modelling " +
+                    "batch, look at the image, and do not report the work as done while errors remain.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 5000, ""description"": ""Elements to check. Omitted: the elements the last Horizun write in this document added or modified (kept in memory since Revit started)."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 5000, ""description"": ""Elements to check. Omitted: resolved from scope instead."" },
+    ""scope"": { ""type"": ""string"", ""enum"": [""last_write"", ""session""], ""default"": ""last_write"", ""description"": ""Ignored when element_ids is given. last_write: only the most recent Horizun write. session: every write's added/modified ids since Revit started (or since_utc), unioned and capped at 2000 ids."" },
+    ""since_utc"": { ""type"": ""string"", ""description"": ""With scope=session, only writes at or after this ISO-8601 UTC instant."" },
     ""capture"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Return an image of the elements with the findings coloured. False: findings only, no temporary view."" },
     ""orientation"": { ""type"": ""string"", ""enum"": [""isometric"", ""top"", ""front"", ""right""], ""default"": ""isometric"" },
     ""pixel_size"": { ""type"": ""integer"", ""default"": 1400, ""minimum"": 256, ""maximum"": 4096 },
     ""max_findings"": { ""type"": ""integer"", ""default"": 50, ""minimum"": 1, ""maximum"": 500 },
     ""time_budget_seconds"": { ""type"": ""integer"", ""default"": 60, ""minimum"": 5, ""maximum"": 600, ""description"": ""Stops early and reports partial rather than running unbounded."" },
+    ""include_annotation"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Also check tag/text-note overlap (view coordinates) in view_ids, or the owning view of any tag/text note in scope, or the active view."" },
+    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 50, ""description"": ""Views to check with include_annotation=true. Each id must resolve to a view in this document."" },
     ""target_document"": { ""type"": ""string"", ""description"": ""Title or full path of the ACTIVE document; required when capture=true."" }
   },
   ""additionalProperties"": false
