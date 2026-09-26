@@ -283,11 +283,11 @@ namespace Horizun.Core.Tests
                       "stays an ArgumentException because Python faces the same absent setter." },
 
             new Entry {
-                File = "MepRoutingCommand.cs", Fragment = "flex runs are unsupported by resize",
+                File = "MepRoutingCommand.cs", Fragment = "which is unsupported by resize: it covers pipes, ducts, conduits, cable trays and flex runs",
                 Classification = Kind.StructuralGranted,
-                Why = "resize types pipes, ducts, conduits and cable trays; a flex pipe or flex duct is sized " +
-                      "through parameters this command does not type. Judged while planning, per element, " +
-                      "before any transaction, and handed to FallbackDecision over the whole batch." },
+                Why = "since 2026-09-26 resize also types flex pipes and flex ducts; any OTHER MEPCurve (a wire, " +
+                      "a fabrication part's run) is still outside it. Judged while planning, per element, before " +
+                      "any transaction, and handed to FallbackDecision over the whole batch." },
 
             new Entry {
                 File = "EditDimensionsCommand.cs", Fragment = "not supported by the Revit API itself",

@@ -314,7 +314,9 @@ namespace Horizun.Server
         // contract resource, exactly as CompactDescription does one level up. Only the
         // ADVERTISED copy is compacted: argument validation reads t.InputSchema, and
         // horizun://contract/tools serves every word. The copy is computed once per tool.
-        internal const int SchemaDescriptionMax = 270;
+        // 250 since 2026-09-26: the coordination loop, element kinds and re-read work took
+        // tools/list to 526 KB against the 512 KiB budget.
+        internal const int SchemaDescriptionMax = 250;
         private const string SchemaDescriptionSuffix = " (full text: horizun://contract/tools)";
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> CompactSchemas =
             new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.Ordinal);

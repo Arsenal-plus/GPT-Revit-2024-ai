@@ -881,7 +881,7 @@ namespace Horizun.Revit.Commands
                 { r.Kind = shape == ConnectorProfileType.Oval ? "flex_duct_oval" : "flex_duct_rectangular"; r.Params = new[] { BuiltInParameter.RBS_CURVE_WIDTH_PARAM, BuiltInParameter.RBS_CURVE_HEIGHT_PARAM }; }
                 else { why = "flex duct " + Rid.Value(e.Id) + " has no readable end-connector shape"; return null; }
             }
-            else { why = "element " + Rid.Value(e.Id) + " is a " + e.GetType().Name + "; resize covers pipes, ducts, conduits, cable trays and flex runs"; return null; }
+            else { why = "element " + Rid.Value(e.Id) + " is a " + e.GetType().Name + ", which is unsupported by resize: it covers pipes, ducts, conduits, cable trays and flex runs"; return null; }
             r.Before = new double[r.Params.Length];
             for (int i = 0; i < r.Params.Length; i++)
             {
