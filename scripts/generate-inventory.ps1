@@ -88,6 +88,7 @@ $psi.EnvironmentVariables['HORIZUN_TOOL_PACKS'] = 'all'
 $proc = $null
 $listed = $null
 $identity = $null
+$contractRead = $null
 try {
     $proc = [Diagnostics.Process]::Start($psi)
     function Send-Line($o) { $proc.StandardInput.WriteLine(($o | ConvertTo-Json -Depth 24 -Compress)); $proc.StandardInput.Flush() }
@@ -114,6 +115,13 @@ try {
     # these tools - and the binary is the thing this file is a measurement of.
     Send-Line @{ jsonrpc='2.0'; id=3; method='resources/read'; params=@{ uri='horizun://build/identity' } }
     $identity = Recv-Line
+    # THE FULL CONTRACT, from the same binary. tools/list advertises an ABRIDGED
+    # copy of each input schema (a combinator branch no longer repeats a field
+    # schema its union already states), so walking the advertised copy would
+    # undercount the enumerated values (MEASURED 2026-09-26: 1537 -> 1272). Names,
+    # count and annotations still come from tools/list; the enums come from here.
+    Send-Line @{ jsonrpc='2.0'; id=4; method='resources/read'; params=@{ uri='horizun://contract/tools' } }
+    $contractRead = Recv-Line
     $proc.StandardInput.Close()
     if (-not $proc.WaitForExit(10000)) { $proc.Kill() }
 } finally {
@@ -130,6 +138,11 @@ try {
 } catch { $contractHash = $null }
 $tools = @($listed.result.tools)
 if ($tools.Count -eq 0) { throw 'tools/list came back empty' }
+if (-not $contractRead -or -not $contractRead.result) { throw 'the server did not answer resources/read horizun://contract/tools' }
+$contractSchemas = @{}
+foreach ($row in @(($contractRead.result.contents[0].text | ConvertFrom-Json).tools)) {
+    $contractSchemas[[string]$row.name] = $row.input_schema
+}
 
 # ---- walk every schema for enum-valued properties ---------------------------
 function Walk-Schema($node, $path, [System.Collections.ArrayList]$acc) {
@@ -176,7 +189,10 @@ $operationTotal = 0
 $unverifiedSelectors = @()
 foreach ($t in $tools) {
     $acc = [System.Collections.ArrayList]::new()
-    Walk-Schema $t.inputSchema '' $acc
+    # Only tools NAMED by tools/list are walked, so the inventory still measures what
+    # this binary serves; a listed tool missing from the contract is a broken build.
+    if (-not $contractSchemas.ContainsKey([string]$t.name)) { throw ('tools/list names ' + $t.name + ' but horizun://contract/tools does not') }
+    Walk-Schema $contractSchemas[[string]$t.name] '' $acc
     $enums = @($acc)
     $variants = 0
     foreach ($e in $enums) { $variants += @($e.values).Count }
@@ -280,7 +296,7 @@ if ($bare -and $headNow) {
 $inventory = [ordered]@{
     schema = 'horizun.inventory/1'
     generated_by = 'scripts/generate-inventory.ps1'
-    generated_from = 'tools/list answered by the built server binary'
+    generated_from = 'tools/list answered by the built server binary; enumerated values walked from the full input schemas of horizun://contract/tools served by the same binary'
     # RELATIVE TO THE REPO, never the absolute path.
     #
     # This file is committed, and this repository has a public counterpart, so an
