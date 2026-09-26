@@ -51,7 +51,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class MepRoutingCommand : ICommand
+    public sealed partial class MepRoutingCommand : ICommand
     {
         public string Name => "horizun_mep_routing";
         public string Description =>
@@ -87,8 +87,8 @@ namespace Horizun.Revit.Commands
                 catch (Exception ex) { return CommandResult.Fail(op + " failed: " + ex.Message + " Nothing was written."); }
             }
 
-            if (op != "set_rules" && op != "add_sizes" && op != "remove_sizes" && op != "resize")
-                return CommandResult.Fail("operation must be read, set_rules, add_sizes, remove_sizes, resize or size_by_flow.");
+            if (op != "set_rules" && op != "add_sizes" && op != "remove_sizes" && op != "resize" && op != "route")
+                return CommandResult.Fail("operation must be read, set_rules, add_sizes, remove_sizes, resize, route or size_by_flow.");
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -99,6 +99,7 @@ namespace Horizun.Revit.Commands
             {
                 if (op == "set_rules") plan = RulesPlan.Build(doc, request, u, out error);
                 else if (op == "resize") plan = ResizePlan.Build(doc, request, u, out error, out refusal);
+                else if (op == "route") plan = RoutePlan.Build(doc, request, u, out error);
                 else plan = SizesPlan.Build(doc, request, u, op == "add_sizes", out error);
             }
             catch (Exception ex) { plan = null; error = ex.Message; }
@@ -106,7 +107,8 @@ namespace Horizun.Revit.Commands
             if (plan == null) return CommandResult.Fail(error + " Nothing was written.");
 
             string hash = DocumentGate.PlanHash(request, "operation", "units", "type_id", "segment_id", "catalog",
-                "conduit_standard", "rules", "junction", "sizes", "element_ids", "system_id", "diameter", "width", "height");
+                "conduit_standard", "rules", "junction", "sizes", "element_ids", "system_id", "diameter", "width", "height",
+                "kind", "system_type_id", "level_id", "start", "end", "clearance_mm", "grid_mm", "max_nodes", "preferred_elevation");
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
             ResolvedPlan resolved = plan.Resolved(gate, app, Name);
 
