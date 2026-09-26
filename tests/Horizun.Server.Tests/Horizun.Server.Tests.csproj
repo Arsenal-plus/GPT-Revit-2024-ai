@@ -202,6 +202,7 @@
     <!-- The contract schema check: the advertised-schema equivalence proof and schema_help judge arguments with the same rules. -->
     <Compile Include="..\..\src\Horizun.Server\ContractSchemaCheck.cs" Link="ContractSchemaCheck.cs" />
     <Compile Include="..\..\src\Horizun.Server\ContractVariants.cs" Link="ContractVariants.cs" />
+    <Compile Include="..\..\src\Horizun.Server\SchemaHelp.cs" Link="SchemaHelp.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" Link="Settings.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" Link="ToolPacks.cs" />
     <!-- The model-data neutraliser and injection marker every tool reply passes through. -->

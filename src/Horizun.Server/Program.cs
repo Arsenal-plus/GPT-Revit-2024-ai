@@ -1342,6 +1342,13 @@ namespace Horizun.Server
         {
             ContentSafety.Report safety = null;
             JToken result = CallToolCore(prms, ct, observe, envelope, ref safety);
+            // A failed call whose arguments violate the FULL contract carries the exact
+            // schema it violated (advice only; see SchemaHelp). Before Finish, so the
+            // safety verdict covers the reply as it leaves.
+            JToken toolName = prms?["name"];
+            result = SchemaHelp.Attach(result,
+                toolName != null && toolName.Type == JTokenType.String ? (string)toolName : null,
+                prms?["arguments"]);
             return safety == null ? result : ContentSafety.Finish(result, safety);
         }
 
