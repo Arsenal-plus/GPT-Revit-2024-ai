@@ -660,6 +660,89 @@ inmóvil, y el mismo test de Navisworks lo marcó Resuelto al re-correrlo. Ojo: 
 3D que Navisworks lee debe estar en detalle **Fino**; en Grueso la tubería llega como
 una línea y el test Hard reporta cero choques contra ella.
 
+### BCF import from any tool, and Navisworks readiness
+
+`horizun_coordination operation=import` used to stop at "unmatched" for any topic
+that was not this ledger's own export (matched by the guid `BcfTopicGuid` mints for
+each finding). A `.bcfzip` a coordinator actually gets back - from Navisworks, ACC,
+Solibri, BIMcollab - names its clash by the topic's viewpoint **Components**
+(`IfcGuid` and/or `AuthoringToolId`), never by that internal guid. Those topics are
+now resolved and re-detected exactly like `operation=import_navisworks` does beside
+it, instead of merely being reported:
+
+```
+somebody's coordination tool
+   -> a .bcfzip (BCF 2.1 or 3.0 - both viewpoint shapes are read, Core/BcfMarkupReader.cs)
+   -> horizun_coordination operation=import
+        - topic matches THIS ledger's own guid  -> status/comments only (unchanged)
+        - topic from ANY OTHER tool             -> resolve Components, RE-DETECT, fold in
+   -> only a REPRODUCED pair becomes a finding (origin `bcf`, runComplete=false always)
+```
+
+**Resolving a Component**, in `Core/CoordinationImportBcfExternal.cs`, two
+independent paths tried in this order:
+
+- **`AuthoringToolId`** - tried as a Revit Element Id (an integer), then as a Revit
+  UniqueId (`Document.GetElement(string)`), against the active document and every
+  LOADED link.
+- **`IfcGuid`** - the compressed 22-character IFC GlobalId. First the `IFC_GUID`
+  parameter (a native `ElementParameterFilter`, so this never walks the model to find
+  it); when nothing was ever stored there, Revit's own **computed** default -
+  `ExportUtils.GetExportId(doc, id)` - is what a fresh export actually writes, so the
+  incoming compressed guid is decoded back to that same .NET `Guid` (`Core/IfcGuidCodec.cs`,
+  a Revit-free port of the buildingSMART IFC2x3 compression algorithm) and matched
+  against an index built once per document per import, capped defensively - a model
+  too large to scan in one call falls back to the parameter path alone rather than
+  hanging.
+
+A topic resolving fewer than two DISTINCT elements is reported `external_not_traceable`
+with the reason, never invented; one that resolves two but does not reproduce lands in
+`external_not_reproduced`. A reproduced pair's row in `external_reproduced` carries the
+topic's `topic_guid`/`title`/`priority`/`assigned_to`/`status`, and its status/AssignedTo/
+comments are folded onto the (possibly brand-new) finding through the SAME
+conflict-aware logic a matched topic already uses.
+
+**`operation=navisworks_readiness`** (read-only) finds the 3D view Navisworks' own
+Revit exporter reads - one named exactly `Navisworks`, else the default `{3D}` - and
+reports its detail level, section box, visual phase, and every MODEL category **with
+elements in the model** that is hidden in it. Verdict `not_ready` when detail level is
+not Fine (see the measured Coarse-vs-Fine trap two sections up - it is the same one)
+or when an MEP category with elements is hidden (it will never reach Navisworks at
+all, regardless of detail level). **`operation=prepare_navisworks`** is the fix -
+`dry_run` -> token -> apply - setting that view's detail level to Fine and, only with
+`unhide=true`, unhiding the named categories; `View.CanCategoryBeHidden` is checked
+BEFORE ever opening a transaction (a view template governing category visibility, or
+a dependent view, refuses there), and `DetailLevel`/`GetCategoryHidden` are re-read
+after commit to decide success - never the calls not throwing.
+
+**`operation=navisworks_status`** (read-only) reports, for every ledger finding with
+`external_source=navisworks`, its own `revit_status` and `resolved_by_model_at` plus
+a `navis_set_status` suggestion list (`resolved` only when a complete detection run
+measured the pair gone, `active` otherwise - including a human `closed_by_decision`
+or `accepted_risk`, which is a decision, not a measurement) ready to feed to
+naviscoord-mcp's `navis_set_status`; `path`+`overwrite` optionally write it to a JSON
+file, re-read and row-count verified. It writes nothing to Navisworks itself.
+
+#### Resumen (español)
+
+`operation=import` ya no se detiene en "unmatched" para un topic que no es de este
+ledger: cada Component de su viewpoint (`IfcGuid`/`AuthoringToolId`) se resuelve
+contra el documento activo y los vínculos cargados - por Element Id o UniqueId, o por
+el parámetro `IFC_GUID` y, si no está guardado, por el id de exportación calculado de
+Revit decodificado del mismo guid comprimido (`Core/IfcGuidCodec.cs`) - y el par se
+**vuelve a medir** exactamente como `import_navisworks`. Solo un par reproducido entra
+como hallazgo (origen `bcf`, `runComplete=false` siempre); uno que resuelve menos de
+dos elementos se reporta `external_not_traceable` con la razón, nunca se inventa.
+
+`navisworks_readiness` (solo lectura) busca la vista 3D `Navisworks` o `{3D}` y
+reporta su nivel de detalle, caja de sección, fase visual y qué categorías MEP con
+elementos están ocultas - `not_ready` si el detalle no es Fino o si hay una categoría
+MEP oculta. `prepare_navisworks` (escritura, dry_run -> token -> apply) pone el
+detalle en Fino y, solo con `unhide=true`, desoculta las categorías nombradas,
+verificado por relectura tras el commit. `navisworks_status` (solo lectura) reporta
+el estado propio de cada hallazgo de origen `navisworks` y sugiere qué mandarle a
+naviscoord-mcp - nunca escribe en Navisworks.
+
 ## Parameters and classification
 
 ### `horizun_manage_parameters`
