@@ -60,8 +60,11 @@ namespace Horizun.Revit.Commands
                 case "import": return Import(doc, request, ledgerPath);
                 case "import_navisworks": return ImportNavisworks(doc, request, ledgerPath);
                 case "show": return Show(app, request);
+                case "navisworks_readiness": return NavisworksReadiness(doc, request);
+                case "prepare_navisworks": return PrepareNavisworks(app, request);
+                case "navisworks_status": return NavisworksStatus(doc, request, ledgerPath);
                 default:
-                    return CommandResult.Fail("operation '" + operation + "' (known: list, update, export, import, import_navisworks, show, evidence) is not one this command understands. " +
+                    return CommandResult.Fail("operation '" + operation + "' (known: list, update, export, import, import_navisworks, show, evidence, navisworks_readiness, prepare_navisworks, navisworks_status) is not one this command understands. " +
                         "(Detection and folding live in horizun_clash record_findings.)");
             }
         }
