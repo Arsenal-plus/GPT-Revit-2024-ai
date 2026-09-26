@@ -82,6 +82,16 @@ namespace Horizun.Revit.Core
         public const string CodeSloped = "sloped_or_vertical_run";
         public const string CodePinned = "pinned";
         public const string CodeImmovableSide = "immovable_side_blocks_resolution";
+        public const string CodeNetworkTooLarge = "network_exceeds_cap";
+        public const string CodeInGroup = "member_in_group";
+        public const string CodeBoundaryBlocked = "boundary_connector_blocked";
+
+        /// <summary>The action a kept proposal took: one flexible run, or its whole connected network.</summary>
+        public const string ModeSingle = "single";
+        public const string ModeRunShift = "run_shift";
+
+        /// <summary>How many members a connected network may reach before it is report-only (never moved).</summary>
+        public const int MaxNetworkMembers = 60;
 
         private static readonly string[] Movable =
         {
@@ -96,6 +106,21 @@ namespace Horizun.Revit.Core
             "OST_Walls", "OST_Floors", "OST_Roofs", "OST_Ceilings", "OST_Columns", "OST_Doors", "OST_Windows",
             "OST_Stairs", "OST_Ramps", "OST_CurtainWallPanels", "OST_CurtainWallMullions", "OST_GenericModel"
         };
+        /// <summary>
+        /// The fittings and accessories that keep a run connected end-to-end (elbows, tees,
+        /// couplings, valves, dampers...). A network walk follows connectors through these
+        /// AND through <see cref="Movable"/> itself; it never walks INTO equipment, fixtures
+        /// or terminals - those are exactly the boundary a connected move must not disturb.
+        /// </summary>
+        private static readonly string[] NetworkFittings =
+        {
+            "OST_PipeFitting", "OST_PipeAccessory", "OST_DuctFitting", "OST_DuctAccessory",
+            "OST_ConduitFitting", "OST_CableTrayFitting"
+        };
+
+        /// <summary>Pipe/duct/conduit/cable tray runs AND their fittings/accessories - the categories a run-shift network may include.</summary>
+        public static bool IsNetworkMember(string builtInCategory)
+            => builtInCategory != null && (Array.IndexOf(Movable, builtInCategory) >= 0 || Array.IndexOf(NetworkFittings, builtInCategory) >= 0);
 
         /// <summary>The role of a BuiltInCategory name. A structural wall/floor is passed as structure by the caller.</summary>
         public static string RoleOf(string builtInCategory, bool structuralFlag)
@@ -305,5 +330,124 @@ namespace Horizun.Revit.Core
         /// <summary>A canonical pair key: order-normalized, so (x,y) and (y,x) are one clash.</summary>
         public static string PairKey(long a, long b) =>
             (a <= b ? a : b).ToString(CultureInfo.InvariantCulture) + "~" + (a <= b ? b : a).ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// A pair key for a host element against an element inside a loaded link: distinct
+        /// from <see cref="PairKey"/> (host ids and link ids are different namespaces, so the
+        /// key is never order-normalized) and stable across a before/after re-detection as
+        /// long as the link stays loaded under the same name.
+        /// </summary>
+        public static string LinkPairKey(long hostId, string linkName, long linkElementId) =>
+            "link:" + (linkName ?? "") + ":" + hostId.ToString(CultureInfo.InvariantCulture) + "~" + linkElementId.ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// The AABB of a box's 8 corners under an affine transform (mm throughout, no Revit
+        /// type crosses this boundary): corner c maps to origin + c.X*basisX + c.Y*basisY +
+        /// c.Z*basisZ. Basis vectors are unitless direction cosines (a rotation/reflection),
+        /// so they need no unit conversion; only origin is a point and must already be in mm.
+        /// Used to carry a host box into a linked model's coordinates (the link instance's
+        /// total transform, inverted) for a conservative box-only contact prediction - the
+        /// AABB of a rotated box is never smaller than the box itself, so this over-clears
+        /// rather than under-clears, exactly like every other box check in this file.
+        /// </summary>
+        public static ResolveBox TransformBox(ResolveBox box, double[] basisX, double[] basisY, double[] basisZ, double[] originMm)
+        {
+            double minX = double.MaxValue, minY = double.MaxValue, minZ = double.MaxValue;
+            double maxX = double.MinValue, maxY = double.MinValue, maxZ = double.MinValue;
+            foreach (double x in new[] { box.MinX, box.MaxX })
+                foreach (double y in new[] { box.MinY, box.MaxY })
+                    foreach (double z in new[] { box.MinZ, box.MaxZ })
+                    {
+                        double px = originMm[0] + x * basisX[0] + y * basisY[0] + z * basisZ[0];
+                        double py = originMm[1] + x * basisX[1] + y * basisY[1] + z * basisZ[1];
+                        double pz = originMm[2] + x * basisX[2] + y * basisY[2] + z * basisZ[2];
+                        if (px < minX) minX = px; if (px > maxX) maxX = px;
+                        if (py < minY) minY = py; if (py > maxY) maxY = py;
+                        if (pz < minZ) minZ = pz; if (pz > maxZ) maxZ = pz;
+                    }
+            return new ResolveBox(minX, minY, minZ, maxX, maxY, maxZ);
+        }
+
+        // ---- connected MEP networks (run_shift) ------------------------------------------
+
+        /// <summary>Per-member facts a run-shift network is judged on. Revit-free.</summary>
+        public sealed class NetworkMemberFacts
+        {
+            public long Id;
+            public bool Host;
+            public bool Pinned;
+            public bool InGroup;
+        }
+
+        /// <summary>A connector at the network's boundary that is connected to something outside it.</summary>
+        public sealed class BoundaryBlock
+        {
+            public long OwnerId;
+            public string BlockedByDescription;
+        }
+
+        /// <summary>
+        /// Breadth-first walk of the mover's connected network, up to <paramref name="maxSize"/>
+        /// members, over a caller-supplied adjacency function (Revit connectors, in production;
+        /// a dictionary, in a test) - no Revit type crosses this boundary. <paramref name="truncated"/>
+        /// is true when the cap stopped the walk before every reachable neighbour was visited:
+        /// a truncated network is NEVER complete, so the caller must refuse it rather than move
+        /// a network it did not fully see.
+        /// </summary>
+        public static List<long> CollectNetwork(long seed, Func<long, IEnumerable<long>> neighboursOf, int maxSize, out bool truncated)
+        {
+            truncated = false;
+            var visited = new List<long>();
+            var seen = new HashSet<long> { seed };
+            var queue = new Queue<long>();
+            queue.Enqueue(seed);
+            while (queue.Count > 0)
+            {
+                if (visited.Count >= maxSize) { truncated = true; break; }
+                long id = queue.Dequeue();
+                visited.Add(id);
+                foreach (long n in neighboursOf(id) ?? Enumerable.Empty<long>())
+                    if (seen.Add(n)) queue.Enqueue(n);
+            }
+            if (!truncated && queue.Count > 0) truncated = true;   // the cap was hit exactly as the queue drained
+            return visited;
+        }
+
+        /// <summary>
+        /// May the whole collected network move as one rigid body? Every member must be a
+        /// host element, unpinned and outside any group, AND no boundary connector may reach
+        /// outside the set (equipment, fixtures, terminals - anything the walk did not itself
+        /// follow). A truncated walk is refused before either check: a network this call could
+        /// not fully see is never declared safe.
+        /// </summary>
+        public static bool EligibleForRunShift(IReadOnlyList<NetworkMemberFacts> members, IReadOnlyList<BoundaryBlock> boundaryBlocks,
+                                               bool truncated, out string code, out string reason)
+        {
+            code = null; reason = null;
+            if (truncated)
+            {
+                code = CodeNetworkTooLarge;
+                reason = "the connected network reaches more than " + MaxNetworkMembers + " elements; not moved automatically - report only";
+                return false;
+            }
+            foreach (NetworkMemberFacts m in members ?? new List<NetworkMemberFacts>())
+            {
+                if (!m.Host)
+                { code = CodeLinked; reason = "member " + m.Id + " of the connected network lives in a linked model - report only"; return false; }
+                if (m.Pinned)
+                { code = CodePinned; reason = "member " + m.Id + " of the connected network is pinned - report only"; return false; }
+                if (m.InGroup)
+                { code = CodeInGroup; reason = "member " + m.Id + " of the connected network belongs to a group - report only"; return false; }
+            }
+            if (boundaryBlocks != null && boundaryBlocks.Count > 0)
+            {
+                BoundaryBlock b = boundaryBlocks[0];
+                code = CodeBoundaryBlocked;
+                reason = "connector on " + b.OwnerId + " is connected to " + b.BlockedByDescription +
+                          " outside the network - moving the network would tear that connection; report only";
+                return false;
+            }
+            return true;
+        }
     }
 }
