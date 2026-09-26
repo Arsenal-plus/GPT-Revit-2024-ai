@@ -2214,6 +2214,7 @@ $writeNames = @(
     @{ N = 'the reply separates resolved, persistent and NEW findings';                        T = 'horizun_fix_planimetry' }
     @{ N = 'reverting the section returns the census to its reference';                        T = 'horizun_fix_planimetry' }
     @{ N = 'no model was saved by the correction section';                                     T = 'horizun_fix_planimetry' }
+    @{ N = 'set_crop writes a non-rectangular (polygon) crop and the loop is re-read vertex by vertex'; T = 'horizun_fix_planimetry' }
 
     # ---- W9+: AUTONOMOUS PLANIMETRY PRODUCTION.
     @{ N = 'automatic packing commits one complete obstacle-aware sheet arrangement';          T = 'horizun_pack_sheets' }
@@ -2311,7 +2312,7 @@ $writeNames = @(
 
 # The dimension probes are addressed by CASE NUMBER 1..17, the 2D-detail probes
 # by 1..11, the planimetry read probes by 1..22 and the planimetry FIX probes by
-# 1..23, each against its own slice of the tail of $writeNames. Computed from the
+# 1..24, each against its own slice of the tail of $writeNames. Computed from the
 # end backwards, not hard-coded, so inserting a probe above cannot silently
 # misattribute every verdict to its neighbour's name - and each base is derived
 # from the one after it, so adding a section means adding one line here.
@@ -2321,7 +2322,7 @@ $w12NameBase = $w13NameBase - 14
 $mpNameBase = $w12NameBase - 13
 $dp2NameBase = $mpNameBase - 18
 $productionNameBase = $dp2NameBase - 5
-$fixNameBase = $productionNameBase - 23
+$fixNameBase = $productionNameBase - 24
 $planNameBase = $fixNameBase - 22
 $d2dNameBase = $planNameBase - 11
 $dimNameBase = $d2dNameBase - 17
@@ -6332,7 +6333,7 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified an
         }
 
         if ($fixGap) {
-            for ($fc = 1; $fc -le 23; $fc++) { Complete-FixCase $fc (Get-Date) 'not_covered' $fixGap }
+            for ($fc = 1; $fc -le 24; $fc++) { Complete-FixCase $fc (Get-Date) 'not_covered' $fixGap }
         }
         else {
             # ---- case 1: the contract, as a client sees it --------------------
@@ -6380,7 +6381,7 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified an
             }
             $au = Get-FixAudit
             if ($au.isError -or -not $au.data) {
-                for ($fc = 2; $fc -le 23; $fc++) {
+                for ($fc = 2; $fc -le 24; $fc++) {
                     Complete-FixCase $fc (Get-Date) 'unverified' ('the audit these corrections cite could not be read: ' + (Get-DimShortText $au.text))
                 }
             }
@@ -6948,6 +6949,61 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified an
                     }
                 }
 
+                # ---- case 24: set_crop (polygon) --------------------------------
+                # Reshapes the SAME view case 11 just cropped rectangularly, into a
+                # non-rectangular (polygon) crop - crop.loop rather than min/max. The
+                # finding case 11 cited is now stale (the crop it observed has moved),
+                # so this re-audits to get a finding the model shows RIGHT NOW, exactly
+                # as every other correction here does.
+                $t0 = Get-Date
+                if (-not $f11 -or $fix11.stage -ne 'apply' -or -not (Test-FixVerified $fix11.answer)) {
+                    Complete-FixCase 24 $t0 'unverified' 'case 11 (the rectangular crop) did not commit, so there is no crop to reshape into a polygon'
+                }
+                else {
+                    $auP = Get-FixAudit
+                    $f24 = $null
+                    if ($auP.data) {
+                        foreach ($rule in @('text.outside-annotation-crop', 'detail_2d.outside-crop', 'tag.outside-annotation-crop')) {
+                            $f24 = Find-FixFinding $auP $rule $null
+                            if ($f24) { break }
+                        }
+                    }
+                    if (-not $f24) {
+                        Complete-FixCase 24 $t0 'unverified' 'the re-audit after the rectangular crop produced no outside-crop finding, so no polygon correction is licensed'
+                    }
+                    else {
+                        $srcP = @{ finding_set_fingerprint = $auP.data.finding_set_fingerprint; units = 'mm' }
+                        # A diamond quadrilateral strictly inside the -20000..20000 mm
+                        # rectangle case 11 just committed, in the same view-plane
+                        # convention (x along RightDirection, y along UpDirection).
+                        $fix24 = Invoke-FixApply @{
+                            target_document = $wDoc; units = 'mm'; tolerance = 1.0; source_audit = $srcP
+                            actions = @(@{ operation = 'set_crop'; view_id = $cropView
+                                           crop = @{ loop = @(@(0, -15000), @(15000, 0), @(0, 15000), @(-15000, 0)) }
+                                           finding = (New-FixFinding $f24) })
+                        } 'setcroppolygon'
+                        if ($fix24.stage -ne 'apply') {
+                            Complete-FixCase 24 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix24.answer.text))
+                        }
+                        elseif (Test-FixVerified $fix24.answer) {
+                            $row = @($fix24.answer.data.rows)[0]
+                            $props = @($row.postconditions.properties | ForEach-Object { $_.property })
+                            $proves = (($props -contains 'crop_active') -and ($props -contains 'crop_shape') -and
+                                       ($props -contains 'crop_visible_unchanged'))
+                            if ($proves -and $row.postconditions.all_verified -eq $true) {
+                                Complete-FixCase 24 $t0 'pass' 'the non-rectangular (polygon) crop committed and its loop was re-read vertex by vertex within tolerance; active and visibility unchanged' `
+                                    -Evidence @{ postconditions = $row.postconditions }
+                            }
+                            else {
+                                Complete-FixCase 24 $t0 'fail' ("the polygon crop checklist is incomplete: properties={0}" -f ($props -join ','))
+                            }
+                        }
+                        else {
+                            Complete-FixCase 24 $t0 'fail' ('the polygon crop did not verify: ' + (Get-DimShortText $fix24.answer.text))
+                        }
+                    }
+                }
+
                 # ---- case 6: rename_sheet ---------------------------------------
                 $t0 = Get-Date
                 $auR = Get-FixAudit
@@ -7336,7 +7392,7 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'restored the pre-s
 
         # Every case number reports exactly once - the same harness rule the other
         # three sections live under.
-        for ($fixCase = 1; $fixCase -le 23; $fixCase++) {
+        for ($fixCase = 1; $fixCase -le 24; $fixCase++) {
             if (-not $script:fixCasesDone.ContainsKey($fixCase)) {
                 Complete-FixCase $fixCase (Get-Date) 'unverified' 'the fix section ended before this probe ran - a harness bug, not a product verdict'
             }
