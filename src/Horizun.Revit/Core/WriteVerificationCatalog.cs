@@ -127,8 +127,9 @@ namespace Horizun.Revit.Core
             Row("horizun_coordination", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
                 F(C + "CoordinationShow.cs", C + "CoordinationNavisworksReadiness.cs"),
                 "CoordinationShow.cs: only a bounded sample (20 host + 10 link overrides) is re-read per apply, not every painted element."),
-            Row("horizun_resolve_clash", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "ResolveClashCommand.cs"),
-                "ResolveClashCommand.cs DetectLinks: an unloaded link is listed in links_skipped and its pairs are simply not measured - the no_new_clash postcondition does not fail solely for that, matching SpatialCoherence.AgainstLinks's own convention."),
+            Row("horizun_resolve_clash", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "ResolveClashCommand.cs", C + "ResolveClashSleeves.cs"),
+                "ResolveClashCommand.cs DetectLinks: an unloaded link is listed in links_skipped and its pairs are simply not measured - the no_new_clash postcondition does not fail solely for that, matching SpatialCoherence.AgainstLinks's own convention.",
+                "ResolveClashSleeves.cs apply_opening: a sleeve that does not cut its host (no void, or a host that refuses InstanceVoidCutUtils) leaves the run inside the host solid by design - host_cleared is only asked of a cut, and the finding stays open for that reason; a point-placed sleeve's axis follows its family author's modelling and is caught only by the containment check."),
             Row("horizun_undo", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "UndoCommand.cs"),
                 "UndoCapture.cs State: the drift guard compares location, type, pin, orientation and tag head; an edit to an element's OTHER parameters since the batch is not detected."),
 
