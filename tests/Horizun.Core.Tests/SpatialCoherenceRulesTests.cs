@@ -25,6 +25,15 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_framing_member_inside_its_own_source_wall_is_expected_and_elsewhere_is_not()
+        {
+            var framed = new SpatialCoherenceRules.Pair { CategoryA = "OST_GenericModel", CategoryB = "OST_Walls", SharedVolume = 0.5, VolumeA = 0.5, VolumeB = 20, FramedBy = true };
+            Assert.Equal(K.Expected, SpatialCoherenceRules.Classify(framed).Kind);
+            framed.FramedBy = false;
+            Assert.NotEqual(K.Expected, SpatialCoherenceRules.Classify(framed).Kind);
+        }
+
+        [Fact]
         public void A_view_camera_is_not_a_physical_element_even_though_Revit_files_it_as_model()
         {
             Assert.False(SpatialCoherenceRules.Considered("OST_Cameras"));

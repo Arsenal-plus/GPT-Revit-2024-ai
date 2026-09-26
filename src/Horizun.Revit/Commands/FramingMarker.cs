@@ -105,6 +105,20 @@ namespace Horizun.Revit.Commands
             catch { return null; }
         }
 
+        /// <summary>
+        /// True for a framing member and its own source element, or two members of the same
+        /// framed source: they meet by construction, so the spatial check after a write counts
+        /// the pair as expected (SpatialCoherenceRules.Pair.FramedBy), never as a clash.
+        /// </summary>
+        public static bool Frames(Element a, Element b)
+        {
+            if (a == null || b == null || Schema.Lookup(SchemaGuid) == null) return false;
+            FramingMark ma = Read(a), mb = Read(b);
+            if (ma != null && ma.Role != WorkPlaneRole && ma.SourceId == Rid.Value(b.Id)) return true;
+            if (mb != null && mb.Role != WorkPlaneRole && mb.SourceId == Rid.Value(a.Id)) return true;
+            return ma != null && mb != null && ma.SourceId != 0 && ma.SourceId == mb.SourceId;
+        }
+
         /// <summary>Every marked element of the document whose source is in the set (all sources when null).</summary>
         public static List<KeyValuePair<Element, FramingMark>> Find(Document doc, ICollection<long> sources)
         {

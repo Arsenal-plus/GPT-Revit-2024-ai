@@ -120,6 +120,7 @@ namespace Horizun.Revit.Core
                         Joined = Joined(doc, a, b),
                         Connected = Connected(a, b),
                         SameAssembly = SameAssembly(a, b),
+                        FramedBy = Horizun.Revit.Commands.FramingMarker.Frames(a, b),
                         SharedVolume = shared,
                         VolumeA = Volume(sa), VolumeB = Volume(sb)
                     };
