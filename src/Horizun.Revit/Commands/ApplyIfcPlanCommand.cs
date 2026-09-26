@@ -237,6 +237,11 @@ namespace Horizun.Revit.Commands
             int created = 0, failedStages = 0, provenanceWritten = 0, provenanceRefused = 0, updatesLanded = 0;
             bool stopped = false;
             string stoppedBecause = null;
+            // EVERY STAGE, as the composite verdict below needs to see it: the child's
+            // transport answer and its own reply data - never just "ok". A stage that
+            // never got to call its child (malformed, unresolved host) is a failed
+            // child with no data, same as one whose child refused outright.
+            var stageChildren = new List<CompositeChild>();
 
             var ordered = actions.OfType<JObject>()
                                  .Select((a, i) => new { Action = a, Index = i })
@@ -261,6 +266,7 @@ namespace Horizun.Revit.Commands
                     failedStages++;
                     stopped = true;
                     stoppedBecause = "an action was malformed";
+                    stageChildren.Add(CompositeChild.Of(false, null));
                     break;
                 }
 
@@ -282,6 +288,7 @@ namespace Horizun.Revit.Commands
                     stopped = true;
                     stoppedBecause = "a row names a host that is not in this model and was not built by an " +
                                      "earlier stage";
+                    stageChildren.Add(CompositeChild.Of(false, null));
                     break;
                 }
 
@@ -304,6 +311,11 @@ namespace Horizun.Revit.Commands
                 CommandResult result = isUpdate
                     ? ApplyUpdates(doc, callArgs, dryRun)
                     : create.Execute(app, callArgs.ToString(Formatting.None));
+                // THE CHILD'S OWN VERDICT, not just whether it answered. create_elements
+                // and ApplyUpdates each stamp their own application block (Rehearsed/
+                // VerifiedApplied/Partial/...), and that - not result.Success alone - is
+                // what the composite verdict below is built from.
+                stageChildren.Add(CompositeChild.Of(result.Success, result.Data));
                 var row = new JObject
                 {
                     ["key"] = key,
@@ -438,6 +450,16 @@ namespace Horizun.Revit.Commands
                     "commit. This command verified the BINDING — the file, the resolved types and levels, the " +
                     "actions — and the host resolution. It did not re-measure the geometry against the IFC."
             };
+
+            // THE COMPOSITE'S OWN application BLOCK, from every stage's own declared
+            // verdict - never from stopped_because/state alone, which are prose this
+            // command wrote about itself. A dry run expects every stage's child to have
+            // rehearsed cleanly; a real apply expects every stage's child to have come
+            // back verified_applied (or a legitimate no-op, e.g. an update stage with
+            // nothing left to change).
+            ApplicationOutcome.Stamp(payload, dryRun
+                ? CompositeVerdict.AggregateRehearsal(stageChildren)
+                : CompositeVerdict.Aggregate(ApplicationOutcome.Committed, stageChildren));
 
             return failedStages > 0 && created == 0
                 ? CommandResult.FailWithDetail("ifc_apply_failed: " +
@@ -714,6 +736,16 @@ namespace Horizun.Revit.Commands
                       "updated was read back with the new value; one reported as refused was read back with " +
                       "the old one."
             };
+            // ONLY ON A REAL APPLY. The dry run above WROTE and rolled back, which is not
+            // what ApplicationState.Rehearsed means (resolved end to end, NOTHING written)
+            // - there is no vocabulary word here for "we wrote it and then undid it to
+            // preview", so the dry-run reply stays undeclared rather than stamped with a
+            // state it does not hold. On the real apply, updated/unchanged are both
+            // provably correct (re-read after the write), so they are the composite's
+            // 'applied' and 'verified'; refused/unsupported/skipped are not.
+            if (!dryRun)
+                ApplicationOutcome.StampApplied(payload, ApplicationOutcome.Committed, elements.Count,
+                    updated + unchanged, updated + unchanged, 0, refused + unsupported + skipped, 0);
             return CommandResult.Ok(payload);
         }
 

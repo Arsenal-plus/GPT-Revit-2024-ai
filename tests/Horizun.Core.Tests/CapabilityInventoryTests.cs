@@ -134,6 +134,13 @@ namespace Horizun.Core.Tests
                       "whether to call its own coverage complete." },
 
             new Entry {
+                File = "ApplyIfcPlanCommand.cs", Fragment = "refused + unsupported + skipped, 0);",
+                Classification = Kind.Argument,
+                Why = "The same tally again, folded into the composite application block's 'failed' count on a " +
+                      "real apply (updated/unchanged are 'applied'; refused/unsupported/skipped are not). A " +
+                      "count, not a decision - nothing here refuses anything." },
+
+            new Entry {
                 File = "CreateElementsCommand.cs", Fragment = "route == CadPlacementRoute.Unsupported",
                 Classification = Kind.PostWrite,
                 Why = "A family whose FamilyPlacementType this command has no route for - measured from the " +
