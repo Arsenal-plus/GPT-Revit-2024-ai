@@ -70,16 +70,18 @@ $script:HzProbeModules += [pscustomobject]@{
         # materials must not turn this case into a collision refusal (measured 2026-09-26).
         $req = @{ target_document = $doc; source_path = $lib; type_names = @($typeName); duplicate_types = 'use_destination' }
         if ($category) { $req.category = $category }
-        $c = & $Ctx.Apply $C $req 'cbd-source-path'
-        $ok = $c.stage -eq 'apply' -and -not $c.answer.isError -and $c.answer.data -and $c.answer.data.host_verified -eq $true -and
-              $c.answer.data.source_open -and $c.answer.data.source_open.opened_in_background -eq $true -and
-              $c.answer.data.source_open.will_be_closed_without_saving -eq $true -and @($c.answer.data.rows).Count -gt 0
+        # NOT `$c`: PowerShell names are case-insensitive, so `$c` IS `$C` and the tool name would
+        # become this reply - every case after it then reports a Hashtable as its tool.
+        $copy = & $Ctx.Apply $C $req 'cbd-source-path'
+        $ok = $copy.stage -eq 'apply' -and -not $copy.answer.isError -and $copy.answer.data -and $copy.answer.data.host_verified -eq $true -and
+              $copy.answer.data.source_open -and $copy.answer.data.source_open.opened_in_background -eq $true -and
+              $copy.answer.data.source_open.will_be_closed_without_saving -eq $true -and @($copy.answer.data.rows).Count -gt 0
         if ($ok) {
-            $createdIds = @(@($c.answer.data.rows) | ForEach-Object { [long]$_.element_id })
-            Case $names[2] $C 'pass' ('copied ' + $createdIds.Count + ' element(s) from ' + $lib + ', types_that_arrived=' + @($c.answer.data.types_that_arrived).Count)
+            $createdIds = @(@($copy.answer.data.rows) | ForEach-Object { [long]$_.element_id })
+            Case $names[2] $C 'pass' ('copied ' + $createdIds.Count + ' element(s) from ' + $lib + ', types_that_arrived=' + @($copy.answer.data.types_that_arrived).Count)
             if ($createdIds.Count -gt 0) { $null = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = $createdIds } 'cbd-cleanup' }
         }
-        else { Case $names[2] $C 'fail' ("stage=$($c.stage) " + [string]$c.answer.text) }
+        else { Case $names[2] $C 'fail' ("stage=$($copy.stage) " + [string]$copy.answer.text) }
 
         return $cases.ToArray()
     }

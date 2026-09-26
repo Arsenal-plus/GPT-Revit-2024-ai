@@ -54,7 +54,10 @@ $script:HzProbeModules += [pscustomobject]@{
         # A rigid pipe type (not a flex one) and a piping system, discovered from the fixture.
         $pipeType = Types 'OST_PipeCurves' | Where-Object { $_.family -notmatch 'Flex' -and $_.type -notmatch 'Flex' } | Select-Object -First 1
         $system = Types 'OST_PipingSystem' | Select-Object -First 1
-        $columnType = Types 'OST_StructuralColumns' | Select-Object -First 1
+        # BY NAME, NEVER "THE FIRST ONE": the full matrix has already loaded HZC300, a column
+        # authored from the bare template that stands NO height when placed without a top level
+        # (MEASURED 2026-09-26, bounding box z 0..0) - the router then had nothing to avoid.
+        $columnType = Types 'OST_StructuralColumns' | Where-Object { $_.family -eq 'M_Concrete-Rectangular-Column' -and $_.type -eq '300 x 450mm' } | Select-Object -First 1
         # STAGED, NEVER ASSUMED: an MEP fixture carries no structural column family, and
         # Autodesk's structural template of the run's year does (MEASURED 2026-09-26:
         # 'M_Concrete-Rectangular-Column: 300 x 450mm'); the typed copy brings the type in.
@@ -62,7 +65,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $tpl = "C:\ProgramData\Autodesk\RVT $($Ctx.Year)\Templates\English\Structural Analysis-DefaultMetric.rte"
             if (Test-Path -LiteralPath $tpl) {
                 $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); type_names = @('M_Concrete-Rectangular-Column: 300 x 450mm'); category = 'OST_StructuralColumns'; duplicate_types = 'use_destination' } ($run + '-route-coltype')
-                $columnType = Types 'OST_StructuralColumns' | Select-Object -First 1
+                $columnType = Types 'OST_StructuralColumns' | Where-Object { $_.family -eq 'M_Concrete-Rectangular-Column' -and $_.type -eq '300 x 450mm' } | Select-Object -First 1
             }
         }
         $columnId = $null

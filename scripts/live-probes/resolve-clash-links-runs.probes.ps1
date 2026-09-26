@@ -39,6 +39,17 @@ $script:HzProbeModules += [pscustomobject]@{
             $t = @($q.data.rows | Where-Object { $_.is_element_type })
             if ($t.Count -gt 0) { return $t[0].element_id } else { return $null }
         }
+        # THE COLUMN TYPE IS CHOSEN BY NAME, NEVER "THE FIRST ONE". MEASURED 2026-09-26: in the
+        # full matrix the write tier has already loaded HZC300, a column family authored from the
+        # bare structural-column template, and placed without a top level it has NO height
+        # (bounding box z 0..0) - the clash and the router saw nothing to avoid. The Autodesk
+        # concrete column placed the same way stands 2500 mm.
+        function Find-ColumnType {
+            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_StructuralColumns'); include_types = $true; max_rows = 500; include_links = $false }
+            if (-not $q.data) { return $null }
+            $t = @($q.data.rows | Where-Object { $_.is_element_type -and $_.family -eq 'M_Concrete-Rectangular-Column' -and $_.type -eq '300 x 450mm' })
+            if ($t.Count -gt 0) { return $t[0].element_id } else { return $null }
+        }
 
         # ---- scenario (a): a linked element blocks the naive elevation candidate -------
         $created_a = New-Object System.Collections.ArrayList
@@ -143,7 +154,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 elements = @(@{ kind = 'level'; name = ('HZ_RCLR_' + ($run -replace '[^A-Za-z0-9]', '')); elevation = $levelZ }) } ($run + '-rclr-b-level')
             $level = if ($rl.stage -eq 'apply' -and -not $rl.answer.isError) { [long]@($rl.answer.data.rows)[0].element_id } else { $null }
             if ($level) { [void]$created_b.Add($level) }
-            $pipeType = Find-Type 'OST_PipeCurves'; $system = Find-Type 'OST_PipingSystem'; $columnType = Find-Type 'OST_StructuralColumns'
+            $pipeType = Find-Type 'OST_PipeCurves'; $system = Find-Type 'OST_PipingSystem'; $columnType = Find-ColumnType
             # STAGED, NEVER ASSUMED: an MEP fixture carries no structural column family, and
             # Autodesk's structural template of the run's year does (MEASURED 2026-09-26:
             # 'M_Concrete-Rectangular-Column: 300 x 450mm'). The typed copy brings the type in.
@@ -153,7 +164,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 if (-not (Test-Path -LiteralPath $tpl)) { $columnNote = "no structural template at $tpl" }
                 else {
                     $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); type_names = @('M_Concrete-Rectangular-Column: 300 x 450mm'); category = 'OST_StructuralColumns'; duplicate_types = 'use_destination' } ($run + '-rclr-b-coltype')
-                    $columnType = Find-Type 'OST_StructuralColumns'
+                    $columnType = Find-ColumnType
                     if (-not $columnType) { $columnNote = 'the column type could not be copied from the template: ' + (Short $cp.answer) }
                 }
             }

@@ -28,6 +28,13 @@ function New-Fake([string]$mode) {
                     if (@($a.categories) -contains 'OST_StructuralColumns' -and $s.Mode -eq 'no-column-type' -and -not $s.ColumnTypeCopied) {
                         return & $reply ([pscustomobject]@{ rows = @() })
                     }
+                    if (@($a.categories) -contains 'OST_StructuralColumns') {
+                        # The REAL shape of the full matrix (MEASURED 2026-09-26): the write tier's
+                        # HZC300 comes FIRST and stands no height; the probe must pick the named one.
+                        return & $reply ([pscustomobject]@{ rows = @(
+                            [pscustomobject]@{ element_id = 998; is_element_type = $true; family = 'HZ_MPCOL_x'; type = 'HZC300' },
+                            [pscustomobject]@{ element_id = 999; is_element_type = $true; family = 'M_Concrete-Rectangular-Column'; type = '300 x 450mm' }) })
+                    }
                     return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 999; is_element_type = $true }) })
                 }
                 if ($a.include_links) {
@@ -90,7 +97,7 @@ function New-Fake([string]$mode) {
                 elseif ($key -like '*-b-p1') { $s.Pipe1 = $id }
                 elseif ($key -like '*-b-p2') { $s.Pipe2 = $id }
                 elseif ($key -like '*-b-elbow') { $s.Elbow = $id }
-                elseif ($key -like '*-b-col') { $s.Column = $id }
+                elseif ($key -like '*-b-col') { $s.Column = $id; $s.ColumnTypeId = [long]$a.elements[0].type_id }
                 elseif ($key -like '*-b-level') { $s.Level = $id; $s.LevelArgs = $a.elements[0] }
                 return & $ok ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) })
             }
@@ -119,6 +126,7 @@ $by = @{}; foreach ($c in $cases) { $by[$c.Name] = $c }
 Check 'every catalogued case is reported' ($cases.Count -eq $module.Catalog.Count)
 Check 'names match the catalog exactly' (@($cases | Where-Object { $module.Catalog.Name -notcontains $_.Name }).Count -eq 0)
 Check 'all six pass on fixtures that behave' (@($cases | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
+Check 'the column is the named Autodesk type, not the first listed (HZC300 stands no height)' ($f.State.ColumnTypeId -eq 999)
 Check 'scenario (a) cleanup deleted the pipes and the link type' (($f.State.Deleted -join ',') -match '900')
 Check 'scenario (b) cleanup deleted three elements' (@($f.State.Deleted | Where-Object { $_ -match '^\d+$' -or $_ -is [long] }).Count -ge 0)
 

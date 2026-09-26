@@ -38,7 +38,9 @@ $fakeCall = {
         $rows = switch ($arguments.categories[0]) {
             'OST_PipeCurves' { @(@{ element_id = 201; is_element_type = $true; family = 'Flex Pipe'; type = 'Standard' }, @{ element_id = 202; is_element_type = $true; family = 'Pipe Types'; type = 'Default' }) }
             'OST_PipingSystem' { @(@{ element_id = 203; is_element_type = $true; family = 'Piping System'; type = 'Domestic Cold Water' }) }
-            'OST_StructuralColumns' { @(@{ element_id = 204; is_element_type = $true; family = 'Concrete-Rectangular-Column'; type = '300 x 450mm' }) }
+            # HZC300 FIRST, as the full matrix leaves it (MEASURED 2026-09-26: no height, bbox z 0..0).
+            'OST_StructuralColumns' { @(@{ element_id = 203; is_element_type = $true; family = 'HZ_MPCOL_x'; type = 'HZC300' },
+                                        @{ element_id = 204; is_element_type = $true; family = 'M_Concrete-Rectangular-Column'; type = '300 x 450mm' }) }
             default { @() }
         }
         return Reply ([pscustomobject]@{ rows = @($rows | ForEach-Object { [pscustomobject]$_ }) }) $false ''
@@ -83,6 +85,7 @@ Check 'the route request is a straight 6000 mm line through the column, with a r
     ($sentRoute.operation -eq 'route') -and ($sentRoute.kind -eq 'pipe') -and ($sentRoute.type_id -eq 202) -and
     ([double]$sentRoute.end[0] - [double]$sentRoute.start[0] -eq 6000) -and ([double]$sentRoute.start[1] -eq [double]$sentRoute.end[1]) -and
     ([double]$script:sent['t1-mrt-column'].elements[0].point[0] -eq ([double]$sentRoute.start[0] + 3000)))
+Check 'the column is placed with the named Autodesk type, not the first type listed (HZC300 has no height)' ([long]$script:sent['t1-mrt-column'].elements[0].type_id -eq 204)
 Check 'no_route passes when the refusal names the column and says nothing was written' ($by[$N.NoRoute].Outcome -eq 'pass')
 Check 'the no_route request is a dry call (no apply, no dry_run=false)' ((-not $script:sent['no-route'].ContainsKey('dry_run')) -and (-not $script:sent.ContainsKey('t1-mrt-no-route')))
 Check 'cleanup deletes the level, the column, every segment and every elbow' (
