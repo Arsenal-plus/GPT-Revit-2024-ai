@@ -67,6 +67,9 @@ namespace Horizun.Revit.Core
         public long? SillTypeId { get; set; }
         /// <summary>0: cripples on the layout stations the opening removed.</summary>
         public double CrippleSpacingMm { get; set; }
+        /// <summary>Header / sill section depths (z); null: the axis sits on the head / sill line, warned.</summary>
+        public double? HeaderDepthMm { get; set; }
+        public double? SillDepthMm { get; set; }
         public List<BlockingRow> Blocking { get; set; } = new List<BlockingRow>();
 
         /// <summary>Every type the plan can name, so the command resolves and checks each once.</summary>
@@ -96,6 +99,8 @@ namespace Horizun.Revit.Core
                 KingStuds = KingStuds,
                 JackStuds = JackStuds,
                 CrippleSpacing = CrippleSpacingMm,
+                HeaderDepth = HeaderDepthMm ?? 0,
+                SillDepth = SillDepthMm ?? 0,
                 StudTypeKey = Key(StudTypeId),
                 BottomTrackTypeKey = Key(BottomTrackTypeId),
                 TopTrackTypeKey = Key(TopTrackTypeId),
@@ -207,7 +212,8 @@ namespace Horizun.Revit.Core
             JObject openings = r.Obj(w, "openings", "spec.wall", false);
             if (openings != null)
             {
-                r.Known(openings, "spec.wall.openings", "king_studs", "jack_studs", "header_type_id", "sill_type_id", "cripple_spacing_mm");
+                r.Known(openings, "spec.wall.openings", "king_studs", "jack_studs", "header_type_id", "sill_type_id", "cripple_spacing_mm",
+                    "header_depth_mm", "sill_depth_mm");
                 JToken kings = openings["king_studs"];
                 if (kings != null && kings.Type != JTokenType.Null)
                 {
@@ -218,6 +224,8 @@ namespace Horizun.Revit.Core
                 result.HeaderTypeId = r.Id(openings, "header_type_id", "spec.wall.openings", false);
                 result.SillTypeId = r.Id(openings, "sill_type_id", "spec.wall.openings", false);
                 result.CrippleSpacingMm = r.Mm(openings, "cripple_spacing_mm", "spec.wall.openings", false, MinSpacingMm, MaxSpacingMm) ?? 0;
+                result.HeaderDepthMm = r.Mm(openings, "header_depth_mm", "spec.wall.openings", false, 0, 2000);
+                result.SillDepthMm = r.Mm(openings, "sill_depth_mm", "spec.wall.openings", false, 0, 2000);
             }
 
             JToken blocking = w["blocking"];

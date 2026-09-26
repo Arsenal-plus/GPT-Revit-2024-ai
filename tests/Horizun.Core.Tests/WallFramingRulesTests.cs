@@ -237,6 +237,60 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Header_and_sill_depths_seat_the_header_on_the_head_and_the_sill_under_the_sill_line()
+        {
+            var input = Wall(3600);
+            input.CrippleSpacing = 400;
+            input.HeaderDepth = 150;
+            input.SillDepth = 90;
+            input.Openings.Add(new WallOpeningSpan { Id = "win", Start = 1000, End = 2200, Sill = 900, Head = 2100 });
+            // A blocking row inside the header's depth: before the depth it ran king to king through the header.
+            input.Blocking.Add(new BlockingRow { Height = 2200, TypeKey = "block" });
+            WallFramingPlan plan = WallFramingRules.Plan(input, Budget);
+            AssertSound(plan, input);
+
+            FramingMember header = Assert.Single(plan.Members, m => m.Role == FramingRoles.Header);
+            Assert.Equal(2175, header.Z0, 9);
+            FramingMember sill = Assert.Single(plan.Members, m => m.Role == FramingRoles.Sill);
+            Assert.Equal(855, sill.Z0, 9);
+            var cripples = plan.Members.Where(m => m.Role == FramingRoles.Cripple).ToList();
+            Assert.Equal(4, cripples.Count);
+            Assert.All(cripples.Where(c => c.Z1 > 2000), c => { Assert.Equal(2250, c.Z0, 9); Assert.Equal(2700, c.Z1, 9); });
+            Assert.All(cripples.Where(c => c.Z1 < 2000), c => { Assert.Equal(0, c.Z0, 9); Assert.Equal(810, c.Z1, 9); });
+            Assert.DoesNotContain(plan.Members, m => m.Role == FramingRoles.Blocking && m.X0 < 1600 && m.X1 > 1600);
+            Assert.DoesNotContain(plan.Warnings, x => x.StartsWith("no_header_depth") || x.StartsWith("no_sill_depth"));
+
+            // Without depths the axes sit on the lines, and the plan says so.
+            input.HeaderDepth = 0;
+            input.SillDepth = 0;
+            WallFramingPlan onLine = WallFramingRules.Plan(input, Budget);
+            Assert.Equal(2100, Assert.Single(onLine.Members, m => m.Role == FramingRoles.Header).Z0, 9);
+            Assert.Contains("no_header_depth:header_axis_on_head_line", onLine.Warnings);
+            Assert.Contains("no_sill_depth:sill_axis_on_sill_line", onLine.Warnings);
+        }
+
+        [Fact]
+        public void A_header_or_sill_that_does_not_fit_between_the_tracks_is_not_placed_and_is_named()
+        {
+            var input = Wall(3000);
+            input.HeaderDepth = 150;
+            input.SillDepth = 200;
+            input.Openings.Add(new WallOpeningSpan { Id = "door", Start = 400, End = 1300, Sill = 0, Head = 2600 });
+            input.Openings.Add(new WallOpeningSpan { Id = "win", Start = 1800, End = 2600, Sill = 150, Head = 2000 });
+            WallFramingPlan plan = WallFramingRules.Plan(input, Budget);
+            AssertSound(plan, input);
+
+            Assert.Contains("header_does_not_fit_below_top_track:door", plan.Warnings);
+            Assert.Contains("sill_does_not_fit_above_bottom_track:win", plan.Warnings);
+            FramingMember header = Assert.Single(plan.Members, m => m.Role == FramingRoles.Header);
+            Assert.Equal(1, header.Source);
+            Assert.Equal(0, Count(plan, FramingRoles.Sill));
+            // No cripples over the door (no header) and none under the window (no sill).
+            Assert.DoesNotContain(plan.Members, m => m.Role == FramingRoles.Cripple && m.Source == 0);
+            Assert.DoesNotContain(plan.Members, m => m.Role == FramingRoles.Cripple && m.Source == 1 && m.Z1 < 1000);
+        }
+
+        [Fact]
         public void A_spacing_in_the_wrong_unit_refuses_before_allocating()
         {
             var input = Wall(30000, spacing: 42);

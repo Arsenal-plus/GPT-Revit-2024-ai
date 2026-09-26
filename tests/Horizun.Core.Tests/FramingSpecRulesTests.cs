@@ -33,6 +33,29 @@ namespace Horizun.Core.Tests
         private static List<string> Codes(List<FramingSpecError> errors) => errors.Select(e => e.Code + "@" + e.Path).ToList();
 
         [Fact]
+        public void Header_and_sill_depths_read_into_the_plan_input_and_are_optional()
+        {
+            JObject spec = JObject.Parse(Partition);
+            JObject openings = (JObject)spec["wall"]["openings"];
+            openings["header_depth_mm"] = 152.4;
+            openings["sill_depth_mm"] = 41.3;
+            WallFramingSpec withDepth = FramingSpecRules.ParseWall(spec, out var errors);
+            Assert.Empty(errors);
+            WallFramingInput input = withDepth.ToInput(3000, 2700, 41.3, 1.2, null);
+            Assert.Equal(152.4, input.HeaderDepth, 9);
+            Assert.Equal(41.3, input.SillDepth, 9);
+
+            WallFramingSpec without = FramingSpecRules.ParseWall(JObject.Parse(Partition), out errors);
+            Assert.Empty(errors);
+            Assert.Null(without.HeaderDepthMm);
+            Assert.Equal(0, without.ToInput(3000, 2700, 41.3, 1.2, null).HeaderDepth, 9);
+
+            openings["header_depth_mm"] = -1;
+            FramingSpecRules.ParseWall(spec, out errors);
+            Assert.Contains("below_minimum@spec.wall.openings.header_depth_mm", Codes(errors));
+        }
+
+        [Fact]
         public void A_complete_partition_spec_reads_into_the_plan_input()
         {
             WallFramingSpec spec = FramingSpecRules.ParseWall(JObject.Parse(Partition), out var errors);

@@ -26,6 +26,12 @@
 //    (only when the sill is above the bottom track). Cripples fill above the
 //    header and below the sill: at the layout stations the opening removed, or
 //    evenly at cripple_spacing when one is given.
+//  * A HEADER SITS ON THE HEAD, A SILL UNDER THE SILL LINE: with a header depth
+//    the header's axis is head + depth/2 and the cripples above start at
+//    head + depth; with a sill depth the sill's axis is sill - depth/2 and the
+//    cripples below end there. Without a depth the axis sits ON the line (half
+//    the member hangs into the void) and the plan says so in its warnings. A
+//    header or sill that does not fit between the tracks is not placed, named.
 //  * NO VERTICAL MEMBER CROSSES AN OPENING VOID, and no two vertical members
 //    overlap (closer than one StudWidth while their heights overlap). Conflicts
 //    resolve by priority: jack > king > end stud > layout stud; the loser is
@@ -145,6 +151,10 @@ namespace Horizun.Revit.Core
         public bool JackStuds { get; set; } = true;
         /// <summary>0 = cripples on the layout stations the opening removed.</summary>
         public double CrippleSpacing { get; set; }
+        /// <summary>The header's section depth (z); 0 = its axis sits on the head line, warned.</summary>
+        public double HeaderDepth { get; set; }
+        /// <summary>The sill's section depth (z); 0 = its axis sits on the sill line, warned.</summary>
+        public double SillDepth { get; set; }
         public string StudTypeKey { get; set; }
         public string BottomTrackTypeKey { get; set; }
         public string TopTrackTypeKey { get; set; }
@@ -189,6 +199,8 @@ namespace Horizun.Revit.Core
             if (rule != "wall_start" && rule != "wall_end" && rule != "centred") { plan.Refusal = "unknown_start_rule"; return plan; }
             double cs = input.CrippleSpacing;
             if (!(cs >= 0) || !Finite(cs)) { plan.Refusal = "bad_cripple_spacing"; return plan; }
+            double hd = input.HeaderDepth, sd = input.SillDepth;
+            if (!(hd >= 0) || !Finite(hd) || !(sd >= 0) || !Finite(sd)) { plan.Refusal = "bad_header_or_sill_depth"; return plan; }
 
             double zb = tb, zt = H - tt;
             List<WallOpeningSpan> openings = new List<WallOpeningSpan>();
@@ -285,7 +297,7 @@ namespace Horizun.Revit.Core
             for (int i = 0; i < openings.Count; i++)
             {
                 WallOpeningSpan o = openings[i];
-                bool header = o.Head < zt - Tol, sill = o.Sill > zb + Tol;
+                bool header = HeaderFits(o, zt, hd) && o.Head + hd < zt - Tol, sill = SillFits(o, zb, sd) && o.Sill - sd > zb + Tol;
                 if (!header && !sill) continue;
                 List<double> xs;
                 if (cs > Tol)
@@ -298,8 +310,8 @@ namespace Horizun.Revit.Core
                 else xs = removedByOpening.Where(x => x - w / 2 >= o.Start - Tol && x + w / 2 <= o.End + Tol).Distinct().ToList();
                 foreach (double x in xs.OrderBy(x => x))
                 {
-                    if (header) cripples.Add(new Vertical { X = x, Z0 = o.Head, Z1 = zt, Role = FramingRoles.Cripple, Opening = i });
-                    if (sill) cripples.Add(new Vertical { X = x, Z0 = zb, Z1 = o.Sill, Role = FramingRoles.Cripple, Opening = i });
+                    if (header) cripples.Add(new Vertical { X = x, Z0 = o.Head + hd, Z1 = zt, Role = FramingRoles.Cripple, Opening = i });
+                    if (sill) cripples.Add(new Vertical { X = x, Z0 = zb, Z1 = o.Sill - sd, Role = FramingRoles.Cripple, Opening = i });
                 }
             }
 
@@ -319,16 +331,25 @@ namespace Horizun.Revit.Core
 
             // Headers between the kings, sills between the jacks.
             double jackW = input.JackStuds ? w : 0;
+            bool headerOnLine = false, sillOnLine = false;
             for (int i = 0; i < openings.Count; i++)
             {
                 WallOpeningSpan o = openings[i];
-                if (o.Head < zt - Tol)
+                if (!(o.Head < zt - Tol)) plan.Warnings.Add("opening_reaches_top_no_header:" + o.Id);
+                else if (!HeaderFits(o, zt, hd)) plan.Warnings.Add("header_does_not_fit_below_top_track:" + o.Id);
+                else
+                {
                     plan.Members.Add(Horizontal(FramingRoles.Header, input.HeaderTypeKey ?? input.TopTrackTypeKey ?? input.BottomTrackTypeKey,
-                        Math.Max(0, o.Start - jackW), Math.Min(L, o.End + jackW), o.Head, i));
-                else plan.Warnings.Add("opening_reaches_top_no_header:" + o.Id);
-                if (o.Sill > zb + Tol)
-                    plan.Members.Add(Horizontal(FramingRoles.Sill, input.SillTypeKey ?? input.BottomTrackTypeKey, o.Start, o.End, o.Sill, i));
+                        Math.Max(0, o.Start - jackW), Math.Min(L, o.End + jackW), o.Head + hd / 2, i));
+                    headerOnLine |= hd <= Tol;
+                }
+                if (!(o.Sill > zb + Tol)) continue;
+                if (!SillFits(o, zb, sd)) { plan.Warnings.Add("sill_does_not_fit_above_bottom_track:" + o.Id); continue; }
+                plan.Members.Add(Horizontal(FramingRoles.Sill, input.SillTypeKey ?? input.BottomTrackTypeKey, o.Start, o.End, o.Sill - sd / 2, i));
+                sillOnLine |= sd <= Tol;
             }
+            if (headerOnLine) plan.Warnings.Add("no_header_depth:header_axis_on_head_line");
+            if (sillOnLine) plan.Warnings.Add("no_sill_depth:sill_axis_on_sill_line");
 
             // Blocking: split at every vertical spanning the row's height, interrupted across voids.
             List<Vertical> verticals = accepted.Concat(cripples).ToList();
@@ -344,7 +365,8 @@ namespace Horizun.Revit.Core
                     double a = xs[k - 1] + w / 2, b = xs[k] - w / 2;
                     if (b - a <= Tol) continue;
                     double mid = (a + b) / 2;
-                    if (openings.Any(o => mid > o.Start && mid < o.End && h > o.Sill - Tol && h < o.Head + Tol)) continue;
+                    // The framed void: the opening plus its header and sill depths.
+                    if (openings.Any(o => mid > o.Start && mid < o.End && h > o.Sill - sd - Tol && h < o.Head + hd + Tol)) continue;
                     plan.Members.Add(Horizontal(FramingRoles.Blocking, row.TypeKey ?? input.StudTypeKey, a, b, h, r));
                 }
             }
@@ -352,6 +374,12 @@ namespace Horizun.Revit.Core
             if (plan.Members.Count > maxMembers) { plan.Members.Clear(); plan.Refusal = "over_budget"; }
             return plan;
         }
+
+        /// <summary>A header below a head under the top track fits when head + depth reaches no higher than the top track.</summary>
+        private static bool HeaderFits(WallOpeningSpan o, double zt, double depth) => o.Head < zt - Tol && o.Head + depth <= zt + Tol;
+
+        /// <summary>A sill above the bottom track fits when sill - depth reaches no lower than the bottom track.</summary>
+        private static bool SillFits(WallOpeningSpan o, double zb, double depth) => o.Sill > zb + Tol && o.Sill - depth >= zb - Tol;
 
         /// <summary>The layout stations of the start rule, inside [0, L], unfiltered.</summary>
         public static List<double> LayoutStations(double length, double spacing, string startRule)
