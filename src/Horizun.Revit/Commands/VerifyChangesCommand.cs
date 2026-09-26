@@ -57,6 +57,10 @@ namespace Horizun.Revit.Commands
                 sinceUtc = parsedSince;
             }
             bool includeAnnotation = request.Value<bool?>("include_annotation") ?? false;
+            var ruleErrors = new List<string>();
+            List<ClearanceZoneRules.Rule> clearanceRules = request["clearance_rules"] is JArray rulesArr
+                ? ClearanceZoneRules.Parse(rulesArr, ruleErrors) : null;
+            if (ruleErrors.Count > 0) return CommandResult.Fail(string.Join(" ", ruleErrors));
             List<long> explicitViewIds = null;
             if (request["view_ids"] != null)
             {
@@ -149,7 +153,7 @@ namespace Horizun.Revit.Commands
 
             List<Element> subjects = SpatialCoherence.Subjects(doc, ids);
             scope["model_elements"] = subjects.Count;
-            SpatialCoherence.Outcome outcome = SpatialCoherence.Check(doc, subjects, 5000, budgetS * 1000);
+            SpatialCoherence.Outcome outcome = SpatialCoherence.Check(doc, subjects, 5000, budgetS * 1000, clearanceRules: clearanceRules);
             JObject check = SpatialCoherence.ToJson(outcome, maxFindings);
             string headline = SpatialCoherence.Headline(outcome);
 

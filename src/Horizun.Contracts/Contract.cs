@@ -696,6 +696,7 @@ namespace Horizun.Contracts
     ""time_budget_seconds"": { ""type"": ""integer"", ""default"": 60, ""minimum"": 5, ""maximum"": 600, ""description"": ""Stops early and reports partial rather than running unbounded."" },
     ""include_annotation"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Also check tag/text-note overlap (view coordinates) in view_ids, or the owning view of any tag/text note in scope, or the active view."" },
     ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 50, ""description"": ""Views to check with include_annotation=true. Each id must resolve to a view in this document."" },
+    ""clearance_rules"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""description"": ""Org-neutral maintenance/access clearance zones: [{category (OST_*), family_contains?, type_contains?, face:'front'|'all'|'top', depth_mm, width_extra_mm?, height_mm?}]. An equipment instance matching a rule gets a zone off its FacingOrientation; a wall/column/other ruled equipment invading it is an error, a smaller intrusion a warning. See docs/TOOLS-EXTENDED.md."" },
     ""target_document"": { ""type"": ""string"", ""description"": ""Title or full path of the ACTIVE document; required when capture=true."" }
   },
   ""additionalProperties"": false

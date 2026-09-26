@@ -75,7 +75,8 @@ namespace Horizun.Revit.Core
             catch { return false; }
         }
 
-        public static Outcome Check(Document doc, IList<Element> subjects, int maxSubjects = DefaultMaxSubjects, int budgetMs = DefaultBudgetMs, bool includeLinks = true)
+        public static Outcome Check(Document doc, IList<Element> subjects, int maxSubjects = DefaultMaxSubjects, int budgetMs = DefaultBudgetMs,
+            bool includeLinks = true, IList<ClearanceZoneRules.Rule> clearanceRules = null)
         {
             var o = new Outcome { Subjects = subjects.Count };
             var clock = Stopwatch.StartNew();
@@ -114,6 +115,8 @@ namespace Horizun.Revit.Core
                 }
             }
             if (!o.Partial) DoorClearance(doc, subjects, o, pairs, solidCache, clock, budgetMs);
+            if (!o.Partial && clearanceRules != null && clearanceRules.Count > 0)
+                EquipmentClearance(doc, subjects, o, clearanceRules, pairs, solidCache, clock, budgetMs, includeLinks);
             if (!o.Partial && includeLinks) AgainstLinks(doc, subjects, o, solidCache, clock, budgetMs);
             o.Ms = clock.ElapsedMilliseconds;
             return o;
@@ -242,20 +245,7 @@ namespace Horizun.Revit.Core
                 long hostId = door.Host == null ? -1 : Rid.Value(door.Host.Id);
                 foreach (Solid zone in zones)
                 {
-                    IList<Element> hits;
-                    try
-                    {
-                        // Box first: the solid filter alone scanned the whole model twice per
-                        // door (a real model's 234 doors ran out of a 5-minute budget).
-                        BoundingBoxXYZ zb = zone.GetBoundingBox();
-                        XYZ z0 = zb.Transform.OfPoint(zb.Min), z1 = zb.Transform.OfPoint(zb.Max);
-                        var zoneOutline = new Outline(new XYZ(Math.Min(z0.X, z1.X), Math.Min(z0.Y, z1.Y), Math.Min(z0.Z, z1.Z)),
-                                                      new XYZ(Math.Max(z0.X, z1.X), Math.Max(z0.Y, z1.Y), Math.Max(z0.Z, z1.Z)));
-                        hits = new FilteredElementCollector(doc).WhereElementIsNotElementType()
-                            .WherePasses(new BoundingBoxIntersectsFilter(zoneOutline))
-                            .WherePasses(new ElementIntersectsSolidFilter(zone)).ToElements();
-                    }
-                    catch { continue; }
+                    IList<Element> hits = ZoneObstacles(doc, zone);
                     foreach (Element b in hits)
                     {
                         long ib = Rid.Value(b.Id);
@@ -322,6 +312,118 @@ namespace Horizun.Revit.Core
             }
             try { BoundingBoxXYZ b = door.get_BoundingBox(null); if (b != null) return b.Max.Z - b.Min.Z; } catch { }
             return 0;
+        }
+
+        // ---- equipment maintenance / access clearance zones -----------------------------
+        // Generalises the door clear zone to any category a caller declares via
+        // clearance_rules (ClearanceZoneRules.cs): a panelboard's front working space, an
+        // AHU's service access, a valve's overhead clearance. Org-neutral - the rules are
+        // caller data, nothing here names a real standard.
+        private static void EquipmentClearance(Document doc, IList<Element> subjects, Outcome o, IList<ClearanceZoneRules.Rule> rules,
+            HashSet<string> pairs, Dictionary<long, List<Solid>> cache, Stopwatch clock, int budgetMs, bool includeLinks)
+        {
+            var ruleCategories = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ClearanceZoneRules.Rule r in rules) if (r.Category != null) ruleCategories.Add(r.Category);
+            var subjectIds = new HashSet<long>(subjects.Select(e => Rid.Value(e.Id)));
+            foreach (Element e in subjects)
+            {
+                if (clock.ElapsedMilliseconds > budgetMs) { o.Partial = true; o.PartialWhy = "the time budget ran out during the equipment clearance pass"; return; }
+                if (!(e is FamilyInstance fi)) continue;
+                string category = CategoryKey(e);
+                ClearanceZoneRules.Rule rule = ClearanceZoneRules.FirstMatch(rules, category, SafeFamilyName(fi), SafeTypeName(fi));
+                if (rule == null) continue;
+                if (!(fi.Location is LocationPoint lp)) continue;
+                XYZ facing = fi.FacingOrientation, hand = fi.HandOrientation;
+                if (facing == null || hand == null || facing.IsZeroLength() || hand.IsZeroLength()) continue;
+                BoundingBoxXYZ bb = null;
+                try { bb = fi.get_BoundingBox(null); } catch { }
+                if (bb == null) continue;
+                var corners = new List<(double X, double Y, double Z)>();
+                for (int c = 0; c < 8; c++)
+                    corners.Add(((c & 1) == 0 ? bb.Min.X : bb.Max.X, (c & 2) == 0 ? bb.Min.Y : bb.Max.Y, (c & 4) == 0 ? bb.Min.Z : bb.Max.Z));
+                ClearanceZoneRules.Extents ext;
+                try { ext = ClearanceZoneRules.Project(lp.Point.X, lp.Point.Y, facing.X, facing.Y, hand.X, hand.Y, corners); }
+                catch { continue; }
+                List<ClearanceZoneRules.ZoneFootprint> footprints;
+                try { footprints = ClearanceZoneRules.Footprints(rule, ext); } catch { continue; }
+                double fx = facing.X, fy = facing.Y, hx = hand.X, hy = hand.Y;
+                double fLen = Math.Sqrt(fx * fx + fy * fy), hLen = Math.Sqrt(hx * hx + hy * hy);
+                if (fLen < 1e-9 || hLen < 1e-9) continue;
+                fx /= fLen; fy /= fLen; hx /= hLen; hy /= hLen;
+                long eid = Rid.Value(e.Id);
+                long hostId = fi.Host == null ? -1 : Rid.Value(fi.Host.Id);
+                foreach (ClearanceZoneRules.ZoneFootprint fp in footprints)
+                {
+                    Solid zone = BuildZoneSolid(lp.Point, fx, fy, hx, hy, fp);
+                    if (zone == null) continue;
+                    IList<Element> hits = ZoneObstacles(doc, zone);
+                    foreach (Element b in hits)
+                    {
+                        long ib = Rid.Value(b.Id);
+                        if (ib == eid || !IsPhysical(b)) continue;
+                        if (!subjectIds.Contains(eid) && !subjectIds.Contains(ib)) continue;
+                        if (b is FamilyInstance bf && bf.SuperComponent != null && Rid.Value(bf.SuperComponent.Id) == eid) continue;
+                        bool isHost = ib == hostId || Hosts(b, e);
+                        double? shared = Shared(new List<Solid> { zone }, Solids(b, cache));
+                        SpatialCoherenceRules.Verdict v = ClearanceZoneRules.Classify(category, ruleCategories, CategoryKey(b), isHost, shared);
+                        if (v.Kind == SpatialCoherenceRules.Kind.None) continue;
+                        if (!pairs.Add("clear-eq:" + eid + "|" + ib)) continue;
+                        o.Findings.Add(new Finding { Verdict = v, A = e, B = b, SharedVolumeFt3 = shared });
+                    }
+                }
+            }
+        }
+
+        private static string SafeFamilyName(FamilyInstance fi)
+        {
+            try { return fi.Symbol?.Family?.Name; } catch { return null; }
+        }
+
+        private static string SafeTypeName(FamilyInstance fi)
+        {
+            try { return fi.Symbol?.Name; } catch { return null; }
+        }
+
+        /// <summary>A zone footprint (in origin/facing/hand/Z coordinates, see
+        /// ClearanceZoneRules.Footprints) turned into a world-coordinate extrusion, the same
+        /// way ClearZones below builds a door's passage box.</summary>
+        private static Solid BuildZoneSolid(XYZ origin, double fx, double fy, double hx, double hy, ClearanceZoneRules.ZoneFootprint fp)
+        {
+            try
+            {
+                double height = fp.MaxZ - fp.MinZ;
+                if (height <= 0) return null;
+                XYZ facing = new XYZ(fx, fy, 0), hand = new XYZ(hx, hy, 0);
+                XYZ p00 = At(origin, facing, hand, fp.MinF, fp.MinH, fp.MinZ);
+                XYZ p10 = At(origin, facing, hand, fp.MaxF, fp.MinH, fp.MinZ);
+                XYZ p11 = At(origin, facing, hand, fp.MaxF, fp.MaxH, fp.MinZ);
+                XYZ p01 = At(origin, facing, hand, fp.MinF, fp.MaxH, fp.MinZ);
+                var loop = CurveLoop.Create(new List<Curve> { Line.CreateBound(p00, p10), Line.CreateBound(p10, p11), Line.CreateBound(p11, p01), Line.CreateBound(p01, p00) });
+                return GeometryCreationUtilities.CreateExtrusionGeometry(new List<CurveLoop> { loop }, XYZ.BasisZ, height);
+            }
+            catch { return null; }
+        }
+
+        private static XYZ At(XYZ origin, XYZ facing, XYZ hand, double f, double h, double z) =>
+            new XYZ(origin.X + facing.X * f + hand.X * h, origin.Y + facing.Y * f + hand.Y * h, z);
+
+        /// <summary>Every model element whose solid intersects <paramref name="zone"/>: box
+        /// filter first (a solid filter alone scanned the whole model twice per door - a
+        /// real model's 234 doors ran out of a 5-minute budget), then the solid filter.
+        /// Shared by the door clear zone and the equipment clearance zone.</summary>
+        private static IList<Element> ZoneObstacles(Document doc, Solid zone)
+        {
+            try
+            {
+                BoundingBoxXYZ zb = zone.GetBoundingBox();
+                XYZ z0 = zb.Transform.OfPoint(zb.Min), z1 = zb.Transform.OfPoint(zb.Max);
+                var zoneOutline = new Outline(new XYZ(Math.Min(z0.X, z1.X), Math.Min(z0.Y, z1.Y), Math.Min(z0.Z, z1.Z)),
+                                              new XYZ(Math.Max(z0.X, z1.X), Math.Max(z0.Y, z1.Y), Math.Max(z0.Z, z1.Z)));
+                return new FilteredElementCollector(doc).WhereElementIsNotElementType()
+                    .WherePasses(new BoundingBoxIntersectsFilter(zoneOutline))
+                    .WherePasses(new ElementIntersectsSolidFilter(zone)).ToElements();
+            }
+            catch { return new List<Element>(); }
         }
 
         private static double DoorWidth(FamilyInstance door)
