@@ -40,9 +40,9 @@ namespace Horizun.Core.Tests
             // of one wall arrive with FramedBy = false: contact is no finding, a real overlap is.
             var touching = new SpatialCoherenceRules.Pair { CategoryA = "OST_GenericModel", CategoryB = "OST_GenericModel", SharedVolume = 1e-5, VolumeA = 0.1, VolumeB = 0.1 };
             Assert.Equal(K.None, SpatialCoherenceRules.Classify(touching).Kind);
-            var through = new SpatialCoherenceRules.Pair { CategoryA = "OST_StructuralFraming", CategoryB = "OST_StructuralFraming", SharedVolume = 0.02, VolumeA = 0.3, VolumeB = 0.1 };
+            var through = new SpatialCoherenceRules.Pair { CategoryA = "OST_GenericModel", CategoryB = "OST_GenericModel", SharedVolume = 0.02, VolumeA = 0.3, VolumeB = 0.1 };
             Assert.NotEqual(K.Expected, SpatialCoherenceRules.Classify(through).Kind);
-            Assert.NotEqual(K.None, SpatialCoherenceRules.Classify(through).Kind);
+            Assert.Equal(K.Overlap, SpatialCoherenceRules.Classify(through).Kind);
         }
 
         [Fact]

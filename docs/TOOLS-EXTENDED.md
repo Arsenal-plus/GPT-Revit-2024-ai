@@ -1956,11 +1956,30 @@ existing members are re-read against the plan. Framing from another spec on the 
 source is refused until `operation=remove` takes it away. Hand-modelled framing carries no
 marker and is never read, claimed or removed.
 
+The marker also records the member's OWN UniqueId. Extensible storage travels with a copy,
+so a wall copied or arrayed together with its framing brings members whose marker still
+names the original wall; their UniqueId no longer matches, so they are **foreign copies**:
+`remove` keeps them (`plan.foreign_copies_kept`, `evidence.foreign_copies_kept`), the
+idempotence and the re-read never count them, the spatial check never excuses them, and
+`read` lists them apart (`foreign_copies`, `foreign_copy_count`).
+
+`remove` measures, in a rolled-back transaction, what Revit deletes WITH the members (tags,
+dimensions, anything hosted on the tool's work planes): the rehearsal shows it in
+`plan.cascade` (count, by category, ids), the token binds it, and after the commit
+`cascade_absent` and `cascade_as_measured` re-read it (`evidence.cascaded_ids`); a cascade
+the token did not bind rolls the whole remove back.
+
+A ceiling's hangers are re-cast after the commit: one ray up from just under each rod's top
+must meet a floor, framing or roof within 1 mm of that top (`hanger_reaches_support`,
+`evidence.hanger_recheck`).
+
 **The automatic spatial check** (`spatial_check` after every write) treats a framing
-member and its own source wall or ceiling, and two members of the same framed source, as
-EXPECTED intersections (reason "framing inside its own source, or members of one framed
-source"), read from the marker: studs inside the wall they frame and tracks meeting studs
-are what was asked for. A member touching anything else is still reported.
+member and its own source wall or ceiling as an EXPECTED intersection (reason "framing
+inside its own source"), read from the marker: studs inside the wall they frame are what was
+asked for. Two members of one source are judged by the normal rules: studs meeting tracks
+share no volume (no finding), but mains running through cross members (`drop_mm` under the
+cross depth) or any real overlap between members is reported. A member touching anything
+else is still reported.
 
 **Live probe** (`scripts/live-probes/framing.probes.ps1`, offline twin
 `framing.tests.ps1`). On its own level it authors a line-based Generic Model member,
@@ -1970,4 +1989,7 @@ apply `already_applied`, read, remove), then an own ceiling 600 mm under an own 
 that floor, by id) and a second ceiling with nothing above (rehearsal: every station
 `no_support_above`, no hanger planned). The ceiling framing is removed with
 `operation=remove` before the staging is deleted, because its members are not hosted by
-the ceiling.
+the ceiling. A last case frames a wall at 45 degrees with the document's own Structural
+Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
+columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
+when the document carries neither category.
