@@ -233,9 +233,9 @@ namespace Horizun.Revit.Core
             Row("horizun_apply_cad_plan", VerificationMechanism.DelegatedChildDeclaration, E("created_verified", "state", "application"), F(C + "ApplyCadPlanCommand.cs", "Horizun.Revit/Core/CompositeVerdict.cs")),
             Row("horizun_apply_cad_update", VerificationMechanism.DelegatedChildDeclaration, E("verdict", "state", "application"), F(C + "ApplyCadUpdateCommand.cs", "Horizun.Revit/Core/CompositeVerdict.cs"),
                 "ApplyCadUpdateCommand.cs: `verdict`/`state`/`failures` still count an action landed on the child's transport Success, not on its application block - `application` (added) is the accurate one; a caller reading the older fields alone still gets the pre-existing, more lenient answer."),
-            Row("horizun_cad_connect", VerificationMechanism.DelegatedChildDeclaration, E("state"), F(C + "CadConnectCommand.cs", C + "CadRefit.cs"),
-                "CadConnectCommand.cs ~l.1751/1855: direct joins and elbow/tee/cross rows become joined/created on the child's Success, not on its application block.",
-                "CadConnectCommand.cs ~l.429, CadRefit.cs ~l.131: state reads applied whenever nothing was refused, including when zero junctions were joined; neither reply carries a top-level application block."),
+            Row("horizun_cad_connect", VerificationMechanism.DelegatedChildDeclaration, E("state", "application"),
+                F(C + "CadConnectCommand.cs", C + "CadRefit.cs", "Horizun.Revit/Core/CadConnectVerdict.cs", "Horizun.Revit/Core/CompositeVerdict.cs"),
+                "CadConnectCommand.cs ~l.429: the PROSE `state` field (rehearsed/applied/partial) still reads applied whenever nothing was refused, unchanged - `application` (added, via CadConnectVerdict + CompositeVerdict) is the accurate one a caller should read instead."),
 
             // ---- outside the model ---------------------------------------------------------
             Row("horizun_power_bi_push", VerificationMechanism.RemoteAcknowledgement, E("http_status"), F(S + "PowerBiPush.cs"),

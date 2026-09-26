@@ -465,6 +465,13 @@ namespace Horizun.Revit.Commands
                     "some junctions were made and some were not. What was joined IS in the model. A junction " +
                     "refused for an ambiguous or occupied connector is refused because joining the wrong end " +
                     "would be invisible afterwards, and re-sending it unchanged will refuse again.";
+            // THE COMPOSITE'S OWN application BLOCK - see SyntheticDeclaration/RowChild above.
+            // A dry run expects every row to have rehearsed cleanly (or be a legitimate
+            // already_connected no-op); a real apply expects verified_applied.
+            ApplicationOutcome.Stamp(result, dryRun
+                ? CompositeVerdict.AggregateRehearsal(rows.OfType<JObject>().Select(CadConnectVerdict.RowChild))
+                : CompositeVerdict.Aggregate(ApplicationOutcome.Committed, rows.OfType<JObject>().Select(CadConnectVerdict.RowChild)));
+
             // A REHEARSAL RETURNS HERE: the provenance write below belongs to an apply only.
             if (dryRun) return CommandResult.Ok(result);
             result["provenance_as_connected"] = RecordAsConnected(doc, madeJunctions, tolerance);
@@ -1711,6 +1718,9 @@ namespace Horizun.Revit.Commands
             return !string.IsNullOrWhiteSpace(named) && string.Equals(named.Trim(), key, StringComparison.Ordinal);
         }
 
+        // ChildVerdictBacksUp / RowChild live in Core/CadConnectVerdict.cs, Revit-free and
+        // unit tested there - see that file's header for why.
+
         private JObject DelegateDirect(UIApplication app, string title, Junction j,
                                        MepConnectorPick a, MepConnectorPick b,
                                        bool dryRun, JObject request, string keySuffix = "")
@@ -1765,9 +1775,22 @@ namespace Horizun.Revit.Commands
                 return j.Row("refused", "connect_mep_threw", ex.Message);
             }
 
-            JObject row = j.Row(r.Success ? (dryRun ? "would_join" : "joined") : "refused",
-                                r.Success ? null : "connect_mep_refused",
-                                r.Success ? null : r.Error);
+            // THE CHILD'S OWN VERDICT, not just whether it answered - see ChildVerdictBacksUp.
+            // A call that succeeded but did not declare a clean rehearsal (dry run) or a
+            // verified application (real write) is "uncertain", never "joined"/"would_join":
+            // the direct-join tally below counts only what this backs up.
+            ApplicationState childState;
+            bool landed = CadConnectVerdict.ChildVerdictBacksUp(r, dryRun, out childState);
+            string state = !r.Success ? "refused" : landed ? (dryRun ? "would_join" : "joined") : "uncertain";
+            string refusal = !r.Success ? "connect_mep_refused" : landed ? null : "connect_mep_unverified";
+            string says = !r.Success
+                ? r.Error
+                : landed
+                    ? null
+                    : "the delegated call answered success but its own application block declared '" +
+                      ApplicationOutcome.Name(childState) + "', not a " +
+                      (dryRun ? "clean rehearsal" : "verified application") + " - not counted as joined.";
+            JObject row = j.Row(state, refusal, says);
             row["delegated_to"] = "horizun_connect_mep";
             row["connectors"] = new JObject
             {
@@ -1869,9 +1892,23 @@ namespace Horizun.Revit.Commands
                 return j.Row("refused", "create_elements_threw", ex.Message);
             }
 
-            JObject row = j.Row(r.Success ? (dryRun ? "would_create" : "created") : "refused",
-                                r.Success ? null : "create_elements_refused",
-                                r.Success ? null : r.Error);
+            // THE CHILD'S OWN VERDICT, not just whether it answered - see ChildVerdictBacksUp.
+            // horizun_create_elements is a PostconditionChecklist tool with its own
+            // application block; a call that succeeded but did not declare a clean
+            // rehearsal (dry run) or a verified application (real write) is "uncertain",
+            // never "created"/"would_create".
+            ApplicationState childState;
+            bool landed = CadConnectVerdict.ChildVerdictBacksUp(r, dryRun, out childState);
+            string state = !r.Success ? "refused" : landed ? (dryRun ? "would_create" : "created") : "uncertain";
+            string refusal = !r.Success ? "create_elements_refused" : landed ? null : "create_elements_unverified";
+            string says = !r.Success
+                ? r.Error
+                : landed
+                    ? null
+                    : "the delegated call answered success but its own application block declared '" +
+                      ApplicationOutcome.Name(childState) + "', not a " +
+                      (dryRun ? "clean rehearsal" : "verified application") + " - not counted as created.";
+            JObject row = j.Row(state, refusal, says);
             row["delegated_to"] = "horizun_create_elements";
             row["fitting"] = j.Fitting;
             if (!r.Success) row["error"] = r.Error;

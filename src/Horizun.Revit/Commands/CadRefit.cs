@@ -150,6 +150,13 @@ namespace Horizun.Revit.Commands
                             "when the new fitting joins every run with the new section at every end and every run's other " +
                             "connections are unchanged; otherwise the group is rolled back and the step that failed is named."
             };
+            // THE COMPOSITE'S OWN application BLOCK, from every row's own final state - never
+            // from the `state`/`means` prose above. A dry run expects every row to have
+            // rehearsed cleanly; a real apply expects verified_applied.
+            ApplicationOutcome.Stamp(result, dryRun
+                ? CompositeVerdict.AggregateRehearsal(rows.OfType<JObject>().Select(CadConnectVerdict.RefitRowChild))
+                : CompositeVerdict.Aggregate(ApplicationOutcome.Committed, rows.OfType<JObject>().Select(CadConnectVerdict.RefitRowChild)));
+
             // A refit that did not happen whole is not a success, and a composing caller (the update's
             // apply) must see a refusal - its rehearsal then stops before anything is written.
             if (failed > 0 || notViable > 0)
