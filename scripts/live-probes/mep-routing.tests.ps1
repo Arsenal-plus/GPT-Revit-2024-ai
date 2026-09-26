@@ -11,12 +11,14 @@ function New-Fake([hashtable]$Break = @{}) {
     $s = [pscustomobject]@{
         Elbows = [System.Collections.ArrayList]@('Elbow A'); Sizes = [System.Collections.ArrayList]@(15.0, 20.0, 25.0)
         Width = 400.0; Height = 250.0; Break = $Break; Calls = [System.Collections.ArrayList]@(); RuleKeys = [System.Collections.ArrayList]@()
+        StagedDuct = $null; Deleted = $null
     }
     $obj = { param($h) ($h | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
     $call = {
         param($tool, $a)
         [void]$s.Calls.Add("$tool/$($a.operation)")
         if ($tool -eq 'horizun_list_elements') { return @{ isError = $false; data = (& $obj @{ rows = @(@{ element_id = 900 }) }) } }
+        if ($tool -eq 'horizun_query_model') { return @{ isError = $false; data = (& $obj @{ rows = @(@{ element_id = 31; is_element_type = $true; family = 'Duct System'; type = 'Supply Air' }) }) } }
         switch ($a.operation) {
             'read' {
                 if ($a.type_id) {
@@ -28,7 +30,7 @@ function New-Fake([hashtable]$Break = @{}) {
                     return @{ isError = $false; data = (& $obj @{ elements = @(@{ element_id = 900; kind = 'duct_rectangular'; size = @{ width = $s.Width; height = $s.Height }; size_in_catalog = $true }) }) }
                 }
                 return @{ isError = $false; data = (& $obj @{
-                    types = @(@{ id = 5; class = 'PipeType'; has_routing_preferences = $true }, @{ id = 8; class = 'DuctType'; has_routing_preferences = $true })
+                    types = @(@{ id = 5; class = 'PipeType'; has_routing_preferences = $true }, @{ id = 8; class = 'DuctType'; shape = 'Rectangular'; has_routing_preferences = $true })
                     segments = @(@{ id = 6; size_count = $s.Sizes.Count })
                     duct_sizes = @{ round = @(@{ nominal = 100 }); rectangular = @(@{ nominal = 300 }, @{ nominal = 400 }, @{ nominal = 500 }) } }) }
             }
@@ -43,6 +45,12 @@ function New-Fake([hashtable]$Break = @{}) {
         [void]$s.Calls.Add("apply/$($a.operation)/$key")
         if ($a.operation -eq 'set_rules' -and $a.rules) { foreach ($k in $a.rules[0].Keys) { [void]$s.RuleKeys.Add([string]$k) } }
         if ($s.Break.ContainsKey($key)) { return @{ stage = 'apply'; answer = @{ isError = $true; text = $s.Break[$key]; data = $null } } }
+        # The staging the resize case stands on (MEASURED 2026-09-26: an own, free-standing duct).
+        if ($tool -eq 'horizun_create_elements') {
+            if ($key -eq 'mep-resize-duct') { $s.StagedDuct = $a.elements[0]; $s.Width = [double]$a.elements[0].width; $s.Height = [double]$a.elements[0].height; $id = 900 } else { $id = 950 }
+            return @{ stage = 'apply'; answer = @{ isError = $false; data = (& $obj @{ rows = @(@{ element_id = $id }); application = @{ state = 'verified_applied' } }) } }
+        }
+        if ($tool -eq 'horizun_delete_verified') { $s.Deleted = @($a.ids); return @{ stage = 'apply'; answer = @{ isError = $false; data = (& $obj @{ deleted_total = @($a.ids).Count }) } } }
         $result = @{}
         switch ($a.operation) {
             'set_rules' { $r = $a.rules[0]; if ($r.action -eq 'add') { [void]$s.Elbows.Add($r.description) } else { $s.Elbows.RemoveAt($r.index) } }
@@ -67,7 +75,9 @@ Check 'every catalogued case is reported' (@($module.Catalog | Where-Object { -n
 Check 'a working bridge passes every case' (@($cases | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
 Check 'the elbow rule added is removed again' ($f.State.Elbows.Count -eq 1)
 Check 'the segment size added is removed again' ($f.State.Sizes.Count -eq 3)
-Check 'the duct is resized back to its original width' ($f.State.Width -eq 400)
+Check 'the resize stands on an OWN duct at a catalog size, on the probe''s own level' (($f.State.StagedDuct.kind -eq 'duct') -and ([double]$f.State.StagedDuct.width -eq 300) -and ([long]$f.State.StagedDuct.level_id -eq 950))
+Check 'the duct is resized back to its original width' ($f.State.Width -eq 300)
+Check 'the own duct and its level are deleted afterwards, duct first' (($f.State.Deleted -join ',') -eq '900,950')
 Check 'the duct went to a different catalog width in between' (@($f.State.Calls | Where-Object { $_ -eq 'apply/resize/mep-resize-there' }).Count -eq 1)
 
 # 2. A failed apply is a failure of that case, and the probe does not try to undo what was never done.

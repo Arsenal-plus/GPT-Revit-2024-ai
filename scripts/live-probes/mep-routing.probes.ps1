@@ -105,14 +105,45 @@ $script:HzProbeModules += [pscustomobject]@{
         }
 
         # ---- resize a duct and back ----------------------------------------------------------
-        $ducts = & $Ctx.Call 'horizun_list_elements' @{ category = 'OST_DuctCurves'; max_rows = 30; include_links = $false }
-        $ids = @($ducts.data.rows | ForEach-Object { $_.element_id } | Where-Object { $_ })
-        $picked = $null
-        if ($ids.Count -gt 0) {
-            $er = & $Ctx.Call $T @{ operation = 'read'; target_document = $doc; units = 'mm'; element_ids = $ids }
-            $picked = @($er.data.elements) | Where-Object { $_.size_in_catalog -and ($_.kind -eq 'duct_rectangular' -or $_.kind -eq 'duct_round') } | Select-Object -First 1
+        # AN OWN, FREE-STANDING DUCT. MEASURED 2026-09-26 in Revit 2023: a fixture duct picked
+        # from a network was resized, Revit left two regenerated tees at the neighbours'
+        # 450x200 against the new size, and the tool - rightly - rolled the whole change back.
+        # That is the tool refusing a broken network, not the tool failing; this case measures
+        # the resize itself, so it stands on a duct nothing else is connected to.
+        $picked = $null; $stagedDuct = @()
+        $rectType = $types | Where-Object { $_.class -eq 'DuctType' -and [string]$_.shape -eq 'Rectangular' } | Select-Object -First 1
+        $roundType = $types | Where-Object { $_.class -eq 'DuctType' -and [string]$_.shape -eq 'Round' } | Select-Object -First 1
+        $ductType = if ($rectType) { $rectType } else { $roundType }
+        $sysQ = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_DuctSystem'); include_types = $true; include_links = $false; max_rows = 20 }
+        $ductSystem = @($sysQ.data.rows | Where-Object { $_.is_element_type }) | Select-Object -First 1
+        if (-not $ductSystem) {
+            # MEASURED 2026-09-26, Revit 2023 (HZ23_BASE): the system TYPES answer no category
+            # query while 45 duct-system instances do - their type_id is the system type.
+            $sysI = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_DuctSystem'); include_types = $false; include_links = $false; max_rows = 5 }
+            $inst = @($sysI.data.rows | Where-Object { $_.type_id }) | Select-Object -First 1
+            if ($inst) { $ductSystem = [pscustomobject]@{ element_id = [long]$inst.type_id } }
         }
-        if (-not $picked) { $out += Case $N.Resize 'not_covered' 'no round or rectangular duct at a catalog size in the write document' }
+        $shapeKey = if ($ductType -eq $rectType) { 'rectangular' } else { 'round' }
+        $sizes = @($ov.data.duct_sizes.$shapeKey | ForEach-Object { [double]$_.nominal })
+        if ($ductType -and $ductSystem -and $sizes.Count -ge 2) {
+            $mE = 98000.0; $mX = 1010000.0
+            $lvr = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'level'; name = ('HZ_MEPR_' + (([string]$Ctx.RunId) -replace '[^A-Za-z0-9]', '')); elevation = $mE }) } 'mep-resize-level'
+            $lvId = if ($lvr.stage -eq 'apply' -and -not $lvr.answer.isError) { [long]@($lvr.answer.data.rows)[0].element_id } else { $null }
+            if ($lvId) {
+                $size0 = $sizes | Sort-Object { [math]::Abs($_ - 300) } | Select-Object -First 1
+                $duct = @{ kind = 'duct'; start = @($mX, 0, ($mE + 2500)); end = @(($mX + 4000), 0, ($mE + 2500)); level_id = $lvId; type_id = [long]$ductType.id; system_type_id = [long]$ductSystem.element_id }
+                if ($shapeKey -eq 'round') { $duct.diameter = $size0 } else { $duct.width = $size0; $duct.height = $size0 }
+                $dr = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @($duct) } 'mep-resize-duct'
+                $ductId = if ($dr.stage -eq 'apply' -and -not $dr.answer.isError) { [long]@($dr.answer.data.rows)[0].element_id } else { $null }
+                if ($ductId) {
+                    $stagedDuct = @($ductId, $lvId)
+                    $er = & $Ctx.Call $T @{ operation = 'read'; target_document = $doc; units = 'mm'; element_ids = @($ductId) }
+                    $picked = @($er.data.elements) | Where-Object { $_.size_in_catalog } | Select-Object -First 1
+                }
+                else { $stagedDuct = @($lvId) }
+            }
+        }
+        if (-not $picked) { $out += Case $N.Resize 'not_covered' 'no own duct could be staged at a catalog size (duct type, duct system type or a two-size catalog missing)' }
         else {
             $shape = if ($picked.kind -eq 'duct_round') { 'round' } else { 'rectangular' }
             $list = @($ov.data.duct_sizes.$shape | ForEach-Object { [double]$_.nominal })
@@ -149,6 +180,14 @@ $script:HzProbeModules += [pscustomobject]@{
             elseif ($sf.data.writes -ne $false -or $null -ne $sf.data.confirmation_token) { $out += Case $N.Flow 'fail' 'size_by_flow claims or offers a write' }
             elseif (-not $row.proposed -and -not $row.reason) { $out += Case $N.Flow 'fail' 'the row has neither a proposal nor a reason' }
             else { $out += Case $N.Flow 'pass' ("proposed {0} at {1} m/s" -f ($row.proposed | ConvertTo-Json -Compress), $row.velocity_mps) }
+        }
+
+        # ---- the own duct and its level go; a leftover is named in the resize case ----------
+        if ($stagedDuct.Count -gt 0) {
+            $del = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = @($stagedDuct); id_cap = 5 } 'mep-resize-cleanup'
+            if ($del.stage -ne 'apply' -or $del.answer.isError) {
+                $out = @($out | ForEach-Object { if ($_.Name -eq $N.Resize -and $_.Outcome -eq 'pass') { $_.Outcome = 'fail'; $_.Detail += '; the own duct/level were NOT deleted: ' + (Why $del) }; $_ })
+            }
         }
         return $out
     }

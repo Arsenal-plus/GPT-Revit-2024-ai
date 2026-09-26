@@ -53,6 +53,17 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $q.data) { return @() }
             return @($q.data.rows | Where-Object { $_.is_element_type })
         }
+        # A system TYPE to create a run with. MEASURED 2026-09-26, Revit 2023 (HZ23_BASE): the
+        # piping/duct system types answer no category query while their instances do, and an
+        # instance's type_id is the system type.
+        function SystemType($category) {
+            $t = Types $category | Select-Object -First 1
+            if ($t) { return $t }
+            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $false; include_links = $false; max_rows = 5 }
+            $inst = @(if ($q.data) { $q.data.rows | Where-Object { $_.type_id } }) | Select-Object -First 1
+            if ($inst) { return [pscustomobject]@{ element_id = [long]$inst.type_id } }
+            return $null
+        }
         function Instances($category, $max) {
             $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $false; include_links = $false; max_rows = $max }
             if (-not $q.data) { return @() }
@@ -111,7 +122,7 @@ $script:HzProbeModules += [pscustomobject]@{
 
         # ==== 2/3: flex_pipe / flex_duct ====================================================
         $flexPipeType = Types 'OST_FlexPipeCurves' | Select-Object -First 1
-        $pipingSystem = Types 'OST_PipingSystem' | Select-Object -First 1
+        $pipingSystem = SystemType 'OST_PipingSystem'
         if (-not $levelId -or -not $flexPipeType -or -not $pipingSystem) {
             Case $catalog[1] $tools[1] 'not_covered' "no own level, no flex pipe type or no piping system type in the fixture"
         }
@@ -131,7 +142,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $cat = & $Ctx.Call 'horizun_mep_routing' @{ operation = 'read'; target_document = $doc; units = 'mm' }
         $roundSizes = @(if ($cat.data -and $cat.data.duct_sizes) { @($cat.data.duct_sizes.round) | ForEach-Object { [double]$_.nominal } })
         $flexDiameter = if ($roundSizes.Count -gt 0) { $roundSizes | Sort-Object { [math]::Abs($_ - 150) } | Select-Object -First 1 } else { 150 }
-        $ductSystem = Types 'OST_DuctSystem' | Select-Object -First 1
+        $ductSystem = SystemType 'OST_DuctSystem'
         if (-not $levelId -or -not $flexDuctType -or -not $ductSystem) {
             Case $catalog[2] $tools[2] 'not_covered' "no own level, no flex duct type or no duct system type in the fixture"
         }

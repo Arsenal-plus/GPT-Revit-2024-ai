@@ -142,42 +142,69 @@ $script:HzProbeModules += [pscustomobject]@{
             }
 
             # ---- 2: navisworks_readiness names the view and its detail level --------
-            $ready = & $Ctx.Call 'horizun_coordination' @{ operation = 'navisworks_readiness'; target_document = $doc }
-            $readyOk = -not $ready.isError -and $ready.data -and -not [string]::IsNullOrWhiteSpace([string]$ready.data.detail_level) -and
-                       @('ready', 'not_ready') -contains [string]$ready.data.verdict -and -not [string]::IsNullOrWhiteSpace([string]$ready.data.view_name)
-            $cases += Out-Case 2 $(if ($readyOk) { 'pass' } else { 'fail' }) (($ready.data | ConvertTo-Json -Depth 6 -Compress) -as [string])
-            if (-not $readyOk) {
-                foreach ($i in 3..4) { $cases += Out-Case $i 'not_covered' 'no navisworks_readiness verdict to prepare against (no Navisworks/{3D} view in this fixture)' }
-                return $cases
-            }
+            # One pass through a do/while(false) so every early exit is a `break` that still
+            # reaches the finally below: a `return $cases` inside this try evaluated $cases
+            # BEFORE the finally appended the cleanup case, which then went unreported
+            # (MEASURED 2026-09-26, Revit 2023: "cleanup ... did not report this case").
+            do {
+                $ready = & $Ctx.Call 'horizun_coordination' @{ operation = 'navisworks_readiness'; target_document = $doc }
+                # A fixture with NO 'Navisworks' and NO '{3D}' view (MEASURED 2026-09-26: Revit
+                # 2023's HZ23_BASE) is refused, rightly, naming what is missing. That refusal is
+                # the answer for this fixture; the probe then stages its OWN 'Navisworks' view
+                # and asks again, so the verdict case still measures a view and its detail level.
+                $refusedNoView = $ready.isError -and ([string]$ready.text -match "No 3D view whose name contains 'Navisworks'")
+                $firstNote = ''
+                if ($refusedNoView) {
+                    $mv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; units = 'mm'
+                            actions = @(@{ operation = 'create_3d'; key = 'nwprobe'; name = 'Navisworks' }) } ($Ctx.RunId + '-bcfr-view')
+                    if ($mv.stage -ne 'apply' -or $mv.answer.isError -or -not $mv.answer.data.aliases.nwprobe) {
+                        foreach ($i in 2..4) { $cases += Out-Case $i 'unverified' ('the fixture has no Navisworks/{3D} view and the probe could not create its own: ' + (($mv.answer | ConvertTo-Json -Depth 6 -Compress) -as [string])) }
+                        break
+                    }
+                    $viewId = [long]$mv.answer.data.aliases.nwprobe
+                    $firstNote = "the fixture had no Navisworks/{3D} view and the first call refused naming what was missing; with the probe's own view: "
+                    $ready = & $Ctx.Call 'horizun_coordination' @{ operation = 'navisworks_readiness'; target_document = $doc }
+                }
+                $readyOk = -not $ready.isError -and $ready.data -and -not [string]::IsNullOrWhiteSpace([string]$ready.data.detail_level) -and
+                           @('ready', 'not_ready') -contains [string]$ready.data.verdict -and -not [string]::IsNullOrWhiteSpace([string]$ready.data.view_name) -and
+                           (-not $refusedNoView -or [string]$ready.data.view_name -eq 'Navisworks')
+                $readyDetail = if ($ready.data) { ($ready.data | ConvertTo-Json -Depth 6 -Compress) -as [string] } else { [string]$ready.text }
+                $cases += Out-Case 2 $(if ($readyOk) { 'pass' } else { 'fail' }) ($firstNote + $readyDetail)
+                if (-not $readyOk) {
+                    foreach ($i in 3..4) { $cases += Out-Case $i 'not_covered' 'no navisworks_readiness verdict to prepare against' }
+                    break
+                }
 
-            # ---- disposable view: NEVER the real one already reported above ---------
-            if ($ready.data.view_name -eq 'Navisworks') {
-                foreach ($i in 3..4) { $cases += Out-Case $i 'not_covered' "a real 3D view already named exactly 'Navisworks' exists in this fixture; not touching it - only a view this probe creates itself is prepared." }
-                return $cases
-            }
-            $mv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; units = 'mm'
-                    actions = @(@{ operation = 'create_3d'; key = 'nwprobe'; name = 'Navisworks' }) } ($Ctx.RunId + '-bcfr-view')
-            if ($mv.stage -ne 'apply' -or $mv.answer.isError -or -not $mv.answer.data.aliases.nwprobe) {
-                foreach ($i in 3..4) { $cases += Out-Case $i 'unverified' ('could not create the disposable Navisworks view: ' + (($mv.answer | ConvertTo-Json -Depth 6 -Compress) -as [string])) }
-                return $cases
-            }
-            $viewId = [long]$mv.answer.data.aliases.nwprobe
+                # ---- disposable view: NEVER the real one already reported above ---------
+                if (-not $viewId) {
+                    if ($ready.data.view_name -eq 'Navisworks') {
+                        foreach ($i in 3..4) { $cases += Out-Case $i 'not_covered' "a real 3D view already named exactly 'Navisworks' exists in this fixture; not touching it - only a view this probe creates itself is prepared." }
+                        break
+                    }
+                    $mv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; units = 'mm'
+                            actions = @(@{ operation = 'create_3d'; key = 'nwprobe'; name = 'Navisworks' }) } ($Ctx.RunId + '-bcfr-view')
+                    if ($mv.stage -ne 'apply' -or $mv.answer.isError -or -not $mv.answer.data.aliases.nwprobe) {
+                        foreach ($i in 3..4) { $cases += Out-Case $i 'unverified' ('could not create the disposable Navisworks view: ' + (($mv.answer | ConvertTo-Json -Depth 6 -Compress) -as [string])) }
+                        break
+                    }
+                    $viewId = [long]$mv.answer.data.aliases.nwprobe
+                }
 
-            # ---- 3: prepare_navisworks dry_run: a token and the planned change ------
-            $prepDry = & $Ctx.Call 'horizun_coordination' @{ operation = 'prepare_navisworks'; target_document = $doc; dry_run = $true }
-            $prepDryOk = -not $prepDry.isError -and $prepDry.data -and -not [string]::IsNullOrWhiteSpace([string]$prepDry.data.confirmation_token) -and
-                         [long]$prepDry.data.view_id -eq $viewId -and [string]$prepDry.data.detail_level_after -eq 'Fine'
-            $cases += Out-Case 3 $(if ($prepDryOk) { 'pass' } else { 'fail' }) (($prepDry.data | ConvertTo-Json -Depth 6 -Compress) -as [string])
-            if (-not $prepDryOk) { $cases += Out-Case 4 'not_covered' 'the dry run gave no plan to apply' }
-            else {
-                # ---- 4: apply sets Fine, verified by re-read ---------------------------
-                $prepApply = & $Ctx.Apply 'horizun_coordination' @{ operation = 'prepare_navisworks'; target_document = $doc } ($Ctx.RunId + '-bcfr-prepare')
-                $prepOk = $prepApply.stage -eq 'apply' -and -not $prepApply.answer.isError -and
-                          [string]$prepApply.answer.data.detail_level -eq 'Fine' -and
-                          $prepApply.answer.data.postconditions.all_verified -eq $true
-                $cases += Out-Case 4 $(if ($prepOk) { 'pass' } else { 'fail' }) (($prepApply.answer.text -as [string]))
-            }
+                # ---- 3: prepare_navisworks dry_run: a token and the planned change ------
+                $prepDry = & $Ctx.Call 'horizun_coordination' @{ operation = 'prepare_navisworks'; target_document = $doc; dry_run = $true }
+                $prepDryOk = -not $prepDry.isError -and $prepDry.data -and -not [string]::IsNullOrWhiteSpace([string]$prepDry.data.confirmation_token) -and
+                             [long]$prepDry.data.view_id -eq $viewId -and [string]$prepDry.data.detail_level_after -eq 'Fine'
+                $cases += Out-Case 3 $(if ($prepDryOk) { 'pass' } else { 'fail' }) (($prepDry.data | ConvertTo-Json -Depth 6 -Compress) -as [string])
+                if (-not $prepDryOk) { $cases += Out-Case 4 'not_covered' 'the dry run gave no plan to apply' }
+                else {
+                    # ---- 4: apply sets Fine, verified by re-read ---------------------------
+                    $prepApply = & $Ctx.Apply 'horizun_coordination' @{ operation = 'prepare_navisworks'; target_document = $doc } ($Ctx.RunId + '-bcfr-prepare')
+                    $prepOk = $prepApply.stage -eq 'apply' -and -not $prepApply.answer.isError -and
+                              [string]$prepApply.answer.data.detail_level -eq 'Fine' -and
+                              $prepApply.answer.data.postconditions.all_verified -eq $true
+                    $cases += Out-Case 4 $(if ($prepOk) { 'pass' } else { 'fail' }) (($prepApply.answer.text -as [string]))
+                }
+            } while ($false)
         }
         finally {
             $ids = @($created)

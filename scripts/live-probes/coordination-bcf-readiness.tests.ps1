@@ -11,7 +11,7 @@ $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'coordination-bcf-
 
 function New-Fake([string]$mode) {
     $s = @{ Mode = $mode; Next = 200; ViewNext = 900; Recorded = $false; FindingId = 'f-bcf-1'; Calls = @() }
-    $reply = { param($data, $isError = $false) [pscustomobject]@{ isError = $isError; data = $data; text = 'fake' } }
+    $reply = { param($data, $isError = $false, $text = 'fake') [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $call = {
         param($tool, $a)
         $s.Calls += $tool
@@ -44,7 +44,13 @@ function New-Fake([string]$mode) {
                         return & $reply ([pscustomobject]@{ rows = @($row) })
                     }
                     'navisworks_readiness' {
-                        if ($s.Mode -eq 'no-view') { return & $reply $null $true }
+                        # The REAL refusal (MEASURED 2026-09-26, Revit 2023 HZ23_BASE) until the probe
+                        # has created its own 'Navisworks' view; then that view is the verdict's.
+                        if ($s.Mode -eq 'no-view' -and -not $s.LastViewId) {
+                            return & $reply $null $true "Error: No 3D view whose name contains 'Navisworks', and no default '{3D}' view either - those are what Navisworks' own Revit reader looks for. Create one, or point Navisworks at a different view directly. Nothing was read."
+                        }
+                        if ($s.Mode -eq 'no-view') { return & $reply ([pscustomobject]@{ detail_level = 'Coarse'; verdict = 'not_ready'; view_name = 'Navisworks'; view_id = $s.LastViewId }) }
+                        if ($s.Mode -eq 'refused-other') { return & $reply $null $true 'Error: target_document does not match the active document.' }
                         $viewName = if ($s.Mode -eq 'real-navisworks-view') { 'Navisworks' } else { '{3D}' }
                         return & $reply ([pscustomobject]@{ detail_level = 'Coarse'; verdict = 'not_ready'; view_name = $viewName; view_id = 42 })
                     }
@@ -108,9 +114,19 @@ Check 'the pipes are still deleted after a failed IfcGUID write' ($g.State.Calls
 
 $h = New-Fake 'no-view'
 $cases3 = @(& $module.Run $h.Ctx)
-Check 'no Navisworks/{3D} view: case 2 fails and 3-4 are not_covered' (
-    $cases3[2].Outcome -eq 'fail' -and $cases3[3].Outcome -eq 'not_covered' -and $cases3[4].Outcome -eq 'not_covered')
-Check 'no view was created when readiness found none' (-not ($h.State.Calls -contains 'horizun_manage_views:apply:'))
+Check 'no Navisworks/{3D} view: the refusal is recorded, the probe stages its own view and readiness passes on it' (
+    $cases3[2].Outcome -eq 'pass' -and ([string]$cases3[2].Detail -match 'first call refused') -and ([string]$cases3[2].Detail -match '"view_name":"Navisworks"'))
+Check 'with its own view, prepare dry run and apply run on that view' ($cases3[3].Outcome -eq 'pass' -and $cases3[4].Outcome -eq 'pass')
+Check 'exactly one disposable view is created' (@($h.State.Calls | Where-Object { $_ -eq 'horizun_manage_views:apply:' }).Count -eq 1)
+Check 'every catalogued case is reported, cleanup included (no return inside the try)' (
+    $cases3.Count -eq $module.Catalog.Count -and @($cases3 | Where-Object { $_.Name -eq $module.Catalog[5].Name -and $_.Outcome -eq 'pass' }).Count -eq 1)
+
+$r = New-Fake 'refused-other'
+$cases6 = @(& $module.Run $r.Ctx)
+Check 'any other readiness refusal fails case 2, leaves 3-4 not_covered and creates no view' (
+    $cases6[2].Outcome -eq 'fail' -and $cases6[3].Outcome -eq 'not_covered' -and $cases6[4].Outcome -eq 'not_covered' -and
+    -not ($r.State.Calls -contains 'horizun_manage_views:apply:'))
+Check 'the cleanup case is still reported after an early stop' (@($cases6 | Where-Object { $_.Name -eq $module.Catalog[5].Name }).Count -eq 1)
 
 $k = New-Fake 'real-navisworks-view'
 $cases4 = @(& $module.Run $k.Ctx)
