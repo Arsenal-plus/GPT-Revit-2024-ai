@@ -184,7 +184,7 @@ namespace Horizun.Revit.Core
             // the resize's own target size); a fitting whose id was removed and replaced
             // has no id left to check, so it is named in Report()'s fittings_removed_or_replaced
             // and its replacement (if any) is verified there under fittings_added instead.
-            // route: postconditions cover segment endpoints (1 mm) and elbow connector count;
+            // route: postconditions cover segment endpoints and size (1 mm) and elbow connections;
             // the spatial-check gate (SpatialCoherence.Check against every created element) runs
             // INSIDE Apply() and throws on any error against a physical host or loaded link, so a
             // committed route is one the gate already passed - it is not a separate postcondition.
