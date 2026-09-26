@@ -171,12 +171,28 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void Travel_distance_is_always_not_decidable_and_says_where_a_route_is_measured()
+        public void Travel_distance_without_a_measurement_is_not_decidable_and_names_the_config()
         {
             RequirementSet s = Load("[{ 'id': 't', 'selector': { 'category': 'OST_Rooms' }, 'assertion': { 'measure': 'travel_distance_m', 'operator': 'lte', 'value': 45 } }]");
             JObject r = CodeCheckRules.Evaluate(s, new[] { new CheckedElement { Id = 1, CategoryToken = "OST_Rooms" } }, 50, true);
             Assert.Equal("not_decidable", (string)r["findings"][0]["outcome"]);
-            Assert.Contains("horizun_audit_access", (string)r["findings"][0]["reason"]);
+            Assert.Contains("route_view_id", (string)r["findings"][0]["reason"]);
+        }
+
+        [Fact]
+        public void A_routed_travel_distance_passes_or_fails_the_rule_and_multi_level_stays_undecided()
+        {
+            RequirementSet s = Load("[{ 'id': 't', 'selector': { 'category': 'OST_Rooms' }, 'assertion': { 'measure': 'travel_distance_m', 'operator': 'lte', 'value': 45 } }]");
+            var near = new CheckedElement { Id = 1, CategoryToken = "OST_Rooms" };
+            near.Measures["travel_distance_m"] = MeasuredValue.Exact(12.4, "measured_travel_path");
+            var far = new CheckedElement { Id = 2, CategoryToken = "OST_Rooms" };
+            far.Measures["travel_distance_m"] = MeasuredValue.Exact(51.0, "measured_travel_path");
+            var upstairs = new CheckedElement { Id = 3, CategoryToken = "OST_Rooms" };
+            upstairs.Measures["travel_distance_m"] = MeasuredValue.None("not_assessable: no declared exit door is on level 'L2'.");
+            JObject r = CodeCheckRules.Evaluate(s, new[] { near, far, upstairs }, 50, true);
+            Assert.Equal(1, r["totals"].Value<int>("passes"));
+            Assert.Equal(1, r["totals"].Value<int>("fails"));
+            Assert.Equal(1, r["totals"].Value<int>("not_decidable"));
         }
 
         [Fact]

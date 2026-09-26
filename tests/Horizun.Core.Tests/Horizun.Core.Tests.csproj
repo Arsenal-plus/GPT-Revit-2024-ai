@@ -420,6 +420,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckEvaluation.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckGeometry.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\EgressTravelRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleImport.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleLinkRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\FederationCheckRules.cs" />
