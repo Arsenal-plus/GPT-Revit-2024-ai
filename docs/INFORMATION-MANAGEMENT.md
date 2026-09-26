@@ -983,7 +983,7 @@ Coherence adds rules, reported like every other finding:
 | `loin_unknown_ifc_entity` | error | `ifc_entity` is not an entity of the schema(s) the requirement targets (its `ifc_versions`, else `delivery.ifc.version`, else IFC4 **and** IFC4X3_ADD2). The message says where the name does exist. |
 | `loin_entity_version_specific` | warning | No version declared and the entity exists in only one of IFC4 / IFC4X3_ADD2. |
 | `loin_bounds_conflict`, `loin_bounds_inverted`, `loin_bounds_on_non_numeric` | error | Bounds that cannot be written or cannot be satisfied. |
-| `loin_unit_not_ids_default` | warning | Bounds in a unit other than the IFC default (SI); they will not be translated. |
+| `loin_unit_not_ids_default` | warning | Bounds in a unit that is not the IFC default (SI) and not a length/area/volume unit `ids_from_loin` converts; they will not be translated. |
 | `loin_pattern_anchor` | warning | An XML Schema pattern always matches the whole value; `^` and `$` are literal characters there. |
 | `loin_property_repeated`, `loin_applies_to_empty` | warning | Redundant or unanchored requirements. |
 
@@ -1007,14 +1007,24 @@ translates the alphanumerical part into an **IDS 1.0** file (namespace
 | `alphanumeric.properties` | requirement `<property>` with `dataType` (upper case), cardinality, `uri`, and a value: one allowed value → `simpleValue`; several → `xs:enumeration`; `pattern` → `xs:pattern`; bounds → `xs:minInclusive` … on `xs:double`/`xs:integer` |
 | single common purpose / milestone | `<info><purpose>` / `<milestone>` |
 
-**Never invented.** Everything IDS cannot express is returned in `not_translated`,
-one line per item with `handling` (`omitted` or `description_text`) and why:
-every geometry aspect, every documentation item, the actors (carried only as
-description text), a Revit category, free-text identification and notes, a
-classification URI in applicability, bounds in a non-default unit (IDS values are
-in the IFC default unit and this bridge does not convert), and whole requirements
-that cannot become a checkable specification (no IFC version, no entity or
-classification, or nothing alphanumerical with an optional occurrence).
+**Length, area and volume bounds are converted, not dropped.** A bound whose
+`unit` is a length, area or volume spelling other than the IFC default (SI) - `mm`,
+`cm`, `dm`, `km`, `in`, `ft`, `yd` for length; `mm2`/`cm2`/`dm2`/`km2`/`ft2`/`in2`
+for area; `mm3`/`cm3`/`dm3`/`l`/`km3`/`ft3`/`in3` for volume - is converted to
+`m`/`m2`/`m3` before it is written, with the factor and the before/after values
+reported in `converted_units`. This is the SI default, not the actual IFC file's
+declared units, which `ids_from_loin` has no file to read at translation time.
+
+**Never invented.** Everything else IDS cannot express is returned in
+`not_translated`, one line per item with `handling` (`omitted` or
+`description_text`) and why: every geometry aspect, every documentation item, the
+actors (carried only as description text), a Revit category, free-text
+identification and notes, a classification URI in applicability, bounds in a unit
+that is neither the IFC default nor a length/area/volume unit this bridge
+converts (IDS values are in the IFC default unit, and converting a unit this
+bridge does not recognise would write a number nobody specified), and whole
+requirements that cannot become a checkable specification (no IFC version, no
+entity or classification, or nothing alphanumerical with an optional occurrence).
 
 **Proved before it is reported.** The generated XML is validated against the
 published **ids.xsd 1.0.0**, embedded verbatim (`schemas/ids/ids-1.0.xsd`); the
@@ -1047,6 +1057,10 @@ alfanumérica a **IDS 1.0** y **lista, sin inventar**, lo que IDS no puede
 expresar (geometría, documentación, actores, categoría de Revit, límites en otra
 unidad). El archivo se valida contra el `ids.xsd` 1.0 embebido y con el lector
 IDS del propio puente; ensaya por defecto y, al escribir, relee y vuelve a validar.
+Los límites en longitud, área o volumen dados en otra unidad (mm, cm, ft, ft2,
+l...) SÍ se convierten al default IFC (m/m2/m3), con el factor y el valor antes/
+después reportados en `converted_units`; cualquier otra unidad no reconocida
+sigue sin convertirse y se lista igual en `not_translated`.
 
 ## bSDD lookup
 

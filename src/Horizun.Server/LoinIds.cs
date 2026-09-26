@@ -209,12 +209,43 @@ namespace Horizun.Server
 
         // IDS writes values in the IFC default unit (the User Manual's units table), which is
         // SI. A bound given in one of these units is already in that unit; any other is not
-        // converted here, because a converted bound is a number nobody wrote down.
+        // converted here, because a converted bound is a number nobody wrote down - UNLESS it
+        // is a length, area or volume unit, which IS a dimension this bridge knows how to
+        // convert (see LengthAreaVolumeUnits below). Everything else - mass, pressure, power,
+        // flow rate, and any spelling this table does not recognise - is still left out and
+        // listed in not_translated, because converting it would still be a number nobody wrote.
         private static readonly HashSet<string> DefaultUnits = new HashSet<string>(StringComparer.Ordinal)
         {
             "m", "m2", "m²", "m3", "m³", "kg", "s", "K", "Pa", "N", "W", "J", "A", "V", "Hz", "lx", "cd", "mol",
             "rad", "kg/m3", "kg/m³", "W/(m·K)", "W/(m2·K)", "W/(m²·K)", "m/s", "m3/s", "m³/s"
         };
+
+        // Length -> m, area -> m2, volume -> m3: the three dimensions ids_from_loin converts.
+        // "L"/"l" are both liter (kept distinct because DefaultUnits/this table compare by
+        // Ordinal, i.e. case-sensitively, and both spellings are written in practice).
+        private static readonly Dictionary<string, KeyValuePair<string, double>> LengthAreaVolumeUnits =
+            new Dictionary<string, KeyValuePair<string, double>>(StringComparer.Ordinal)
+        {
+            ["mm"] = Si("m", 0.001), ["cm"] = Si("m", 0.01), ["dm"] = Si("m", 0.1), ["km"] = Si("m", 1000.0),
+            ["in"] = Si("m", 0.0254), ["ft"] = Si("m", 0.3048), ["yd"] = Si("m", 0.9144),
+            ["mm2"] = Si("m2", 0.000001), ["cm2"] = Si("m2", 0.0001), ["dm2"] = Si("m2", 0.01), ["km2"] = Si("m2", 1000000.0),
+            ["ft2"] = Si("m2", 0.09290304), ["in2"] = Si("m2", 0.00064516),
+            ["mm3"] = Si("m3", 0.000000001), ["cm3"] = Si("m3", 0.000001), ["dm3"] = Si("m3", 0.001),
+            ["l"] = Si("m3", 0.001), ["L"] = Si("m3", 0.001), ["km3"] = Si("m3", 1000000000.0),
+            ["ft3"] = Si("m3", 0.028316846592), ["in3"] = Si("m3", 0.000016387064)
+        };
+
+        private static KeyValuePair<string, double> Si(string unit, double factor) => new KeyValuePair<string, double>(unit, factor);
+
+        /// <summary>True for a length/area/volume unit this bridge converts to its SI default (m/m2/m3).</summary>
+        private static bool TryConvertLengthAreaVolume(string unit, out string siUnit, out double factor)
+        {
+            if (unit != null && LengthAreaVolumeUnits.TryGetValue(unit, out KeyValuePair<string, double> kv))
+            {
+                siUnit = kv.Key; factor = kv.Value; return true;
+            }
+            siUnit = null; factor = 0; return false;
+        }
 
         private static readonly HashSet<string> StringTypes = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -353,10 +384,10 @@ namespace Horizun.Server
                 findings.Add(Finding(at, "loin_bounds_on_non_numeric", "error",
                     "Numeric bounds are given for a " + type + " property; they can only constrain a number."));
             string unit = Str(p["unit"]);
-            if (anyBound && unit != null && !DefaultUnits.Contains(unit))
+            if (anyBound && unit != null && !DefaultUnits.Contains(unit) && !LengthAreaVolumeUnits.ContainsKey(unit))
                 findings.Add(Finding(at + "/unit", "loin_unit_not_ids_default", "warning",
-                    "The bounds are in '" + unit + "'. IDS values are in the IFC default (SI) unit and this bridge does not " +
-                    "convert, so ids_from_loin will leave these bounds out and list them."));
+                    "The bounds are in '" + unit + "', which is not the IFC default (SI) unit and not a length, area or " +
+                    "volume unit this bridge converts, so ids_from_loin will leave these bounds out and list them."));
             CheckPattern(Str(p["pattern"]), at + "/pattern", findings);
         }
 
@@ -464,7 +495,12 @@ namespace Horizun.Server
                 ["not_translated"] = translation.NotTranslated,
                 ["not_translated_means"] =
                     "IDS 1.0 constrains the alphanumerical content of an IFC file. Geometry, documentation, actors and " +
-                    "Revit categories have no IDS facet: they are listed here, never approximated into one."
+                    "Revit categories have no IDS facet: they are listed here, never approximated into one.",
+                ["converted_units"] = translation.ConvertedUnits,
+                ["converted_units_means"] =
+                    "Length, area and volume bounds given in a unit other than the IFC default (SI) were converted to it " +
+                    "(factor and before/after values are here). Every other non-default unit is not converted and is " +
+                    "listed in not_translated instead."
             };
 
             if (translation.Specifications.Count == 0)
@@ -616,6 +652,8 @@ namespace Horizun.Server
             public int Considered;
             public JArray Specifications = new JArray();
             public JArray NotTranslated = new JArray();
+            /// <summary>Length/area/volume bounds converted to SI on their way into the IDS (see LengthAreaVolumeUnits).</summary>
+            public JArray ConvertedUnits = new JArray();
             public byte[] Xml;
         }
 
@@ -684,7 +722,8 @@ namespace Horizun.Server
                 foreach (JObject p in properties)
                 {
                     string type = Str(p["data_type"])?.ToUpperInvariant();
-                    Restriction r = ValueOf(p, type, id, "alphanumeric.properties." + Str(p["property_set"]) + "." + Str(p["name"]), skipped);
+                    Restriction r = ValueOf(p, type, id, "alphanumeric.properties." + Str(p["property_set"]) + "." + Str(p["name"]),
+                        t.ConvertedUnits, skipped);
                     propertyFacets.Add(new KeyValuePair<JObject, Restriction>(p, r));
                     string uri = Str(p["uri"]);
                     if (uri != null && !Uri.IsWellFormedUriString(uri, UriKind.Absolute))
@@ -692,7 +731,7 @@ namespace Horizun.Server
                             "not an absolute URI, which the IDS uri attribute requires."));
                 }
                 var attributeFacets = attributes.Select(a => new KeyValuePair<JObject, Restriction>(a,
-                    ValueOf(a, null, id, "alphanumeric.attributes." + Str(a["name"]), skipped))).ToList();
+                    ValueOf(a, null, id, "alphanumeric.attributes." + Str(a["name"]), t.ConvertedUnits, skipped))).ToList();
                 if (Str(cls?["uri"]) != null)
                     skipped.Add(Skip(id, "applies_to.classification.uri", Str(cls["uri"]), "omitted",
                         "an IDS applicability classification facet has no uri attribute (only a requirements one does)."));
@@ -861,7 +900,7 @@ namespace Horizun.Server
             w.WriteEndElement();
         }
 
-        private static Restriction ValueOf(JObject rule, string ifcType, string id, string aspect, List<JObject> skipped)
+        private static Restriction ValueOf(JObject rule, string ifcType, string id, string aspect, JArray converted, List<JObject> skipped)
         {
             var r = new Restriction { Base = BaseFor(ifcType) };
             if (rule["allowed_values"] is JArray allowed)
@@ -873,15 +912,23 @@ namespace Horizun.Server
             string unit = Str(rule["unit"]);
             if (anyBound)
             {
-                if (unit != null && !DefaultUnits.Contains(unit))
-                    skipped.Add(Skip(id, aspect + ".bounds", unit, "omitted",
-                        "the bounds are in '" + unit + "' and IDS values are in the IFC default (SI) unit; converting would " +
-                        "write a number nobody specified."));
-                else
+                if (unit == null || DefaultUnits.Contains(unit))
                 {
                     r.MinI = minI; r.MaxI = maxI; r.MinE = minE; r.MaxE = maxE;
                     if (r.Base == "xs:string") r.Base = "xs:double";
                 }
+                else if (TryConvertLengthAreaVolume(unit, out string siUnit, out double factor))
+                {
+                    r.MinI = Scale(minI, factor); r.MaxI = Scale(maxI, factor);
+                    r.MinE = Scale(minE, factor); r.MaxE = Scale(maxE, factor);
+                    if (r.Base == "xs:string") r.Base = "xs:double";
+                    converted.Add(Converted(id, aspect, unit, siUnit, factor, minI, maxI, minE, maxE, r));
+                }
+                else
+                    skipped.Add(Skip(id, aspect + ".bounds", unit, "omitted",
+                        "the bounds are in '" + unit + "' and IDS values are in the IFC default (SI) unit; this bridge " +
+                        "converts length, area and volume units but has no conversion factor for '" + unit + "', so " +
+                        "writing a value from it would be a number nobody specified."));
             }
             else if (unit != null)
                 skipped.Add(Skip(id, aspect + ".unit", unit, "omitted",
@@ -993,6 +1040,31 @@ namespace Horizun.Server
         // ============================================================================
         // helpers
         // ============================================================================
+
+        private static double? Scale(double? value, double factor) => value.HasValue ? (double?)(value.Value * factor) : null;
+
+        /// <summary>A length/area/volume bound converted to its SI default - the "conversion stated" record.</summary>
+        private static JObject Converted(string id, string aspect, string fromUnit, string toUnit, double factor,
+            double? minI, double? maxI, double? minE, double? maxE, Restriction r) => new JObject
+        {
+            ["requirement_id"] = id,
+            ["aspect"] = aspect + ".bounds",
+            ["from_unit"] = fromUnit,
+            ["to_unit"] = toUnit,
+            ["factor"] = factor,
+            ["original"] = Bounds(minI, maxI, minE, maxE),
+            ["converted"] = Bounds(r.MinI, r.MaxI, r.MinE, r.MaxE)
+        };
+
+        private static JObject Bounds(double? minI, double? maxI, double? minE, double? maxE)
+        {
+            var o = new JObject();
+            if (minI.HasValue) o["min_inclusive"] = minI.Value;
+            if (maxI.HasValue) o["max_inclusive"] = maxI.Value;
+            if (minE.HasValue) o["min_exclusive"] = minE.Value;
+            if (maxE.HasValue) o["max_exclusive"] = maxE.Value;
+            return o;
+        }
 
         private static JObject Skip(string id, string aspect, string value, string handling, string why) => new JObject
         {
