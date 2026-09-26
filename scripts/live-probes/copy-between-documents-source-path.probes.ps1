@@ -55,6 +55,10 @@ $script:HzProbeModules += [pscustomobject]@{
                 if ($fx.LibraryDocumentCategory) { $category = [string]$fx.LibraryDocumentCategory }
             } catch { }
         }
+        # One fixture line serves every year: a '{year}' in the path becomes the run's
+        # Revit year, so an Autodesk template of THAT year is the library (a newer file
+        # cannot be opened by an older Revit at all).
+        if ($lib -and $Ctx.Year) { $lib = $lib.Replace('{year}', [string]$Ctx.Year) }
         if (-not $lib -or -not (Test-Path -LiteralPath $lib) -or -not $typeName) {
             Case $names[2] $C 'not_covered' ('needs -Fixtures LibraryDocument (a .rvt/.rte path) and LibraryDocumentTypeName (a type name known ' +
                 'to be in it) in live-fixtures.json; LibraryDocument=' + [bool]$lib + ' exists=' + [bool]($lib -and (Test-Path -LiteralPath $lib)) +

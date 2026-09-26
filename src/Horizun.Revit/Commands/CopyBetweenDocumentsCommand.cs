@@ -304,6 +304,40 @@ namespace Horizun.Revit.Commands
                         "arrived and every collision that occurred."
                 };
                 if (sourceOpenInfo != null) preview["source_open"] = sourceOpenInfo;
+
+                // REHEARSE THE COPY ITSELF. MEASURED 2026-09-26: a column type from the
+                // Autodesk template got a clean dry run and a token, and the apply then
+                // refused with 3 type-name collisions - the rehearsal had resolved the
+                // elements but never asked Revit what they would bring. The copy now runs
+                // inside a transaction that is always rolled back, so the collisions the
+                // apply would meet are named here.
+                string rehearsalError = null;
+                using (var rehearsal = new Transaction(destination, "Horizun: copy rehearsal"))
+                {
+                    if (rehearsal.Start() == TransactionStatus.Started)
+                    {
+                        try { ElementTransformUtils.CopyElements(source, ids, destination, transform, options); }
+                        catch (Exception ex) { rehearsalError = ex.Message; }
+                        finally { try { if (rehearsal.GetStatus() == TransactionStatus.Started) Guard.RollBack(rehearsal); } catch { } }
+                    }
+                    else rehearsalError = "the rehearsal transaction could not start";
+                }
+                preview["type_name_collisions"] = new JArray(typeCollisions.Collisions);
+                if (typeCollisions.Collisions.Count > 0 && duplicates == "abort_on_collision")
+                    return CommandResult.FailWithDetail(
+                        "the copy would be refused: " + typeCollisions.Collisions.Count + " type name(s) it brings already exist in '" +
+                        destination.Title + "' (see type_name_collisions) and duplicate_types=abort_on_collision. Pass " +
+                        "duplicate_types=use_destination to keep the destination's own types for those names. Rehearsed and rolled back; nothing was written.",
+                        new JObject
+                        {
+                            ["state"] = "rehearsed", ["code"] = "type_name_collision",
+                            ["type_name_collisions"] = new JArray(typeCollisions.Collisions)
+                        });
+                if (rehearsalError != null)
+                    return CommandResult.FailWithDetail("the rehearsed copy failed and was rolled back: " + rehearsalError,
+                        new JObject { ["state"] = "rehearsed", ["code"] = "copy_failed", ["revit_said"] = rehearsalError });
+                typeCollisions.Collisions.Clear();
+
                 ApplicationOutcome.StampRehearsal(preview, ids.Count, 0, 0, 0);
                 DocumentGate.StampConfirmation(preview, gate, Name, hash, true,
                     "the token binds the source document, every source element's unique id and type name, and " +
