@@ -187,6 +187,96 @@ namespace Horizun.Core.Tests
         }
 
         // =====================================================================
+        // Model precheck combined with the file's own coverage - the four-way split
+        // an exporter's own behaviour cannot tell apart on its own.
+        // =====================================================================
+
+        private static PsetMapping.Row Row(string pset, string property, int expected, int carrying) => new PsetMapping.Row
+        {
+            PropertySet = pset, Property = property, Entities = "IfcWall", Expected = expected, Carrying = carrying,
+            Status = carrying >= expected ? DeliveryGateStatus.Passed : DeliveryGateStatus.Failed
+        };
+
+        [Fact]
+        public void An_empty_parameter_is_told_apart_from_a_mapping_the_exporter_did_not_apply()
+        {
+            // 5 elements in the model: 3 have a value for Code, 2 do not (empty_in_model).
+            // Of the 3 with a value, only 2 landed in the file - the exporter dropped one
+            // (not_applied), which the file alone could never distinguish from "empty".
+            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Code",
+                                                          Total = 5, HasValue = 3, Empty = 2, ParameterMissing = 0 };
+            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 5, 2) }, new[] { model });
+            JObject row = (JObject)combined.Single();
+            Assert.Equal(2, (int)row["exported"]);
+            Assert.Equal(2, (int)row["empty_in_model"]);
+            Assert.Equal(1, (int)row["not_applied"]);
+            Assert.Equal(0, (int)row["parameter_missing"]);
+            Assert.Null(row["population_mismatch_note"]);
+        }
+
+        [Fact]
+        public void A_parameter_absent_from_the_element_is_its_own_bucket()
+        {
+            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Maker",
+                                                          Total = 4, HasValue = 1, Empty = 0, ParameterMissing = 3 };
+            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Maker", 4, 1) }, new[] { model });
+            JObject row = (JObject)combined.Single();
+            Assert.Equal(1, (int)row["exported"]);
+            Assert.Equal(0, (int)row["empty_in_model"]);
+            Assert.Equal(0, (int)row["not_applied"]);
+            Assert.Equal(3, (int)row["parameter_missing"]);
+        }
+
+        [Fact]
+        public void An_unmapped_ifc_class_reads_the_model_never_and_says_so()
+        {
+            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Code",
+                                                          CategoryUnmapped = true, UnmappedReason = "no Revit category for IfcDistributionElement." };
+            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 2, 2) }, new[] { model });
+            JObject row = (JObject)combined.Single();
+            Assert.Equal(JTokenType.Null, row["exported"].Type);
+            Assert.Equal(JTokenType.Null, row["not_applied"].Type);
+            Assert.True((bool)row["model"]["category_unmapped"]);
+            Assert.Contains("IfcDistributionElement", (string)row["model"]["reason"]);
+        }
+
+        [Fact]
+        public void No_model_census_at_all_is_told_apart_from_an_unmapped_category()
+        {
+            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 2, 2) },
+                                                           Array.Empty<PsetMapping.ModelCensusRow>());
+            JObject row = (JObject)combined.Single();
+            Assert.Equal(JTokenType.Null, row["model"].Type);
+            Assert.Equal(JTokenType.Null, row["exported"].Type);
+            Assert.Contains("no model census", (string)row["classification_reason"], StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_population_mismatch_between_the_census_and_the_file_is_named_not_hidden()
+        {
+            // The category heuristic found 6 elements; the file's own coverage check, by
+            // IFC class, found only 5 candidates. exported/not_applied are still reported
+            // (as aggregate counts), but the mismatch is surfaced rather than silently
+            // trusted.
+            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Code",
+                                                          Total = 6, HasValue = 4, Empty = 2, ParameterMissing = 0 };
+            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 5, 4) }, new[] { model });
+            JObject row = (JObject)combined.Single();
+            Assert.NotNull(row["population_mismatch_note"]);
+        }
+
+        [Fact]
+        public void Not_applied_never_goes_negative_even_if_the_file_carries_more_than_the_model_had_values()
+        {
+            // A heuristic category mismatch could in principle find carrying > has_value;
+            // that must read as 0 not_applied, never a negative count.
+            var model = new PsetMapping.ModelCensusRow { PropertySet = "HZ_Delivery", Property = "Code",
+                                                          Total = 3, HasValue = 1, Empty = 2, ParameterMissing = 0 };
+            JArray combined = PsetMapping.CombineWithModel(new[] { Row("HZ_Delivery", "Code", 3, 3) }, new[] { model });
+            Assert.Equal(0, (int)((JObject)combined.Single())["not_applied"]);
+        }
+
+        // =====================================================================
         // Header and trailer
         // =====================================================================
 
