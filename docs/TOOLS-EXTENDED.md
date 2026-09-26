@@ -1909,7 +1909,9 @@ orientation is refused by name before anything is written:
 
 - **Structural Framing** places as a beam (`StructuralType.Beam`) on a HORIZONTAL axis only:
   tracks, headers, sills, blocking, mains, cross, perimeter. Its z-justification is set to
-  centre so the axis is the member's centreline.
+  centre so the axis is the member's centreline, and its automatic joins are switched off
+  at both ends: a track or a blocking piece ends where the plan says, against a stud's
+  face, instead of being cut back or extended by Revit to meet a column or another beam.
 - **Structural Columns** place as a column (`StructuralType.Column`) on a VERTICAL axis only:
   studs, kings, jacks, cripples, hangers.
 - **Line-based Generic Model** takes both, on a reference plane through the member's axis

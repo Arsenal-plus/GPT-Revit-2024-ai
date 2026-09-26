@@ -282,6 +282,13 @@ namespace Horizun.Revit.Commands
                     // The axis is the member's centreline; Revit's default justification hangs a
                     // beam BELOW its line. Centre it where the parameter exists (measured live).
                     try { beam.get_Parameter(BuiltInParameter.Z_JUSTIFICATION)?.Set((int)ZJustification.Center); } catch { }
+                    // A track, header or blocking piece ends where the plan says, against a stud's
+                    // face. Revit's automatic beam joins would cut back or extend it at a column or
+                    // another beam, and the member would no longer measure what the plan and the
+                    // takeoff say. Its geometry follows its location line only with joins off at
+                    // both ends (whether an unjoined end keeps the planned endpoint is measured live).
+                    for (int end = 0; end < 2; end++)
+                        try { if (StructuralFramingUtils.IsJoinAllowedAtEnd(beam, end)) StructuralFramingUtils.DisallowJoinAtEnd(beam, end); } catch { }
                     return beam;
                 }
                 case FramingPlacementKind.Column:
