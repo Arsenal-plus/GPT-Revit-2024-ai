@@ -5362,12 +5362,14 @@ namespace Horizun.Contracts
                     "Revit replaced or added. slope moves a gravity pipe run's endpoints to a target grade from a fixed end " +
                     "(element_ids + walk to follow fittings, slope_percent, fixed_end). size_by_flow proposes sizes by velocity " +
                     "limit; writes nothing. route: orthogonal 3-D path around obstacles (refuses no_route); apply creates segments " +
-                    "and elbows, re-reads ends, sizes and connections, and rolls back on any spatial-check error.",
+                    "and elbows, re-reads ends, sizes and connections, and rolls back on any spatial-check error. hangers places a " +
+                    "caller-supplied family at spaced stations under the floor/framing/roof above (host or link), re-reading " +
+                    "position, rotation and rod length; stations with nothing above are reported, not placed.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""slope"", ""size_by_flow"", ""route""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""slope"", ""size_by_flow"", ""route"", ""hangers""] },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""in"", ""feet""], ""default"": ""mm"" },
     ""type_id"": { ""type"": ""integer"" }, ""segment_id"": { ""type"": ""integer"" },
     ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct"", ""conduit"", ""cable_tray""], ""description"": ""route: run kind to create."" },
@@ -5399,6 +5401,12 @@ namespace Horizun.Contracts
     ""slope_percent"": { ""type"": ""number"", ""description"": ""slope: grade to hold, e.g. 2.0 for 2%."" },
     ""fixed_end"": { ""type"": ""string"", ""description"": ""slope: 'upstream', 'downstream', or the open-end pipe id to hold, optionally ':high' or ':low'."" },
     ""min_clearance"": { ""type"": ""number"", ""description"": ""slope: refuse if any point lands below the floor under the held end plus this."" },
+    ""hanger_type_id"": { ""type"": ""integer"", ""description"": ""hangers: non-hosted family type placed at each station"" },
+    ""spacing_mm"": { ""type"": ""number"", ""description"": ""hangers: maximum distance between supports"" },
+    ""end_offset_mm"": { ""type"": ""number"", ""description"": ""hangers: clearance from each run end and each tap fitting"" },
+    ""rod_length_parameter"": { ""type"": ""string"", ""description"": ""hangers: instance length parameter set to the measured rod"" },
+    ""attach"": { ""type"": ""string"", ""enum"": [""structure_above""], ""default"": ""structure_above"" },
+    ""max_rod_mm"": { ""type"": ""number"", ""default"": 3000 },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")

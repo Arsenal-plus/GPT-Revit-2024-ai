@@ -633,6 +633,7 @@
     <!-- horizun_mep_routing: rule-list edits and velocity sizing, Revit-free. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRoutingRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SlopeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\HangerRules.cs" />
     <!-- Field audit 2026-09-25: rule-based mass type change, template/SPF audit,
          warning root-cause classification, edited-wall-profile drift. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\TypeChangeRuleRules.cs" />

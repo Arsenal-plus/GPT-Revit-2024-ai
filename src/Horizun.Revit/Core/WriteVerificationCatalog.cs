@@ -197,8 +197,11 @@ namespace Horizun.Revit.Core
             // slope: every pipe end re-read against its planned elevation (sign and height),
             // the signed slope of each non-riser pipe, each fitting centre, the held end,
             // min_clearance and every connector pair recorded before the write.
+            // hangers: every placed instance re-reads its type, position (1 mm, Z from its level
+            // plus the governing offset), rotation (0.5 degree) and the named rod parameter (1 mm),
+            // and a "count" item holds placed == planned (MepRoutingHangers.cs).
             Row("horizun_mep_routing", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
-                F(C + "MepRoutingCommand.cs", C + "MepRoutingRoute.cs", C + "MepRoutingSlope.cs", "Horizun.Revit/Core/SlopeRules.cs"),
+                F(C + "MepRoutingCommand.cs", C + "MepRoutingRoute.cs", C + "MepRoutingSlope.cs", "Horizun.Revit/Core/SlopeRules.cs", C + "MepRoutingHangers.cs"),
                 "MepRoutingSlope.cs ~l.469: slope's connection:<pair> checks IsConnectedTo, not origin coincidence; an elbow flagged connected but off its pipe end passes (the pipe-slope live probe re-reads origins).",
                 "MepRoutingSlope.cs ~l.333: flow direction (Connector.Direction, element-relative) is not measured live; ':high'/':low' do not depend on it.",
                 "MepRoutingCommand.cs ~l.146: warnings Revit posts in slope's apply transaction (AutoRouteFailures.AttemptToConnectNonSlopingElementToSlopedPipeWarning) are not captured in the reply.",
