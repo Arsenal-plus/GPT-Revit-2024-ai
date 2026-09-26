@@ -379,23 +379,32 @@ namespace Horizun.Revit.Core
 
         // ---- export ----------------------------------------------------------------
 
+        // The first 14 are the ORIGINAL header, in their original order - a Power BI
+        // report already built against this file reads columns by name, but a column
+        // that MOVES is still a breaking change for anything reading by position.
+        // The 6 appended after them are this ledger's external-coordination provenance
+        // (see CoordinationFinding's own fields), added for a Power BI dashboard.
         public static readonly string[] CsvHeader =
         {
             "finding_id", "status", "assignee", "note", "category_a", "category_b",
             "side_a", "side_b", "point_mm", "first_seen_utc", "last_seen_utc",
-            "resolved_utc", "times_seen", "regression"
+            "resolved_utc", "times_seen", "regression",
+            "scope", "external_source", "external_issue_id", "priority", "responsible", "immovable_discipline"
         };
 
         public static string CsvRow(CoordinationFinding f)
         {
             string point = f.PointMm == null ? "" : string.Join(" ", Array.ConvertAll(f.PointMm,
                 v => v.ToString("0.0", CultureInfo.InvariantCulture)));
+            string immovable = f.ImmovableSideIsA == null ? "" : f.ImmovableSideIsA == true ? "a" : "b";
             string[] cells =
             {
                 f.Id, f.Status, f.Assignee ?? "", f.Note ?? "", f.CategoryA ?? "", f.CategoryB ?? "",
                 f.SideA ?? "", f.SideB ?? "", point, f.FirstSeenUtc ?? "", f.LastSeenUtc ?? "",
                 f.ResolvedUtc ?? "", f.TimesSeen.ToString(CultureInfo.InvariantCulture),
-                f.Regression ? "true" : "false"
+                f.Regression ? "true" : "false",
+                f.Scope ?? "", f.ExternalSource ?? "", f.ExternalIssueId ?? "", f.Priority ?? "",
+                f.Responsible ?? "", immovable
             };
             var sb = new StringBuilder();
             for (int i = 0; i < cells.Length; i++)

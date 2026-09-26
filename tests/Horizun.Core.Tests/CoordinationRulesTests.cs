@@ -6,6 +6,7 @@
 // that must not close anything, the human verdict detection may not forge.
 // -----------------------------------------------------------------------------
 using System.Collections.Generic;
+using System.Linq;
 using Horizun.Revit.Core;
 using Xunit;
 
@@ -162,6 +163,41 @@ namespace Horizun.Core.Tests
             Assert.Contains("\"cruza la viga, dijo \"\"moverlo\"\"\nal eje B\"", row);
             // The header and the row agree on the column count.
             Assert.Equal(CoordinationRules.CsvHeader.Length, SplitCsv(row));
+        }
+
+        [Fact]
+        public void Csv_header_keeps_the_14_original_columns_then_the_6_provenance_columns()
+        {
+            string[] original =
+            {
+                "finding_id", "status", "assignee", "note", "category_a", "category_b",
+                "side_a", "side_b", "point_mm", "first_seen_utc", "last_seen_utc",
+                "resolved_utc", "times_seen", "regression"
+            };
+            string[] appended = { "scope", "external_source", "external_issue_id", "priority", "responsible", "immovable_discipline" };
+
+            Assert.Equal(20, CoordinationRules.CsvHeader.Length);
+            Assert.Equal(original, CoordinationRules.CsvHeader.Take(14));
+            Assert.Equal(appended, CoordinationRules.CsvHeader.Skip(14));
+        }
+
+        [Fact]
+        public void Csv_row_carries_the_provenance_columns_in_the_same_order_as_the_header()
+        {
+            var f = new CoordinationFinding
+            {
+                Id = "abc", Status = "open", SideA = "host||u1", SideB = "MEP||u2", TimesSeen = 1,
+                Scope = "s1", ExternalSource = "navisworks", ExternalIssueId = "iss-42",
+                Priority = "High", Responsible = "Mechanical", ImmovableSideIsA = true
+            };
+            string[] cells = CoordinationRules.CsvRow(f).Split(',');
+            Assert.Equal(CoordinationRules.CsvHeader.Length, cells.Length);
+            Assert.Equal("s1", cells[14]);
+            Assert.Equal("navisworks", cells[15]);
+            Assert.Equal("iss-42", cells[16]);
+            Assert.Equal("High", cells[17]);
+            Assert.Equal("Mechanical", cells[18]);
+            Assert.Equal("a", cells[19]);
         }
 
         private static int SplitCsv(string row)

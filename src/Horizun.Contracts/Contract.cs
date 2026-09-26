@@ -5449,7 +5449,7 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_coordination",
                 Command = "horizun_coordination",
-                Description = @"List, update and export the durable clash-finding ledger that horizun_clash record_findings=true maintains per document. A finding is a clash pair with a stable order-normalized identity, a state and a history: open, assigned, accepted_risk, closed_by_decision are the states people set; resolved_by_model is MEASURED - only a complete detection run of the finding's own scope can set it, a partial run resolves nothing, and a resolved finding that returns is flagged as a regression. The ledger is bridge state under the Horizun data root, not model state: no Revit transaction opens here, and every update is re-read from disk before success is claimed. Every state change, assignment and comment lands in an APPEND-ONLY history the export carries. Export writes csv, json or bcf and reports the re-read byte count and SHA-256; the BCF claim is exactly STRUCTURAL - the zip is re-read and every markup.bcf re-parsed as XML against the ledger, and no consumer round-trip is proven. operation=import reads a returned .bcfzip back into the ledger: topics match by the GUID this ledger MINTED (not by title, which a coordinator is free to edit), a closed topic becomes closed_by_decision and NEVER resolved_by_model - an external tool saying Closed means a person decided, not that the geometry moved - comments are folded in without duplicating on a re-import, and a topic this ledger does not know is REPORTED rather than invented into it as a finding no detection run could ever resolve. Import is a dry run by default. operation=import_navisworks reads naviscoord-mcp's navis_handoff output (coordination_handoff.json; revit_worklist.json carries one side only and is reported untraceable-by-design): elements are matched by normalized source_file against the active document and loaded rvt links, and the pair is RE-DETECTED - solid intersection, or a measured distance otherwise. Only a REPRODUCED pair is folded into the ledger (origin navisworks; priority/responsible/immovable_side/suggested_action carried) with runComplete=false always - it never resolves a finding by itself. Reports issues_total/traceable/matched/reproduced/not_reproduced/not_traceable. Dry run by default. operation=show creates a PERSISTENT 3D view (section box + overrides: red = must move, orange = immovable, blue = unknown) over selected findings - the one operation here that WRITES the model, dry_run -> token -> apply, verified by re-reading the view/box/overrides; a link-only side is painted at the link level (link_level_overrides says so). operation=evidence returns a ready manage_views section over one finding's clash point, to capture with horizun_capture_view.",
+                Description = @"List, update and export the durable clash-finding ledger that horizun_clash record_findings=true maintains per document. A finding is a clash pair with a stable order-normalized identity, a state and a history: open, assigned, accepted_risk, closed_by_decision are the states people set; resolved_by_model is MEASURED - only a complete detection run of the finding's own scope can set it, a partial run resolves nothing, and a resolved finding that returns is flagged as a regression. The ledger is bridge state under the Horizun data root, not model state: no Revit transaction opens here, and every update is re-read from disk before success is claimed. Every state change, assignment and comment lands in an APPEND-ONLY history the export carries. Export writes csv, json or bcf and reports the re-read byte count and SHA-256; the BCF claim is exactly STRUCTURAL - the zip is re-read and every markup.bcf re-parsed as XML against the ledger, and no consumer round-trip is proven. operation=import reads a returned .bcfzip back into the ledger: topics matching the GUID this ledger MINTED update status/comments (closed becomes closed_by_decision, NEVER resolved_by_model). A topic from ANY OTHER tool (Navisworks, ACC, Solibri, BIMcollab, both BCF 2.1 and 3.0) is resolved by its own viewpoint Components - AuthoringToolId as a Revit Element Id or UniqueId, IfcGuid via the IFC_GUID parameter or the computed export id - and RE-DETECTED against the active document and loaded links; only a REPRODUCED pair becomes a finding (origin bcf, runComplete=false always, carrying the topic's guid/title/priority/assigned_to/status), a topic resolving fewer than two elements is reported not_traceable with the reason, never invented. Import is a dry run by default. operation=import_navisworks reads naviscoord-mcp's navis_handoff output (coordination_handoff.json; revit_worklist.json carries one side only and is reported untraceable-by-design): elements are matched by normalized source_file against the active document and loaded rvt links, and the pair is RE-DETECTED - solid intersection, or a measured distance otherwise. Only a REPRODUCED pair is folded into the ledger (origin navisworks; priority/responsible/immovable_side/suggested_action carried) with runComplete=false always - it never resolves a finding by itself. Reports issues_total/traceable/matched/reproduced/not_reproduced/not_traceable. Dry run by default. operation=show creates a PERSISTENT 3D view (section box + overrides: red = must move, orange = immovable, blue = unknown) over selected findings - the one operation here that WRITES the model, dry_run -> token -> apply, verified by re-reading the view/box/overrides; a link-only side is painted at the link level (link_level_overrides says so). operation=evidence returns a ready manage_views section over one finding's clash point, to capture with horizun_capture_view. operation=navisworks_readiness (read-only) finds the 3D view named exactly 'Navisworks' (else the default '{3D}') and reports its detail level, section box, visual phase and which model categories WITH ELEMENTS are hidden in it - verdict not_ready when detail level is not Fine (MEASURED: Coarse exports a pipe as one line, zero clashes found against it) or an MEP category with elements is hidden. operation=prepare_navisworks (write, dry_run -> token -> apply) sets that view's detail level to Fine and, only with unhide=true, unhides the named categories (refusing any View.CanCategoryBeHidden denies, e.g. a governing template). operation=navisworks_status (read-only) reports every navisworks-origin finding's own revit_status plus a navis_set_status suggestion list ('resolved' only when a complete detection run measured it gone) to feed back to naviscoord-mcp; path+overwrite optionally write it to a JSON file, re-read and row-count verified.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -5462,17 +5462,22 @@ namespace Horizun.Contracts
         ""import"",
         ""import_navisworks"",
         ""show"",
-        ""evidence""
+        ""evidence"",
+        ""navisworks_readiness"",
+        ""prepare_navisworks"",
+        ""navisworks_status""
       ],
       ""default"": ""list""
     },
-    ""target_document"": { ""type"": ""string"", ""description"": ""show: required - the document the view is created in.""},
+    ""target_document"": { ""type"": ""string"", ""description"": ""show/prepare_navisworks: required - the document being changed.""},
+    ""unhide"": { ""type"": ""boolean"", ""default"": false, ""description"": ""prepare_navisworks: also unhide the categories named in `categories`. Without it, categories is refused rather than silently ignored.""},
+    ""categories"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""string"" }, ""description"": ""prepare_navisworks with unhide=true: model category NAMES (as navisworks_readiness reports them) to unhide in the Navisworks view.""},
     ""finding_ids"": { ""type"": ""array"", ""maxItems"": 300, ""items"": { ""type"": ""string"" }, ""description"": ""show: scope to these findings; omitted uses status (or every open/assigned/accepted_risk finding).""},
     ""view_name"": { ""type"": ""string"", ""description"": ""show: the persistent view's name; refused if one already exists with it.""},
     ""per_issue"": { ""type"": ""boolean"", ""default"": false, ""description"": ""show: one view per finding instead of one aggregate view. Not yet implemented - refused.""},
     ""max_views"": { ""type"": ""integer"", ""default"": 10, ""description"": ""show: reserved for per_issue.""},
     ""select"": { ""type"": ""boolean"", ""default"": false, ""description"": ""show: also select the painted elements (best-effort, not part of the verified postconditions).""},
-    ""confirmation_token"": { ""type"": ""string"", ""description"": ""show apply: from the dry run.""},
+    ""confirmation_token"": { ""type"": ""string"", ""description"": ""show/prepare_navisworks apply: from the dry run.""},
     ""status"": {
       ""type"": ""string"",
       ""description"": ""list: filter by status. update: the new status (open, assigned, accepted_risk, closed_by_decision - resolved_by_model is detection's verdict and refuses).""
@@ -5508,7 +5513,7 @@ namespace Horizun.Contracts
     },
     ""path"": {
       ""type"": ""string"",
-      ""description"": ""export: absolute destination file. import: the .bcfzip to read. import_navisworks: the navis_handoff json.""
+      ""description"": ""export: absolute destination file. import: the .bcfzip to read. import_navisworks: the navis_handoff json. navisworks_status: optional absolute destination to also write the JSON to (re-read and row-count verified).""
     },
     ""format"": {
       ""type"": ""string"",
@@ -5522,12 +5527,12 @@ namespace Horizun.Contracts
     ""dry_run"": {
       ""type"": ""boolean"",
       ""default"": true,
-      ""description"": ""import: show what a returned .bcfzip WOULD change. import_navisworks: show what would be matched/reproduced before recording it.""
+      ""description"": ""import: show what a returned .bcfzip WOULD change. import_navisworks: show what would be matched/reproduced before recording it. prepare_navisworks: preview the detail-level/unhide change before a confirmation_token applies it.""
     },
     ""overwrite"": {
       ""type"": ""boolean"",
       ""default"": false,
-      ""description"": ""export: replace an existing file. Off by default so an export cannot silently clobber evidence.""
+      ""description"": ""export/navisworks_status(path): replace an existing file. Off by default so a write cannot silently clobber evidence.""
     },
     ""on_conflict"": {
       ""type"": ""string"",

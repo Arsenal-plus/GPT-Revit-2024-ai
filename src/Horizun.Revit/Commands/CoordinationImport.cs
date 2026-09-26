@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - reading a .bcfzip back. Original Horizun code.
 //
 // G14 of the 2026-09-14 competitive inventory, second half. The export half was
@@ -8,8 +8,9 @@
 // exported file in BIMcollab or Solibri, writes comments and statuses into it, and
 // sends it back. Until now that file could only be read by a human.
 //
-// THE HARD PART IS NOT THE ZIP. It is deciding what a returned topic MEANS about
-// a finding this model measured, and the rule here is deliberately conservative:
+// THE HARD PART IS NOT THE ZIP (Core's BcfMarkupReader does that, Revit-free and
+// tested without a model). It is deciding what a returned topic MEANS about a
+// finding this model measured, and the rule here is deliberately conservative:
 //
 //   A RETURNED TOPIC NEVER RESOLVES A FINDING. resolved_by_model is detection's
 //   verdict and nothing else may assert it - an external tool saying "Closed"
@@ -17,11 +18,14 @@
 //   to closed_by_decision, which is exactly what it is, and the comment that
 //   accompanied it is preserved so the decision has its reason attached.
 //
-//   A TOPIC THIS LEDGER DOES NOT KNOW IS NOT INVENTED INTO IT. Someone else's
-//   BCF, or a topic raised by hand in another tool, has no pair of elements in
-//   this model. It is REPORTED as unmatched, with its title, rather than folded
-//   in as a finding with no sides - which would put a row in the ledger that no
-//   detection run could ever resolve or regress.
+//   A TOPIC THIS LEDGER DID NOT MINT IS NOT INVENTED INTO IT BY ASSERTION. Someone
+//   else's BCF, or a topic raised by hand in another tool, is not matched by the
+//   guid this ledger mints for its own exports (BcfTopicGuid) - so instead of just
+//   reporting it, CoordinationImportBcfExternal.cs resolves its own viewpoint
+//   Components against the model and RE-DETECTS the pair, exactly like
+//   import_navisworks does beside it. Only a REPRODUCED pair becomes a finding;
+//   one that cannot be traced to two elements is reported not_traceable, never
+//   invented.
 //
 //   THE MATCH IS BY THE GUID WE MINTED. BcfTopicGuid is a deterministic function
 //   of the finding id, so a topic that came from this ledger matches exactly.
@@ -36,10 +40,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
-using System.Text;
-using System.Xml;
 using Autodesk.Revit.DB;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
@@ -49,10 +50,9 @@ namespace Horizun.Revit.Commands
     public sealed partial class CoordinationCommand
     {
         /// <summary>
-        /// Fold a .bcfzip back into this document's ledger.
-        ///
-        /// Statuses and comments only. Nothing here can create a finding, and nothing
-        /// here can resolve one.
+        /// Fold a .bcfzip back into this document's ledger - both topics this ledger
+        /// exported (status/comments only) and topics from any other tool (resolved and
+        /// re-detected against the model; see CoordinationImportBcfExternal.cs).
         /// </summary>
         private static CommandResult Import(Document doc, JObject request, string ledgerPath)
         {
@@ -64,7 +64,7 @@ namespace Horizun.Revit.Commands
 
             List<BcfTopic> topics;
             string readError;
-            if (!TryReadTopics(path, out topics, out readError))
+            if (!BcfMarkupReader.TryReadTopics(path, out topics, out readError))
                 return CommandResult.Fail(readError);
 
             if (topics.Count == 0)
@@ -95,26 +95,29 @@ namespace Horizun.Revit.Commands
                     "happened, and nothing here knows that.");
             var refused = new JArray();
             var changes = new List<Change>();
+            var unmatchedTopics = new List<BcfTopic>();
 
             foreach (BcfTopic topic in topics)
             {
                 CoordinationFinding finding;
                 if (!byGuid.TryGetValue(topic.Guid, out finding))
                 {
+                    unmatchedTopics.Add(topic);
                     unmatched.Add(new JObject
                     {
                         ["guid"] = topic.Guid,
                         ["title"] = topic.Title,
                         ["status"] = topic.Status,
                         ["comments"] = topic.Comments.Count,
-                        ["means"] = "no finding in this document's ledger has that topic guid. It was NOT " +
-                                    "created: a finding with no pair of elements is a row no detection run " +
-                                    "could ever resolve or regress."
+                        ["means"] = "no finding in this document's ledger has that topic guid - it is not one " +
+                                    "this ledger exported. Resolved and re-detected against its own viewpoint " +
+                                    "components below (external_reproduced/external_not_traceable/" +
+                                    "external_not_reproduced); NOT invented into a finding merely for being named here."
                     });
                     continue;
                 }
 
-                string wantedStatus = MapStatus(topic.Status);
+                string wantedStatus = BcfMarkupReader.MapStatus(topic.Status);
                 var change = new Change { Finding = finding, Topic = topic };
 
                 if (wantedStatus != null && wantedStatus != finding.Status)
@@ -124,7 +127,7 @@ namespace Horizun.Revit.Commands
                     // Closed about a clash that is still in the model. Two dates that were both
                     // already recorded and never compared.
                     string localAt = finding.UpdatedUtc;
-                    string externalAt = LastExternalChange(topic);
+                    string externalAt = BcfMarkupReader.LastExternalChange(topic);
                     bool conflict = localAt != null && externalAt != null &&
                                     string.CompareOrdinal(localAt, externalAt) > 0;
 
@@ -173,7 +176,7 @@ namespace Horizun.Revit.Commands
                 // because re-importing the same file must not double every comment - a
                 // coordinator sends the file back more than once.
                 foreach (BcfComment comment in topic.Comments)
-                    if (!AlreadyRecorded(finding, comment))
+                    if (!BcfMarkupReader.AlreadyRecorded(finding, comment))
                         change.NewComments.Add(comment);
 
                 if (change.NewStatus == null && change.NewComments.Count == 0) continue;
@@ -188,6 +191,16 @@ namespace Horizun.Revit.Commands
                     ["comments_to_add"] = change.NewComments.Count
                 });
             }
+
+            // ---- topics THIS ledger does not recognize: resolve their own viewpoint
+            // components against the model and re-detect, exactly like import_navisworks. ----
+            JArray extNotTraceable, extReproduced, extNotReproduced;
+            List<CoordinationDetected> extDetected;
+            Dictionary<string, BcfTopic> extTopicByFindingId;
+            List<string> extLinksUnloaded;
+            string extMatchRule;
+            ResolveExternalBcfTopics(doc, unmatchedTopics, out extNotTraceable, out extReproduced,
+                out extNotReproduced, out extDetected, out extTopicByFindingId, out extLinksUnloaded, out extMatchRule);
 
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
             var summary = new JObject
@@ -207,16 +220,26 @@ namespace Horizun.Revit.Commands
                     "'Closed' overwriting yesterday's re-detection leaves the ledger saying Closed about " +
                     "a clash that is still in the model.",
                 ["refused_transitions"] = refused,
+                ["external_reproduced"] = extReproduced,
+                ["external_not_reproduced"] = extNotReproduced,
+                ["external_not_traceable"] = extNotTraceable,
+                ["external_links_not_loaded"] = new JArray(extLinksUnloaded),
+                ["external_match_rule"] = extMatchRule,
                 ["means"] =
-                    "A returned topic NEVER sets resolved_by_model: that status is detection's verdict, and an " +
-                    "external tool saying 'Closed' means a person decided, which is closed_by_decision. Topics " +
-                    "this ledger does not know are reported, never invented into it."
+                    "A returned topic that matches one of THIS ledger's own exports NEVER sets " +
+                    "resolved_by_model: that status is detection's verdict, and an external tool saying " +
+                    "'Closed' means a person decided, which is closed_by_decision (see 'planned'/'unmatched' " +
+                    "above). A topic from ANY OTHER tool is resolved by its own viewpoint components and " +
+                    "RE-DETECTED (external_reproduced/external_not_reproduced/external_not_traceable): only a " +
+                    "reproduced pair becomes a finding, origin 'bcf', runComplete=false always - it never " +
+                    "resolves a finding by itself either."
             };
 
             if (dry)
             {
                 summary["dry_run"] = true;
                 summary["would_change"] = changes.Count;
+                summary["external_would_record"] = extDetected.Count;
                 return CommandResult.Ok(summary);
             }
 
@@ -233,9 +256,53 @@ namespace Horizun.Revit.Commands
                 foreach (BcfComment comment in change.NewComments)
                 {
                     CoordinationRules.AppendEvent(change.Finding, "comment",
-                        ImportedCommentText(comment), nowUtc);
+                        BcfMarkupReader.ImportedCommentText(comment), nowUtc);
                     change.Finding.UpdatedUtc = nowUtc;
                 }
+            }
+
+            // runComplete is ALWAYS false: a spot-check over named topics is not a complete
+            // detection run over a category scope, and must never resolve anything.
+            CoordinationRules.Merge(findings, extDetected, nowUtc, runComplete: false, scopeKey: "bcf");
+            foreach (KeyValuePair<string, BcfTopic> kv in extTopicByFindingId)
+            {
+                CoordinationFinding finding;
+                if (!findings.TryGetValue(kv.Key, out finding)) continue; // Merge just added or refreshed it
+                BcfTopic topic = kv.Value;
+
+                string wantedStatus = BcfMarkupReader.MapStatus(topic.Status);
+                if (wantedStatus != null && wantedStatus != finding.Status)
+                {
+                    string why;
+                    if (CoordinationRules.CanTransition(finding.Status, wantedStatus, out why))
+                    {
+                        // Same conflict rule as a matched topic: a brand-new finding (UpdatedUtc
+                        // still null) can never conflict, since nothing local existed to disagree with.
+                        string localAt = finding.UpdatedUtc;
+                        string externalAt = BcfMarkupReader.LastExternalChange(topic);
+                        bool conflict = localAt != null && externalAt != null &&
+                                        string.CompareOrdinal(localAt, externalAt) > 0;
+                        if (!conflict || onConflict == "prefer_external")
+                        {
+                            CoordinationRules.AppendEvent(finding, "status",
+                                "imported from BCF '" + Path.GetFileName(path) + "' (external topic " +
+                                topic.Guid + "): " + finding.Status + " -> " + wantedStatus, nowUtc);
+                            finding.Status = wantedStatus;
+                            finding.UpdatedUtc = nowUtc;
+                        }
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(finding.Assignee) && !string.IsNullOrWhiteSpace(topic.AssignedTo))
+                {
+                    finding.Assignee = topic.AssignedTo;
+                    finding.UpdatedUtc = nowUtc;
+                }
+                foreach (BcfComment comment in topic.Comments)
+                    if (!BcfMarkupReader.AlreadyRecorded(finding, comment))
+                    {
+                        CoordinationRules.AppendEvent(finding, "comment", BcfMarkupReader.ImportedCommentText(comment), nowUtc);
+                        finding.UpdatedUtc = nowUtc;
+                    }
             }
 
             CoordinationLedger.Save(ledgerPath, documentTitle ?? doc.Title, findings);
@@ -254,6 +321,12 @@ namespace Horizun.Revit.Commands
                 if (change.NewStatus != null && after.Status != change.NewStatus)
                     notVerified.Add(change.Finding.Id);
             }
+            foreach (string findingId in extTopicByFindingId.Keys)
+            {
+                CoordinationFinding after;
+                if (!reloaded.TryGetValue(findingId, out after) || after.ExternalSource != "bcf")
+                    notVerified.Add(findingId);
+            }
             if (notVerified.Count > 0)
                 return CommandResult.Fail(
                     "The ledger was written and re-reading it does not show " + notVerified.Count +
@@ -262,179 +335,9 @@ namespace Horizun.Revit.Commands
 
             summary["dry_run"] = false;
             summary["applied"] = changes.Count;
+            summary["external_recorded"] = extDetected.Count;
             summary["verified_by_reread"] = true;
             return CommandResult.Ok(summary);
-        }
-
-        // =====================================================================
-        // Reading the file
-        // =====================================================================
-
-        private static bool TryReadTopics(string path, out List<BcfTopic> topics, out string error)
-        {
-            topics = new List<BcfTopic>();
-            error = null;
-            try
-            {
-                using (FileStream stream = File.OpenRead(path))
-                using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
-                {
-                    foreach (ZipArchiveEntry entry in zip.Entries)
-                    {
-                        if (!entry.FullName.EndsWith("markup.bcf", StringComparison.OrdinalIgnoreCase)) continue;
-                        var xml = new XmlDocument();
-                        using (Stream entryStream = entry.Open()) xml.Load(entryStream);
-                        BcfTopic topic = ReadTopic(xml, entry.FullName);
-                        if (topic != null) topics.Add(topic);
-                    }
-                }
-            }
-            catch (InvalidDataException ex)
-            {
-                error = "'" + path + "' could not be opened as a zip: " + ex.Message +
-                        ". A BCF is a zip; nothing was read.";
-                return false;
-            }
-            catch (XmlException ex)
-            {
-                // A file with one broken topic is not a file with none: say which entry.
-                error = "a markup.bcf entry inside '" + path + "' is not valid XML: " + ex.Message +
-                        ". Nothing was imported - a partial import of somebody else's coordination file is " +
-                        "worse than none, because nobody can tell which half arrived.";
-                return false;
-            }
-            catch (Exception ex)
-            {
-                error = "'" + path + "' could not be read: " + ex.Message;
-                return false;
-            }
-            return true;
-        }
-
-        private static BcfTopic ReadTopic(XmlDocument xml, string entryName)
-        {
-            XmlElement root = xml.DocumentElement;
-            if (root == null || root.Name != "Markup") return null;
-            XmlNode topicNode = root.SelectSingleNode("Topic");
-            if (topicNode == null) return null;
-
-            var topic = new BcfTopic
-            {
-                Entry = entryName,
-                Guid = Attribute(topicNode, "Guid"),
-                Status = Attribute(topicNode, "TopicStatus"),
-                Title = Text(topicNode, "Title"),
-                CreationDate = Text(topicNode, "CreationDate")
-            };
-
-            foreach (XmlNode commentNode in root.SelectNodes("Comment"))
-                topic.Comments.Add(new BcfComment
-                {
-                    Guid = Attribute(commentNode, "Guid"),
-                    Date = Text(commentNode, "Date"),
-                    Author = Text(commentNode, "Author"),
-                    Text = Text(commentNode, "Comment")
-                });
-
-            return string.IsNullOrWhiteSpace(topic.Guid) ? null : topic;
-        }
-
-        private static string Attribute(XmlNode node, string name)
-        {
-            XmlAttribute attribute = node?.Attributes?[name];
-            return attribute?.Value;
-        }
-
-        private static string Text(XmlNode node, string child)
-        {
-            XmlNode found = node?.SelectSingleNode(child);
-            return found?.InnerText;
-        }
-
-        /// <summary>
-        /// A BCF TopicStatus mapped to one of this ledger's statuses, or null when it
-        /// says nothing this ledger can act on.
-        ///
-        /// "Closed" becomes closed_by_decision and never resolved_by_model. The two are
-        /// different claims: one says a person decided, the other says the geometry
-        /// changed and a complete detection run proved it.
-        /// </summary>
-        /// <summary>
-        /// When this topic last changed OUTSIDE this ledger: its newest comment, or its
-        /// creation date when it has none.
-        ///
-        /// ISO-8601 UTC strings compare correctly as ordinals, which is why they are written
-        /// that way everywhere in this codebase. A topic with no date at all yields null, and
-        /// a null cannot conflict: an unknown date is not evidence that something moved.
-        /// </summary>
-        private static string LastExternalChange(BcfTopic topic)
-        {
-            string newest = topic.CreationDate;
-            foreach (BcfComment comment in topic.Comments ?? new List<BcfComment>())
-            {
-                if (string.IsNullOrWhiteSpace(comment.Date)) continue;
-                if (newest == null || string.CompareOrdinal(comment.Date, newest) > 0) newest = comment.Date;
-            }
-            return string.IsNullOrWhiteSpace(newest) ? null : newest;
-        }
-
-        private static string MapStatus(string bcfStatus)
-        {
-            switch ((bcfStatus ?? "").Trim().ToLowerInvariant())
-            {
-                case "closed":
-                case "resolved":
-                    return CoordinationRules.StatusClosedByDecision;
-                case "open":
-                case "active":
-                case "reopened":
-                    return CoordinationRules.StatusOpen;
-                default:
-                    return null;
-            }
-        }
-
-        private static string ImportedCommentText(BcfComment comment)
-        {
-            var parts = new List<string>();
-            if (!string.IsNullOrWhiteSpace(comment.Author)) parts.Add(comment.Author);
-            if (!string.IsNullOrWhiteSpace(comment.Date)) parts.Add(comment.Date);
-            string who = parts.Count == 0 ? "" : " [" + string.Join(" · ", parts) + "]";
-            return "imported from BCF" + who + ": " + (comment.Text ?? "");
-        }
-
-        /// <summary>
-        /// Has this comment already been folded in? Compared on the text it would
-        /// produce, so re-importing the same file - which coordinators do - adds nothing
-        /// the second time.
-        /// </summary>
-        private static bool AlreadyRecorded(CoordinationFinding finding, BcfComment comment)
-        {
-            string wanted = ImportedCommentText(comment);
-            foreach (CoordinationEvent entry in finding.History ?? new List<CoordinationEvent>())
-                if (entry.Kind == "comment" && string.Equals(entry.Text, wanted, StringComparison.Ordinal))
-                    return true;
-            return false;
-        }
-
-        private sealed class BcfTopic
-        {
-            public string Entry;
-            public string Guid;
-            public string Status;
-            public string Title;
-
-            /// <summary>The topic's own CreationDate: the only external date a topic with no comments has.</summary>
-            public string CreationDate;
-            public readonly List<BcfComment> Comments = new List<BcfComment>();
-        }
-
-        private sealed class BcfComment
-        {
-            public string Guid;
-            public string Date;
-            public string Author;
-            public string Text;
         }
 
         private sealed class Change
