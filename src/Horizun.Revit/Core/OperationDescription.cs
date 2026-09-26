@@ -152,6 +152,7 @@ namespace Horizun.Revit.Core
             ["horizun_manage_groups"] = new[] { "Gestionar grupos", "Manage groups" },
             ["horizun_manage_curtain"] = new[] { "Editar muro cortina", "Edit curtain wall" },
             ["horizun_create_railing"] = new[] { "Crear barandilla", "Create railing" },
+            ["horizun_framing"] = new[] { "Crear entramado", "Build framing" },
             ["horizun_slab_shape"] = new[] { "Editar forma de losa", "Edit slab shape" },
             ["horizun_connect_mep"] = new[] { "Conectar MEP", "Connect MEP" },
             ["horizun_mep_routing"] = new[] { "Trazar MEP", "Route MEP" },

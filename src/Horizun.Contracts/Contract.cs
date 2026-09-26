@@ -292,6 +292,7 @@ namespace Horizun.Contracts
             Row("horizun_manage_curtain", "architecture"),
             Row("horizun_slab_shape", "architecture", "structure"),
             Row("horizun_create_railing", "architecture"),
+            Row("horizun_framing", "architecture", "structure"),
 
             // ---- structure --------------------------------------------------------------
             Row("horizun_query_structure", "read", "structure"),
@@ -1587,6 +1588,27 @@ namespace Horizun.Contracts
     ""table"": { ""type"": ""string"", ""enum"": [""keynote"", ""assembly_code""], ""default"": ""keynote"" },
     ""family_id"": { ""type"": ""integer"" },
     ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 5000, ""default"": 500 }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_framing",
+                Command = "horizun_framing",
+                Description =
+                    "Light-gauge/drywall framing built from a caller spec (prompt framing-from-detail reads a detail image into it). " +
+                    "wall: studs, tracks, kings, jacks, headers, sills, cripples, blocking in a Basic wall's layer; openings never crossed. " +
+                    "ceiling: mains, cross, perimeter, hangers to the structure above. dry_run -> confirmation_token -> apply, " +
+                    "re-read; read/remove by marker. Spec: docs/TOOLS-EXTENDED.md.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""wall"", ""ceiling"", ""read"", ""remove""] },
+    ""element_ids"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""integer"" }, ""description"": ""Source Basic walls or ceilings."" },
+    ""view_id"": { ""type"": ""integer"", ""description"": ""wall/ceiling: every source visible in this view, instead of element_ids."" },
+    ""spec"": { ""type"": ""object"", ""description"": ""{wall:{layer,stud,track,openings,blocking}} or {ceiling:{main,cross,perimeter,hanger,drop_mm}}; mm, type ids."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")
             },
@@ -6687,6 +6709,7 @@ namespace Horizun.Contracts
                 "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
                 "horizun_rectangularize_walls",
                 "horizun_manage_curtain", "horizun_slab_shape", "horizun_create_railing",
+                "horizun_framing",
                 // Only operation=colorize writes (a duplicated view with overrides); every
                 // other operation reads the model and writes only under the data root.
                 "horizun_model_diff",
