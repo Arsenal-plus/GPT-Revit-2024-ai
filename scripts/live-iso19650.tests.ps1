@@ -90,7 +90,10 @@ function Invoke-FakeDeliver($a) {
         @{ gate = 'export'; status = 'passed'; requested = $true; advisory = $false },
         @{ gate = 'schema_header'; status = 'passed'; requested = $true; advisory = $false; evidence = @{ file_schema_family = 'IFC4' } },
         @{ gate = 'ids_validate'; status = $ids; requested = $true; advisory = $false },
-        @{ gate = 'pset_mapping'; status = $ids; requested = $true; advisory = $false },
+        @{ gate = 'pset_mapping'; status = $ids; requested = $true; advisory = $false
+           evidence = @{ model_comparison = @(@{ property_set = 'HZ_Delivery'; property = 'Code'
+               exported = $(if ($coded) { 1 } else { 0 }); empty_in_model = $(if ($coded) { 0 } else { 1 })
+               not_applied = 0; parameter_missing = 0; model = @{ total = 1 } }) } },
         @{ gate = 'bcf'; status = $(if ($coded) { 'skipped' } else { 'passed' }); requested = $true; advisory = $false }
     )
     if ($fx.defect -ne 'seal-gate-unreported') {
@@ -341,8 +344,8 @@ try {
     $closed = Close-HorizunIsoRecorder $rec
     Assert 'the first verdict stands and a repeat is named' ($rec.Results['ISO-D1'].outcome -eq 'pass' -and $rec.Results['ISO-D1'].detail -match 'second verdict')
     Assert 'an unknown case id and an unknown outcome throw' ($threw -and $threwOutcome)
-    Assert 'a case that never ran closes as unverified, in catalog order' ($closed.Count -eq 15 -and $closed[1].id -eq 'ISO-D2' -and $closed[1].outcome -eq 'unverified')
-    Assert 'the opt-in ready case exists only when asked for' (@(Get-HorizunIsoCaseCatalog).Count -eq 15 -and @(Get-HorizunIsoCaseCatalog -IncludeReadyWrite).Count -eq 16)
+    Assert 'a case that never ran closes as unverified, in catalog order' ($closed.Count -eq 16 -and $closed[1].id -eq 'ISO-D2' -and $closed[1].outcome -eq 'unverified')
+    Assert 'the opt-in ready case exists only when asked for' (@(Get-HorizunIsoCaseCatalog).Count -eq 16 -and @(Get-HorizunIsoCaseCatalog -IncludeReadyWrite).Count -eq 17)
     $names = @(Get-HorizunIsoCaseCatalog -IncludeReadyWrite | ForEach-Object { $_.Name })
     Assert 'case names are unique (verify-live refuses a report with duplicate names)' (@($names | Select-Object -Unique).Count -eq $names.Count)
     $liveSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'verify-live.ps1') -Raw
@@ -368,9 +371,9 @@ try {
     # ---- 1. green, Revit 2026, safe_write -----------------------------------------
     Reset-Fake -Year 2026
     $r = Invoke-Section
-    $all = @('ISO-D1', 'ISO-D2', 'ISO-D3', 'ISO-D4', 'ISO-D5', 'ISO-E1', 'ISO-E2', 'ISO-E3', 'ISO-H1', 'ISO-H2', 'ISO-H3', 'ISO-H4', 'ISO-H5', 'ISO-H6', 'ISO-H7')
-    Assert '2026 safe_write: every case passes' ((Outcomes $r $all) -eq ((@('pass') * 15) -join ','))
-    if ((Outcomes $r $all) -ne ((@('pass') * 15) -join ',')) { $r.section.cases | Where-Object { $_.outcome -ne 'pass' } | ForEach-Object { Write-Host ("   {0} {1}: {2}" -f $_.id, $_.outcome, $_.detail) } }
+    $all = @('ISO-D1', 'ISO-D2', 'ISO-D3', 'ISO-D7', 'ISO-D4', 'ISO-D5', 'ISO-E1', 'ISO-E2', 'ISO-E3', 'ISO-H1', 'ISO-H2', 'ISO-H3', 'ISO-H4', 'ISO-H5', 'ISO-H6', 'ISO-H7')
+    Assert '2026 safe_write: every case passes' ((Outcomes $r $all) -eq ((@('pass') * 16) -join ','))
+    if ((Outcomes $r $all) -ne ((@('pass') * 16) -join ',')) { $r.section.cases | Where-Object { $_.outcome -ne 'pass' } | ForEach-Object { Write-Host ("   {0} {1}: {2}" -f $_.id, $_.outcome, $_.detail) } }
     Assert 'H7 took the profile-refusal branch under safe_write' ($r.byId['ISO-H7'].detail -match 'refused by the permission profile')
     Assert 'H6 used the IFC sealed by export' ($r.byId['ISO-H6'].detail -match 'sealed by horizun_export')
     Assert 'the discovery chose the preferred category with elements' ($r.byId['ISO-D1'].detail -match 'OST_DuctCurves' -and $r.byId['ISO-D1'].detail -match 'IfcDuctSegment')
@@ -392,8 +395,8 @@ try {
     Assert 'the evidence file may not live inside the folder that is removed' $insideRefused
     $live = Complete-HorizunIsoLiveRun -Section $r.section -Identity $identity -EvidencePath $evidencePath -ScratchRoot $r.scratch -RunId $r.run
     $ev = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
-    Assert 'the record is horizun.live-evidence/2 with totals that match its probes' ($ev.schema -eq 'horizun.live-evidence/2' -and $ev.passed -eq 15 -and
-        $ev.failed -eq 0 -and @($ev.probes).Count -eq 15 -and $ev.harness_file -eq 'scripts/verify-live.ps1' -and $ev.revit_year -eq '2026')
+    Assert 'the record is horizun.live-evidence/2 with totals that match its probes' ($ev.schema -eq 'horizun.live-evidence/2' -and $ev.passed -eq 16 -and
+        $ev.failed -eq 0 -and @($ev.probes).Count -eq 16 -and $ev.harness_file -eq 'scripts/verify-live.ps1' -and $ev.revit_year -eq '2026')
     Assert 'a green run removes its folder' ($live.run_directory_removed -and -not (Test-Path -LiteralPath $runDir))
     $python = $null
     foreach ($candidate in @('python', 'python3', 'py')) { if (Get-Command $candidate -ErrorAction SilentlyContinue) { $python = $candidate; break } }
@@ -405,7 +408,7 @@ try {
         if (-not $ok) { Write-Host ($output | Out-String) }
         else {
             $cons = Get-Content -LiteralPath $consolidated -Raw | ConvertFrom-Json
-            Assert 'the consolidator counts 15 distinct cases (probe x harness x year x document)' ([int]$cons.coverage.unique_cases -eq 15)
+            Assert 'the consolidator counts 16 distinct cases (probe x harness x year x document)' ([int]$cons.coverage.unique_cases -eq 16)
         }
     } else { Write-Host 'SKIP consolidator round trip (no python on PATH)' }
     $badStatus = $false
@@ -429,7 +432,7 @@ try {
     # ---- 4. the opt-in ready case ------------------------------------------------
     Reset-Fake -Year 2026
     $r = Invoke-Section -ReadyWrite
-    Assert 'ready probe: writing the code turns the same delivery ready' ($r.byId['ISO-D6'].outcome -eq 'pass' -and @($r.section.cases).Count -eq 16)
+    Assert 'ready probe: writing the code turns the same delivery ready' ($r.byId['ISO-D6'].outcome -eq 'pass' -and @($r.section.cases).Count -eq 17)
 
     # ---- 5. the write gate closed ------------------------------------------------
     Reset-Fake -Year 2026
@@ -481,7 +484,7 @@ try {
     $e = @($section.cases | Where-Object { $_.id -like 'ISO-E*' })
     Assert 'a transport that throws mid-section leaves its cases UNVERIFIED and the rest measured' (
         @($e | Where-Object { $_.outcome -ne 'unverified' }).Count -eq 0 -and $e[0].detail -match 'transport died' -and
-        @($section.cases | Where-Object { $_.id -eq 'ISO-D2' -and $_.outcome -eq 'pass' }).Count -eq 1 -and @($section.cases).Count -eq 15)
+        @($section.cases | Where-Object { $_.id -eq 'ISO-D2' -and $_.outcome -eq 'pass' }).Count -eq 1 -and @($section.cases).Count -eq 16)
 
     # ---- 9. THE GLUE IN verify-live.ps1, run from its own text --------------------
     # The block between the iso19650-section markers is executed here with the
@@ -516,7 +519,7 @@ try {
         . ([scriptblock]::Create($glue))
         $outcomes = @($script:writeResults | ForEach-Object { $_.Outcome } | Select-Object -Unique)
         Assert ("glue ($($glueCase.expect)): every ISO case reaches Add-Write once, as $($glueCase.expect)") (
-            $script:writeResults.Count -eq 15 -and ($outcomes -join ',') -eq $glueCase.expect)
+            $script:writeResults.Count -eq 16 -and ($outcomes -join ',') -eq $glueCase.expect)
         if ($glueCase.expect -eq 'pass') {
             $evidenceFile = Join-Path (Split-Path -Parent $Json) ("iso19650-2026-{0}.json" -f $probeRun)
             $glueEvidence = Get-Content -LiteralPath $evidenceFile -Raw | ConvertFrom-Json
@@ -526,7 +529,7 @@ try {
             Assert 'glue: the report block is serialisable and the run folder is gone after a green run' (
                 $isoLive.run_directory_removed -and (($isoLive | ConvertTo-Json -Depth 40) -match 'ISO-H7'))
         } else {
-            Assert 'glue: a section that throws is recorded, never lost' (@($script:writeResults | Where-Object { $_.Detail -match 'HARNESS' }).Count -eq 15)
+            Assert 'glue: a section that throws is recorded, never lost' (@($script:writeResults | Where-Object { $_.Detail -match 'HARNESS' }).Count -eq 16)
         }
     }
 }

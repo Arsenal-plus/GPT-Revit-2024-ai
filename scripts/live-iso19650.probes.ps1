@@ -99,6 +99,8 @@ function Get-HorizunIsoCaseCatalog {
             Name = 'deliver_ifc with a generated TAB mapping and IDS passes export, schema_header and the container seal, and the sidecar verifies as match' }
         [pscustomobject]@{ Id = 'ISO-D3'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
             Name = 'deliver_ifc decides ids_validate and pset_mapping on the exported file and deliverable_ready follows its gates' }
+        [pscustomobject]@{ Id = 'ISO-D7'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
+            Name = 'the pset_mapping gate carries a model_comparison row per declared property, with exported/empty_in_model/not_applied/parameter_missing' }
         [pscustomobject]@{ Id = 'ISO-D4'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
             Name = 'a second deliver_ifc onto the sealed name is refused and nothing is exported' }
         [pscustomobject]@{ Id = 'ISO-D5'; Tier = 'write'; Tool = 'horizun_deliver_ifc'
@@ -444,7 +446,7 @@ function Invoke-HorizunIsoDeliveryProbes {
           [scriptblock]$Call, [scriptblock]$Apply, $Recorder, [switch]$ReadyWrite, [string]$MappedParameter = 'Comments')
     $plan = Get-HorizunIsoIfcPlan -Year $Year
     $class = Find-HorizunIsoDeliveryClass -Call $Call -PreferredCategory $PreferredCategory
-    $deliveryIds = @('ISO-D1', 'ISO-D2', 'ISO-D3', 'ISO-D4', 'ISO-D6')
+    $deliveryIds = @('ISO-D1', 'ISO-D2', 'ISO-D3', 'ISO-D4', 'ISO-D6', 'ISO-D7')
     if (-not $class.found) {
         foreach ($id in $deliveryIds) {
             if ($Recorder.Catalog | Where-Object { $_.Id -eq $id }) {
@@ -509,9 +511,11 @@ function Invoke-HorizunIsoDeliveryProbes {
             $why = 'the rehearsal did not issue a token, so the delivery was never applied: ' + (Limit-HorizunIsoText $applied.answer.text 300)
             Complete-HorizunIsoCase $Recorder 'ISO-D2' 'unverified' $why $null
             Complete-HorizunIsoCase $Recorder 'ISO-D3' 'unverified' $why $null
+            Complete-HorizunIsoCase $Recorder 'ISO-D7' 'unverified' $why $null
         } elseif ($applied.answer.isError -or -not $applied.answer.data) {
             Complete-HorizunIsoCase $Recorder 'ISO-D2' 'fail' ('the delivery apply failed: ' + (Limit-HorizunIsoText $applied.answer.text 400)) $null
             Complete-HorizunIsoCase $Recorder 'ISO-D3' 'unverified' 'the delivery apply failed, so no gate could be judged' $null
+            Complete-HorizunIsoCase $Recorder 'ISO-D7' 'unverified' 'the delivery apply failed, so no gate could be judged' $null
         } else {
             $a = $applied.answer.data
             $gates = Get-HorizunIsoGates $a
@@ -557,6 +561,33 @@ function Invoke-HorizunIsoDeliveryProbes {
                     @{ gates = $a.gates; blocking = $a.blocking; deliverable_ready = $a.deliverable_ready }
             } else {
                 Complete-HorizunIsoCase $Recorder 'ISO-D3' 'fail' ($problems -join '; ') @{ gates = $a.gates; blocking = $a.blocking }
+            }
+
+            # ---- D7: the pset_mapping gate tells empty apart from not-applied ----
+            # An empty Revit parameter and a mapping the exporter did not apply both
+            # look like "missing" to the file alone (docs/INFORMATION-MANAGEMENT.md);
+            # model_comparison is the BEFORE-export read merged with the file's own
+            # coverage, so this checks its shape, not a specific model state - the
+            # disposable model's Comments parameter may be empty or already coded.
+            $mcProblems = @()
+            if (-not $gates.ContainsKey('pset_mapping') -or -not $gates['pset_mapping'].evidence -or
+                -not $gates['pset_mapping'].evidence.model_comparison) {
+                $mcProblems += 'the pset_mapping gate carries no model_comparison evidence'
+            } else {
+                $mc = @($gates['pset_mapping'].evidence.model_comparison)
+                if ($mc.Count -eq 0) { $mcProblems += 'model_comparison is empty' }
+                foreach ($row in $mc) {
+                    $rowNames = @($row.PSObject.Properties.Name)
+                    foreach ($key in @('exported', 'empty_in_model', 'not_applied', 'parameter_missing', 'model')) {
+                        if ($rowNames -notcontains $key) { $mcProblems += ("row for '" + [string]$row.property + "' carries no '" + $key + "'") }
+                    }
+                }
+            }
+            if ($mcProblems.Count -eq 0) {
+                Complete-HorizunIsoCase $Recorder 'ISO-D7' 'pass' ('model_comparison carries ' + $mc.Count +
+                    ' row(s), each with exported/empty_in_model/not_applied/parameter_missing/model') @{ model_comparison = $mc }
+            } else {
+                Complete-HorizunIsoCase $Recorder 'ISO-D7' 'fail' ($mcProblems -join '; ') @{ gates = $a.gates }
             }
         }
 
@@ -985,7 +1016,7 @@ function Invoke-HorizunIsoSection {
                 -PreferredCategory $PreferredCategory -Call $Call -Apply $Apply -Recorder $recorder `
                 -ReadyWrite:$ReadyWrite -MappedParameter $MappedParameter
         } catch {
-            foreach ($id in @('ISO-D1', 'ISO-D2', 'ISO-D3', 'ISO-D4', 'ISO-D5', 'ISO-D6')) {
+            foreach ($id in @('ISO-D1', 'ISO-D2', 'ISO-D3', 'ISO-D4', 'ISO-D5', 'ISO-D6', 'ISO-D7')) {
                 if (($recorder.Catalog | Where-Object { $_.Id -eq $id }) -and -not $recorder.Results.ContainsKey($id)) {
                     Complete-HorizunIsoCase $recorder $id 'unverified' ('HARNESS: the delivery probes threw: ' + $_.Exception.Message) $null
                 }
