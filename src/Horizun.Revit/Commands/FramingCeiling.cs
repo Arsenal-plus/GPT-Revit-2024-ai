@@ -134,6 +134,11 @@ namespace Horizun.Revit.Commands
                 if (spec.MainDepthMm == null) p.Warnings.Add("ceiling " + sid + ": no main.depth_mm; the mains' axis sits drop_mm above the top face and hangers start there");
                 if (spec.CrossTypeId != null && spec.CrossDepthMm == null) p.Warnings.Add("ceiling " + sid + ": no cross.depth_mm; the cross members' axis sits on the top face");
                 if (spec.PerimeterTypeId != null && spec.PerimeterDepthMm == null) p.Warnings.Add("ceiling " + sid + ": no perimeter.depth_mm; the perimeter axis sits on the top face");
+                // The cross (furring) members bear on the top face and the mains start drop_mm above
+                // it: a drop smaller than the furring's depth plans mains running THROUGH them.
+                if (spec.CrossTypeId != null && spec.CrossDepthMm != null && spec.DropMm < spec.CrossDepthMm.Value - 1e-6)
+                    p.Warnings.Add("ceiling " + sid + ": drop_mm " + spec.DropMm.ToString(CultureInfo.InvariantCulture) + " is less than cross.depth_mm " +
+                                   spec.CrossDepthMm.Value.ToString(CultureInfo.InvariantCulture) + "; the mains run through the cross members");
                 double mainDepth = spec.MainDepthMm ?? 0;
                 fc.CrossZMm = fc.TopMm + (spec.CrossDepthMm ?? 0) / 2;
                 fc.PerimeterZMm = fc.TopMm + (spec.PerimeterDepthMm ?? 0) / 2;

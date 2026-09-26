@@ -351,8 +351,14 @@ namespace Horizun.Revit.Commands
             bool same = members.All(x => x.Value.SpecHash == p.SpecHash && x.Value.PlanSignature == p.Signature)
                         && members.Select(x => x.Value.Index).Distinct().Count() == p.Members.Count && members.Count == p.Members.Count;
             if (!same)
-                throw new ArgumentException(p.Operation + " " + sid + " already carries " + members.Count + " horizun_framing member(s) from another spec or plan (spec " +
-                                            string.Join(",", members.Select(x => x.Value.SpecHash).Distinct()) + "); run operation=remove for it first.");
+            {
+                // Same spec and plan but not the same members: some were deleted (or copied) by hand.
+                bool samePlan = members.Count > 0 && members.All(x => x.Value.SpecHash == p.SpecHash && x.Value.PlanSignature == p.Signature);
+                throw new ArgumentException(p.Operation + " " + sid + " already carries " + members.Count + " horizun_framing member(s) " +
+                                            (samePlan ? "of this same plan, which places " + p.Members.Count + " (members were deleted or copied since)"
+                                                      : "from another spec or plan (spec " + string.Join(",", members.Select(x => x.Value.SpecHash).Distinct()) + ")") +
+                                            "; run operation=remove for it first.");
+            }
             p.AlreadyApplied = true;
             foreach (KeyValuePair<Element, FramingMark> x in members) p.MemberIds[x.Value.Index] = Rid.Value(x.Key.Id);
             p.WorkPlaneIds.AddRange(existing.Where(x => x.Value.Role == FramingMarker.WorkPlaneRole).Select(x => Rid.Value(x.Key.Id)));
