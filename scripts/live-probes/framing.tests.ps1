@@ -4,7 +4,8 @@
 # (plan.sources[].count_by_role, z_mm, top_face_mm, members[].to, no_support_above;
 # evidence.sources[] with hanger_supports keyed 'host:<id>'; postconditions.properties[]
 # with property/matches; already_applied, evidence.removed_ids, member_count). Those
-# shapes are the code's, not yet measured live: the first live run must compare them.
+# shapes are the code's, not yet measured live: the first live run must compare them
+# (and a reply captured from it should replace each fake below).
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'framing.probes.ps1')
@@ -27,6 +28,7 @@ function New-State {
     $script:floorId = $null; $script:ceilings = @(); $script:removeTargets = @()
 }
 $script:noFloorType = $false
+$script:structuralTypes = $false; $script:structReads = @('column_constraints', 'location_curve')
 
 # Ceiling A: underside at level + 2400 on a 50 mm compound type, drop 22, main depth 38;
 # the floor's top at level + 3000 on a 300 mm type, so every rod ends at 100700.
@@ -65,6 +67,8 @@ $fakeCall = {
             'OST_Doors' { @(@{ element_id = 402; is_element_type = $true; family = 'M_Single-Flush'; type = '0915 x 2134mm' }) }
             'OST_Windows' { @(@{ element_id = 403; is_element_type = $true; family = 'M_Fixed'; type = '0915 x 1220mm' }) }
             'OST_Floors' { if ($script:noFloorType) { @() } else { @(@{ element_id = 404; is_element_type = $true; family = 'Floor'; type = 'Generic 300mm' }) } }
+            'OST_StructuralFraming' { if ($script:structuralTypes) { @(@{ element_id = 408; is_element_type = $true; family = 'M_HSS-Hollow Structural Section'; type = 'HSS152X152X6.4' }) } else { @() } }
+            'OST_StructuralColumns' { if ($script:structuralTypes) { @(@{ element_id = 409; is_element_type = $true; family = 'M_Concrete-Rectangular-Column'; type = '300 x 450mm' }) } else { @() } }
             'OST_Ceilings' { @(@{ element_id = 405; is_element_type = $true; family = 'Basic Ceiling'; type = 'Generic' }, @{ element_id = 406; is_element_type = $true; family = 'Compound Ceiling'; type = '600 x 600mm Grid' }) }
             default { @() }
         }
@@ -119,9 +123,16 @@ $fakeApply = {
             if ($arguments.operation -eq 'remove') {
                 $script:removed = $true; $script:removeTargets += [long]@($arguments.element_ids)[0]
                 return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ operation = 'remove'; postconditions = [pscustomobject]@{ all_verified = $true }
-                    evidence = [pscustomobject]@{ removed_ids = @(1..30 | ForEach-Object { 8000 + $_ }) } }) $false '') }
+                    application = [pscustomobject]@{ state = 'verified_applied'; fully_applied = $true }
+                    evidence = [pscustomobject]@{ removed_ids = @(1..30 | ForEach-Object { 8000 + $_ }); cascaded_ids = @(); cascade_measured_in_rehearsal = @(); foreign_copies_kept = 0 } }) $false '') }
             }
             if ($arguments.operation -eq 'ceiling') { return @{ stage = 'apply'; answer = (& $script:ceilingApply $arguments) } }
+            if ($arguments.spec.wall.stud.type_id -eq 409) {
+                return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = $false
+                    application = [pscustomobject]@{ state = 'verified_applied'; fully_applied = $true }; postconditions = [pscustomobject]@{ all_verified = $true }
+                    evidence = [pscustomobject]@{ endpoint_read = $script:structReads; source_joins_undone = 3; sources = @([pscustomobject]@{ source_id = [long]@($arguments.element_ids)[0]
+                        planned = 8; found = 8; max_endpoint_deviation_mm = 0.2; stud_crossings = 0; inserts_checked = 0; inserts_changed = 0; joined_to_source = 0 }) } }) $false '') }
+            }
             return @{ stage = 'apply'; answer = (& $script:wallApply $arguments) }
         }
         'horizun_delete_verified' { $script:deleted = $arguments.ids; return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{}) $false '') } }
@@ -162,6 +173,20 @@ try {
     Check 'the compound ceiling type is preferred' (($script:sent['t1-fr-ceiling-a'].elements[0].type_id -eq 406) -and ($script:sent['t1-fr-ceiling-b'].elements[0].type_id -eq 406))
     Check 'cleanup removes the ceiling framing first, then the seven staged elements' (($by[$n[8]].Outcome -eq 'pass') -and ($script:deleted.Count -eq 7) -and
         (@($script:removeTargets) -contains 7006) -and ($by[$n[8]].Detail -match '^ceiling framing removed'))
+    Check 'without structural types the structural case is not_covered, naming both categories' (($by[$n[9]].Outcome -eq 'not_covered') -and ($by[$n[9]].Detail -match 'structural framing type') -and ($by[$n[9]].Detail -match 'structural column type'))
+
+    # ---- structural types present: column studs and beam tracks on the 45-degree wall ----
+    New-State; $script:structuralTypes = $true
+    $structBy = RunBy ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $fakeData 'scratch'); RunId = 't1s'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply })
+    $diagSent = $script:sent['t1s-fr-diag-wall'].elements[0]; $structSent = $script:sent['t1s-fr-struct']
+    Check 'the structural case passes on column_constraints and location_curve re-reads' (($structBy[$n[9]].Outcome -eq 'pass') -and ($structBy[$n[9]].Detail -match 'column_constraints'))
+    Check 'the structural wall runs at 45 degrees and is framed with the column and beam types' (([math]::Abs(($diagSent.end[0] - $diagSent.start[0]) - ($diagSent.end[1] - $diagSent.start[1])) -lt 0.1) -and
+        ($structSent.spec.wall.stud.type_id -eq 409) -and ($structSent.spec.wall.track.bottom_type_id -eq 408))
+    Check 'the structural framing is removed and its wall deleted at cleanup' ((@($script:removeTargets) -contains [long]$structSent.element_ids[0]) -and ($script:deleted.Count -eq 8) -and ($structBy[$n[8]].Outcome -eq 'pass'))
+    New-State; $script:structReads = @('location_curve')
+    $noColBy = RunBy ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $fakeData 'scratch'); RunId = 't1t'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply })
+    Check 'a structural apply whose studs were not read as columns fails' (($noColBy[$n[9]].Outcome -eq 'fail') -and ($noColBy[$n[9]].Detail -match 'column constraints'))
+    $script:structuralTypes = $false; $script:structReads = @('column_constraints', 'location_curve')
 
     # ---- a stud through an opening is a fail, not a pass ----
     New-State
@@ -241,7 +266,8 @@ try {
     $closed = $ctx.PSObject.Copy(); $closed.WriteGate = $true
     $shut = @(& $module.Run $closed)
     Check 'a closed write tier reports every case not_covered' ((@($shut | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq $module.Catalog.Count))
-    Check 'a closed write tier names the delete tool on the cleanup case' ((@($shut)[-1].Tool -eq 'horizun_delete_verified') -and (@($shut)[-2].Tool -eq 'horizun_framing'))
+    Check 'a closed write tier names the delete tool on the cleanup case and only there' ((@($shut | Where-Object { $_.Name -like 'framing probes:*' -and $_.Tool -eq 'horizun_delete_verified' }).Count -eq 1) -and
+        (@($shut | Where-Object { $_.Name -notlike 'framing probes:*' -and $_.Tool -ne 'horizun_framing' }).Count -eq 0))
 }
 finally {
     $env:ProgramData = $realProgramData

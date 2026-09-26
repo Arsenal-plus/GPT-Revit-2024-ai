@@ -6,7 +6,10 @@
 # floor, by id) and a second ceiling 20 m away with nothing above it (every hanger
 # station no_support_above, none planned). Whether Revit keeps each committed axis on
 # the planned ends is exactly what each apply measures (endpoints within 1 mm, re-read
-# by the tool). Everything created - framing by operation=remove, staging by
+# by the tool). A last wall, at 45 degrees, is framed with the document's own Structural
+# Columns (studs) and Structural Framing (tracks) types, the Column and Beam placements the
+# line-based cases never take; not_covered, named, when the document carries neither
+# category. Everything created - framing by operation=remove, staging by
 # horizun_delete_verified - is deleted at the end; the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'framing'
@@ -20,6 +23,7 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'framing ceiling: apply verified inside the boundary, every hanger carried by the staged floor'; Tool = 'horizun_framing' }
         @{ Name = 'framing ceiling: a ceiling with nothing above reports no_support_above and plans no hanger'; Tool = 'horizun_framing' }
         @{ Name = 'framing probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
+        @{ Name = 'framing wall (structural types): column studs and beam tracks on a 45-degree wall, verified'; Tool = 'horizun_framing' }
     )
     Run     = {
         param($Ctx)
@@ -34,10 +38,11 @@ $script:HzProbeModules += [pscustomobject]@{
             'framing ceiling: the rehearsal plans mains, cross, perimeter and hangers up to the floor above',
             'framing ceiling: apply verified inside the boundary, every hanger carried by the staged floor',
             'framing ceiling: a ceiling with nothing above reports no_support_above and plans no hanger',
-            'framing probes: everything created is deleted')
+            'framing probes: everything created is deleted',
+            'framing wall (structural types): column studs and beam tracks on a 45-degree wall, verified')
         $T = 'horizun_framing'; $DeleteTool = 'horizun_delete_verified'   # not $DeleteTool: PowerShell names are case-insensitive and $d holds the rehearsal
         if ($Ctx.WriteGate) {
-            for ($i = 0; $i -lt $catalog.Count; $i++) { $tool = $T; if ($i -eq $catalog.Count - 1) { $tool = $DeleteTool }; Case $catalog[$i] $tool 'not_covered' 'the write tier is closed for this run' }
+            for ($i = 0; $i -lt $catalog.Count; $i++) { $tool = $T; if ($catalog[$i] -like 'framing probes:*') { $tool = $DeleteTool }; Case $catalog[$i] $tool 'not_covered' 'the write tier is closed for this run' }
             return $cases
         }
         $doc = $Ctx.Document; $run = $Ctx.RunId
@@ -237,6 +242,39 @@ $script:HzProbeModules += [pscustomobject]@{
             else { Case $catalog[7] $T 'fail' ("no_support_above $(@($ns.no_support_above).Count), hangers planned $([int]$ns.count_by_role.hanger), mains $([int]$ns.count_by_role.main)") }
         }
 
+        # ==== 10: structural types on a wall not parallel to X ============================
+        # Studs as Structural Columns and tracks as Structural Framing: the vertical column
+        # turned onto the wall, the beam's z-justification and its unjoined ends, which the
+        # Generic Model cases never exercise. The tool re-reads each column from its base and
+        # top constraints and each beam from its curve; the 45-degree wall means an axis or a
+        # section read in the wrong frame cannot pass by accident.
+        $beamType = Types 'OST_StructuralFraming' | Where-Object { [string]$_.family -match '(?i)HSS' } | Select-Object -First 1
+        if (-not $beamType) { $beamType = Types 'OST_StructuralFraming' | Select-Object -First 1 }
+        $columnType = Types 'OST_StructuralColumns' | Where-Object { [string]$_.family -match '(?i)rectangular' } | Select-Object -First 1
+        if (-not $columnType) { $columnType = Types 'OST_StructuralColumns' | Select-Object -First 1 }
+        $diag = $null; $structFramed = $false
+        if ($level -and $wallType -and $beamType -and $columnType) { $diag = Create @(@{ kind = 'wall'; start = @($X, ($Y - 60000), $E); end = @(($X + 4242.6), ($Y - 60000 + 4242.6), $E); level_id = $level; type_id = $wallType.element_id; height = 3000 }) 'diag-wall' }
+        if (-not $diag) { Case $catalog[9] $T 'not_covered' "staging incomplete: structural framing type '$($beamType.element_id)', structural column type '$($columnType.element_id)', 45-degree wall '$diag' (the document must carry both categories' types)" }
+        else {
+            $sArgs = @{ operation = 'wall'; target_document = $doc; element_ids = @($diag); spec = @{ wall = @{
+                stud = @{ type_id = [long]$columnType.element_id; spacing_mm = 1200; start = 'wall_start'; double_at_ends = $false }
+                track = @{ bottom_type_id = [long]$beamType.element_id; top_same_as_bottom = $true } } } }
+            $sa = & $Ctx.Apply $T $sArgs ($run + '-fr-struct')
+            $structFramed = ($sa.stage -eq 'apply' -and -not $sa.answer.isError)
+            $sev = $null; $reads = @()
+            if ($sa.answer.data) { $sev = @($sa.answer.data.evidence.sources)[0]; $reads = @($sa.answer.data.evidence.endpoint_read) }
+            $problems = @()
+            if (-not $structFramed -or $sa.answer.data.postconditions.all_verified -ne $true -or -not $sev) { $problems += 'apply: ' + (Short $sa.answer) }
+            else {
+                if ([string]$sa.answer.data.application.state -ne 'verified_applied') { $problems += "application.state '$($sa.answer.data.application.state)', expected verified_applied" }
+                if ([double]$sev.max_endpoint_deviation_mm -gt 1.0) { $problems += "endpoint deviation $($sev.max_endpoint_deviation_mm) mm" }
+                if ($reads -notcontains 'column_constraints') { $problems += 'no stud was re-read from its column constraints' }
+                if ($reads -notcontains 'location_curve') { $problems += 'no track was re-read from its location curve' }
+            }
+            if ($problems.Count -gt 0) { Case $catalog[9] $T 'fail' ($problems -join '; ') }
+            else { Case $catalog[9] $T 'pass' ("$($sev.found) members re-read on a 45-degree wall with types $($columnType.element_id)/$($beamType.element_id), max endpoint deviation $($sev.max_endpoint_deviation_mm) mm, read by " + ($reads -join ',') + '; section_along_wall and beam_settings inside all_verified') }
+        }
+
         # ==== 9: cleanup ==================================================================
         # The ceiling's members are not hosted by it: deleting the ceiling would orphan
         # them, so operation=remove runs first whenever an apply committed.
@@ -246,6 +284,11 @@ $script:HzProbeModules += [pscustomobject]@{
             $cx = & $Ctx.Apply $T @{ operation = 'remove'; target_document = $doc; element_ids = @($ceilingA) } ($run + '-fr-ceiling-remove')
             $framingGone = ($cx.stage -eq 'apply' -and -not $cx.answer.isError -and $cx.answer.data.postconditions.all_verified -eq $true)
             if ($framingGone) { $notes += "ceiling framing removed ($(@($cx.answer.data.evidence.removed_ids).Count) element(s))" } else { $notes += 'ceiling remove: ' + (Short $cx.answer) }
+        }
+        if ($structFramed) {
+            $sx = & $Ctx.Apply $T @{ operation = 'remove'; target_document = $doc; element_ids = @($diag) } ($run + '-fr-struct-remove')
+            if ($sx.stage -eq 'apply' -and -not $sx.answer.isError -and $sx.answer.data.postconditions.all_verified -eq $true) { $notes += "structural framing removed ($(@($sx.answer.data.evidence.removed_ids).Count) element(s))" }
+            else { $framingGone = $false; $notes += 'structural remove: ' + (Short $sx.answer) }
         }
         $ids = @($created | Sort-Object -Descending -Unique)
         if ($ids.Count -eq 0 -and -not $cCommitted) { Case $catalog[8] $DeleteTool 'not_covered' 'nothing was created' }
