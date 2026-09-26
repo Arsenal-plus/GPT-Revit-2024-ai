@@ -121,7 +121,7 @@ namespace Horizun.Revit.Core
             // source wall's layer / the ceiling's boundary), counts per role == plan, no stud through an
             // opening, the wall's hosted inserts untouched; read/remove by the marker on each member.
             Row("horizun_framing", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"),
-                F(C + "FramingCommand.cs", "Horizun.Revit/Core/WallFramingRules.cs", "Horizun.Revit/Core/CeilingFramingRules.cs")),
+                F(C + "FramingCommand.cs", C + "FramingApply.cs", "Horizun.Revit/Core/WallFramingRules.cs", "Horizun.Revit/Core/CeilingFramingRules.cs")),
 
             Row("horizun_manage_groups", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
                 F(C + "ManageGroupsCommand.cs", "Horizun.Revit/Core/GroupWorksetRules.cs"),
