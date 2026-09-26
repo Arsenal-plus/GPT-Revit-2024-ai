@@ -107,7 +107,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $endGap = if ($last) { [math]::Sqrt([math]::Pow([double]$last[0] - $doorPoint[0] / 1000, 2) + [math]::Pow([double]$last[1] - $doorPoint[1] / 1000, 2)) } else { $null }
             $ok1 = -not $m.isError -and $row -and [double]$row.distance_m -gt 0 -and [long]$row.exit_door_id -eq $doorId -and
                    $null -ne $endGap -and $endGap -le 0.5 -and $row.outcome -eq 'passes'
-            Case $catalog[0] $tools[0] $(if ($ok1) { 'pass' } else { 'fail' }) $(if ($row) { "distance_m=$($row.distance_m) exit=$($row.exit_door_id) end_gap_m=$endGap outcome=$($row.outcome)" } else { Short $m })
+            Case $catalog[0] $tools[0] $(if ($ok1) { 'pass' } else { 'fail' }) $(if ($row) { "distance_m=$($row.distance_m) upper_bound_m=$($row.upper_bound_m) routed=$($row.routed)/$($row.candidates) exit=$($row.exit_door_id) end_gap_m=$endGap outcome=$($row.outcome) $($row.reason)" } else { Short $m })
 
             # ==== 2: the grammar - a rule with config becomes pass/fail, not unverified =====
             $set = @{ requirement_set = @{ id = "hz-egress-probe-$run"; version = '1'; title = 'egress probe' }
