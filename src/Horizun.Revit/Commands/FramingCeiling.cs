@@ -337,7 +337,8 @@ namespace Horizun.Revit.Commands
 
         private static PostconditionCheck VerifyCeilings(Document doc, List<FramingSourcePlan> plans, JObject evidence)
         {
-            var check = new PostconditionCheck("member_count", "member_types", "member_endpoints", "counts_by_role", "inside_boundary", "beam_settings");
+            var check = new PostconditionCheck("member_count", "member_types", "member_endpoints", "counts_by_role", "inside_boundary", "beam_settings", "hanger_reaches_support");
+            var hangerTops = new List<HangerTop>();
             int planned = 0, found = 0, wrongType = 0, unreadable = 0, beamOff = 0;
             double maxDev = 0, maxOutside = 0;
             var plannedRoles = new JObject();
@@ -364,6 +365,8 @@ namespace Horizun.Revit.Commands
                     if (p.Kinds[m.Role + "|" + m.TypeKey] == FramingPlacementKind.Beam) beamOff += BeamSettingsOff(e);
                     XYZ[] ends = MemberEnds(doc, e, out string _);
                     if (ends == null) { unreadable++; continue; }
+                    if (m.Role == FramingRoles.Hanger)
+                        hangerTops.Add(new HangerTop { Id = Rid.Value(e.Id), Top = ends[0].Z >= ends[1].Z ? ends[0] : ends[1], LengthMm = ends[0].DistanceTo(ends[1]) * MmPerFt, Phase = SourcePhase(doc, p.Source) });
                     Line axis = p.Axis(m);
                     XYZ a = axis.GetEndPoint(0), b = axis.GetEndPoint(1);
                     srcDev = Math.Max(srcDev, Math.Min(Math.Max(ends[0].DistanceTo(a), ends[1].DistanceTo(b)), Math.Max(ends[0].DistanceTo(b), ends[1].DistanceTo(a))) * MmPerFt);
@@ -390,8 +393,63 @@ namespace Horizun.Revit.Commands
             check.Record("counts_by_role", plannedRoles, foundRoles, JToken.DeepEquals(plannedRoles, foundRoles));
             check.Compare("beam_settings", 0, beamOff);
             check.Measure("inside_boundary", 0, maxOutside, EndpointToleranceMm, "mm", "max plan distance of a member end outside the ceiling's sketch boundary (holes count)");
+            List<long> short_ = RecheckHangers(doc, hangerTops, out double maxGap);
+            check.Compare("hanger_reaches_support", 0, short_.Count);
+            evidence["hanger_recheck"] = new JObject
+            {
+                ["checked"] = hangerTops.Count, ["not_at_support"] = new JArray(short_),
+                ["max_gap_mm"] = hangerTops.Count == 0 || double.IsInfinity(maxGap) ? JValue.CreateNull() : (JToken)Math.Round(maxGap, 3)
+            };
             evidence["sources"] = perSource;
             return check;
+        }
+
+        private sealed class HangerTop
+        {
+            public long Id;
+            public XYZ Top;
+            public double LengthMm;
+            public ElementId Phase;
+        }
+
+        /// <summary>
+        /// After the commit, one ray up from just under each placed hanger's top end: the first
+        /// support must sit at that end (within 1 mm). The planning ray chose the rod length; this
+        /// re-reads that the rod AS BUILT reaches it. Same rolled-back temporary view as planning.
+        /// Returns the hangers that do not; maxGapMm is the largest gap measured.
+        /// </summary>
+        private static List<long> RecheckHangers(Document doc, List<HangerTop> tops, out double maxGapMm)
+        {
+            maxGapMm = 0;
+            var misses = new List<long>();
+            if (tops.Count == 0) return misses;
+            using (var tx = new Transaction(doc, "Horizun: framing hanger re-read (rolled back)"))
+            {
+                if (tx.Start() != TransactionStatus.Started) { maxGapMm = double.PositiveInfinity; return tops.Select(h => h.Id).ToList(); }
+                try
+                {
+                    var views = new Dictionary<long, View3D>();
+                    var filter = new ElementMulticategoryFilter(SupportCategories.Concat(new[] { BuiltInCategory.OST_RvtLinks }).ToList());
+                    foreach (HangerTop h in tops)
+                    {
+                        long pk = h.Phase == null ? -1 : Rid.Value(h.Phase);
+                        if (!views.TryGetValue(pk, out View3D view)) views[pk] = view = CeilingRayView(doc, h.Phase);
+                        var ray = new ReferenceIntersector(filter, FindReferenceTarget.Face, view) { FindReferencesInRevitLinks = true };
+                        // From below the top end, so the support face is a hit at a known distance
+                        // rather than the ray's own origin (planning skips a zero-proximity hit).
+                        double back = Math.Min(50.0, h.LengthMm / 2) / MmPerFt;
+                        double d = SupportAbove(doc, ray, h.Top - new XYZ(0, 0, back), back + 100 / MmPerFt, out string support);
+                        double gap = support == null ? double.PositiveInfinity : Math.Abs(d - back) * MmPerFt;
+                        maxGapMm = Math.Max(maxGapMm, gap);
+                        if (gap > EndpointToleranceMm) misses.Add(h.Id);
+                    }
+                }
+                finally
+                {
+                    if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
+                }
+            }
+            return misses;
         }
 
         private static JObject CeilingSummary(List<FramingSourcePlan> plans)

@@ -100,7 +100,8 @@ namespace Horizun.Revit.Commands
             Document doc = gate.Document;
 
             List<FramingSourcePlan> plans;
-            List<KeyValuePair<Element, FramingMark>> toRemove = null;
+            List<KeyValuePair<Element, FramingMark>> toRemove = null, foreignCopies = null;
+            List<long> cascade = null;
             var skipped = new List<string>();
             string signature;
             try
@@ -110,8 +111,14 @@ namespace Horizun.Revit.Commands
                     HashSet<long> ids = SourceIds(request);
                     if (ids == null || ids.Count == 0) throw new ArgumentException("remove needs element_ids: the walls or ceilings whose framing goes.");
                     toRemove = FramingMarker.Find(doc, ids);
+                    foreignCopies = FramingMarker.FindForeign(doc, ids);
+                    cascade = MeasureRemoveCascade(doc, toRemove);
                     plans = new List<FramingSourcePlan>();
-                    signature = string.Join(",", toRemove.Select(p => Rid.Value(p.Key.Id).ToString(CultureInfo.InvariantCulture)));
+                    // The token binds the named members AND the cascade Revit measured for them: a
+                    // token that binds only the named ids would still authorise an unbounded dependent
+                    // cascade (the rule DeleteCommand keeps for horizun_delete_verified).
+                    signature = string.Join(",", toRemove.Select(p => Rid.Value(p.Key.Id).ToString(CultureInfo.InvariantCulture)))
+                                + "|cascade:" + string.Join(",", cascade.Select(id => id.ToString(CultureInfo.InvariantCulture)));
                 }
                 else
                 {
@@ -139,9 +146,15 @@ namespace Horizun.Revit.Commands
             if (toRemove != null)
                 foreach (KeyValuePair<Element, FramingMark> p in toRemove)
                     resolved.Elements.Add(ModelEditRunner.Planned(p.Key, PlannedAction.Delete, request));
+            if (cascade != null)
+                foreach (long id in cascade)
+                {
+                    Element dependent = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+                    if (dependent != null) resolved.Elements.Add(ModelEditRunner.Planned(dependent, PlannedAction.Delete, request));
+                }
             string hash = DocumentGate.PlanHash(request, HashScope) + "|" + FramingPlanSignature.Of(new[] { new FramingMember { Role = op, TypeKey = signature } });
 
-            JObject summary = op == "remove" ? RemoveSummary(toRemove) : op == "ceiling" ? CeilingSummary(plans) : WallSummary(plans);
+            JObject summary = op == "remove" ? RemoveSummary(doc, toRemove, cascade, foreignCopies) : op == "ceiling" ? CeilingSummary(plans) : WallSummary(plans);
             if (skipped.Count > 0) summary["skipped"] = new JArray(skipped.ToArray());
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             if (dryRun)
@@ -166,8 +179,9 @@ namespace Horizun.Revit.Commands
             string txName = op == "remove" ? "Horizun: remove framing" : "Horizun: framing";
             var evidence = new JObject();
             List<long> removedIds = toRemove?.Select(p => Rid.Value(p.Key.Id)).ToList();
+            var cascadedNow = new List<long>();
             Func<Document, PostconditionCheck> verify = op == "remove"
-                ? (Func<Document, PostconditionCheck>)(d => VerifyRemoved(d, removedIds, SourceIds(request), evidence))
+                ? (Func<Document, PostconditionCheck>)(d => VerifyRemoved(d, removedIds, SourceIds(request), cascade, cascadedNow, foreignCopies.Count, evidence))
                 : op == "ceiling" ? (Func<Document, PostconditionCheck>)(d => VerifyCeilings(d, plans, evidence))
                 : d => VerifyWalls(d, plans, evidence);
             PostconditionCheck check;
@@ -185,8 +199,13 @@ namespace Horizun.Revit.Commands
                         started = true;
                         try
                         {
-                            if (op == "remove") { if (toRemove.Count > 0) doc.Delete(toRemove.Select(p => p.Key.Id).ToList()); }
-                            else foreach (FramingSourcePlan p in plans.Where(x => !x.AlreadyApplied)) PlaceSource(doc, p);
+                            if (op == "remove" && toRemove.Count > 0)
+                            {
+                                var named = new HashSet<long>(removedIds);
+                                cascadedNow.Clear();
+                                cascadedNow.AddRange(doc.Delete(toRemove.Select(p => p.Key.Id).ToList()).Select(Rid.Value).Where(id => !named.Contains(id)).OrderBy(id => id));
+                            }
+                            else if (op != "remove") foreach (FramingSourcePlan p in plans.Where(x => !x.AlreadyApplied)) PlaceSource(doc, p);
                             doc.Regenerate();
                             if (op == "wall" && UnjoinFromSources(doc, plans, evidence) > 0) doc.Regenerate();
                             Guard.Commit(tx, txName);
@@ -628,16 +647,58 @@ namespace Horizun.Revit.Commands
         /// Re-reads by the ids captured BEFORE the delete: a deleted Element's wrapper is no longer a
         /// valid object, so reading its Id after the commit throws instead of answering "gone".
         /// </summary>
-        private static PostconditionCheck VerifyRemoved(Document doc, List<long> removedIds, HashSet<long> sources, JObject evidence)
+        private static PostconditionCheck VerifyRemoved(Document doc, List<long> removedIds, HashSet<long> sources, List<long> cascadeMeasured,
+                                                        List<long> cascadedNow, int foreignKept, JObject evidence)
         {
-            var check = new PostconditionCheck("members_absent", "markers_absent");
+            var check = new PostconditionCheck("members_absent", "markers_absent", "cascade_absent", "cascade_as_measured");
             int still = removedIds.Count(id => doc.GetElement(Rid.Make(id)) != null);
             int marked = FramingMarker.Find(doc, sources).Count;
             check.Compare("members_absent", 0, still);
             check.Compare("markers_absent", 0, marked);
+            // The dependents the rehearsal measured must be gone, and Revit must have taken no
+            // other: a cascade the token did not bind rolls the whole remove back.
+            check.Compare("cascade_absent", 0, cascadeMeasured.Count(id => doc.GetElement(Rid.Make(id)) != null));
+            var measured = new HashSet<long>(cascadeMeasured);
+            int differs = cascadedNow.Count(id => !measured.Contains(id)) + cascadeMeasured.Count(id => !cascadedNow.Contains(id));
+            check.Compare("cascade_as_measured", 0, differs);
             evidence["removed_ids"] = new JArray(removedIds);
+            evidence["cascaded_ids"] = new JArray(cascadedNow);
+            evidence["cascade_measured_in_rehearsal"] = new JArray(cascadeMeasured);
+            evidence["foreign_copies_kept"] = foreignKept;
             evidence["sources"] = new JArray(sources.OrderBy(s => s));
             return check;
+        }
+
+        /// <summary>
+        /// What Revit deletes along with the named members (tags, dimensions, anything hosted on
+        /// the tool's work planes), measured in a rolled-back transaction: the ids Delete returned
+        /// AND that no longer resolve, minus the named ones. Deterministic for one model state, so
+        /// the rehearsal and the apply measure the same set and the token can bind it.
+        /// </summary>
+        private static List<long> MeasureRemoveCascade(Document doc, List<KeyValuePair<Element, FramingMark>> toRemove)
+        {
+            var cascade = new List<long>();
+            if (toRemove == null || toRemove.Count == 0) return cascade;
+            var named = new HashSet<long>(toRemove.Select(p => Rid.Value(p.Key.Id)));
+            using (var tx = new Transaction(doc, "Horizun: measure framing remove (rolled back)"))
+            {
+                if (tx.Start() != TransactionStatus.Started) throw new InvalidOperationException("the remove's cascade could not be measured: no transaction could start.");
+                try
+                {
+                    ICollection<ElementId> gone = doc.Delete(toRemove.Select(p => p.Key.Id).ToList());
+                    foreach (ElementId id in gone)
+                    {
+                        long v = Rid.Value(id);
+                        if (!named.Contains(v) && doc.GetElement(id) == null) cascade.Add(v);
+                    }
+                }
+                finally
+                {
+                    if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
+                }
+            }
+            cascade.Sort();
+            return cascade;
         }
 
         // ---- summaries ------------------------------------------------------------------
@@ -685,7 +746,8 @@ namespace Horizun.Revit.Commands
             };
         }
 
-        private static JObject RemoveSummary(List<KeyValuePair<Element, FramingMark>> found)
+        private static JObject RemoveSummary(Document doc, List<KeyValuePair<Element, FramingMark>> found, List<long> cascade,
+                                             List<KeyValuePair<Element, FramingMark>> foreign)
         {
             var bySource = new JArray();
             foreach (IGrouping<long, KeyValuePair<Element, FramingMark>> g in found.GroupBy(p => p.Value.SourceId))
@@ -694,7 +756,28 @@ namespace Horizun.Revit.Commands
                 foreach (IGrouping<string, KeyValuePair<Element, FramingMark>> r in g.GroupBy(p => p.Value.Role).OrderBy(r => r.Key, StringComparer.Ordinal)) counts[r.Key] = r.Count();
                 bySource.Add(new JObject { ["source_id"] = g.Key, ["count_by_role"] = counts, ["element_count"] = g.Count() });
             }
-            return new JObject { ["sources"] = bySource, ["element_count"] = found.Count, ["nothing_to_remove"] = found.Count == 0 };
+            var byCategory = new JObject();
+            foreach (IGrouping<string, long> g in cascade.GroupBy(id => CategoryLabel(doc, id)).OrderBy(g => g.Key, StringComparer.Ordinal)) byCategory[g.Key] = g.Count();
+            var copies = new JArray();
+            foreach (KeyValuePair<Element, FramingMark> c in foreign.Take(SummaryMemberCap))
+                copies.Add(new JObject { ["id"] = Rid.Value(c.Key.Id), ["names_source_id"] = c.Value.SourceId, ["role"] = c.Value.Role });
+            return new JObject
+            {
+                ["sources"] = bySource, ["element_count"] = found.Count, ["nothing_to_remove"] = found.Count == 0,
+                // Deleted WITH the members by Revit itself; bound by the token, re-read after the commit.
+                ["cascade"] = new JObject { ["count"] = cascade.Count, ["by_category"] = byCategory, ["ids"] = new JArray(cascade.Take(SummaryMemberCap)) },
+                // Copies of members (copy/paste or array of a framed wall): their marker names a source
+                // in the call, but they are not the members it made, so they stay.
+                ["foreign_copies_kept"] = copies, ["foreign_copy_count"] = foreign.Count
+            };
+        }
+
+        private static string CategoryLabel(Document doc, long id)
+        {
+            Element e = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+            if (e == null) return "(unreadable)";
+            try { if (e.Category != null) return e.Category.Name; } catch { }
+            return e.GetType().Name;
         }
     }
 }

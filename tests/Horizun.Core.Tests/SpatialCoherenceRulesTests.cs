@@ -34,6 +34,18 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Two_members_of_one_framed_source_are_judged_by_the_normal_rules()
+        {
+            // FramingMarker.Frames is true only for a member and its own source, so two members
+            // of one wall arrive with FramedBy = false: contact is no finding, a real overlap is.
+            var touching = new SpatialCoherenceRules.Pair { CategoryA = "OST_GenericModel", CategoryB = "OST_GenericModel", SharedVolume = 1e-5, VolumeA = 0.1, VolumeB = 0.1 };
+            Assert.Equal(K.None, SpatialCoherenceRules.Classify(touching).Kind);
+            var through = new SpatialCoherenceRules.Pair { CategoryA = "OST_StructuralFraming", CategoryB = "OST_StructuralFraming", SharedVolume = 0.02, VolumeA = 0.3, VolumeB = 0.1 };
+            Assert.NotEqual(K.Expected, SpatialCoherenceRules.Classify(through).Kind);
+            Assert.NotEqual(K.None, SpatialCoherenceRules.Classify(through).Kind);
+        }
+
+        [Fact]
         public void A_view_camera_is_not_a_physical_element_even_though_Revit_files_it_as_model()
         {
             Assert.False(SpatialCoherenceRules.Considered("OST_Cameras"));

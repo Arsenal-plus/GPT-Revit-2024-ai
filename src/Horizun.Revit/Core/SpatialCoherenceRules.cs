@@ -51,7 +51,7 @@ namespace Horizun.Revit.Core
             public bool Connected;
             /// <summary>Nested family / super-component, or both belong to the same curtain system or stair.</summary>
             public bool SameAssembly;
-            /// <summary>A horizun_framing member and its own source wall/ceiling, or two members of one framed source (FramingMarker).</summary>
+            /// <summary>A horizun_framing member and its own source wall/ceiling (FramingMarker); two members of one source are NOT this.</summary>
             public bool FramedBy;
             /// <summary>Shared solid volume in ft³; null when Revit could not compute the boolean.</summary>
             public double? SharedVolume;
@@ -130,7 +130,9 @@ namespace Horizun.Revit.Core
             if (p.HostRelation || p.SameAssembly) return new Verdict { Kind = Kind.Expected, Reason = "host or same assembly" };
             // Studs sit INSIDE the wall they frame and meet their tracks by construction: that
             // is what horizun_framing was asked to build, not a clash (docs/TOOLS-EXTENDED.md).
-            if (p.FramedBy) return new Verdict { Kind = Kind.Expected, Reason = "framing inside its own source, or members of one framed source" };
+            // Only member vs its own source: two members of one source meet by contact (under
+            // the touch volume, so no finding), and any real overlap between them stays one.
+            if (p.FramedBy) return new Verdict { Kind = Kind.Expected, Reason = "framing inside its own source" };
             if (p.Connected) return new Verdict { Kind = Kind.Expected, Reason = "connected through MEP connectors" };
 
             // Revit could not compute the shared solid: the solids intersect (the filter said

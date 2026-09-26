@@ -92,6 +92,14 @@ namespace Horizun.Revit.Commands
                 ["truncated"] = listed < found.Count,
                 ["note"] = "Members are found by the horizun_framing marker only; hand-modelled framing is never listed."
             };
+            // Copies of members (a framed wall copied with its framing): their marker names a source
+            // but they are not what the tool made for it, so they are listed apart and never counted.
+            List<KeyValuePair<Element, FramingMark>> foreign = FramingMarker.FindForeign(doc, sources);
+            result["foreign_copy_count"] = foreign.Count;
+            result["foreign_copies"] = new JArray(foreign.Take(ReadMemberCap).Select(p => new JObject
+            {
+                ["id"] = Rid.Value(p.Key.Id), ["names_source_id"] = p.Value.SourceId, ["role"] = p.Value.Role, ["index"] = p.Value.Index
+            }));
             if (sources != null)
                 result["sources_without_framing"] = new JArray(sources.Where(s => found.All(p => p.Value.SourceId != s)).OrderBy(s => s).ToArray());
             return CommandResult.Ok(result);
