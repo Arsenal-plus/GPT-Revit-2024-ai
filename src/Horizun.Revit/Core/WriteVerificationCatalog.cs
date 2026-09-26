@@ -184,7 +184,15 @@ namespace Horizun.Revit.Core
             // the resize's own target size); a fitting whose id was removed and replaced
             // has no id left to check, so it is named in Report()'s fittings_removed_or_replaced
             // and its replacement (if any) is verified there under fittings_added instead.
-            Row("horizun_mep_routing", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "MepRoutingCommand.cs")),
+            // slope: every pipe end re-read against its planned elevation (sign and height),
+            // the signed slope of each non-riser pipe, each fitting centre, the held end,
+            // min_clearance and every connector pair recorded before the write.
+            Row("horizun_mep_routing", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
+                F(C + "MepRoutingCommand.cs", C + "MepRoutingSlope.cs", "Horizun.Revit/Core/SlopeRules.cs"),
+                "MepRoutingSlope.cs ~l.469: slope's connection:<pair> checks IsConnectedTo, not origin coincidence; an elbow flagged connected but off its pipe end passes (the pipe-slope live probe re-reads origins).",
+                "MepRoutingSlope.cs ~l.333: flow direction (Connector.Direction, element-relative) is not measured live; ':high'/':low' do not depend on it.",
+                "MepRoutingCommand.cs ~l.146: warnings Revit posts in slope's apply transaction (AutoRouteFailures.AttemptToConnectNonSlopingElementToSlopedPipeWarning) are not captured in the reply.",
+                "MepRoutingSlope.cs ~l.481: fitting_centre tolerance allows slope x the longest leg, room for Revit re-orienting an elbow (TO MEASURE LIVE)."),
             Row("horizun_structural_connections", VerificationMechanism.PerRowReread, E("host_verified", "application"), F(C + "StructuralConnectionsCommand.cs"),
                 "StructuralConnectionsCommand.cs ~l.580: the per-row verified field uses a count (connected >= members), not containment; the verdict itself uses containment."),
             Row("horizun_copy_between_documents", VerificationMechanism.PerRowReread, E("host_verified", "application"), F(C + "CopyBetweenDocumentsCommand.cs"),
