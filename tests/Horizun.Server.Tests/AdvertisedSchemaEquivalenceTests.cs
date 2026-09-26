@@ -301,6 +301,12 @@ namespace Horizun.Server.Tests
             }
         }
 
+        // Names are compared per INSTANCE location: a branch's names merge into the
+        // location they validate. Inside one branch a field whose nested object schema
+        // equals the union field's is advertised as {"type":"object"} (source_reference in
+        // 27 create_elements kinds, MEASURED 2026-09-26), and its nested names live in the
+        // union one level up; Advertised_branches_rehydrate_to_the_full_schema proves each
+        // such fold is identical to the union, so no name a caller can send disappears.
         [Fact]
         public void Property_names_are_identical_at_every_depth()
         {

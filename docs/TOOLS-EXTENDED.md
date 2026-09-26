@@ -36,14 +36,30 @@ today `horizun_create_elements` `kind` (32) and `horizun_document_session`
 `completion/complete` fills `{tool}` and `{variant}`.
 
 **`schema_help`.** A call that failed (`isError`, or a rehearsal with
-`invalid > 0`) and whose arguments violate the full contract carries
-`structuredContent.schema_help`: `contract_uri`, up to 20 `pointer: message`
-violations and, for a discriminated tool, one entry per kind/operation in the
-arguments with its `uri` and (for up to 3 branches, 12 KB) the verbatim branch;
-an unknown value gets `valid_values`. It is bounded at 16 KB. It is advice
-attached after the verdict: a success keeps its text exactly the payload, an
-error gains one line naming the first pointer, and `isError`, `invalid`,
-`errors`, `fallback` and `capability_gaps` are unchanged.
+`invalid > 0`) and whose arguments violate the full contract gets advice. A
+reply that already has `structuredContent` (a rehearsal, or an error with a
+fallback block or trace) carries `structuredContent.schema_help`: `contract_uri`,
+up to 20 `pointer: message` violations and, for a discriminated tool, one entry
+per kind/operation in the arguments with its `uri` and (for up to 3 branches,
+12 KB) the verbatim branch; an unknown value gets `valid_values`. It is bounded
+at 16 KB. A failing `oneOf` is explained by the branch the row names by its
+`const` (a wall row is told what a wall needs), and by the closest branch only
+when it names none. An error with no `structuredContent` gets none created: it
+gains one text line with the first violation and the URI of the schema that holds
+it, because readers that take `structuredContent` in place of the text (the
+procedure judge; clients that forward it to the model) would otherwise see the
+advice and lose the error. In every case this is advice attached after the
+verdict: a success keeps its text exactly the payload, an error gains one line,
+and `isError`, `invalid`, `errors`, `fallback` and `capability_gaps` are
+unchanged.
+
+**Names inside a branch.** Every argument name is kept at every instance
+location. Inside one branch, a field whose whole nested object schema equals the
+union field's (for example `source_reference` in 27 `create_elements` kinds) is
+shown as `{"type":"object"}`, and its nested names are read in the union field one
+level up; `AdvertisedSchemaEquivalenceTests` rehydrates every such fold. Keeping
+stub copies of those names in each branch would cost about 8 KB (estimated from
+the field's 9 keys), the margin this work exists to create.
 
 **What a call is validated against.** There is no generic JSON-Schema check
 before dispatch, and this change does not add one. Validation reads the FULL

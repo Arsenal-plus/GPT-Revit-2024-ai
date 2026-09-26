@@ -479,8 +479,8 @@ Named prompts cover family recipes, room documentation, audits and delivery.
 These protocol features and workflow prompts are additional to the tool count.
 `tools/list` schemas are abridged; the exact one is `horizun://contract/tools/{tool}`
 (or `.../{tool}/{variant}` for one `create_elements` kind or `document_session`
-operation), and a failed call that violates it carries `structuredContent.schema_help`
-([details](docs/TOOLS-EXTENDED.md#advertised-schemas-and-the-contract)).
+operation), and a failed call that violates it names the failing path and that URI
+(with `structuredContent.schema_help` when the reply is structured) ([details](docs/TOOLS-EXTENDED.md#advertised-schemas-and-the-contract)).
 
 Tool packs, compact/summary queries, selected-field projections and durable jobs
 help manage context and long-running work. Calls use a bounded 16-slot FIFO
