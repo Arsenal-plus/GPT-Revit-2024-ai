@@ -137,7 +137,15 @@ namespace Horizun.Revit.Core
         }
     }
 
-    /// <summary>The last Horizun write per document, for horizun_verify_changes scope=last_write.</summary>
+    /// <summary>
+    /// The Horizun writes for each document, for horizun_verify_changes. `For` keeps the
+    /// EXACT scope=last_write behaviour it always had (one entry, replaced each write).
+    /// `HistoryFor` is new: a bounded list of every write recorded for that document since
+    /// the add-in started, oldest first, for scope=session (SessionScopeRules.cs unions
+    /// their added/modified ids). Capped at HistoryCap writes per document so a long Revit
+    /// session does not grow this without limit; the oldest write is dropped first, which
+    /// only narrows how far back scope=session can see, never corrupts what it returns.
+    /// </summary>
     internal static class ChangeLedger
     {
         internal sealed class Entry
@@ -149,8 +157,10 @@ namespace Horizun.Revit.Core
             public int Deleted;
         }
 
+        private const int HistoryCap = 500;
         private static readonly object Gate = new object();
         private static readonly Dictionary<string, Entry> Last = new Dictionary<string, Entry>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, List<Entry>> History = new Dictionary<string, List<Entry>>(StringComparer.Ordinal);
 
         public static void Record(string tool, ChangeWatch.DocChanges d)
         {
@@ -165,12 +175,26 @@ namespace Horizun.Revit.Core
                 Transactions = d.Transactions.ToArray()
             };
             try { entry.DocumentTitle = d.Document.Title; } catch { }
-            lock (Gate) Last[ChangeWatch.Key(d.Document)] = entry;
+            string key = ChangeWatch.Key(d.Document);
+            lock (Gate)
+            {
+                Last[key] = entry;
+                if (!History.TryGetValue(key, out List<Entry> list)) History[key] = list = new List<Entry>();
+                list.Add(entry);
+                while (list.Count > HistoryCap) list.RemoveAt(0);
+            }
         }
 
         public static Entry For(Document doc)
         {
             lock (Gate) return Last.TryGetValue(ChangeWatch.Key(doc), out Entry e) ? e : null;
+        }
+
+        /// <summary>Every write recorded for this document, oldest first, bounded to HistoryCap.
+        /// Empty (never null) when nothing has been recorded yet.</summary>
+        public static IReadOnlyList<Entry> HistoryFor(Document doc)
+        {
+            lock (Gate) return History.TryGetValue(ChangeWatch.Key(doc), out List<Entry> list) ? list.ToArray() : Array.Empty<Entry>();
         }
     }
 }
