@@ -96,8 +96,8 @@ $script:wallApply = {
     $script:applies++
     Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = ($script:applies -gt 1)
         postconditions = [pscustomobject]@{ all_verified = $true }
-        evidence = [pscustomobject]@{ endpoint_read = @('location_curve'); sources = @([pscustomobject]@{ source_id = 7003; already_applied = ($script:applies -gt 1)
-            planned = 30; found = 30; max_endpoint_deviation_mm = 0.0; stud_crossings = 0; inserts_checked = 2; inserts_changed = 0 }) } }) $false ''
+        evidence = [pscustomobject]@{ endpoint_read = @('location_curve'); source_joins_undone = 0; sources = @([pscustomobject]@{ source_id = 7003; already_applied = ($script:applies -gt 1)
+            planned = 30; found = 30; max_endpoint_deviation_mm = 0.0; stud_crossings = 0; inserts_checked = 2; inserts_changed = 0; joined_to_source = 0 }) } }) $false ''
 }
 
 $fakeApply = {

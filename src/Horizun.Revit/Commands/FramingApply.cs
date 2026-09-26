@@ -21,8 +21,9 @@
 // VERIFICATION reads the model, never the calls that did not throw: members found
 // by marker, their type, both endpoints within 1 mm of the plan, |y| inside the
 // chosen layer, no vertical member entering an opening, counts per role equal to
-// the plan, and each hosted insert (door, window, opening) with the same type and
-// location as before the write.
+// the plan, each hosted insert (door, window, opening) with the same type and
+// location as before the write, and no member geometry-joined with (cutting) its
+// source wall - a join Revit made on its own is undone inside the write.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -183,6 +184,7 @@ namespace Horizun.Revit.Commands
                             if (op == "remove") doc.Delete(toRemove.Select(p => p.Key.Id).ToList());
                             else foreach (FramingSourcePlan p in plans.Where(x => !x.AlreadyApplied)) PlaceSource(doc, p);
                             doc.Regenerate();
+                            if (op == "wall" && UnjoinFromSources(doc, plans, evidence) > 0) doc.Regenerate();
                             Guard.Commit(tx, txName);
                         }
                         catch { said = recorder.Said(); throw; }
@@ -376,6 +378,47 @@ namespace Horizun.Revit.Commands
             }
         }
 
+        /// <summary>
+        /// Revit may join a column placed inside a wall with that wall and cut the wall by it
+        /// (it does so for some column materials; which ones is measured live). A stud never
+        /// cuts the partition it frames: that would change the wall's own volume and area, so
+        /// every such join is undone here and the count is reported (evidence.source_joins_undone).
+        /// </summary>
+        private static int UnjoinFromSources(Document doc, List<FramingSourcePlan> plans, JObject evidence)
+        {
+            int undone = 0;
+            var refused = new JArray();
+            foreach (FramingSourcePlan p in plans.Where(x => !x.AlreadyApplied))
+                foreach (long id in p.MemberIds.Values)
+                {
+                    Element m = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+                    try
+                    {
+                        if (m == null || !JoinGeometryUtils.AreElementsJoined(doc, p.Source, m)) continue;
+                        JoinGeometryUtils.UnjoinGeometry(doc, p.Source, m);
+                        undone++;
+                    }
+                    // Named, not thrown: the source_unjoined postcondition re-reads the join and
+                    // rolls the whole edit back when one survived.
+                    catch (Exception ex) { refused.Add(id + ": " + ex.Message); }
+                }
+            evidence["source_joins_undone"] = undone;
+            if (refused.Count > 0) evidence["source_unjoin_refused"] = refused;
+            return undone;
+        }
+
+        /// <summary>Members of this plan still geometry-joined with their source wall (re-read; must be 0).</summary>
+        private static int JoinedToSource(Document doc, FramingSourcePlan p)
+        {
+            int n = 0;
+            foreach (long id in p.MemberIds.Values)
+            {
+                Element m = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+                try { if (m != null && JoinGeometryUtils.AreElementsJoined(doc, p.Source, m)) n++; } catch { }
+            }
+            return n;
+        }
+
         // ---- verifying ------------------------------------------------------------------
 
         /// <summary>A member's axis as the committed model reports it, and how it was read.</summary>
@@ -399,8 +442,8 @@ namespace Horizun.Revit.Commands
 
         private static PostconditionCheck VerifyWalls(Document doc, List<FramingSourcePlan> plans, JObject evidence)
         {
-            var check = new PostconditionCheck("member_count", "member_types", "member_endpoints", "counts_by_role", "inside_layer", "no_stud_through_opening", "inserts_untouched");
-            int planned = 0, found = 0, wrongType = 0, unreadable = 0, crossings = 0, insertsChanged = 0;
+            var check = new PostconditionCheck("member_count", "member_types", "member_endpoints", "counts_by_role", "inside_layer", "no_stud_through_opening", "inserts_untouched", "source_unjoined");
+            int planned = 0, found = 0, wrongType = 0, unreadable = 0, crossings = 0, insertsChanged = 0, joined = 0;
             double maxDev = 0, maxExcess = 0;
             var plannedRoles = new JObject();
             var foundRoles = new JObject();
@@ -444,11 +487,13 @@ namespace Horizun.Revit.Commands
                 maxDev = Math.Max(maxDev, srcDev);
                 int changed = p.InsertsBefore.Count(kv => InsertState(doc, kv.Key) != kv.Value);
                 insertsChanged += changed;
+                int srcJoined = JoinedToSource(doc, p);
+                joined += srcJoined;
                 perSource.Add(new JObject
                 {
                     ["source_id"] = sid, ["already_applied"] = p.AlreadyApplied, ["planned"] = p.Members.Count, ["found"] = srcFound,
                     ["max_endpoint_deviation_mm"] = Math.Round(srcDev, 3), ["stud_crossings"] = srcCross,
-                    ["inserts_checked"] = p.InsertsBefore.Count, ["inserts_changed"] = changed,
+                    ["inserts_checked"] = p.InsertsBefore.Count, ["inserts_changed"] = changed, ["joined_to_source"] = srcJoined,
                     ["member_ids"] = new JArray(p.MemberIds.OrderBy(kv => kv.Key).Select(kv => kv.Value)),
                     ["work_plane_ids"] = new JArray(p.WorkPlaneIds)
                 });
@@ -461,6 +506,7 @@ namespace Horizun.Revit.Commands
             check.Measure("inside_layer", 0, maxExcess, EndpointToleranceMm, "mm", "max |y| beyond half the carrying layer's thickness");
             check.Compare("no_stud_through_opening", 0, crossings);
             check.Compare("inserts_untouched", 0, insertsChanged);
+            check.Compare("source_unjoined", 0, joined);
             evidence["sources"] = perSource;
             evidence["endpoint_read"] = new JArray(methods.OrderBy(s => s, StringComparer.Ordinal).ToArray());
             return check;

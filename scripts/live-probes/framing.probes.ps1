@@ -119,7 +119,7 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($a.stage -ne 'apply' -or $a.answer.isError -or $a.answer.data.postconditions.all_verified -ne $true -or -not $ev) { Case $catalog[1] $T 'fail' ('apply: ' + (Short $a.answer)) }
             elseif ([int]$ev.stud_crossings -ne 0 -or [int]$ev.inserts_changed -ne 0 -or [int]$ev.inserts_checked -ne 2 -or [int]$ev.found -ne $planned) {
                 Case $catalog[1] $T 'fail' "crossings $($ev.stud_crossings), inserts changed $($ev.inserts_changed) of $($ev.inserts_checked), found $($ev.found) of $planned" }
-            else { $applied = $true; Case $catalog[1] $T 'pass' ("$($ev.found) members re-read, max endpoint deviation $($ev.max_endpoint_deviation_mm) mm, read by " + (@($a.answer.data.evidence.endpoint_read) -join ',')) }
+            else { $applied = $true; Case $catalog[1] $T 'pass' ("$($ev.found) members re-read, max endpoint deviation $($ev.max_endpoint_deviation_mm) mm, read by " + (@($a.answer.data.evidence.endpoint_read) -join ',') + ", joins with the wall undone $($a.answer.data.evidence.source_joins_undone)") }
             if (-not $applied) { Case $catalog[2] $T 'not_covered' 'the first apply did not verify' }
             else {
                 $b = & $Ctx.Apply $T $wallArgs ($run + '-fr-apply-again')

@@ -1926,8 +1926,12 @@ whether the committed axis keeps the planned ends is what `framing.probes.ps1` m
 After the commit the tool re-reads, by marker, every planned member: its type, both
 endpoints within 1 mm of the plan (a vertical column's ends are read from its base and
 top constraints), `|y|` inside the carrying layer, no vertical member inside an opening's
-void, counts per role equal to the plan, and every hosted insert of the wall with the same
-type and location as before. Any disagreement rolls the whole edit back.
+void, counts per role equal to the plan, every hosted insert of the wall with the same
+type and location as before, and no member geometry-joined with its source wall
+(`source_unjoined`). Revit joins some column families with the wall they stand in and cuts
+the wall by them; a stud never cuts the partition it frames, so such a join is undone inside
+the write and counted in `evidence.source_joins_undone`. Any disagreement rolls the whole
+edit back.
 
 Each member (and work plane) carries an extensible-storage marker naming its source
 element (id and UniqueId), role, plan index, spec hash and plan signature. A second apply
