@@ -7,26 +7,40 @@
 // organisation's hanger catalogue) along straight pipes, ducts, cable trays and
 // conduits: one instance per station, on the run's centreline, turned to the run's
 // horizontal direction. Stations come from HangerRules (Core, unit-tested): end
-// clearance at both ends, no gap above spacing_mm, none within end_offset_mm of an
-// interior fitting (a tap on the run).
+// clearance at both ends, none inside end_offset_mm of an interior fitting (a tap)
+// - end stations included - and no gap above spacing_mm inside a free span. A gap
+// that cannot be closed (across a tap's clearance zone wider than the spacing, or
+// where a station has nothing above it) is NAMED in gaps_above_spacing, never hidden.
+//
+// THE COUNT IS BOUNDED BEFORE ANY RAY. Pass 1 is arithmetic only: every run is
+// classified and its stations counted against MaxStations; a spacing in the wrong
+// unit refuses there, before Revit's UI thread casts a single ray.
 //
 // THE ROD. For each station a ray goes straight UP from the run's top (centreline
 // plus half its outside height) against floors, structural framing and roofs of the
-// host document AND of loaded Revit links. The nearest hit within max_rod_mm is the
-// support; its distance is the rod length, written to rod_length_parameter when the
-// caller names one. A station with nothing above within max_rod_mm is reported as
-// no_support_above and NOT placed: a hanger hanging from nothing is a defect this
-// operation would otherwise create.
+// host document AND of loaded Revit links. ReferenceIntersector returns only what
+// its view shows (RevitAPI.xml: hidden elements and elements outside the section box
+// are never returned), so the rays are cast in a TEMPORARY isometric view created in
+// a transaction that is always rolled back: no template, no filters, no section box,
+// the structure and link categories visible, every open user workset visible, the
+// run's own phase and a phase filter that hides demolished elements. The nearest hit
+// within max_rod_mm is the support; its distance is the rod length, written to
+// rod_length_parameter (an instance Length parameter) when the caller names one. A
+// station with nothing above is reported as no_support_above and NOT placed; a ray
+// that could not be cast refuses the call (no measurement is not "nothing above").
+//
+// Risers are skipped and reported (they take riser clamps, not hangers); flex runs
+// are the only capability gap that grants the Python fallback.
 //
 // WHAT IS PROVEN after the commit, re-read from the model: every instance exists
 // with the requested type, its position (X/Y from its location, Z from its level
 // plus the offset that governs it) within 1 mm, its rotation within 0.5 degree, the
 // rod parameter within 1 mm, and placed == planned.
 //
-// NOT MEASURED YET (live probe mep-hangers.probes.ps1 measures it): whether
-// ReferenceIntersector honours the ray view's visibility/section box for linked
-// structure, and which offset parameter a work-plane-based type exposes after a
-// level placement. The code is defensive on both; the verification decides.
+// NOT MEASURED YET (live probe mep-hangers.probes.ps1 measures what it can): that
+// linked structure is hit through the temporary view, and which offset parameter a
+// work-plane-based type exposes after a level placement. Closed worksets are not
+// loaded at all, so they are listed rather than searched.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -70,12 +84,19 @@ namespace Horizun.Revit.Commands
                 public ElementId Created;
             }
 
+            private sealed class RunPlan
+            {
+                public MEPCurve Run; public long Id; public XYZ A; public XYZ Dir; public double Half; public double Angle; public Level Level;
+                public HangerStationPlan Stations; public JObject Row;
+            }
+
             private readonly List<Station> _stations = new List<Station>();
             private readonly List<JObject> _runs = new List<JObject>();
+            private readonly SortedSet<string> _viewPhases = new SortedSet<string>(), _closedWorksets = new SortedSet<string>();
             private ElementId _symbolId;
-            private string _symbolName, _rodName, _viewName;
+            private string _symbolName, _rodName, _phaseFilter;
             private double _spacingMm, _endOffsetMm, _maxRodMm;
-            private int _linksLoaded, _noSupport;
+            private int _linksLoaded, _noSupport, _risers, _wideGaps, _viewCount;
 
             public override int Count => _stations.Count;
 
@@ -88,7 +109,7 @@ namespace Horizun.Revit.Commands
                 double? spacing = request.Value<double?>("spacing_mm"), endOffset = request.Value<double?>("end_offset_mm");
                 double maxRod = request.Value<double?>("max_rod_mm") ?? 3000;
                 if (spacing == null || !(spacing > 0) || double.IsInfinity(spacing.Value)) { error = "hangers needs spacing_mm > 0 (the maximum distance between supports)."; return null; }
-                if (endOffset == null || endOffset < 0 || double.IsInfinity(endOffset.Value)) { error = "hangers needs end_offset_mm >= 0 (the clearance from each run end and each fitting)."; return null; }
+                if (endOffset == null || !(endOffset >= 0) || double.IsInfinity(endOffset.Value)) { error = "hangers needs end_offset_mm >= 0 (the clearance from each run end and each fitting)."; return null; }
                 if (!(maxRod > 0) || double.IsInfinity(maxRod)) { error = "max_rod_mm must be positive."; return null; }
 
                 long typeId = request.Value<long?>("hanger_type_id") ?? -1;
@@ -107,49 +128,55 @@ namespace Horizun.Revit.Commands
 
                 List<MEPCurve> targets = Targets(doc, request, out error);
                 if (targets == null) return null;
-                View3D view = RayView(doc);
-                if (view == null) { error = "no non-template, non-perspective 3D view exists to cast the support rays from; create one first."; return null; }
+                // Targets() sorts by id; a capability gap must name the caller's OWN index.
+                var requestIndex = new Dictionary<long, int>();
+                if (request["element_ids"] is JArray requested)
+                    for (int i = 0; i < requested.Count; i++) { long rid = requested[i].Value<long>(); if (!requestIndex.ContainsKey(rid)) requestIndex[rid] = i; }
 
                 var p = new HangersPlan
                 {
-                    _symbolId = symbol.Id, _symbolName = (symbol.FamilyName ?? "") + ": " + symbol.Name, _rodName = rodName, _viewName = view.Name,
+                    _symbolId = symbol.Id, _symbolName = (symbol.FamilyName ?? "") + ": " + symbol.Name, _rodName = rodName,
                     _spacingMm = spacing.Value, _endOffsetMm = endOffset.Value, _maxRodMm = maxRod,
                     _linksLoaded = new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>().Count(l => Safe(() => l.GetLinkDocument()) != null)
                 };
-                var filter = new ElementMulticategoryFilter(StructureCategories.Concat(new[] { BuiltInCategory.OST_RvtLinks }).ToList());
-                var ray = new ReferenceIntersector(filter, FindReferenceTarget.Face, view) { FindReferencesInRevitLinks = true };
                 double spacingFt = spacing.Value / MmPerFoot, offsetFt = endOffset.Value / MmPerFoot, maxRodFt = maxRod / MmPerFoot;
 
-                var outcomes = new List<ActionOutcome>();
+                // PASS 1 - arithmetic only, no ray: classify every run and count its stations
+                // against the budget.
+                var outcomes = new List<ActionOutcome>(); var runs = new List<RunPlan>();
+                int planned = 0; bool overBudget = false;
                 for (int i = 0; i < targets.Count; i++)
                 {
                     MEPCurve e = targets[i]; long id = Rid.Value(e.Id);
-                    var outcome = new ActionOutcome { Index = i }; outcomes.Add(outcome);
+                    var outcome = new ActionOutcome { Index = requestIndex.TryGetValue(id, out int at) ? at : i }; outcomes.Add(outcome);
+                    if (e is FlexPipe || e is FlexDuct)
+                    { outcome.Error = "element " + id + " is a flex run: it has no straight axis to space supports along"; outcome.UnsupportedReason = FallbackSignal.ReasonUnsupportedCapability; continue; }
                     string kind = e is Pipe ? "pipe" : e is Duct ? "duct" : e is CableTray ? "cable_tray" : e is Conduit ? "conduit" : null;
+                    // A wire or any other MEPCurve is out of scope, not a capability gap: no fallback grant.
+                    if (kind == null) { outcome.Error = "element " + id + " is not a pipe, duct, cable tray or conduit; hangers supports those only"; continue; }
                     Line line = (e.Location as LocationCurve)?.Curve as Line;
-                    if (kind == null || line == null)
-                    { outcome.Error = "element " + id + " is not a straight pipe, duct, cable tray or conduit (flex runs have no straight axis to space supports along)"; outcome.UnsupportedReason = FallbackSignal.ReasonUnsupportedCapability; continue; }
+                    if (line == null) { outcome.Error = "element " + id + " has no straight location line"; continue; }
                     XYZ a = line.GetEndPoint(0), b = line.GetEndPoint(1); double length = a.DistanceTo(b); XYZ dir = (b - a).Normalize();
+                    var row = new JObject { ["element_id"] = id, ["kind"] = kind, ["length_mm"] = Mm(length) };
                     if (Math.Sqrt(dir.X * dir.X + dir.Y * dir.Y) < 1e-6)
-                    { outcome.Error = "element " + id + " is vertical: a riser is supported by riser clamps, not by hangers from the structure above"; outcome.UnsupportedReason = FallbackSignal.ReasonUnsupportedCapability; continue; }
+                    {
+                        // A riser takes riser clamps, not hangers from above: skipped and reported, and
+                        // never a fallback grant (Python placing them would be the same defect).
+                        row["stations"] = 0; row["skipped"] = "vertical run (riser): supported by riser clamps, not by hangers from the structure above";
+                        p._risers++; p._runs.Add(row); continue;
+                    }
                     Level level = Safe(() => e.ReferenceLevel) ?? doc.GetElement(e.LevelId) as Level;
                     if (level == null) { outcome.Error = "element " + id + " has no reference level to place its hangers on"; continue; }
 
-                    double half = HalfHeight(e), angle = Math.Atan2(dir.Y, dir.X);
                     List<double> fittings = InteriorFittings(e, a, dir, length);
-                    List<double> along = HangerRules.ComputeStations(length, offsetFt, spacingFt, fittings);
-                    var row = new JObject { ["element_id"] = id, ["kind"] = kind, ["length_mm"] = Mm(length), ["interior_fittings"] = fittings.Count, ["stations"] = along.Count };
-                    if (along.Count == 0) row["skipped"] = "shorter than 2 x end_offset_mm: no station keeps the clearance from both ends";
-                    var missing = new JArray();
-                    for (int k = 0; k < along.Count; k++)
-                    {
-                        XYZ point = a + dir * along[k];
-                        var s = new Station { Key = id + "@" + k, RunId = id, Index = k, Along = along[k], Point = point, Angle = angle, Level = level };
-                        if (!FindSupport(doc, ray, point + XYZ.BasisZ * half, maxRodFt, s))
-                        { missing.Add(new JObject { ["station"] = k, ["along_mm"] = Mm(along[k]), ["point_mm"] = MmPoint(point) }); p._noSupport++; continue; }
-                        p._stations.Add(s);
-                    }
-                    if (missing.Count > 0) row["no_support_above"] = missing;
+                    HangerStationPlan sp = HangerRules.Plan(length, offsetFt, spacingFt, fittings, Math.Max(0, MaxStations - planned));
+                    if (sp.OverBudget) { overBudget = true; continue; }
+                    planned += sp.Stations.Count;
+                    row["interior_fittings"] = fittings.Count; row["stations"] = sp.Stations.Count;
+                    if (sp.TooShort) row["skipped"] = "shorter than 2 x end_offset_mm: no station keeps the clearance from both ends";
+                    else if (sp.NoFreeSpan) row["skipped"] = "every point of the run is within end_offset_mm of an end or a tap fitting";
+                    if (sp.StartShift > 1e-9 || sp.EndShift > 1e-9) row["end_stations_moved_mm"] = new JArray(Mm(sp.StartShift), Mm(sp.EndShift));
+                    runs.Add(new RunPlan { Run = e, Id = id, A = a, Dir = dir, Half = HalfHeight(e), Angle = Math.Atan2(dir.Y, dir.X), Level = level, Stations = sp, Row = row });
                     p._runs.Add(row);
                 }
                 if (outcomes.Any(o => o.Failed))
@@ -158,11 +185,63 @@ namespace Horizun.Revit.Commands
                         FallbackDecision.Decide(outcomes, writeStarted: false));
                     return null;
                 }
-                if (p._stations.Count > MaxStations) { error = p._stations.Count + " stations planned; at most " + MaxStations + " hangers per call - split the runs."; return null; }
+                if (overBudget)
+                { error = "more than " + MaxStations + " stations at spacing_mm " + spacing.Value + " (is it in millimetres?); at most " + MaxStations + " hangers per call - split the runs."; return null; }
+
+                // PASS 2 - the rays, in temporary views this code configures, rolled back after.
+                var rayFailures = new List<string>();
+                using (var tx = new Transaction(doc, "Horizun: hangers ray view (rolled back)"))
+                {
+                    try
+                    {
+                        if (tx.Start() != TransactionStatus.Started) { error = "the temporary ray view could not be created: no transaction could start."; return null; }
+                        var views = new Dictionary<long, View3D>();
+                        foreach (RunPlan r in runs.Where(x => x.Stations.Stations.Count > 0))
+                        {
+                            ElementId phaseId = RunPhase(doc, r.Run);
+                            long pk = phaseId == null ? -1 : Rid.Value(phaseId);
+                            if (!views.TryGetValue(pk, out View3D view))
+                            {
+                                view = RayView(doc, phaseId, p, out error);
+                                if (view == null) return null;
+                                views[pk] = view;
+                            }
+                            var ray = new ReferenceIntersector(new ElementMulticategoryFilter(StructureCategories.Concat(new[] { BuiltInCategory.OST_RvtLinks }).ToList()),
+                                FindReferenceTarget.Face, view) { FindReferencesInRevitLinks = true };
+                            var missing = new JArray(); var supported = new List<double>();
+                            List<double> along = r.Stations.Stations;
+                            for (int k = 0; k < along.Count; k++)
+                            {
+                                XYZ point = r.A + r.Dir * along[k];
+                                var s = new Station { Key = r.Id + "@" + k, RunId = r.Id, Index = k, Along = along[k], Point = point, Angle = r.Angle, Level = r.Level };
+                                int found = FindSupport(doc, ray, point + XYZ.BasisZ * r.Half, maxRodFt, s, out string why);
+                                if (found < 0) { rayFailures.Add("station " + s.Key + ": " + why); continue; }
+                                if (found == 0) { missing.Add(new JObject { ["station"] = k, ["along_mm"] = Mm(along[k]), ["point_mm"] = MmPoint(point) }); p._noSupport++; continue; }
+                                p._stations.Add(s); supported.Add(along[k]);
+                            }
+                            if (missing.Count > 0) r.Row["no_support_above"] = missing;
+                            // Every gap above spacing_mm among the hangers that WILL exist is named with
+                            // its cause: a tap's clearance zone, or a station with nothing above it.
+                            var wide = new JArray();
+                            foreach (double[] g in HangerRules.GapsAbove(supported, spacingFt))
+                            {
+                                bool zone = r.Stations.WideGaps.Any(w => Math.Abs(w[0] - g[0]) < 1e-6 && Math.Abs(w[1] - g[1]) < 1e-6);
+                                wide.Add(new JObject { ["from_mm"] = Mm(g[0]), ["to_mm"] = Mm(g[1]), ["gap_mm"] = Mm(g[1] - g[0]), ["why"] = zone ? "tap_fitting_clearance" : "no_support_above" });
+                                p._wideGaps++;
+                            }
+                            if (wide.Count > 0) r.Row["gaps_above_spacing"] = wide;
+                        }
+                        p._viewCount = views.Count;
+                    }
+                    finally { if (tx.HasStarted() && !tx.HasEnded()) tx.RollBack(); }
+                }
+                if (rayFailures.Count > 0)
+                { error = rayFailures.Count + " support ray(s) could not be cast, so there is no measurement to place them on (" + rayFailures[0] + ")."; return null; }
                 if (p._stations.Count == 0)
                 {
-                    error = "no station can carry a hanger: " + p._runs.Count(r => r["skipped"] != null) + " run(s) shorter than 2 x end_offset_mm, " +
-                            p._noSupport + " station(s) with no floor, framing or roof above within " + maxRod + " mm (ray view '" + view.Name + "').";
+                    error = "no station can carry a hanger: " + p._runs.Count(r => r["skipped"] != null) + " run(s) skipped (shorter than 2 x end_offset_mm, inside tap clearances, or risers), " +
+                            p._noSupport + " station(s) with no floor, framing or roof above within " + maxRod + " mm in the temporary ray view" +
+                            (p._closedWorksets.Count > 0 ? " (closed worksets not searched: " + string.Join(", ", p._closedWorksets) + ")" : "") + ".";
                     return null;
                 }
                 return p;
@@ -173,7 +252,12 @@ namespace Horizun.Revit.Commands
                 var symbol = doc.GetElement(_symbolId) as FamilySymbol ?? throw new InvalidOperationException("the hanger type no longer exists");
                 if (!symbol.IsActive) { symbol.Activate(); doc.Regenerate(); }
                 foreach (Station s in _stations)
-                    s.Created = doc.Create.NewFamilyInstance(s.Point, symbol, s.Level, StructuralType.NonStructural).Id;
+                {
+                    // NewFamilyInstance returns null when creation fails (RevitAPI.xml).
+                    FamilyInstance created = doc.Create.NewFamilyInstance(s.Point, symbol, s.Level, StructuralType.NonStructural);
+                    if (created == null) throw new InvalidOperationException("station " + s.Key + ": Revit did not create the instance");
+                    s.Created = created.Id;
+                }
                 doc.Regenerate();
                 foreach (Station s in _stations)
                 {
@@ -199,7 +283,9 @@ namespace Horizun.Revit.Commands
                     {
                         Parameter rod = fi.LookupParameter(_rodName);
                         if (rod == null) throw new InvalidOperationException("the hanger family has no instance parameter named '" + _rodName + "'");
-                        if (rod.IsReadOnly || rod.StorageType != StorageType.Double) throw new InvalidOperationException("'" + _rodName + "' is read-only or not a length on the hanger instance");
+                        // A Number or Angle parameter would take the feet value and still re-read equal: only a Length is a rod.
+                        if (rod.IsReadOnly || rod.StorageType != StorageType.Double || !IsLength(rod))
+                            throw new InvalidOperationException("'" + _rodName + "' is read-only or not a Length parameter on the hanger instance");
                         if (!rod.Set(s.RodFeet)) throw new InvalidOperationException("station " + s.Key + ": Revit refused " + _rodName);
                     }
                 }
@@ -236,7 +322,7 @@ namespace Horizun.Revit.Commands
                     if (_rodName != null)
                     {
                         Parameter rod = fi.LookupParameter(_rodName);
-                        if (rod == null || !rod.HasValue) check.Unreadable("rod:" + s.Key, Mm(s.RodFeet), "'" + _rodName + "' did not re-read");
+                        if (rod == null || !rod.HasValue || !IsLength(rod)) check.Unreadable("rod:" + s.Key, Mm(s.RodFeet), "'" + _rodName + "' did not re-read as a Length");
                         else check.Record("rod:" + s.Key, Mm(s.RodFeet), Mm(rod.AsDouble()), Math.Abs(rod.AsDouble() - s.RodFeet) <= PositionTolFeet);
                     }
                 }
@@ -249,7 +335,7 @@ namespace Horizun.Revit.Commands
                 ["planned"] = _stations.Count,
                 ["placed"] = new JArray(_stations.Take(MaxListed).Select(s => Row(s, true))),
                 ["listed"] = Math.Min(MaxListed, _stations.Count),
-                ["no_support_above"] = _noSupport
+                ["no_support_above"] = _noSupport, ["gaps_above_spacing"] = _wideGaps, ["risers_skipped"] = _risers
             };
 
             public override void ResetAfterRehearsal() { foreach (Station s in _stations) s.Created = null; }
@@ -260,8 +346,14 @@ namespace Horizun.Revit.Commands
                 ["spacing_mm"] = _spacingMm, ["end_offset_mm"] = _endOffsetMm, ["max_rod_mm"] = _maxRodMm,
                 ["rod_length_parameter"] = _rodName == null ? (JToken)JValue.CreateNull() : _rodName,
                 ["rod_measured_from"] = "the run's top (centreline + half its outside height) up to the underside of the support",
-                ["ray_view"] = _viewName, ["loaded_links_searched"] = _linksLoaded,
-                ["planned"] = _stations.Count, ["no_support_above"] = _noSupport,
+                ["ray_view"] = new JObject
+                {
+                    ["kind"] = "temporary isometric, rolled back: no template, filters or section box; structure and links visible",
+                    ["views"] = _viewCount, ["phases"] = new JArray(_viewPhases), ["phase_filter"] = _phaseFilter ?? "the view type's default",
+                    ["closed_worksets_not_searched"] = new JArray(_closedWorksets)
+                },
+                ["loaded_links_searched"] = _linksLoaded,
+                ["planned"] = _stations.Count, ["no_support_above"] = _noSupport, ["gaps_above_spacing"] = _wideGaps, ["risers_skipped"] = _risers,
                 ["runs"] = new JArray(_runs.Take(MaxListed)),
                 ["stations"] = new JArray(_stations.Take(MaxListed).Select(s => Row(s, false)))
             };
@@ -294,11 +386,17 @@ namespace Horizun.Revit.Commands
                 return row;
             }
 
-            /// <summary>Nearest floor, framing or roof straight above `origin` within maxRod, host or loaded link.</summary>
-            private static bool FindSupport(Document doc, ReferenceIntersector ray, XYZ origin, double maxRod, Station s)
+            /// <summary>
+            /// Nearest floor, framing or roof straight above `origin` within maxRod, host or
+            /// loaded link: 1 found, 0 nothing there, -1 the ray could not be cast (why says so).
+            /// </summary>
+            private static int FindSupport(Document doc, ReferenceIntersector ray, XYZ origin, double maxRod, Station s, out string why)
             {
+                why = null;
                 IList<ReferenceWithContext> hits;
-                try { hits = ray.Find(origin, XYZ.BasisZ); } catch { return false; }
+                try { hits = ray.Find(origin, XYZ.BasisZ); }
+                catch (Exception ex) { why = ex.GetType().Name + ": " + ex.Message; return -1; }
+                if (hits == null) { why = "the intersector returned no result list"; return -1; }
                 foreach (ReferenceWithContext h in hits.OrderBy(x => x.Proximity))
                 {
                     if (h.Proximity <= 1e-6) continue;
@@ -318,9 +416,9 @@ namespace Horizun.Revit.Commands
                         s.SupportKind = "host"; s.SupportId = Rid.Value(e.Id); s.SupportCategory = e.Category.Name;
                     }
                     s.RodFeet = h.Proximity;
-                    return true;
+                    return 1;
                 }
-                return false;
+                return 0;
             }
 
             private static bool IsStructure(Element e)
@@ -329,12 +427,75 @@ namespace Horizun.Revit.Commands
                 return StructureCategories.Any(c => (long)(int)c == cat);
             }
 
-            private static View3D RayView(Document doc)
+            /// <summary>
+            /// A temporary isometric view whose visibility is KNOWN, created inside the caller's
+            /// open (always rolled back) transaction: nothing inherited may hide the structure.
+            /// </summary>
+            private static View3D RayView(Document doc, ElementId phaseId, HangersPlan p, out string error)
             {
-                List<View3D> views = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>()
-                    .Where(v => !v.IsTemplate && !v.IsPerspective).OrderBy(v => Rid.Value(v.Id)).ToList();
-                return views.FirstOrDefault(v => !Safe(() => v.IsSectionBoxActive)) ?? views.FirstOrDefault();
+                error = null;
+                ViewFamilyType vft = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>()
+                    .FirstOrDefault(t => t.ViewFamily == ViewFamily.ThreeDimensional);
+                if (vft == null) { error = "the model has no 3D view type to build the temporary ray view from."; return null; }
+                View3D view = View3D.CreateIsometric(doc, vft.Id);
+                if (view.ViewTemplateId != ElementId.InvalidElementId) view.ViewTemplateId = ElementId.InvalidElementId;
+                foreach (ElementId f in view.GetFilters().ToList()) view.RemoveFilter(f);
+                if (view.IsSectionBoxActive) view.IsSectionBoxActive = false;
+                try { view.DetailLevel = ViewDetailLevel.Fine; } catch { }
+                foreach (BuiltInCategory bic in StructureCategories.Concat(new[] { BuiltInCategory.OST_RvtLinks }))
+                {
+                    Category c = Safe(() => Category.GetCategory(doc, bic));
+                    if (c != null && view.CanCategoryBeHidden(c.Id) && view.GetCategoryHidden(c.Id)) view.SetCategoryHidden(c.Id, false);
+                }
+                if (doc.IsWorkshared)
+                    foreach (Workset w in new FilteredWorksetCollector(doc).OfKind(WorksetKind.UserWorkset))
+                    {
+                        if (!w.IsOpen) { p._closedWorksets.Add(w.Name); continue; } // not loaded: nothing to see
+                        if (view.GetWorksetVisibility(w.Id) != WorksetVisibility.Visible) view.SetWorksetVisibility(w.Id, WorksetVisibility.Visible);
+                    }
+                if (phaseId != null)
+                {
+                    Parameter vp = view.get_Parameter(BuiltInParameter.VIEW_PHASE);
+                    if (vp != null && !vp.IsReadOnly) vp.Set(phaseId);
+                    p._viewPhases.Add(doc.GetElement(phaseId)?.Name ?? Rid.Value(phaseId).ToString());
+                }
+                PhaseFilter complete = ShowComplete(doc);
+                Parameter pf = view.get_Parameter(BuiltInParameter.VIEW_PHASE_FILTER);
+                if (complete != null && pf != null && !pf.IsReadOnly && pf.Set(complete.Id)) p._phaseFilter = complete.Name;
+                doc.Regenerate();
+                return view;
             }
+
+            /// <summary>
+            /// The phase filter that shows new and existing but not demolished elements, found by
+            /// its presentation settings rather than by its (localised) name.
+            /// </summary>
+            private static PhaseFilter ShowComplete(Document doc)
+            {
+                List<PhaseFilter> filters = new FilteredElementCollector(doc).OfClass(typeof(PhaseFilter)).Cast<PhaseFilter>().ToList();
+                bool Shows(PhaseFilter f, ElementOnPhaseStatus st)
+                {
+                    try { return f.GetPhaseStatusPresentation(st) != PhaseStatusPresentation.DontShow; } catch { return true; }
+                }
+                return filters.FirstOrDefault(f => Shows(f, ElementOnPhaseStatus.New) && Shows(f, ElementOnPhaseStatus.Existing) && !Shows(f, ElementOnPhaseStatus.Demolished) && !Shows(f, ElementOnPhaseStatus.Temporary))
+                    ?? filters.FirstOrDefault(f => Shows(f, ElementOnPhaseStatus.New) && Shows(f, ElementOnPhaseStatus.Existing) && !Shows(f, ElementOnPhaseStatus.Demolished));
+            }
+
+            /// <summary>The run's own phase (the structure must exist when the run does); the last phase when it has none.</summary>
+            private static ElementId RunPhase(Document doc, Element e)
+            {
+                ElementId id = Safe(() => e.CreatedPhaseId);
+                if (id != null && id != ElementId.InvalidElementId) return id;
+                return doc.Phases.Size > 0 ? doc.Phases.get_Item(doc.Phases.Size - 1).Id : null;
+            }
+
+            private static bool IsLength(Parameter p)
+            {
+                string have = Safe(() => p.Definition.GetDataType())?.TypeId, want = SpecTypeId.Length.TypeId;
+                return have != null && Unversioned(have) == Unversioned(want);
+            }
+
+            private static string Unversioned(string typeId) { int dash = typeId.IndexOf('-'); return dash < 0 ? typeId : typeId.Substring(0, dash); }
 
             /// <summary>Half the run's outside height: outer diameter for pipes/conduits, height for rectangular sections.</summary>
             private static double HalfHeight(MEPCurve e)
