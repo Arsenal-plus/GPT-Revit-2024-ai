@@ -2,9 +2,10 @@
 // Horizun Revit MCP - horizun_framing operation=ceiling: the Revit half.
 // Original Horizun code.
 //
-// READING. The boundary is the ceiling's own sketch (the Sketch among its
-// dependent elements; GetDependentElements exists in every supported year, so
-// no per-year SketchId question arises), each loop chained end to end from the
+// READING. The boundary is the ceiling's own sketch (Ceiling.SketchId, present in
+// the 2023 and 2026 RevitAPI.xml; its dependents also hold the sketches of the
+// openings it hosts), plus the outline of every opening hosted by it and every
+// shaft crossing its height as a hole, each loop chained end to end from the
 // tessellated curves, the largest loop first. A sketch with a second region
 // OUTSIDE the largest one is refused by name: the plan's direction and extent are
 // the outer loop's, and a second island would silently get no mains. The top face
@@ -43,6 +44,8 @@ namespace Horizun.Revit.Commands
         public double TopMm, MainZMm, CrossZMm, PerimeterZMm, HangerFromMm;
         public List<List<double[]>> LoopsMm = new List<List<double[]>>();
         public readonly JArray NoSupportAbove = new JArray();
+        /// <summary>Openings (hosted or shafts) whose outlines were added as holes.</summary>
+        public readonly List<long> HoleIds = new List<long>();
         /// <summary>"host:id" or "linked:link/id" -> hangers it carries.</summary>
         public readonly Dictionary<string, int> Supports = new Dictionary<string, int>(StringComparer.Ordinal);
     }
@@ -60,14 +63,17 @@ namespace Horizun.Revit.Commands
             if (!(doc.GetElement(ceiling.LevelId) is Level level)) { refusal = "ceiling " + id + " has no level."; return null; }
             BoundingBoxXYZ bb = ceiling.get_BoundingBox(null);
             if (bb == null) { refusal = "ceiling " + id + " has no geometry to read its top face from."; return null; }
+            // A type with no compound structure (a Basic Ceiling) has width 0: its box must then be
+            // flat to within 1 mm, so a sloped one is refused rather than framed at its high point.
             double thickFt = (doc.GetElement(ceiling.GetTypeId()) as HostObjAttributes)?.GetCompoundStructure()?.GetWidth() ?? 0;
-            if (thickFt > 0 && (bb.Max.Z - bb.Min.Z) - thickFt > 1.0 / MmPerFt)
+            if ((bb.Max.Z - bb.Min.Z) - thickFt > 1.0 / MmPerFt)
             {
                 refusal = "ceiling " + id + " is sloped (its box is " + Math.Round((bb.Max.Z - bb.Min.Z) * MmPerFt, 1) + " mm tall for a " +
                           Math.Round(thickFt * MmPerFt, 1) + " mm type); only flat ceilings are framed.";
                 return null;
             }
-            Sketch sketch = ceiling.GetDependentElements(new ElementClassFilter(typeof(Sketch))).Select(doc.GetElement).OfType<Sketch>().FirstOrDefault();
+            // The ceiling's OWN sketch: its dependents also hold the sketches of openings it hosts.
+            Sketch sketch = ceiling.SketchId == ElementId.InvalidElementId ? null : doc.GetElement(ceiling.SketchId) as Sketch;
             if (sketch?.Profile == null || sketch.Profile.Size == 0) { refusal = "ceiling " + id + " exposes no sketch boundary."; return null; }
             var fc = new FramedCeiling { Level = level, TopMm = bb.Max.Z * MmPerFt };
             foreach (CurveArray arr in sketch.Profile)
@@ -84,6 +90,26 @@ namespace Horizun.Revit.Commands
             {
                 refusal = "ceiling " + id + " sketches " + (islands + 1) + " separate regions; split it into one ceiling per region before framing it.";
                 return null;
+            }
+            // Openings cut into it (hosted by-face openings, shafts crossing its height) are holes:
+            // added as loops, the even-odd boundary test treats them as such in plan and verify.
+            foreach (Opening op in new FilteredElementCollector(doc).OfClass(typeof(Opening)).Cast<Opening>())
+            {
+                bool hosted = op.Host != null && op.Host.Id == ceiling.Id;
+                if (!hosted)
+                {
+                    if (op.Host != null || op.Category == null || Rid.Value(op.Category.Id) != (long)BuiltInCategory.OST_ShaftOpening) continue;
+                    BoundingBoxXYZ ob = op.get_BoundingBox(null);
+                    if (ob == null || ob.Max.Z < bb.Min.Z || ob.Min.Z > bb.Max.Z || ob.Max.X < bb.Min.X || ob.Min.X > bb.Max.X || ob.Max.Y < bb.Min.Y || ob.Min.Y > bb.Max.Y) continue;
+                }
+                List<double[]> hole = null;
+                if (op.IsRectBoundary && op.BoundaryRect != null && op.BoundaryRect.Count > 1)
+                {
+                    XYZ a = op.BoundaryRect[0], b = op.BoundaryRect[1];
+                    hole = new List<double[]> { new[] { a.X * MmPerFt, a.Y * MmPerFt }, new[] { b.X * MmPerFt, a.Y * MmPerFt }, new[] { b.X * MmPerFt, b.Y * MmPerFt }, new[] { a.X * MmPerFt, b.Y * MmPerFt } };
+                }
+                else if (op.BoundaryCurves != null && op.BoundaryCurves.Size > 0) hole = Chain(op.BoundaryCurves, out string _);
+                if (hole != null && hole.Count >= 3) { fc.LoopsMm.Add(hole); fc.HoleIds.Add(Rid.Value(op.Id)); }
             }
             return fc;
         }
@@ -179,6 +205,8 @@ namespace Horizun.Revit.Commands
                     if (m.TypeKey == null || !symbols.TryGetValue(m.TypeKey, out FamilySymbol sym)) throw new ArgumentException(m.Role + " has no type in the spec.");
                     string why = ClassifyType(sym, m.Role == FramingRoles.Hanger, m.Role, out FramingPlacementKind kind);
                     if (why != null) throw new ArgumentException(why);
+                    if (kind == FramingPlacementKind.LineBased && WorkPlaneView(doc) == null)
+                        throw new ArgumentException(key.Split('|')[0] + ": a line-based member needs a model view (a non-template 3-D view or plan) to create its work plane in; the document has none.");
                     kinds[key] = kind;
                 }
                 p.Axis = m => Line.CreateBound(new XYZ(m.X0 / MmPerFt, m.Y0 / MmPerFt, m.Z0 / MmPerFt), new XYZ(m.X1 / MmPerFt, m.Y1 / MmPerFt, m.Z1 / MmPerFt));
@@ -309,8 +337,8 @@ namespace Horizun.Revit.Commands
 
         private static PostconditionCheck VerifyCeilings(Document doc, List<FramingSourcePlan> plans, JObject evidence)
         {
-            var check = new PostconditionCheck("member_count", "member_types", "member_endpoints", "counts_by_role", "inside_boundary");
-            int planned = 0, found = 0, wrongType = 0, unreadable = 0;
+            var check = new PostconditionCheck("member_count", "member_types", "member_endpoints", "counts_by_role", "inside_boundary", "beam_settings");
+            int planned = 0, found = 0, wrongType = 0, unreadable = 0, beamOff = 0;
             double maxDev = 0, maxOutside = 0;
             var plannedRoles = new JObject();
             var foundRoles = new JObject();
@@ -333,6 +361,7 @@ namespace Horizun.Revit.Commands
                     found++; srcFound++;
                     foundRoles[m.Role] = (foundRoles.Value<int?>(m.Role) ?? 0) + 1;
                     if (Rid.Value(e.GetTypeId()).ToString(CultureInfo.InvariantCulture) != m.TypeKey) wrongType++;
+                    if (p.Kinds[m.Role + "|" + m.TypeKey] == FramingPlacementKind.Beam) beamOff += BeamSettingsOff(e);
                     XYZ[] ends = MemberEnds(doc, e, out string _);
                     if (ends == null) { unreadable++; continue; }
                     Line axis = p.Axis(m);
@@ -359,6 +388,7 @@ namespace Horizun.Revit.Commands
             if (unreadable > 0) check.Unreadable("member_endpoints", 0, unreadable + " member(s) report neither a location curve nor column constraints");
             else check.Measure("member_endpoints", 0, maxDev, EndpointToleranceMm, "mm", "max over members of the farther end's distance to the planned axis end");
             check.Record("counts_by_role", plannedRoles, foundRoles, JToken.DeepEquals(plannedRoles, foundRoles));
+            check.Compare("beam_settings", 0, beamOff);
             check.Measure("inside_boundary", 0, maxOutside, EndpointToleranceMm, "mm", "max plan distance of a member end outside the ceiling's sketch boundary (holes count)");
             evidence["sources"] = perSource;
             return check;
@@ -387,7 +417,7 @@ namespace Horizun.Revit.Commands
                 rows.Add(new JObject
                 {
                     ["source_id"] = Rid.Value(p.Source.Id), ["status"] = p.AlreadyApplied ? "already_applied" : "planned",
-                    ["top_face_mm"] = Math.Round(fc.TopMm, 1), ["loops"] = fc.LoopsMm.Count,
+                    ["top_face_mm"] = Math.Round(fc.TopMm, 1), ["loops"] = fc.LoopsMm.Count, ["opening_holes"] = new JArray(fc.HoleIds),
                     ["z_mm"] = new JObject { ["main_axis"] = Math.Round(fc.MainZMm, 1), ["cross_axis"] = Math.Round(fc.CrossZMm, 1), ["perimeter_axis"] = Math.Round(fc.PerimeterZMm, 1), ["hanger_from"] = Math.Round(fc.HangerFromMm, 1) },
                     ["count_by_role"] = counts, ["member_count"] = p.Members.Count, ["no_support_above"] = fc.NoSupportAbove,
                     ["plan_signature"] = p.Signature, ["spec_hash"] = p.SpecHash,

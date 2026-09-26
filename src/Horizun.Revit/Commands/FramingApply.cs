@@ -30,6 +30,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
@@ -233,7 +234,11 @@ namespace Horizun.Revit.Commands
                 ["already_applied"] = op != "remove" && plans.Count > 0 && plans.All(p => p.AlreadyApplied),
                 ["postconditions"] = check.ToJson(), ["evidence"] = evidence
             };
-            ApplicationOutcome.StampApplied(done, ApplicationOutcome.Committed, total, created, total, 0, 0, 0);
+            // What THIS call wrote: members of sources already framed by the same plan were
+            // re-read, not written, so they are reported apart and never counted as applied
+            // (verified > applied would declare an honest idempotent apply 'uncertain').
+            if (op != "remove") { done["members_created"] = created; done["members_reverified_existing"] = total - created; }
+            ApplicationOutcome.StampApplied(done, ApplicationOutcome.Committed, created, created, created, 0, 0, 0);
             return CommandResult.Ok(done);
         }
 
@@ -307,8 +312,10 @@ namespace Horizun.Revit.Commands
                 if (fw == null) throw new ArgumentException(refusal);
                 var p = new FramingSourcePlan { Source = wall, Operation = "wall", Wall = fw, SpecHash = specHash, StudWidthMm = studWidth.Value, PlaneSpan = fw.Normal, Symbols = symbols, Kinds = kinds };
                 p.Warnings.AddRange(fw.Warnings);
-                double track = spec.TrackThicknessMm ?? 0;
-                if (spec.TrackThicknessMm == null) p.Warnings.Add("wall " + Rid.Value(wall.Id) + ": no track thickness_mm; studs run base to top of wall");
+                // No section parameter says which of a track type's sizes is the thickness under a
+                // stud, so the caller states it; a guess would put half of each track outside the wall.
+                if (spec.TrackThicknessMm == null) throw new ArgumentException("give spec.wall.track.thickness_mm (the track's thickness under the studs, e.g. 0.9); it is not guessed from the type.");
+                double track = spec.TrackThicknessMm.Value;
                 WallFramingPlan plan = WallFramingRules.Plan(spec.ToInput(fw.LengthMm, fw.HeightMm, studWidth.Value, track, fw.OpeningsMm), MaxMembersPerSource);
                 if (!string.IsNullOrEmpty(plan.Refusal)) throw new ArgumentException("wall " + Rid.Value(wall.Id) + ": " + plan.Refusal);
                 p.Members = plan.Members;
@@ -322,6 +329,8 @@ namespace Horizun.Revit.Commands
                     if (m.TypeKey == null || !symbols.TryGetValue(m.TypeKey, out FamilySymbol sym)) throw new ArgumentException(m.Role + " has no type in the spec.");
                     string why = ClassifyType(sym, FramingRoles.IsVertical(m.Role), m.Role, out FramingPlacementKind kind);
                     if (why != null) throw new ArgumentException(why);
+                    if (kind == FramingPlacementKind.LineBased && WorkPlaneView(doc) == null)
+                        throw new ArgumentException(m.Role + ": a line-based member needs a model view (a non-template 3-D view or plan) to create its work plane in; the document has none.");
                     kinds[key] = kind;
                 }
                 FramedWall frame = fw;
@@ -466,11 +475,58 @@ namespace Horizun.Revit.Commands
             return null;
         }
 
+        /// <summary>A member's solid in the wall frame, mm {xmin, xmax, ymin, ymax}, from its edges; null when it has none.</summary>
+        internal static double[] SolidExtentInFrame(Element e, FramedWall fw)
+        {
+            GeometryElement ge;
+            try { ge = e.get_Geometry(new Options { DetailLevel = ViewDetailLevel.Fine }); }
+            catch (Autodesk.Revit.Exceptions.ApplicationException) { return null; }
+            if (ge == null) return null;
+            double[] r = { double.MaxValue, double.MinValue, double.MaxValue, double.MinValue };
+            bool any = false;
+            foreach (Solid s in SolidsOf(ge))
+                foreach (Edge ed in s.Edges)
+                    foreach (XYZ q in ed.Tessellate())
+                    {
+                        double[] f = fw.ToFrame(q);
+                        r[0] = Math.Min(r[0], f[0]); r[1] = Math.Max(r[1], f[0]); r[2] = Math.Min(r[2], f[1]); r[3] = Math.Max(r[3], f[1]);
+                        any = true;
+                    }
+            return any ? r : null;
+        }
+
+        private static IEnumerable<Solid> SolidsOf(GeometryElement ge)
+        {
+            foreach (GeometryObject g in ge)
+            {
+                if (g is Solid s && s.Volume > 1e-9) yield return s;
+                else if (g is GeometryInstance gi)
+                    foreach (Solid t in SolidsOf(gi.GetInstanceGeometry())) yield return t;
+            }
+        }
+
+        /// <summary>
+        /// A beam member's settings re-read: 0 when it is centred on its axis (Z_JUSTIFICATION) and
+        /// joins are off at both ends; else how many disagree. Placement sets both in swallowed
+        /// try/catch blocks, and neither moves the LocationCurve the endpoint check reads.
+        /// </summary>
+        internal static int BeamSettingsOff(Element e)
+        {
+            if (!(e is FamilyInstance fi)) return 1;
+            int off = 0;
+            Parameter z = fi.get_Parameter(BuiltInParameter.Z_JUSTIFICATION);
+            if (z == null || !z.HasValue || z.AsInteger() != (int)ZJustification.Center) off++;
+            for (int end = 0; end < 2; end++)
+                try { if (StructuralFramingUtils.IsJoinAllowedAtEnd(fi, end)) off++; } catch (Autodesk.Revit.Exceptions.ApplicationException) { off++; }
+            return off;
+        }
+
         private static PostconditionCheck VerifyWalls(Document doc, List<FramingSourcePlan> plans, JObject evidence)
         {
-            var check = new PostconditionCheck("member_count", "member_types", "member_endpoints", "counts_by_role", "inside_layer", "no_stud_through_opening", "inserts_untouched", "source_unjoined");
-            int planned = 0, found = 0, wrongType = 0, unreadable = 0, crossings = 0, insertsChanged = 0, joined = 0;
-            double maxDev = 0, maxExcess = 0;
+            var check = new PostconditionCheck("member_count", "member_types", "member_endpoints", "counts_by_role", "inside_layer", "no_stud_through_opening",
+                                               "inside_wall_length", "section_along_wall", "beam_settings", "inserts_untouched", "source_unjoined");
+            int planned = 0, found = 0, wrongType = 0, unreadable = 0, crossings = 0, insertsChanged = 0, joined = 0, solidRead = 0, declaredRead = 0, misoriented = 0, beamOff = 0;
+            double maxDev = 0, maxExcess = 0, maxBeyondLength = 0;
             var plannedRoles = new JObject();
             var foundRoles = new JObject();
             var perSource = new JArray();
@@ -503,13 +559,37 @@ namespace Horizun.Revit.Commands
                     double dev = Math.Min(Math.Max(ends[0].DistanceTo(a), ends[1].DistanceTo(b)), Math.Max(ends[0].DistanceTo(b), ends[1].DistanceTo(a))) * 304.8;
                     srcDev = Math.Max(srcDev, dev);
                     double[] f0 = fw.ToFrame(ends[0]), f1 = fw.ToFrame(ends[1]);
-                    maxExcess = Math.Max(maxExcess, Math.Max(0, Math.Max(Math.Abs(f0[1]), Math.Abs(f1[1])) - fw.LayerWidthMm / 2));
+                    // The section as Revit BUILT it: the member's solid in the wall frame. Only a
+                    // member with no solid falls back to its axis and the declared width (counted).
+                    // Along its own axis the length is member_endpoints' job (the location line).
+                    double[] sx = SolidExtentInFrame(e, fw);
+                    double xLo, xHi;
+                    if (sx != null)
+                    {
+                        solidRead++; xLo = sx[0]; xHi = sx[1];
+                        maxExcess = Math.Max(maxExcess, Math.Max(0, Math.Max(Math.Abs(sx[2]), Math.Abs(sx[3])) - fw.LayerWidthMm / 2));
+                    }
+                    else
+                    {
+                        declaredRead++;
+                        double half = FramingRoles.IsVertical(m.Role) ? p.StudWidthMm / 2 : 0;
+                        xLo = Math.Min(f0[0], f1[0]) - half; xHi = Math.Max(f0[0], f1[0]) + half;
+                        maxExcess = Math.Max(maxExcess, Math.Max(0, Math.Max(Math.Abs(f0[1]), Math.Abs(f1[1])) - fw.LayerWidthMm / 2));
+                    }
+                    maxBeyondLength = Math.Max(maxBeyondLength, Math.Max(0, Math.Max(-xLo, xHi - fw.LengthMm)));
+                    FramingPlacementKind kind = p.Kinds[m.Role + "|" + m.TypeKey];
+                    if (kind == FramingPlacementKind.Column && e is FamilyInstance col)
+                    {
+                        XYZ hand = col.HandOrientation;
+                        if (hand == null || Math.Abs(hand.X * fw.Dir.Y - hand.Y * fw.Dir.X) > Math.Sin(Math.PI / 180) * hand.GetLength()) misoriented++;
+                    }
+                    if (kind == FramingPlacementKind.Beam) beamOff += BeamSettingsOff(e);
                     // A cripple sits inside the opening's width but above its head or below its sill,
                     // so the same test (the void's x AND z ranges) holds for every vertical role. The
                     // slack is the endpoint tolerance: a jack flush with the jamb, read back a hair
                     // inside it, is round-off; one that really entered the void fails member_endpoints too.
                     if (FramingRoles.IsVertical(m.Role) &&
-                        WallFramingRules.CrossesOpening((f0[0] + f1[0]) / 2, Math.Min(f0[2], f1[2]), Math.Max(f0[2], f1[2]), p.StudWidthMm, fw.OpeningsMm, EndpointToleranceMm))
+                        WallFramingRules.CrossesOpening((xLo + xHi) / 2, Math.Min(f0[2], f1[2]), Math.Max(f0[2], f1[2]), xHi - xLo, fw.OpeningsMm, EndpointToleranceMm))
                     { crossings++; srcCross++; }
                 }
                 maxDev = Math.Max(maxDev, srcDev);
@@ -531,8 +611,12 @@ namespace Horizun.Revit.Commands
             if (unreadable > 0) check.Unreadable("member_endpoints", 0, unreadable + " member(s) report neither a location curve nor column constraints");
             else check.Measure("member_endpoints", 0, maxDev, EndpointToleranceMm, "mm", "max over members of the farther end's distance to the planned axis end");
             check.Record("counts_by_role", plannedRoles, foundRoles, JToken.DeepEquals(plannedRoles, foundRoles));
-            check.Measure("inside_layer", 0, maxExcess, EndpointToleranceMm, "mm", "max |y| beyond half the carrying layer's thickness");
+            check.Measure("inside_layer", 0, maxExcess, EndpointToleranceMm, "mm", "max |y| of a member's solid (its axis when it has none) beyond half the carrying layer's thickness");
             check.Compare("no_stud_through_opening", 0, crossings);
+            check.Measure("inside_wall_length", 0, maxBeyondLength, EndpointToleranceMm, "mm", "max x of a member's solid beyond the layer's extent between its joins");
+            check.Compare("section_along_wall", 0, misoriented);
+            check.Compare("beam_settings", 0, beamOff);
+            evidence["section_read"] = new JObject { ["solid"] = solidRead, ["axis_and_declared_width"] = declaredRead };
             check.Compare("inserts_untouched", 0, insertsChanged);
             check.Compare("source_unjoined", 0, joined);
             evidence["sources"] = perSource;

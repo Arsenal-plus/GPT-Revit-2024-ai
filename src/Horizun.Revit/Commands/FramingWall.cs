@@ -18,12 +18,15 @@
 // layer (StructuralMaterialIndex) when it is inside the core, else the thickest
 // core layer, else the thickest layer (reported).
 //
-// OPENINGS. Wall.FindInserts (doors, windows, rectangular wall openings). A door or
+// OPENINGS. Wall.FindInserts (doors, windows, rectangular wall openings, embedded
+// walls such as a storefront) plus the inner loops of an edited profile. A door or
 // window spans its rough width/height when the family publishes them, else its
 // nominal width/height, centred on its location point; its sill is the instance's
 // sill height above its level, its head the head height (or sill + height). A
 // rectangular Opening spans its BoundaryRect. Each span says where it came from
-// (rough | nominal | boundary_rect | bounding_box) so a probe can compare it.
+// (rough | nominal | boundary_rect | bounding_box | embedded_wall | profile_hole) so
+// a probe can compare it. The frame's x-range is clipped to the carrying layer's
+// real extent at joins (the wall solid, cut at the layer centre).
 //
 // PLACEMENT BY CATEGORY. RevitAPI.xml (2023 and 2026 read identically) documents
 // Document.NewFamilyInstance(Curve, FamilySymbol, Level, StructuralType) without
@@ -153,8 +156,25 @@ namespace Horizun.Revit.Commands
             double loc = key == 1 ? (coreExt + coreInt) / 2 : key == 2 ? total / 2 : key == 3 ? -total / 2 : key == 4 ? coreExt : key == 5 ? coreInt : 0;
             fw.LayerOffset = layerCentre - loc;
 
+            // ---- the layer's real length ------------------------------------------------------
+            // The location curve runs to the join point, which at a T or L junction lies INSIDE
+            // the adjoining wall; the layer itself stops at that wall's face. Only a clip, never
+            // an extension: studs of two walls must not meet at a corner.
+            double[] extent = LayerExtent(wall, fw);
+            if (extent == null) fw.Warnings.Add(who + ": the layer's extent could not be read from the wall's solid; framed over the location line's length");
+            else if (extent[0] > 0.05 || extent[1] < fw.LengthMm - 0.05)
+            {
+                double s = Math.Max(0, extent[0]), e = Math.Min(fw.LengthMm, extent[1]);
+                if (!(e - s > 0)) { refusal = who + ": its layer has no length between its joins."; return null; }
+                fw.Warnings.Add(who + ": layer_clipped_at_joins start " + Math.Round(s, 1) + " mm, end " + Math.Round(fw.LengthMm - e, 1) + " mm (read from the wall's solid)");
+                fw.Origin += fw.Dir * (s / 304.8);
+                fw.LengthMm = e - s;
+            }
+
             // ---- openings ------------------------------------------------------------------
-            foreach (ElementId id in wall.FindInserts(true, false, false, false))
+            // Embedded walls (a storefront in a partition) are voids too; the inserts of an
+            // embedded wall are not asked for, they sit inside its span and would only overlap it.
+            foreach (ElementId id in wall.FindInserts(true, false, true, false))
             {
                 Element e = doc.GetElement(id);
                 if (e == null) continue;
@@ -164,7 +184,63 @@ namespace Horizun.Revit.Commands
                 fw.OpeningsMm.Add(span);
                 fw.OpeningSources.Add(source);
             }
+            // An edited profile's inner loops are holes no insert reports.
+            if (wall.SketchId != ElementId.InvalidElementId && doc.GetElement(wall.SketchId) is Sketch sketch && sketch.Profile != null)
+            {
+                var loops = new List<List<double[]>>();
+                foreach (CurveArray arr in sketch.Profile)
+                {
+                    var pts = new List<double[]>();
+                    foreach (Curve c in arr) foreach (XYZ q in c.Tessellate()) { double[] f = fw.ToFrame(q); pts.Add(new[] { f[0], f[2] }); }
+                    if (pts.Count >= 3) loops.Add(pts);
+                }
+                loops = loops.OrderByDescending(l => Math.Abs(CeilingFramingRules.Area(l))).ToList();
+                if (loops.Count > 0) fw.Warnings.Add(who + ": the profile is edited; its outline is not re-planned, only its holes are framed around");
+                for (int k = 1; k < loops.Count; k++)
+                {
+                    fw.OpeningsMm.Add(new WallOpeningSpan
+                    {
+                        Id = Rid.Value(wall.SketchId).ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + k,
+                        Start = loops[k].Min(q => q[0]), End = loops[k].Max(q => q[0]), Sill = loops[k].Min(q => q[1]), Head = loops[k].Max(q => q[1])
+                    });
+                    fw.OpeningSources.Add("profile_hole");
+                }
+            }
             return fw;
+        }
+
+        /// <summary>
+        /// The carrying layer's x-range in the wall frame, mm: a line through the layer's centre,
+        /// along the wall, intersected with the wall's solid at three heights (so a door at one
+        /// end does not shorten it), min start and max end. Null when no solid answers.
+        /// </summary>
+        internal static double[] LayerExtent(Wall wall, FramedWall fw)
+        {
+            try
+            {
+                var solids = new List<Solid>();
+                GeometryElement ge = wall.get_Geometry(new Options { DetailLevel = ViewDetailLevel.Fine });
+                if (ge == null) return null;
+                foreach (GeometryObject g in ge)
+                    if (g is Solid s && s.Volume > 0) solids.Add(s);
+                if (solids.Count == 0) return null;
+                double lo = double.MaxValue, hi = double.MinValue, pad = 10.0 * 304.8 + fw.LengthMm;
+                foreach (double frac in new[] { 0.1, 0.5, 0.9 })
+                {
+                    Line probe = Line.CreateBound(fw.ToModel(-pad, 0, fw.HeightMm * frac), fw.ToModel(fw.LengthMm + pad, 0, fw.HeightMm * frac));
+                    foreach (Solid s in solids)
+                    {
+                        SolidCurveIntersection hit = s.IntersectWithCurve(probe, new SolidCurveIntersectionOptions { ResultType = SolidCurveIntersectionMode.CurveSegmentsInside });
+                        for (int i = 0; i < hit.SegmentCount; i++)
+                        {
+                            Curve seg = hit.GetCurveSegment(i);
+                            foreach (XYZ q in new[] { seg.GetEndPoint(0), seg.GetEndPoint(1) }) { double x = fw.ToFrame(q)[0]; lo = Math.Min(lo, x); hi = Math.Max(hi, x); }
+                        }
+                    }
+                }
+                return lo < hi ? new[] { lo, hi } : null;
+            }
+            catch (Autodesk.Revit.Exceptions.ApplicationException) { return null; }
         }
 
         private static WallOpeningSpan OpeningSpan(Document doc, FramedWall fw, Element e, out string source)
@@ -177,6 +253,16 @@ namespace Horizun.Revit.Commands
                 double[] a = fw.ToFrame(op.BoundaryRect[0]), b = fw.ToFrame(op.BoundaryRect[1]);
                 source = "boundary_rect";
                 return new WallOpeningSpan { Id = id, Start = Math.Min(a[0], b[0]), End = Math.Max(a[0], b[0]), Sill = Math.Min(a[2], b[2]), Head = Math.Max(a[2], b[2]) };
+            }
+            // An embedded wall (a storefront): along the wall its own location line, up its box.
+            if (e is Wall ew && ew.Location is LocationCurve elc && elc.Curve != null)
+            {
+                BoundingBoxXYZ eb = ew.get_BoundingBox(null);
+                if (eb == null) return null;
+                double xa = fw.ToFrame(elc.Curve.GetEndPoint(0))[0], xb = fw.ToFrame(elc.Curve.GetEndPoint(1))[0];
+                source = "embedded_wall";
+                return new WallOpeningSpan { Id = id, Start = Math.Min(xa, xb), End = Math.Max(xa, xb),
+                                             Sill = fw.ToFrame(eb.Transform.OfPoint(eb.Min))[2], Head = fw.ToFrame(eb.Transform.OfPoint(eb.Max))[2] };
             }
             if (e is FamilyInstance fi && fi.Location is LocationPoint lp)
             {
@@ -297,7 +383,26 @@ namespace Horizun.Revit.Commands
                     return beam;
                 }
                 case FramingPlacementKind.Column:
-                    return doc.Create.NewFamilyInstance(axis, symbol, level, StructuralType.Column);
+                {
+                    FamilyInstance col = doc.Create.NewFamilyInstance(axis, symbol, level, StructuralType.Column);
+                    // A vertical line carries no orientation: the section comes in on the project
+                    // axes. Its width axis (HandOrientation) is turned onto the run direction, the
+                    // wall for a stud; the verification re-reads it (section_along_wall).
+                    XYZ along = XYZ.BasisZ.CrossProduct(planeSpan);
+                    XYZ hand = col.HandOrientation;
+                    if (along.GetLength() > 0.5 && hand != null && hand.GetLength() > 0.5)
+                    {
+                        along = along.Normalize();
+                        double angle = Math.Atan2(hand.CrossProduct(along).Z, hand.DotProduct(along));
+                        if (angle > Math.PI / 2) angle -= Math.PI; else if (angle < -Math.PI / 2) angle += Math.PI;   // a section is symmetric
+                        if (Math.Abs(angle) > 1e-9)
+                        {
+                            XYZ p = axis.GetEndPoint(0);
+                            ElementTransformUtils.RotateElement(doc, col.Id, Line.CreateBound(p, p + XYZ.BasisZ), angle);
+                        }
+                    }
+                    return col;
+                }
                 default:
                 {
                     XYZ a = axis.GetEndPoint(0), b = axis.GetEndPoint(1);
@@ -307,11 +412,17 @@ namespace Horizun.Revit.Commands
             }
         }
 
-        /// <summary>A view a reference plane can be created in: a non-template 3-D view, else the active view.</summary>
+        /// <summary>
+        /// A MODEL view a reference plane can be created in: a non-template 3-D view, else a
+        /// non-template plan, else null. Never a drafting view, sheet or legend: RevitAPI.xml says
+        /// NewReferencePlane2 makes the plane view-specific there, and a view-specific plane
+        /// cannot host a model line-based instance. Null is refused while planning.
+        /// </summary>
         internal static View WorkPlaneView(Document doc)
         {
             View3D v = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>().FirstOrDefault(x => !x.IsTemplate);
-            return (View)v ?? doc.ActiveView;
+            if (v != null) return v;
+            return new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>().FirstOrDefault(x => !x.IsTemplate);
         }
     }
 }
