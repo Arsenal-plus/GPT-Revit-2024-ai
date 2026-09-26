@@ -53,7 +53,7 @@ namespace Horizun.Revit.Commands
             private readonly List<ElementId> _elbowIds = new List<ElementId>();
             private readonly List<ElementId> _createdIds = new List<ElementId>();
 
-            private struct SegRecord { public ElementId Id; public XYZ Start; public XYZ End; }
+            private struct SegRecord { public ElementId Id; public XYZ Start; public XYZ End; public BuiltInParameter[] SizeParams; public double[] SizeWanted; }
 
             public override int Count => _createdIds.Count;
 
@@ -67,7 +67,11 @@ namespace Horizun.Revit.Commands
                 long typeIdRaw = request.Value<long?>("type_id") ?? -1;
                 if (typeIdRaw < 0 || !Rid.CanRepresent(typeIdRaw)) { error = "type_id is required for route."; return null; }
                 ElementId typeId = Rid.Make(typeIdRaw);
-                if (doc.GetElement(typeId) == null) { error = "type_id " + typeIdRaw + " does not resolve to an element."; return null; }
+                Element typeEl = doc.GetElement(typeId);
+                bool typeMatches = kind == "pipe" ? typeEl is PipeType : kind == "duct" ? typeEl is DuctType
+                    : kind == "conduit" ? typeEl is ConduitType : typeEl is CableTrayType;
+                if (!typeMatches)
+                { error = "type_id " + typeIdRaw + " is " + (typeEl == null ? "not an element" : "a " + typeEl.GetType().Name) + ", not a " + kind + " type."; return null; }
 
                 ElementId systemTypeId = null;
                 if (kind == "pipe" || kind == "duct")
@@ -83,19 +87,27 @@ namespace Horizun.Revit.Commands
                 ElementId levelId = Rid.Make(levelRaw);
                 if (!(doc.GetElement(levelId) is Level)) { error = "level_id " + levelRaw + " is not a Level."; return null; }
 
-                double? diaMm = request.Value<double?>("diameter");
-                double? wMm = request.Value<double?>("width"), hMm = request.Value<double?>("height");
-                if (diaMm == null && (wMm == null || hMm == null)) { error = "size requires diameter, or width and height, in mm."; return null; }
-                if (diaMm != null && (wMm != null || hMm != null)) { error = "give diameter OR width/height, not both."; return null; }
-                double? diameterFt = diaMm.HasValue ? diaMm.Value * MmToFeet : (double?)null;
-                double? widthFt = wMm.HasValue ? wMm.Value * MmToFeet : (double?)null;
-                double? heightFt = hMm.HasValue ? hMm.Value * MmToFeet : (double?)null;
+                // Sizes and points are in the request's units (default mm), like resize's sizes;
+                // clearance_mm, grid_mm and preferred_elevation are always mm, as named.
+                double? diaIn = request.Value<double?>("diameter");
+                double? wIn = request.Value<double?>("width"), hIn = request.Value<double?>("height");
+                // Which size a run takes is fixed by its kind (and a duct type's shape), so a
+                // mismatch is refused here, before any write, instead of failing mid-Apply.
+                bool wantsDiameter = kind == "pipe" || kind == "conduit" ||
+                    (kind == "duct" && ((DuctType)typeEl).Shape == ConnectorProfileType.Round);
+                if (wantsDiameter && (diaIn == null || wIn != null || hIn != null))
+                { error = "a " + kind + (kind == "duct" ? " of a round type" : "") + " takes diameter only."; return null; }
+                if (!wantsDiameter && (diaIn != null || wIn == null || hIn == null))
+                { error = "a " + (kind == "duct" ? "rectangular or oval duct" : kind) + " takes width and height only."; return null; }
+                double? diameterFt = diaIn.HasValue ? diaIn.Value * u.ToFeet : (double?)null;
+                double? widthFt = wIn.HasValue ? wIn.Value * u.ToFeet : (double?)null;
+                double? heightFt = hIn.HasValue ? hIn.Value * u.ToFeet : (double?)null;
                 if ((diameterFt.HasValue && diameterFt.Value <= 0) || (widthFt.HasValue && widthFt.Value <= 0) || (heightFt.HasValue && heightFt.Value <= 0))
                 { error = "diameter, width and height must be positive."; return null; }
 
-                XYZ start = ParsePoint(request["start"], "start", ref error);
+                XYZ start = ParsePoint(request["start"], "start", u, ref error);
                 if (error != null) return null;
-                XYZ end = ParsePoint(request["end"], "end", ref error);
+                XYZ end = ParsePoint(request["end"], "end", u, ref error);
                 if (error != null) return null;
 
                 double clearanceMm = request.Value<double?>("clearance_mm") ?? 50.0;
@@ -138,11 +150,11 @@ namespace Horizun.Revit.Commands
                 };
             }
 
-            private static XYZ ParsePoint(JToken token, string name, ref string error)
+            private static XYZ ParsePoint(JToken token, string name, Units u, ref string error)
             {
                 var arr = token as JArray;
-                if (arr == null || arr.Count != 3) { error = name + " must be [x, y, z] in mm."; return null; }
-                try { return new XYZ(arr[0].Value<double>() * MmToFeet, arr[1].Value<double>() * MmToFeet, arr[2].Value<double>() * MmToFeet); }
+                if (arr == null || arr.Count != 3) { error = name + " must be [x, y, z] in the request's units."; return null; }
+                try { return new XYZ(arr[0].Value<double>() * u.ToFeet, arr[1].Value<double>() * u.ToFeet, arr[2].Value<double>() * u.ToFeet); }
                 catch (Exception ex) { error = name + " must be three finite numbers: " + ex.Message; return null; }
             }
 
@@ -215,9 +227,10 @@ namespace Horizun.Revit.Commands
                         case "cable_tray": seg = CableTray.Create(doc, _typeId, a, b, _levelId); break;
                         default: throw new InvalidOperationException("unsupported kind '" + _kind + "'");
                     }
-                    ApplySize(seg);
+                    var rec = new SegRecord { Id = seg.Id, Start = a, End = b };
+                    ApplySize(seg, ref rec);
                     segments.Add(seg);
-                    _segments.Add(new SegRecord { Id = seg.Id, Start = a, End = b });
+                    _segments.Add(rec);
                     _createdIds.Add(seg.Id);
                 }
                 for (int i = 0; i < segments.Count - 1; i++)
@@ -243,31 +256,28 @@ namespace Horizun.Revit.Commands
                 }
             }
 
-            private void ApplySize(Element seg)
+            /// <summary>
+            /// Sets the run's size through the same parameter map resize uses (Classify): pipe
+            /// and conduit diameters, a duct's diameter or width/height by its type's shape, and
+            /// a cable tray's RBS_CABLETRAY_* width/height (not the RBS_CURVE_* pair, which a
+            /// cable tray does not carry). A size Revit refuses throws, rolling the route back;
+            /// the value it holds is re-read by Verify() as its own postcondition.
+            /// </summary>
+            private void ApplySize(Element seg, ref SegRecord rec)
             {
-                try
+                string why;
+                Run r = seg is MEPCurve mc ? Classify(mc, out why) : null;
+                if (r == null) throw new InvalidOperationException("cannot size new segment " + Rid.Value(seg.Id) + " (no size parameters readable)");
+                double[] want = r.Params.Length == 1
+                    ? new[] { _diameter ?? throw new InvalidOperationException("a " + r.Kind + " takes a diameter") }
+                    : new[] { _width ?? throw new InvalidOperationException("a " + r.Kind + " takes width and height"), _height.Value };
+                for (int i = 0; i < r.Params.Length; i++)
                 {
-                    if (_diameter.HasValue)
-                    {
-                        BuiltInParameter bip = seg is Pipe ? BuiltInParameter.RBS_PIPE_DIAMETER_PARAM
-                            : seg is Conduit ? BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM
-                            : BuiltInParameter.RBS_CURVE_DIAMETER_PARAM; // Duct (round) and CableTray fall back here
-                        SetParam(seg, bip, _diameter.Value);
-                    }
-                    else if (_width.HasValue && _height.HasValue)
-                    {
-                        SetParam(seg, BuiltInParameter.RBS_CURVE_WIDTH_PARAM, _width.Value);
-                        SetParam(seg, BuiltInParameter.RBS_CURVE_HEIGHT_PARAM, _height.Value);
-                    }
+                    Parameter p = seg.get_Parameter(r.Params[i]);
+                    if (p == null || p.IsReadOnly || !p.Set(want[i]))
+                        throw new InvalidOperationException("Revit refused " + r.Params[i] + " = " + Math.Round(want[i] * 304.8, 1) + " mm on new " + r.Kind + " " + Rid.Value(seg.Id));
                 }
-                catch { /* best-effort: sizing is not one of route's required postconditions */ }
-            }
-
-            private static void SetParam(Element e, BuiltInParameter bip, double value)
-            {
-                Parameter p = null;
-                try { p = e.get_Parameter(bip); } catch { }
-                if (p != null && !p.IsReadOnly) { try { p.Set(value); } catch { } }
+                rec.SizeParams = r.Params; rec.SizeWanted = want;
             }
 
             /// <summary>The element's own FREE connector nearest to <paramref name="target"/> - the bend point an elbow goes at.</summary>
@@ -291,7 +301,7 @@ namespace Horizun.Revit.Commands
             public override PostconditionCheck Verify(Document doc)
             {
                 var required = new List<string>();
-                foreach (SegRecord s in _segments) { required.Add("segment:" + Rid.Value(s.Id) + ":start"); required.Add("segment:" + Rid.Value(s.Id) + ":end"); }
+                foreach (SegRecord s in _segments) { required.Add("segment:" + Rid.Value(s.Id) + ":start"); required.Add("segment:" + Rid.Value(s.Id) + ":end"); required.Add("segment:" + Rid.Value(s.Id) + ":size"); }
                 foreach (ElementId id in _elbowIds) required.Add("elbow:" + Rid.Value(id) + ":connected");
                 var check = new PostconditionCheck(required.ToArray());
 
@@ -306,6 +316,18 @@ namespace Horizun.Revit.Commands
                     bool endOk = actualEnd != null && actualEnd.DistanceTo(s.End) <= MmToFeet;
                     check.Record("segment:" + Rid.Value(s.Id) + ":start", PointJson(s.Start), actualStart == null ? (JToken)JValue.CreateNull() : PointJson(actualStart), startOk);
                     check.Record("segment:" + Rid.Value(s.Id) + ":end", PointJson(s.End), actualEnd == null ? (JToken)JValue.CreateNull() : PointJson(actualEnd), endOk);
+                    // The size as the model holds it now - a size Revit snapped to its catalog
+                    // (not the one asked for) is a failed postcondition, named, not a pass.
+                    var wantMm = new JArray(); var haveMm = new JArray(); bool sizeOk = s.SizeParams != null;
+                    for (int i = 0; s.SizeParams != null && i < s.SizeParams.Length; i++)
+                    {
+                        double? have = null;
+                        try { Parameter p = live?.get_Parameter(s.SizeParams[i]); if (p != null && p.HasValue) have = p.AsDouble(); } catch { }
+                        wantMm.Add(Math.Round(s.SizeWanted[i] * 304.8, 1));
+                        haveMm.Add(have.HasValue ? (JToken)Math.Round(have.Value * 304.8, 1) : JValue.CreateNull());
+                        if (!have.HasValue || Math.Abs(have.Value - s.SizeWanted[i]) > MmToFeet) sizeOk = false;
+                    }
+                    check.Record("segment:" + Rid.Value(s.Id) + ":size", wantMm, haveMm, sizeOk);
                 }
                 foreach (ElementId id in _elbowIds)
                 {

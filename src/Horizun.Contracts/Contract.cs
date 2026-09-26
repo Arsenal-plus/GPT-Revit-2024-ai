@@ -5351,14 +5351,25 @@ namespace Horizun.Contracts
                     "segments (material, schedule, nominal/inner/outer sizes), duct, conduit and cable-tray catalogs. " +
                     "set_rules, add_sizes, remove_sizes and resize: dry_run, then confirmation_token; apply re-reads rules, " +
                     "catalog or sizes and rolls back on mismatch. resize takes catalog sizes only and reports fittings Revit " +
-                    "replaced or added. size_by_flow proposes sizes by velocity limit; writes nothing.",
+                    "replaced or added. size_by_flow proposes sizes by velocity limit; writes nothing. route: orthogonal 3-D path " +
+                    "around obstacles (refuses no_route); apply creates segments and elbows, re-reads ends, sizes and " +
+                    "connections, and rolls back on any spatial-check error.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""size_by_flow""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""size_by_flow"", ""route""] },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""in"", ""feet""], ""default"": ""mm"" },
     ""type_id"": { ""type"": ""integer"" }, ""segment_id"": { ""type"": ""integer"" },
+    ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct"", ""conduit"", ""cable_tray""], ""description"": ""route: run kind to create."" },
+    ""system_type_id"": { ""type"": ""integer"", ""description"": ""route: piping/duct system type (pipe, duct)."" },
+    ""level_id"": { ""type"": ""integer"", ""description"": ""route: Level of the new run."" },
+    ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""route: first point [x, y, z], in units."" },
+    ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""route: last point [x, y, z], in units."" },
+    ""clearance_mm"": { ""type"": ""number"", ""default"": 50, ""description"": ""route: air kept around the run's surface."" },
+    ""grid_mm"": { ""type"": ""number"", ""default"": 100, ""description"": ""route: search lattice spacing."" },
+    ""max_nodes"": { ""type"": ""integer"", ""description"": ""route: search budget; no_route when exhausted."" },
+    ""preferred_elevation"": { ""type"": ""object"", ""properties"": { ""min_mm"": { ""type"": ""number"" }, ""max_mm"": { ""type"": ""number"" } }, ""description"": ""route: Z band preferred, not enforced."" },
     ""rules"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""group"", ""action""], ""properties"": {
       ""group"": { ""type"": ""string"", ""description"": ""RoutingPreferenceRuleGroupType: Segments, Elbows, Junctions, Crosses, Transitions, Unions, Caps..."" },
       ""action"": { ""type"": ""string"", ""enum"": [""add"", ""remove"", ""move""] },

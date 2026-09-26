@@ -307,6 +307,7 @@ and a resize is an instance write whose side effects land on other elements.
 | `add_sizes` / `remove_sizes` | yes | `catalog` = `segment` (with `segment_id`), `conduit` (with `conduit_standard`), `duct_round`, `duct_rectangular`, `duct_oval` or `cable_tray`. Segment and conduit sizes need `inner` and `outer`; conduit sizes also `bend_radius`. A size already present (add) or absent (remove) is refused; a size still used by an element is refused before any write, naming the elements. | Each size present with its inner/outer/bend, or absent; every other size unchanged. |
 | `resize` | yes | `element_ids` or `system_id` (piping or duct network), to `diameter` or `width`+`height`. Each value must be a size of that element's own catalog (the pipe's segment, the duct shape's list, the conduit type's standard, the cable-tray list). Runs already at that size are skipped and listed. | Each run's size parameters equal the request, and every connector connected before is still connected. The fittings Revit removed/replaced, retyped or inserted (transitions) are reported in `result`. |
 | `size_by_flow` | no | Per pipe or round/rectangular duct: the smallest catalog size (`used_in_sizing`) whose free area carries the flow at or below `max_velocity` (m/s). Flow is the element's calculated flow, or `flow` (L/s) for all. Pipes use the segment's inner diameter; rectangular ducts hold the current `height` (or the one given) and pick the width. `resize_calls` groups the proposals into ready `resize` requests. | - |
+| `route` | yes | `kind` (pipe/duct/conduit/cable_tray), `type_id`, `system_type_id` (pipe/duct), `level_id`, size (`diameter` for pipes, conduits and round ducts; `width`+`height` for rectangular/oval ducts and cable trays - a mismatch is refused before any write), `start`/`end` ([x,y,z]; points and sizes in `units`, default mm), `clearance_mm` (default 50), `grid_mm` (default 100), `max_nodes`, optional `preferred_elevation` ({min_mm, max_mm}). A pure 3-D orthogonal A* (`RouteSearch`, Revit-free, in `Core/RouteSearch.cs`) finds a polyline around every physical host element and every loaded-link element near the search box, inflated by `clearance_mm` plus half the run's own size; refuses `no_route` naming the blocking region when none exists within `max_nodes`. | Every segment's two endpoints (1 mm), its size re-read from the same parameters `resize` uses (1 mm; a size Revit snapped to its catalog fails, named), every elbow's connector count, and a `SpatialCoherence` check against every created element - any error against a physical host or link throws and rolls back the whole route, named. |
 
 Writes follow the bridge's two-step flow: the dry run (default) applies the change in
 a transaction, verifies it, rolls it back and returns a `confirmation_token`; the apply
@@ -324,13 +325,33 @@ than dropping the criterion. The API members used (`RoutingPreferenceManager`,
 `DuctSizeSettings`, `ConduitSizeSettings`, `CableTraySizes`) read identically in the
 2023-2027 API documentation, so there is no per-year branch.
 
+**`route` example** (mm, apply after a `dry_run` returns a `confirmation_token`):
+
+```json
+{
+  "operation": "route", "target_document": "...", "kind": "pipe",
+  "type_id": 123456, "system_type_id": 234567, "level_id": 345678,
+  "diameter": 100, "start": [0, 0, 3000], "end": [8000, 0, 3000],
+  "clearance_mm": 75, "grid_mm": 150,
+  "dry_run": false, "confirmation_token": "..."
+}
+```
+
+The reply's `result` carries `length_mm`, `bends`, `polyline_mm`, `segment_ids` and
+`elbow_ids`; a failed search returns `no_route: <reason> (blocking region: <name>)`
+instead of a token, naming the obstacle that closed every path.
+
 **Resumen (español).** `horizun_mep_routing` lee y edita las preferencias de
 enrutamiento (reglas por grupo con rangos de tamaño, unión preferida), los segmentos
 de tubería y los catálogos de tamaños de ducto, conduit y bandeja; cambia el tamaño de
 tubos, ductos, conduits y bandejas solo a tamaños de su propio catálogo, verifica
 releyendo tras el commit y reporta los accesorios que Revit reemplazó o insertó; y
 propone tamaños por caudal con un límite de velocidad (solo velocidad, sin fricción:
-el dimensionamiento de Revit no tiene API pública) sin escribir nada.
+el dimensionamiento de Revit no tiene API pública) sin escribir nada. `route` traza
+una ruta ortogonal en 3D que evita obstáculos (elementos físicos y de vínculos
+cargados, con el margen de `clearance_mm`) entre dos puntos, crea los tramos y codos,
+y solo confirma si la relectura de extremos/conexiones y el chequeo espacial salen
+limpios; si no hay camino dentro de `max_nodes` se niega nombrando la zona que bloquea.
 
 
 
