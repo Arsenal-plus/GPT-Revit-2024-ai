@@ -324,6 +324,43 @@ than dropping the criterion. The API members used (`RoutingPreferenceManager`,
 `DuctSizeSettings`, `ConduitSizeSettings`, `CableTraySizes`) read identically in the
 2023-2027 API documentation, so there is no per-year branch.
 
+**`slope` (gravity pipe runs).** `element_ids` names the run's pipes (the fittings
+joining them come along), or one seed pipe with `walk: true` follows the connected
+network through pipe fittings, up to 200 pipes plus fittings. Accessories, fixtures
+and equipment are boundaries, never walked through; their connections are listed as
+`external_connections` and must still be connected afterwards. A pipe with a tap (a
+connection along its length) is refused. `slope_percent` is the grade (2.0 = 2%).
+`fixed_end` holds one open end at its current elevation:
+
+- `upstream` / `downstream` - only for a run with exactly two open ends, and only
+  when a connector reports flow direction (a calculated system); otherwise refused.
+- `<element_id>` - the pipe (or fitting) owning one open end. Direction comes from
+  flow when readable, else the held end is assumed to be the high end; the plan says
+  which (`direction_source`).
+- `<element_id>:high` / `<element_id>:low` - the caller states whether the held end
+  is the upstream end or the outlet. A branched run held at a high end needs flow
+  to name the one outlet; otherwise hold the outlet with `:low`.
+
+Every point sits slope x its horizontal path length to the outlet above the outlet,
+so a tee's branch drains toward the main whichever end is held, and elbow and tee
+legs count as path length. Vertical pipes keep their rise. `min_clearance` (in
+`units`) refuses the run, naming the point, if any point would land below the
+highest level at or below the held end plus that clearance. The rehearsal shows the
+held end, the outlet, target elevations of every pipe end and fitting centre. Apply
+moves each fitting vertically to its target centre, sets each pipe's LocationCurve,
+regenerates, and reconnects a connector pair that separated but still coincides
+(listed in `reconnected`); then it re-reads the held end, every pipe's slope (within
+0.05 percentage points), every connector pair recorded before and every fitting's
+connected count, and rolls back naming the element otherwise. Revit has no pipe
+slope API (no `SlopeType` for pipes; `PipeSettings.GetPipeSlopes` only lists preset
+slopes), so how elbows follow moved ends is measured by the `pipe-slope` live probe.
+
+**Resumen (español).** `slope` da pendiente a una red de tubería por gravedad desde
+un extremo fijo (`fixed_end`), con los accesorios siguiendo a los tubos; cada punto
+queda a pendiente x distancia horizontal hasta la salida, un ramal de tee drena hacia
+la principal, y la aplicación relee pendientes y conexiones o revierte nombrando el
+elemento.
+
 **Resumen (español).** `horizun_mep_routing` lee y edita las preferencias de
 enrutamiento (reglas por grupo con rangos de tamaño, unión preferida), los segmentos
 de tubería y los catálogos de tamaños de ducto, conduit y bandeja; cambia el tamaño de
