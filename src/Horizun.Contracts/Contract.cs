@@ -6982,8 +6982,13 @@ namespace Horizun.Contracts
             // that way. Applied with flipHand() and verified by re-reading
             // HandFlipped; a family that cannot be flipped refuses the row.
             ["family_instance"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "structural_type", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm", "host_face", "top_level_id", "top_offset", "height" },
-            // A sprinkler is a family_instance restricted to OST_Sprinklers; same fields, same routes.
-            ["sprinkler"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm", "host_face" },
+            // A sprinkler is a family_instance restricted to OST_Sprinklers, same routes (level,
+            // hosted or face - most sprinklers are ceiling/pipe hosted, so host_id stays). The
+            // wall-side fields (facing_degrees/side_dead_band_mm/host_face) are dropped, and
+            // host_id's description is overridden below to something terse: the 512 KiB tools/list
+            // budget (GeometryProductionCompatibilityTests requires every published kind to have
+            // its OWN variant, so this cannot be folded into family_instance's).
+            ["sprinkler"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "host_id" },
             ["structural_column"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "rotation_degrees", "top_level_id", "top_offset", "height" },
             ["structural_framing"] = new[] { "start", "end", "type_id", "level_id", "structural_type" },
             ["duct"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
@@ -7001,13 +7006,16 @@ namespace Horizun.Contracts
         };
         public static string ValidateCreation(JObject item, string kind)
         {
+            // Checked AHEAD of the CreationFields lookup: "sprinkler" has no row of its own
+            // there (it shares family_instance's tools/list variant to stay inside the 512 KiB
+            // budget), so this requirement would be silently skipped by the early return below.
+            if ((kind == "family_instance" || kind == "sprinkler" || kind == "structural_column") && item["coordinate_mode"] == null)
+                return "coordinate_mode is required: absolute or level_offset. Legacy ambiguous Z placement is refused.";
             if (!CreationFields.TryGetValue(kind, out var fields)) return null; // handler owns typed fallback
             var allowed = new HashSet<string>(fields, StringComparer.Ordinal) { "kind", "parameters", "source_reference", "source_row" };
             foreach (var field in item.Properties())
                 if (!allowed.Contains(field.Name)) return field.Name + " is not applicable to kind '" + kind + "'.";
             if (item["parameters"] != null && !(item["parameters"] is JObject)) return "parameters must be an object.";
-            if ((kind == "family_instance" || kind == "sprinkler" || kind == "structural_column") && item["coordinate_mode"] == null)
-                return "coordinate_mode is required: absolute or level_offset. Legacy ambiguous Z placement is refused.";
             return null;
         }
         internal static void AddCreationVariants(JObject schema)
@@ -7070,9 +7078,7 @@ namespace Horizun.Contracts
             {
                 ["type"] = "array", ["minItems"] = 2, ["maxItems"] = 100,
                 ["items"] = new JObject { ["type"] = "array", ["minItems"] = 3, ["maxItems"] = 3, ["items"] = new JObject { ["type"] = "number" } },
-                ["description"] = "kind=flex_pipe/flex_duct: the flexible path IN ORDER, including both ends - " +
-                                  "FlexPipe.Create/FlexDuct.Create take this directly, not a start/end pair. " +
-                                  "Re-read after commit point-for-point and by count; Revit may drop a redundant point."
+                ["description"] = "The flex path; ends included."
             };
             props["desired_risers"]=new JObject { ["type"]="integer",["minimum"]=1,["maximum"]=1000 };
             props["tread_depth"]=new JObject { ["type"]="number",["exclusiveMinimum"]=0 };
@@ -7086,11 +7092,36 @@ namespace Horizun.Contracts
             props["source_reference"]["description"]="Optional PDF/source trace stored as ExtensibleStorage on the element (not Comments). Page is one-based; region uses PDF points from top-left. Measurement property names refer to numeric postconditions, e.g. reference_face_elevation or height. Source dimensions are compared with independently measured model values; a mismatch refuses successful application.";
             foreach (var pair in CreationFields)
             {
-                var specific = new JObject { ["kind"] = new JObject { ["const"] = pair.Key }, ["parameters"] = props["parameters"].DeepClone(), ["source_reference"]=props["source_reference"].DeepClone(), ["source_row"]=props["source_row"].DeepClone() };
+                // tools/list is budgeted at 512 KiB (McpPrimitiveTests): source_reference alone
+                // clones to ~1.2 KB PER VARIANT, so the newest, least PDF-traced kinds skip it
+                // (and source_row, which only means anything alongside it) rather than push the
+                // whole tool over budget. ValidateCreation still allows both fields by name for
+                // every kind - this only affects what the compact, advertised schema documents.
+                bool leanKind = pair.Key == "flex_pipe" || pair.Key == "flex_duct" || pair.Key == "sprinkler" ||
+                                pair.Key == "space" || pair.Key == "area" || pair.Key == "area_boundary";
+                var specific = new JObject { ["kind"] = new JObject { ["const"] = pair.Key } };
+                if (!leanKind)
+                {
+                    specific["parameters"] = props["parameters"].DeepClone();
+                    specific["source_reference"] = props["source_reference"].DeepClone();
+                    specific["source_row"] = props["source_row"].DeepClone();
+                }
                 foreach (string field in pair.Value) specific[field] = props[field].DeepClone();
                 if (pair.Key == "beam_system") specific["profile"] = JObject.Parse(@"{'type':'array','minItems':3,'maxItems':12,'items':{'type':'array','minItems':2,'maxItems':2,'items':{'type':'number'}}}");
                 if (pair.Key == "room_separator" || pair.Key == "area_boundary") specific["profile"]["items"]["minItems"] = 2;
                 if(pair.Key=="wall_profile") specific["profile"]["description"]="One simple contour in a vertical plane, absolute internal XYZ. No holes. Revit base normalization is checked against the resulting world-space side-face silhouette.";
+                if (pair.Key == "area_boundary") specific["profile"]["description"] = "One open chain; one line per curve.";
+                if (pair.Key == "sprinkler")
+                {
+                    specific["host_id"]["description"] = "Host for a hosted/face sprinkler.";
+                    specific["coordinate_mode"]["description"] = "absolute or level_offset.";
+                }
+                if (pair.Key == "flex_duct") specific["width"]["description"] = "Rectangular flex duct, with height.";
+                if (pair.Key == "flex_pipe" || pair.Key == "flex_duct")
+                {
+                    specific["system_type_id"]["description"] = "The PipingSystemType/MechanicalSystemType.";
+                    ((JObject)specific["diameter"]).Remove("description");
+                }
                 var required = new JArray("kind");
                 string[] requiredFields;
                 switch (pair.Key)
