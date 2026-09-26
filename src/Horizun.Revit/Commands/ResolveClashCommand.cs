@@ -34,7 +34,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class ResolveClashCommand : ICommand
+    public sealed partial class ResolveClashCommand : ICommand
     {
         public string Name => "horizun_resolve_clash";
         public string Description => "Propose and apply verified clash resolutions for findings of the horizun_clash ledger.";
@@ -53,7 +53,12 @@ namespace Horizun.Revit.Commands
             if (maxMove <= 0 || maxMove > 5000) return CommandResult.Fail("max_move_mm must be in (0, 5000].");
             if (op == "propose") return Propose(app, request, clearance, maxMove);
             if (op == "apply") return Apply(app, request, clearance, maxMove);
-            return CommandResult.Fail("operation must be propose or apply.");
+            // Sleeves/openings (ResolveClashSleeves.cs): for a finding a move cannot resolve -
+            // one side an MEP run, the other a wall/floor/roof/framing/column - propose an
+            // opening or sleeve at the crossing instead of relocating anything.
+            if (op == "propose_opening") return ProposeOpening(app, request, clearance);
+            if (op == "apply_opening") return ApplyOpening(app, request, clearance);
+            return CommandResult.Fail("operation must be propose, apply, propose_opening or apply_opening.");
         }
 
         // ---- propose --------------------------------------------------------------

@@ -106,12 +106,46 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void ContainsCrossingWithClearance_is_true_only_when_the_margin_is_actually_there()
+        public void ContainsCrossingWithClearance_skips_the_axis_the_run_travels_along()
         {
-            var opening = new ResolveBox(-100, -100, -100, 100, 100, 100);
-            Assert.True(SleeveRules.ContainsCrossingWithClearance(opening, new double[] { 0, 0, 0 }, 20, 20, 50));
-            // The same opening cannot clear a run whose half-width alone eats the whole margin.
-            Assert.False(SleeveRules.ContainsCrossingWithClearance(opening, new double[] { 0, 0, 0 }, 60, 20, 50));
+            // A wall along X, 200 mm thick in Y; a 100 mm pipe runs along Y through it at z=0.
+            // The opening re-reads as a thin rectangle in the wall's plane: 250 mm wide (X) and
+            // 250 mm high (Z), but only the wall's thickness in Y.
+            var opening = new ResolveBox(-125, -100, -125, 125, 100, 125);
+            double[] alongY = { 0, 1, 0 };
+            Assert.True(SleeveRules.ContainsCrossingWithClearance(opening, new double[] { 0, 0, 0 }, alongY, 50, 50, 50));
+            // The same margin fails once the pipe grows past it.
+            Assert.False(SleeveRules.ContainsCrossingWithClearance(opening, new double[] { 0, 0, 0 }, alongY, 80, 50, 50));
+            // Off-centre so the clearance is gone on one side.
+            Assert.False(SleeveRules.ContainsCrossingWithClearance(opening, new double[] { 40, 0, 0 }, alongY, 50, 50, 50));
+        }
+
+        [Fact]
+        public void ContainsCrossingWithClearance_checks_both_plan_axes_for_a_vertical_run()
+        {
+            var floorCut = new ResolveBox(-100, -100, -150, 100, 100, 150);
+            double[] up = { 0, 0, 1 };
+            Assert.True(SleeveRules.ContainsCrossingWithClearance(floorCut, new double[] { 0, 0, 0 }, up, 50, 50, 50));
+            Assert.False(SleeveRules.ContainsCrossingWithClearance(floorCut, new double[] { 0, 0, 0 }, up, 50, 60, 50));
+            Assert.False(SleeveRules.ContainsCrossingWithClearance(null, new double[] { 0, 0, 0 }, up, 50, 50, 50));
+        }
+
+        [Fact]
+        public void FloorFootprint_keeps_round_and_squares_a_rectangle_to_its_larger_side()
+        {
+            SleeveRules.FloorFootprint(160, 160, SleeveRules.ShapeRound, out double rx, out double ry);
+            Assert.Equal(160, rx); Assert.Equal(160, ry);
+            SleeveRules.FloorFootprint(450, 250, SleeveRules.ShapeRect, out double x, out double y);
+            Assert.Equal(450, x); Assert.Equal(450, y);
+        }
+
+        [Fact]
+        public void UnintendedNewPairs_drops_only_the_sleeve_inside_its_own_host()
+        {
+            var before = new[] { ClashResolveRules.PairKey(10, 20) };
+            var after = new[] { ClashResolveRules.PairKey(10, 20), ClashResolveRules.PairKey(99, 20), ClashResolveRules.PairKey(99, 10), ClashResolveRules.PairKey(10, 30) };
+            var fresh = SleeveRules.UnintendedNewPairs(before, after, createdId: 99, hostId: 20);
+            Assert.Equal(new[] { ClashResolveRules.PairKey(99, 10), ClashResolveRules.PairKey(10, 30) }, fresh);
         }
     }
 }

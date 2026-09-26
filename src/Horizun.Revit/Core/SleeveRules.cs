@@ -27,7 +27,9 @@
 //     (this bridge is organisation-neutral: no family is compiled in).
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -57,6 +59,8 @@ namespace Horizun.Revit.Core
         public const string CodeNoProfile = "run_has_no_profile";
         public const string CodeNoHostBox = "host_has_no_bounding_box";
         public const string CodeHostUnsupported = "host_kind_not_supported";
+        /// <summary>Framing/columns: the API has no cut for them (only a void-cutting family instance can), so a cut is refused by name.</summary>
+        public const string CodeCutRefused = "host_cannot_be_cut_by_api";
 
         /// <summary>
         /// The host kind that decides the route. `structural` is the caller's own
@@ -150,20 +154,65 @@ namespace Horizun.Revit.Core
 
         /// <summary>
         /// Does `outer` contain `point` with at least `marginMm` of clearance on every side that
-        /// `halfWidthMm`/`halfHeightMm` (the run's own half cross-section, in the host's local
-        /// X/Y) would occupy around it? Used as the apply postcondition: the built opening/sleeve
-        /// must actually clear the run by the clearance that was proposed, not merely overlap it.
-        /// Conservative like every box check in this bridge: exact on an axis-aligned opening,
-        /// a safe under-estimate otherwise.
+        /// the run's own half cross-section would occupy around it? The check runs only on the
+        /// axes ACROSS the run: the axis the run travels along (|component| >= 0.5 of the unit
+        /// direction) is skipped, because an opening is as thin as its host there and a sleeve
+        /// is as long as it is. Vertical (Z) needs `halfHeightMm`; horizontal axes need
+        /// `halfWidthMm` (for a vertical run, plan Y uses `halfHeightMm` - see FloorFootprint,
+        /// which squares a rectangular section for exactly that reason). Used as the apply
+        /// postcondition: the built opening/sleeve must actually clear the run by the clearance
+        /// that was proposed, not merely overlap it. Conservative like every box check in this
+        /// bridge: exact on an axis-aligned opening, a safe under-estimate otherwise.
         /// </summary>
-        public static bool ContainsCrossingWithClearance(ResolveBox outer, double[] pointMm,
+        public static bool ContainsCrossingWithClearance(ResolveBox outer, double[] pointMm, double[] runDirection,
                                                           double halfWidthMm, double halfHeightMm, double marginMm)
         {
             if (outer == null || pointMm == null) return false;
-            double needX = halfWidthMm + marginMm, needY = halfHeightMm + marginMm;
-            return outer.MinX <= pointMm[0] - needX && outer.MaxX >= pointMm[0] + needX
-                && outer.MinY <= pointMm[1] - needY && outer.MaxY >= pointMm[1] + needY
-                && outer.MinZ <= pointMm[2] - needY && outer.MaxZ >= pointMm[2] + needY;
+            double[] u = Unit(runDirection);
+            double[] min = { outer.MinX, outer.MinY, outer.MinZ };
+            double[] max = { outer.MaxX, outer.MaxY, outer.MaxZ };
+            bool vertical = u != null && Math.Abs(u[2]) >= 0.5;
+            for (int i = 0; i < 3; i++)
+            {
+                if (u != null && Math.Abs(u[i]) >= 0.5) continue;
+                double half = i == 2 ? halfHeightMm : (vertical && i == 1 ? halfHeightMm : halfWidthMm);
+                double need = half + marginMm;
+                if (min[i] > pointMm[i] - need + 1e-6 || max[i] < pointMm[i] + need - 1e-6) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Plan footprint (X by Y, mm) of a floor/roof/ceiling opening. A round run keeps its
+        /// diameter; a rectangular section is SQUARED to its larger side because this route does
+        /// not read the section's rotation in plan - an axis-aligned rectangle of the raw width
+        /// by height would miss a duct turned 90 degrees, and the postcondition would then (rightly)
+        /// roll the cut back. Over-size rather than a guess that fails.
+        /// </summary>
+        public static void FloorFootprint(double openingWidthMm, double openingHeightMm, string shape, out double xMm, out double yMm)
+        {
+            if (shape == ShapeRound) { xMm = openingWidthMm; yMm = openingWidthMm; return; }
+            double side = Math.Max(openingWidthMm, openingHeightMm);
+            xMm = side; yMm = side;
+        }
+
+        /// <summary>
+        /// New clash pairs after an opening/sleeve, minus the one that is the design itself: a
+        /// sleeve sitting inside its host (created~host) is the point of a sleeve, not a new
+        /// clash. Anything else new - the sleeve against the run, against a third element, or
+        /// the run against anything - stays in the list and fails the apply.
+        /// </summary>
+        public static List<string> UnintendedNewPairs(IEnumerable<string> before, IEnumerable<string> after, long createdId, long hostId)
+        {
+            string intended = ClashResolveRules.PairKey(createdId, hostId);
+            return ClashResolveRules.NewPairs(before, after).Where(p => p != intended).ToList();
+        }
+
+        private static double[] Unit(double[] d)
+        {
+            if (d == null || d.Length < 3) return null;
+            double len = Math.Sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            return len < 1e-9 ? null : new[] { d[0] / len, d[1] / len, d[2] / len };
         }
 
         public static string Describe(string hostKind, double widthMm, double heightMm, string shape) =>
