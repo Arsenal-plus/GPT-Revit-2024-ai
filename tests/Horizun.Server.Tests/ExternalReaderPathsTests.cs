@@ -61,10 +61,10 @@ namespace Horizun.Server.Tests
         public void Gate_checks_on_the_planimetry_fix_still_hold()
         {
             JObject s = Advertised("horizun_fix_planimetry");
-            Assert.Equal(false, (bool)s["additionalProperties"]);
+            Assert.False((bool)s["additionalProperties"]);
             Assert.NotNull(s.SelectToken("properties.confirmation_token"));
             Assert.NotNull(s.SelectToken("properties.idempotency_key"));
-            Assert.Equal(true, (bool)s.SelectToken("properties.dry_run.default"));
+            Assert.True((bool)s.SelectToken("properties.dry_run.default"));
         }
 
         [Fact]
