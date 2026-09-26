@@ -149,7 +149,7 @@ order and patterns, the status codes, the revision patterns and the folders. Not
 organisation-specific is compiled in.
 
 Everything here works on **local or synced folders** (a desktop connector, a synced
-document library, a plain folder). `horizun_information_container` never calls a cloud API; reading a CDE in the cloud is the separate, read-only `horizun_cde_cloud` (see Cloud CDE reader).
+document library, a plain folder). `horizun_information_container` never calls a cloud API; reading a CDE in the cloud is the separate `horizun_cde_cloud` (see Cloud CDE reader), which writes nothing to the cloud except ACC issues, on request (see ACC Issues from coordination findings).
 
 ### The container object
 
@@ -780,9 +780,13 @@ petición pide `logLevel`, y un nivel desconocido da `-32602`.
 ## Cloud CDE reader
 
 `horizun_cde_cloud` reads a CDE **in the cloud**, where `horizun_information_container`
-reads local or synced folders. It is host-resident (it answers with Revit closed) and
-**read-only**: it never uploads, moves, renames, approves or deletes anything in the
-cloud. It is classified `ReadOnly` with `openWorldHint: true`.
+reads local or synced folders. It is host-resident (it answers with Revit closed). Its
+document operations only read: it never uploads, moves, renames, approves or deletes a
+file or folder in the cloud. The one thing it writes is an **ACC issue**, and only on
+request - `issue_create` / `issue_update` with `dry_run=false` and the confirmation token
+of their dry run (see [ACC Issues from coordination findings](#acc-issues-from-coordination-findings)).
+It is classified `ExternalSideEffectOnRequest` with `openWorldHint: true`: every read is
+admitted at every profile, an issue write asks the profile first.
 
 **Measured live against ACC on 2026-09-26** with a 2-legged APS app, on a test project
 of a real account (no project content is quoted here):
@@ -850,8 +854,9 @@ URL), and the API carries no CDE state. So `opencde` reads documents by id and n
 maps states. The published schema is kept deliberately terse (tools/list has a byte
 budget): arguments are `operation`, `provider`, `project_context_path`, `hub_id`,
 `project_id`, `states`, `naming`, `deliverables`, `as_of`, `offset`, `limit`,
-`max_calls`, `item_id`, `server_url`, `document_ids` and `document_id`. In ACC, status and revision come from file names, not from ACC review or
-approval workflows.
+`max_calls`, `item_id`, `server_url`, `document_ids` and `document_id`, plus `issue_id`,
+`issue`, `finding`, `external_key`, `dry_run` and `confirmation_token` for ACC Issues. In
+ACC, status and revision come from file names, not from ACC review or approval workflows.
 
 References: the APS OpenAPI descriptions
 (<https://github.com/autodesk-platform-services/aps-sdk-openapi>, `datamanagement` and
@@ -862,8 +867,9 @@ release 1.1 (<https://github.com/buildingSMART/foundation-API>).
 
 ### Resumen en español
 
-`horizun_cde_cloud` lee un CDE **en la nube** en solo lectura: nunca sube, mueve,
-renombra, aprueba ni borra. `provider=acc` (ACC/BIM 360 Docs por la API Data
+`horizun_cde_cloud` lee un CDE **en la nube**: nunca sube, mueve, renombra, aprueba ni
+borra archivos ni carpetas. Lo único que escribe, y solo a pedido (ensayo, token y
+`dry_run=false`), son **incidencias de ACC** (ver la sección siguiente). `provider=acc` (ACC/BIM 360 Docs por la API Data
 Management de APS, alcance `data:read`) u `opencde` (buildingSMART OpenCDE:
 descubrimiento Foundation y Documents API 1.0). `list_states` asigna las carpetas de
 la nube a los cuatro estados ISO 19650 según `cde.states` (`Project Files/01_WIP`),
@@ -876,6 +882,115 @@ backoff ante 429 y `coverage_complete=false` ante cualquier cosa no leída (nunc
 archivo de token 3-legged; sin credenciales, se niega sin hacer una sola llamada.
 OpenCDE no permite listar un proyecto sin el flujo interactivo del navegador: lee
 documentos por id y no asigna estados.
+
+## ACC Issues from coordination findings
+
+A coordination finding (a clash, a review comment, a row of the coordination ledger)
+becomes an **ACC issue** through three operations of `horizun_cde_cloud`, `provider=acc`:
+
+| operation | what it does | writes |
+|---|---|---|
+| `issues_list` | lists the project's issues (`offset`/`limit`, default 100, max 1000), or one by `issue_id`, or the ones carrying an `external_key`; filters `issue.status`, `issue.issue_type_id`, `issue.assigned_to`. Always adds `issue_types` (with their **subtypes**) and `root_cause_categories`. | no |
+| `issue_create` | creates one issue from `issue` and/or `finding`, keyed by `external_key`. | yes, on request |
+| `issue_update` | changes the fields given on the issue named by `issue_id`, or found by its key. Only the fields that differ from what is there are sent. | yes, on request |
+
+Endpoints (Autodesk Construction Cloud Issues API v1, APS reference
+<https://aps.autodesk.com/en/docs/acc/v1/reference/http/>, section *Issues*):
+`GET|POST /construction/issues/v1/projects/{projectId}/issues`,
+`GET|PATCH .../issues/{issueId}`, `GET .../issue-types?include=subtypes`,
+`GET .../issue-root-cause-categories?include=rootcauses`. `projectId` is the project GUID;
+a Data Management id (`b.<guid>`) is accepted and its `b.` dropped.
+
+**The issue object** (`issue`, every value a string):
+
+| argument | ACC field | notes |
+|---|---|---|
+| `title` | `title` | required on create |
+| `description` | `description` | the key marker is appended, never duplicated |
+| `issue_type_id` | `issueSubtypeId` | the **subtype** id, required on create; checked against the active subtypes before the plan |
+| `status` | `status` | `draft`, `open` (create default), `pending`, `in_progress`, `completed`, `in_review`, `not_approved`, `in_dispute`, `closed` |
+| `assigned_to` / `assigned_to_type` | `assignedTo` / `assignedToType` | type `user` (default), `company` or `role` |
+| `due_date` / `start_date` | `dueDate` / `startDate` | `YYYY-MM-DD` |
+| `location_id` | `locationId` | an ACC location id |
+| `root_cause_id` | `rootCauseId` | from `root_cause_categories` |
+
+A created issue is sent with `published: true` unless its status is `draft` (an
+unpublished issue is visible to its creator only).
+
+**The finding** (`finding`) is one ledger row, its CSV columns or JSON keys as
+properties; names are matched case-insensitively with spaces read as `_`. The first
+present column wins; anything in `issue` overrides the finding.
+
+- title ← `title`, `name`, `summary`, `clash_name`, `check`
+- description ← `description`, `detail`, `details`, `comment`, `message`, `reason`,
+  followed by one `column: value` line for each of `severity`, `priority`, `discipline`,
+  `category`, `test`, `level`, `grid`, `location`, `zone`, `element_a`, `element_b`,
+  `element_ids`, `elements`, `distance`, `point`, `x`, `y`, `z`, `source`, `model`
+- key ← `external_key`, `finding_id`, `clash_id`, `issue_key`, `guid`, `id`
+
+The reply's `mapped_from_finding` says which column fed which field.
+
+**The key.** `external_key` (1-100 characters of `A-Z a-z 0-9 . _ : -`, or the finding's
+own id) is written as the last line of the description, `[horizun-key:<key>]` - the one
+field every ACC project has, where a custom attribute would need a per-project
+definition. Before a create every issue of the project is scanned for that marker: if
+one carries it, nothing is created (`state: already_exists`) and that issue is read back
+and compared. A scan that could not finish **blocks the apply**, because "not found" in a
+page never read is not "absent" - raise `max_calls`. A POST whose answer is lost is not
+repeated: the project is scanned for the key again (`reconciled`).
+
+**dry_run → confirmation_token → apply.** `dry_run` defaults to true: the rehearsal reads
+the subtypes and the existing issues, returns the exact `plan` (method, path, body; for an
+update, the `changes` with their before values) and a `confirmation_token` bound to that
+plan. The apply repeats the same arguments with `dry_run=false` and the token. For an
+update the before values are part of the plan, so an edit made by somebody else between
+the two calls invalidates the token instead of being overwritten. The apply also asks
+the profile (`Settings.AllowsExternalSideEffect`); `issues_list` and the dry run are
+always available.
+
+**A user, with data:write.** ACC accepts issue writes only in a user context: a
+**3-legged** token with `data:write`. The write operations take the token from
+`HORIZUN_APS_ACCESS_TOKEN` or from the token file `%USERPROFILE%\.horizun\aps-token.json`,
+refreshed and written back as for every `acc` read (the reply's `auth.token_file_refreshed`
+says when that happened). With only `HORIZUN_APS_CLIENT_ID`/`SECRET` configured, the call
+is refused **before any request**, with the steps; a token whose JWT claims carry no user
+id, or whose scope lacks `data:write`, is refused before the write. To obtain one:
+(1) give the APS app a callback URL and have an ACC account admin add it as a custom
+integration; (2) sign in once with the authorization-code flow asking
+`data:read data:write`; (3) save `{access_token, refresh_token, expires_at}` to the token
+file and keep `HORIZUN_APS_CLIENT_ID` (and the secret, for a confidential app) set so it
+refreshes. Credentials never travel in an argument, a reply or a log.
+
+**Read back.** After the POST or PATCH the issue is fetched again and compared field by
+field - title, status, assignee, dates, subtype, location, root cause, the description
+text and the key marker. The reply carries `verification` (per field: expected, actual,
+ok), `host_verified` (true only when every field sent reads back as sent; otherwise
+`state: applied_unverified`), `issue_id`, `display_id` and `web_url`
+(`https://acc.autodesk.com/build/issues/projects/<project>/issues?issueId=<id>`). ACC's
+own error answer is surfaced in the refusal. The verification mechanism is
+`RemoteReread` in the write-verification catalog.
+
+**Nothing binary is attached** in this pass: no snapshot, file, markup, pushpin or linked
+document. The reply says so in `attachments`.
+
+Still to measure live (not yet run against a real ACC project): whether APS 3-legged
+tokens carry the `userid` claim the user-context check reads; how `published` reads
+back; the `web_url` host for accounts in other regions; whether the issue-types filter
+and page size behave as documented; the exact format of an error body.
+
+### Resumen en español
+
+`horizun_cde_cloud` (`provider=acc`) convierte un hallazgo de coordinación en una
+**incidencia de ACC**: `issues_list` (lectura, con tipos y subtipos y categorías de causa
+raíz), `issue_create` e `issue_update` (escritura). La fila del ledger (`finding`, CSV o
+JSON) se mapea a título, descripción y clave; `issue` la sobrescribe. La clave
+(`external_key` o el id del hallazgo) queda como última línea de la descripción,
+`[horizun-key:<clave>]`, así un reintento encuentra la incidencia en vez de duplicarla; si
+el escaneo no termina, el apply se bloquea. Flujo `dry_run` (por defecto) →
+`confirmation_token` → apply. Escribir exige un token **3-legged** con `data:write`: con
+solo credenciales 2-legged se niega sin una sola llamada y explica cómo obtenerlo. Tras
+escribir relee la incidencia y compara campo por campo (`host_verified`), y devuelve
+`issue_id` y `web_url`. No adjunta nada binario en esta pasada.
 
 ## Live verification of the ISO 19650 tools
 

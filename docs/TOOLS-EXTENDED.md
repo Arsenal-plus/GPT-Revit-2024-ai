@@ -1415,3 +1415,26 @@ post to it. Both failures now carry a structured `modal_dialog` block in
 A null field means Win32 could not read it, never that the dialog has no such
 thing. `modal_dialog` is absent (not merely null) when the probe itself is
 unavailable or the main window is enabled.
+
+## horizun_cde_cloud: ACC Issues (`issues_list`, `issue_create`, `issue_update`)
+
+`provider=acc` only. The full flow (key marker, 3-legged `data:write`, read-back) is in
+[INFORMATION-MANAGEMENT.md, "ACC Issues from coordination findings"](INFORMATION-MANAGEMENT.md#acc-issues-from-coordination-findings).
+The arguments the schema keeps terse:
+
+| argument | meaning |
+|---|---|
+| `issue` | the issue fields, every value a string: `title`, `description`, `issue_type_id` (the ACC **subtype** id - `issues_list` returns `issue_types` with their subtypes), `status` (`draft`, `open`, `pending`, `in_progress`, `completed`, `in_review`, `not_approved`, `in_dispute`, `closed`), `assigned_to`, `assigned_to_type` (`user` default, `company`, `role`), `due_date` and `start_date` (`YYYY-MM-DD`), `location_id`, `root_cause_id`. In `issues_list` only `status`, `issue_type_id` and `assigned_to` are accepted, as filters. |
+| `finding` | one coordination-ledger row. Column aliases (case-insensitive, spaces read as `_`, first present wins): title ← `title`, `name`, `summary`, `clash_name`, `check`; description ← `description`, `detail`, `details`, `comment`, `message`, `reason`, plus a `column: value` line for each context column (`severity`, `priority`, `discipline`, `category`, `test`, `level`, `grid`, `location`, `zone`, `element_a`, `element_b`, `element_ids`, `elements`, `distance`, `point`, `x`, `y`, `z`, `source`, `model`); key ← `external_key`, `finding_id`, `clash_id`, `issue_key`, `guid`, `id`. `issue` overrides the finding. |
+| `external_key` | 1-100 characters of `A-Z a-z 0-9 . _ : -`, stored as `[horizun-key:<key>]` on the last line of the description. Required on create (or a finding id). In `issues_list` it selects the issues carrying it. |
+| `issue_id` | the ACC issue id (UUID). `issue_update` also finds the issue by its key when `issue_id` is absent. |
+| `dry_run`, `confirmation_token` | the writes rehearse by default; the apply sends the same arguments with `dry_run=false` and the rehearsal's token. |
+
+Reply of a write: `state` (`rehearsed`, `applied`, `applied_unverified`,
+`already_exists`, `no_change`), `plan`, `changes` (update), `issue_id`, `display_id`,
+`web_url`, `verification` and `host_verified`, `mapped_from_finding`, `external_key`,
+`attachments` (always "none" in this pass), `auth` and `http`. A 2-legged-only
+configuration is refused before any request, with the steps to obtain a 3-legged token.
+
+Live probe: `scripts/live-probes/cde-cloud-issues.probes.ps1` (read-only cases; the apply
+is `not_covered` and is run by hand, with the user's approval, against a test project).
