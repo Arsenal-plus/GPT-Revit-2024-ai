@@ -31,8 +31,8 @@ namespace Horizun.Revit.Commands
         public string Name => "horizun_code_check";
 
         public string Description =>
-            "Evaluate a declarative requirement set (parameters and geometric measures) over the active model. " +
-            "Read-only; outcomes passes, fails, not_decidable, unreadable.";
+            "Evaluate a declarative requirement set (parameters and geometric measures) over the active model, or route " +
+            "egress travel distances per room. Outcomes passes, fails, not_decidable, unreadable.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -41,6 +41,12 @@ namespace Horizun.Revit.Commands
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+
+            // operation=travel_distance (CodeCheckTravel.cs): egress routes per room, and the
+            // only write this tool has (create_paths). Every other call is the read-only check.
+            string operation = request.Value<string>("operation") ?? "check";
+            if (operation == "travel_distance") return ExecuteTravel(app, request);
+            if (operation != "check") return CommandResult.Fail("operation must be check or travel_distance, not '" + operation + "'.");
 
             CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
             if (wrongDocument != null) return wrongDocument;
@@ -108,6 +114,7 @@ namespace Horizun.Revit.Commands
             var paramKeys = new HashSet<(string name, string unit)>();
             var measures = new HashSet<string>(StringComparer.Ordinal);
             bool levelExits = false;
+            bool travelDistance = false;
             foreach (Requirement r in set.Rules)
             {
                 if (r.AssertionParameter != null) paramKeys.Add((r.AssertionParameter, r.AssertionUnit));
@@ -116,6 +123,7 @@ namespace Horizun.Revit.Commands
                 if (r.AssertionMeasure != null) measures.Add(r.AssertionMeasure);
                 if (r.SelectorMeasure != null) measures.Add(r.SelectorMeasure);
                 if (r.AssertionMeasure == "exit_count_minus_required") levelExits = true;
+                if (r.AssertionMeasure == "travel_distance_m") travelDistance = true;
             }
 
             // Which categories: every rule's own, or - when a rule names none - every
@@ -157,6 +165,7 @@ namespace Horizun.Revit.Commands
             coverage["elements_by_category"] = byCategory;
             coverage["elements_unreadable"] = unreadable;
             if (levelExits) AttachLevelContents(doc, facts, set, coverage);
+            if (travelDistance) AttachTravelDistance(doc, facts, set, coverage);
             return facts;
         }
 

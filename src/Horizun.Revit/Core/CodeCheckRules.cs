@@ -100,7 +100,7 @@ namespace Horizun.Revit.Core
             { "stair_run_width_mm", "narrowest run's actual run width; handrails not deducted." },
             { "space_illuminance_lx", "the Space's Average Estimated Illumination as Revit computed it; 0 or empty = not computed." },
             { "exit_count_minus_required", "per level: doors matching config.exit_door minus the exits config.required_exits asks for the level's occupant load." },
-            { "travel_distance_m", "NOT computed by this tool (always not_decidable); horizun_audit_access with route_view_id routes a real path." }
+            { "travel_distance_m", "per room, in metres, routed with Revit's path-of-travel service when the rule's config names route_view_id and exits; not_decidable without one; multi-level rooms report not_assessable." }
         };
 
         public static IEnumerable<string> MeasureNames => Measures.Keys;

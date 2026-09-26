@@ -51,6 +51,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Analysis;
+using Autodesk.Revit.DB.Architecture;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
@@ -204,6 +205,69 @@ namespace Horizun.Revit.Core
                 });
             }
             return results;
+        }
+
+        /// <summary>Result of a global (whole-plan) longest-path search: see LongestPathStarts.</summary>
+        public sealed class LongestPathResult
+        {
+            public IList<XYZ> Starts = new List<XYZ>();
+            public string Problem;
+        }
+
+        /// <summary>
+        /// The farthest starting point(s) anywhere in the plan, to any of the given
+        /// destinations - Autodesk.Revit.DB.Analysis.PathOfTravel.FindStartsOfLongestPathsFromRooms,
+        /// available since Revit 2020.2 in every year this bridge supports.
+        ///
+        /// HONEST LIMIT, stated because the name invites the wrong reading: this is NOT
+        /// "the farthest point in room X" for a room the caller names. Revit's own API
+        /// takes destinations only, no room argument - it tiles the WHOLE plan and returns
+        /// the worst point(s) among every room the view shows. A room the search does not
+        /// land in is not flagged by it, and a per-room fallback (its own location point)
+        /// is still needed for the rest. GetRoomForPoint says which room a returned point
+        /// falls in; it does not say which rooms were left out.
+        /// </summary>
+        public static LongestPathResult LongestPathStarts(ViewPlan plan, IList<XYZ> destinations)
+        {
+            var result = new LongestPathResult();
+            if (plan == null) { result.Problem = "no floor plan view was given."; return result; }
+            if (destinations == null || destinations.Count == 0)
+            {
+                result.Problem = "no destination point was given.";
+                return result;
+            }
+            try
+            {
+                IList<XYZ> starts = PathOfTravel.FindStartsOfLongestPathsFromRooms(plan, destinations);
+                if (starts != null) result.Starts = starts;
+                if (result.Starts.Count == 0)
+                    result.Problem = "Revit found no valid path from any point inside a room this plan shows to any destination.";
+            }
+            catch (Exception ex)
+            {
+                result.Problem = "Revit's longest-path search did not run: " + ex.Message + ". A gap in the " +
+                                 "MEASUREMENT, not a finding about the model.";
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Which room, if any, a point falls in - Revit's own Document.GetRoomAtPoint, in the view's
+        /// phase, at the view's level + 4 ft (the elevation PathOfTravel.GetRoomForPoint documents).
+        /// MEASURED at build time: GetRoomForPoint is in every year's RevitAPI.xml but the Revit 2026
+        /// reference assembly does not expose it (CS0117), so the document lookup is used everywhere.
+        /// </summary>
+        public static Room RoomForPoint(ViewPlan plan, XYZ point)
+        {
+            if (plan == null || point == null) return null;
+            try
+            {
+                var at = new XYZ(point.X, point.Y, (plan.GenLevel?.Elevation ?? point.Z) + 4.0);
+                ElementId phaseId = plan.get_Parameter(BuiltInParameter.VIEW_PHASE)?.AsElementId();
+                Phase phase = phaseId != null ? plan.Document.GetElement(phaseId) as Phase : null;
+                return phase != null ? plan.Document.GetRoomAtPoint(at, phase) : plan.Document.GetRoomAtPoint(at);
+            }
+            catch { return null; }
         }
 
         /// <summary>The caveats that travel with every routed number, in the reply.</summary>
