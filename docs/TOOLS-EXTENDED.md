@@ -1144,6 +1144,31 @@ Example sets in `standards/` (data, not compiled in; review before use):
   Libro 3, Tabla 3.2.2.6 a (maintained illuminance Ēm per space type), matched on
   Space names; plus a Room template with a declared illuminance parameter.
 
+
+#### Egress travel distance — `operation: "travel_distance"`
+
+Routes egress per room with Revit's own `PathOfTravel` service (same members in 2023–2027).
+
+```json
+{ "operation": "travel_distance",
+  "travel": { "view_ids": [123], "exits": { "parameter": "Comments", "value": "EXIT" },
+              "room_ids": [456], "max_m": 45, "create_paths": false } }
+```
+
+- `exits` is the caller's declaration — `{parameter, value?}`, `{mark_prefix}` or `{element_ids}`. Nothing in a
+  model reliably marks an exit, so it is never guessed.
+- Per room: the longest of the routed sample points (boundary corners pulled 300 mm inward, the room point, and
+  any whole-plan start from `FindStartsOfLongestPathsFromRooms` that falls in the room) to the nearest declared exit
+  (`FindShortestPaths`; the exit reached comes from `FindEndsOfShortestPaths`). Each row gives `distance_m`,
+  `exit_door_id`, `start_m`, `polyline_m` and `outcome` (`passes|fails|measured|not_decidable|not_assessable`).
+- Measuring opens **no transaction**: the Find* calls are computations. `create_paths: true` is the only write:
+  dry run → `confirmation_token` → apply creates one `PathOfTravel` per measured room in its plan, re-read after
+  the commit (owner view + length within max(50 mm, 1 %) of the measured route).
+- Honest limits: one level per plan view. A room whose level has no given plan, or no declared exit on that level
+  (egress through a stair), is `not_assessable` with the reason — exits on another level are never flattened into
+  the route. Obstacles are what the plan shows. In non-convex rooms the sampled maximum is not a proven maximum.
+- In a requirement set, a rule `{ "measure": "travel_distance_m", "operator": "lte", "value": 45 }` with
+  `config: { route_view_id | route_view_ids, exits }` now passes or fails per room instead of `not_decidable`.
 ### `horizun_link_schedule` — 4D
 
 `operation`: `import` (file only), `match` (read), `write` and `status_view`
