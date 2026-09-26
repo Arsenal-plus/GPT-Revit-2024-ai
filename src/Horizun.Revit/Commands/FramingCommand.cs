@@ -44,7 +44,9 @@ namespace Horizun.Revit.Commands
             if (Array.IndexOf(Operations, op) < 0)
                 return CommandResult.Fail("operation must be wall, ceiling, read or remove. Nothing was written.");
 
-            // The Revit halves (wall/ceiling planning and placement, read/remove by marker)
+            if (op == "read") return ReadFraming(app, request);
+
+            // The Revit halves (wall/ceiling planning and placement, remove by marker)
             // land in their own partial files; until then this build refuses honestly.
             return CommandResult.Fail("horizun_framing operation=" + op + " is not available in this build yet. Nothing was read or written.");
         }
