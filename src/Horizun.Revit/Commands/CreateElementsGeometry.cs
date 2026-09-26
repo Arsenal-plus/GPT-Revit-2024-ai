@@ -485,6 +485,22 @@ namespace Horizun.Revit.Commands
             if (intersection == null) throw new InvalidOperationException("The elbow connector axes do not define one measurable junction.");
             return new XYZ(intersection[0], intersection[1], intersection[2]);
         }
+        private static ElementId LevelFromParameters(Element e)
+        {
+            foreach (BuiltInParameter bip in new[] { BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
+                         BuiltInParameter.FAMILY_LEVEL_PARAM, BuiltInParameter.SCHEDULE_LEVEL_PARAM })
+            {
+                try
+                {
+                    Parameter prm = e?.get_Parameter(bip);
+                    if (prm != null && prm.StorageType == StorageType.ElementId && prm.AsElementId() != ElementId.InvalidElementId)
+                        return prm.AsElementId();
+                }
+                catch { }
+            }
+            return ElementId.InvalidElementId;
+        }
+
         private static JObject ReadCreated(Document doc, Created made)
         {
             Plan p = made.Plan;
@@ -506,8 +522,14 @@ namespace Horizun.Revit.Commands
                 // binds another level in some models - fails the postcondition on the
                 // elevation too, instead of passing a check about a level the element
                 // is not on.
+                // A framing member (beam/brace) carries NO Element.LevelId - MEASURED
+                // 2026-09-26 in Revit 2026: a committed beam read LevelId = -1 and the
+                // postcondition rolled back every beam this tool created. Its level is
+                // the Reference Level parameter.
                 Func<ElementId> actualLevel = () => e is MEPCurve mep ? mep.ReferenceLevel.Id
-                    : e is BeamSystem beamSystem ? beamSystem.Level.Id : e.LevelId;
+                    : e is BeamSystem beamSystem ? beamSystem.Level.Id
+                    : e.LevelId != ElementId.InvalidElementId ? e.LevelId
+                    : LevelFromParameters(e);
                 Exact("level_id", Rid.Value(p.Level.Id), () => Rid.Value(actualLevel()));
                 Numeric("level_elevation", p.Level.ProjectElevation,
                     () => doc.GetElement(actualLevel()) is Level carried ? carried.ProjectElevation : double.NaN);
