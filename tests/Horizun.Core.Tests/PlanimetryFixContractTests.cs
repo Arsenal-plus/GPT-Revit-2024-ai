@@ -405,13 +405,16 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void The_only_direct_collectors_are_the_pre_write_uniqueness_and_count_checks()
+        public void The_only_direct_collectors_are_the_pre_write_uniqueness_count_and_dimension_cleanup_checks()
         {
             // Direct collection IS legitimate here and the audit inventory cannot replace
-            // it: "does another view already hold this name" and "how many title blocks
-            // are on this sheet" are questions about the state INSIDE the transaction,
-            // asked again after the write. What must never happen is a collector standing
-            // in for the finding recomputation, so each one is pinned to its purpose.
+            // it: "does another view already hold this name", "how many title blocks are
+            // on this sheet" and "which Dimension elements did SetCropShape just create"
+            // are questions about the state INSIDE the transaction, asked again after the
+            // write - the last one so those side-effect elements can be deleted before the
+            // transaction commits, never so a finding is decided from them. What must
+            // never happen is a collector standing in for the finding recomputation, so
+            // each one is pinned to its purpose.
             string source = CommandSource();
             var collectors = Regex.Matches(source, @"new FilteredElementCollector\((?<args>[^)]*)\)")
                                   .Cast<Match>().ToList();
@@ -424,11 +427,13 @@ namespace Horizun.Core.Tests
                 bool purposeful =
                     context.Contains("typeof(View)", StringComparison.Ordinal) ||
                     context.Contains("typeof(ViewSheet)", StringComparison.Ordinal) ||
-                    context.Contains("OST_TitleBlocks", StringComparison.Ordinal);
+                    context.Contains("OST_TitleBlocks", StringComparison.Ordinal) ||
+                    context.Contains("typeof(Dimension)", StringComparison.Ordinal);
                 Assert.True(purposeful,
-                    "the collector at line " + line + " is neither a name-uniqueness check nor the " +
-                    "title-block count. A collector that stands in for the audit recomputation would let " +
-                    "the corrector and the auditor disagree about what a finding is.");
+                    "the collector at line " + line + " is neither a name-uniqueness check, the " +
+                    "title-block count, nor the crop-shape dimension cleanup. A collector that stands in " +
+                    "for the audit recomputation would let the corrector and the auditor disagree about " +
+                    "what a finding is.");
             }
         }
 

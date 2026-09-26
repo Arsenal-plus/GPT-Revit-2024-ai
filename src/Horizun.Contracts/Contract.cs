@@ -3006,8 +3006,9 @@ namespace Horizun.Contracts
                     "coordinates, GetBoxCenter/Point re-read within a declared tolerance), " +
                     "clear_element_override (explicit view and element, ONLY that element's override cleared, " +
                     "OverrideGraphicSettings re-read as defaults, category and template overrides proven " +
-                    "untouched), set_crop (rectangular, view-plane coordinates with declared units, crop " +
-                    "active/visible/geometry re-read; a non-rectangular shape is refused by capability). EVERY " +
+                    "untouched), set_crop (crop.min/max for a rectangle OR crop.loop for a polygon, view-plane " +
+                    "coordinates with declared units, crop active/visible/geometry re-read vertex by vertex; " +
+                    "refused by name on a view whose CanHaveShape is false). EVERY " +
                     "action cites the finding it corrects - rule id, requirement set and version, element ids, " +
                     "sheet/view, and the OBSERVED state - and is refused when the finding no longer exists " +
                     "(stale finding), the observed state moved (stale observation), or the finding is unknown/" +
@@ -3071,8 +3072,9 @@ namespace Horizun.Contracts
         ""crop"": { ""type"": ""object"", ""properties"": {
           ""min"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
           ""max"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
-          ""loop"": { ""type"": ""array"", ""description"": ""NOT COVERED in this phase: a non-rectangular crop is refused by capability, with nothing written."" }
-        }, ""additionalProperties"": false, ""description"": ""set_crop: the rectangular crop in VIEW-PLANE coordinates (x along RightDirection, y along UpDirection from the view origin), in the call's units."" }
+          ""loop"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 200, ""items"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
+            ""description"": ""A non-rectangular crop: a closed polygon, at least 3 [x, y] view-plane points. Refused on a view whose ViewCropRegionShapeManager.CanHaveShape is false."" }
+        }, ""additionalProperties"": false, ""description"": ""set_crop: EITHER min+max (a rectangle) OR loop (a polygon), in VIEW-PLANE coordinates (x along RightDirection, y along UpDirection from the view origin), in the call's units."" }
       }, ""additionalProperties"": false } },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""True (default): validate, materialise the whole batch provisionally, verify, roll back, and return the plan with a confirmation token. Nothing persists."" },
     ""confirmation_token"": { ""type"": ""string"", ""description"": ""From the dry run. Single use; bound to this document, this request and the resolved elements' before-state."" },

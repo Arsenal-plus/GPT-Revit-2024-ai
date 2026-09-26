@@ -1144,3 +1144,36 @@ back wall. With the 3 L opening threshold, a fixed 0.6 m zone, walk-through door
 (≥ 1.80 m) and a bounding-box prefilter, the same pass finished in 24 s with one finding -
 a chute hatch against its hopper whose volume Revit could not measure, now a warning.
 A column in a doorway (51 L) and one 0.7 m in front of a door still come back as errors.
+
+## horizun_fix_planimetry: non-rectangular (polygon) crops
+
+`set_crop` accepts `crop.loop` - a closed polygon of at least 3 `[x, y]`
+view-plane points - as an alternative to `crop.min`/`crop.max`. It is refused BY
+NAME (not as a capability gap) on a view whose
+`ViewCropRegionShapeManager.CanHaveShape` is false; a rectangle is unaffected by
+this and still goes through `View.CropBox`.
+
+- **The polygon is written through `SetCropShape(CurveLoop)`, then cleaned up in
+  the same transaction.** `SetCropShape` was MEASURED (Revit 2026, 2026-08-25, on
+  a rectangular loop, the live gate) to install a crop-region sketch and create
+  two non-view-specific `Dimension` elements as a side effect - elements that were
+  still there after the shape was removed again. A command whose contract is that
+  it writes only what it names cannot leave those behind, so `Apply` diffs the
+  document's `Dimension` elements immediately before and after `SetCropShape`,
+  and deletes whatever appeared, before the transaction that holds them ever
+  commits. The assumption behind this - that those dimensions are UI witnesses of
+  the sketch's constraints and not the shape's geometry, so removing them leaves
+  the polygon intact - is UNVERIFIED beyond the rectangular-loop measurement above;
+  it has NOT been measured live for an actual polygon loop. If it is wrong, the
+  rehearsal's and the apply's own re-read of the shape (vertex by vertex, see
+  below) simply fails the postcondition and the whole batch rolls back - it can
+  never silently report success over a broken shape or a model that kept the
+  extra elements. `scripts/live-probes/fix-planimetry.probes.ps1` needs a case
+  that actually sets a polygon crop and inspects the model's `Dimension` count
+  before/after to close this gap.
+- **Verification compares vertices, not a bounding box.** `crop_shape`'s postcondition
+  re-reads `ViewCropRegionShapeManager.GetCropShape()`'s loop and matches every
+  requested vertex to a distinct read vertex within the batch's tolerance
+  (default 0.1 mm, well inside the 1 mm this feature targets) - unordered, since
+  Revit is free to start or wind the loop however it likes. A rectangle's crop
+  still compares as a bounding box, unchanged.
