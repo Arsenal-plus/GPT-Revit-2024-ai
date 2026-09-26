@@ -21,7 +21,7 @@ function New-Fake([string]$mode) {
                 if ($cat -eq 'OST_ElectricalEquipment' -and $s.Copied -contains 'OST_ElectricalEquipment') {
                     return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 8; is_element_type = $true; family = 'M_Lighting and Appliance Panelboard - 208V MLO'; type = '100 A' }) })
                 }
-                if ($cat -eq 'OST_Columns' -and $s.Copied -contains 'OST_Columns') {
+                if ($cat -eq 'OST_Columns' -and ($s.Copied -contains 'OST_Columns' -or $s.Mode -eq 'column-type-exists')) {
                     return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 9; is_element_type = $true; family = 'M_Rectangular Column'; type = '610 x 610mm' }) })
                 }
                 return & $reply ([pscustomobject]@{ rows = @() })
@@ -34,11 +34,17 @@ function New-Fake([string]$mode) {
                 $bad = @($a.clearance_rules | Where-Object { -not ([string]$_.category).StartsWith('OST_') })
                 if ($bad.Count -gt 0) { return & $reply $null $true 'clearance_rules[1].category must be a BuiltInCategory token such as OST_ElectricalEquipment.' }
                 $f = @()
-                if (-not $s.Moved -or $s.Mode -eq 'still-there') {
+                if ($s.Mode -ne 'not-zoned' -and (-not $s.Moved -or $s.Mode -eq 'still-there')) {
                     $f = @([pscustomobject]@{ severity = 'error'; reason = 'clearance zone of electrical equipment is invaded by column'; a = [pscustomobject]@{ id = $s.Panel }; b = [pscustomobject]@{ id = $s.Column } })
                 }
                 if ($s.Mode -eq 'warning-only' -and -not $s.Moved) { $f[0].severity = 'warning' }
-                return & $reply ([pscustomobject]@{ spatial_check = [pscustomobject]@{ errors = @($f | Where-Object { $_.severity -eq 'error' }).Count; findings = $f } })
+                $zoned = if ($s.Mode -eq 'not-zoned') { 0 } else { 1 }
+                $partial = ($s.Mode -eq 'not-zoned' -or ($s.Mode -eq 'partial' -and $s.Moved))
+                $nm = if ($s.Mode -eq 'not-zoned') { @([pscustomobject]@{ id = $s.Panel; reason = 'its facing points up or down' }) } else { @() }
+                return & $reply ([pscustomobject]@{ spatial_check = [pscustomobject]@{
+                    status = $(if ($f.Count -gt 0) { 'conflicts' } elseif ($partial) { 'partial' } else { 'clean' }); partial = $partial
+                    clearance_rules_source = 'argument'; equipment_clearance = [pscustomobject]@{ zoned = $zoned; not_measured = $nm }
+                    errors = @($f | Where-Object { $_.severity -eq 'error' }).Count; findings = $f } })
             }
         }
         return & $reply $null $true
@@ -73,6 +79,18 @@ Check ((ByName $r '*moved away*').Outcome -eq 'fail') 'a clearance finding left 
 
 $h = New-Fake 'warning-only'; $r = Outcomes $h
 Check ((ByName $r '*invades*').Outcome -eq 'fail') 'a column reported only as a warning fails the error case'
+Check ((ByName $r '*moved away*').Outcome -eq 'not_covered') 'without the invaded case the clean case is not_covered, never a pass'
+
+$h = New-Fake 'partial'; $r = Outcomes $h
+Check ((ByName $r '*moved away*').Outcome -eq 'fail') 'a PARTIAL answer after the move is not a clean zone'
+
+$h = New-Fake 'not-zoned'; $r = Outcomes $h
+Check ((ByName $r '*invades*').Outcome -eq 'fail') 'a panel that got no zone fails the invaded case'
+Check ((ByName $r '*moved away*').Outcome -eq 'not_covered') 'and its "clean" answer is not_covered, not a pass'
+
+$h = New-Fake 'column-type-exists'; $r = Outcomes $h
+Check (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0) ('a column type the document already held still stages the probe: ' + (($r | ForEach-Object { $_.Outcome }) -join ','))
+Check ($h.State.Deleted -notcontains 9 -and $h.State.Deleted.Count -eq 5) ('the pre-existing column type is never deleted: ' + ($h.State.Deleted -join ','))
 
 $h = New-Fake 'no-template'; $r = Outcomes $h
 Check (@($r | Where-Object { $_.Name -like '*invades*' -or $_.Name -like '*moved away*' } | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq 2) 'no template to stage from is not_covered, never a pass'
