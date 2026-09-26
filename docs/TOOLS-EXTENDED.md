@@ -1277,6 +1277,57 @@ wrong level or room, or a missing element, needs the picture).
   automatic pass stays cheap; a batch that annotated more views calls
   `horizun_verify_changes(include_annotation=true, view_ids=[...])` explicitly.
 
+### Equipment clearance zones (`clearance_rules`)
+
+The door clear zone generalised to any equipment a project declares: a panelboard's
+front working space, an air handler's service side, a valve's overhead access. No
+distance or catalogue is compiled in - a rule is caller data, so the check stays
+organisation-neutral:
+
+```json
+"clearance_rules": [
+  { "category": "OST_ElectricalEquipment", "family_contains": "panel", "face": "front",
+    "depth_mm": 900, "width_extra_mm": 150, "height_mm": 2000 }
+]
+```
+
+- `category` (required): a `BuiltInCategory` token (`OST_*`). `family_contains` /
+  `type_contains` (optional): case-insensitive substrings of the instance's family /
+  type name. The FIRST rule an instance satisfies, in declaration order, applies.
+- `face`: `front` (default) - a box off the face the instance's `FacingOrientation`
+  points to; `all` - front, back, left and right; `top` - a box above the equipment.
+  Front/back/left/right are read in the instance's OWN frame (its facing and hand
+  axes, from its own solids), so a rotated instance keeps its front.
+- `depth_mm` (required, > 0): how far the zone extends off the face (for `top`, how
+  high). `width_extra_mm` (default 0): added on EACH side of the equipment's own
+  width. `height_mm` (default 2000): the zone's height, measured up from the
+  equipment's lowest point.
+- Obstacles are physical elements of the document AND of every loaded link (the zone
+  is carried into the link's coordinates, the same path the pair check uses for
+  links), intersected on solids with the door clear zone's own code path. The
+  equipment's own host (a panel's wall), its nested components, floors, ceilings,
+  roofs, the structural frame, railings, doors and windows are never obstacles.
+- Findings read `clearance zone of <equipment> is invaded by <element>`: an ERROR for
+  a wall, column, stair, curtain panel/mullion or other equipment (electrical,
+  mechanical, specialty, or any category a rule names); a WARNING for anything else
+  (furniture, casework, MEP runs). The door calibration applies: an intrusion under
+  10 L is ignored, and a volume Revit could not measure stays a finding.
+- A malformed rule is refused by index (`clearance_rules[1].category must be ...`)
+  before anything is read.
+
+**Where rules come from.** `horizun_verify_changes(clearance_rules=[...])` always
+wins (`spatial_check.clearance_rules_source = "argument"`). Without the argument - and
+in the AUTOMATIC `spatial_check` after every write - the rules are read, in this
+order: (1) the `clearance_rules` array of the nearest `project-context.json`, found
+walking up at most four folders from the active document's own file (an empty array
+is the project's explicit opt-out and stops there; a nearer `project-context.json`
+without the block also stops the walk and falls through to step 2); (2)
+`%USERPROFILE%\.horizun\clearance-rules.json`, a plain array of the same shape (or an
+object with a `clearance_rules` array); (3) neither: no equipment clearance check -
+the door clear zone still runs. `spatial_check.clearance_rules_source` names the file
+used. A malformed file entry is skipped, never turned into a failure of the write it
+follows. Live probe: `scripts/live-probes/clearance-zones.probes.ps1`.
+
 ## Field notes: naming side effects and a read-only add-in's own writes
 
 Three usage notes from a 2026-09-25 field session, kept here rather than invented

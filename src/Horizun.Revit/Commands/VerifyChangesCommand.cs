@@ -153,8 +153,14 @@ namespace Horizun.Revit.Commands
 
             List<Element> subjects = SpatialCoherence.Subjects(doc, ids);
             scope["model_elements"] = subjects.Count;
+            // The explicit argument wins; without it, the same project/machine files the
+            // automatic after-write pass reads (ClearanceRulesSource.cs), so an on-demand
+            // look never judges less than the write it follows did.
+            string clearanceOrigin = clearanceRules != null ? "argument" : null;
+            if (clearanceRules == null) clearanceRules = ClearanceRulesSource.Load(doc, out clearanceOrigin);
             SpatialCoherence.Outcome outcome = SpatialCoherence.Check(doc, subjects, 5000, budgetS * 1000, clearanceRules: clearanceRules);
             JObject check = SpatialCoherence.ToJson(outcome, maxFindings);
+            if (clearanceOrigin != null) check["clearance_rules_source"] = clearanceOrigin;
             string headline = SpatialCoherence.Headline(outcome);
 
             JObject annotationCheck = null;
