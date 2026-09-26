@@ -148,6 +148,11 @@ namespace Horizun.Revit.Core
             IList<Box3> obstacles = req.Obstacles ?? new List<Box3>();
             if (Blocked(obstacles, req.Start, out Box3 startBlock))
                 return Fail("the start point is inside " + Describe(startBlock), startBlock);
+            // Symmetric up-front check for the end: without it an end inside an obstacle is
+            // only discovered by exhausting the whole search (up to max_nodes) - same refusal,
+            // but after the full budget, and naming a region guessed from the straight line.
+            if (Blocked(obstacles, req.End, out Box3 endBlock))
+                return Fail("no_route: the end point is inside " + Describe(endBlock), endBlock);
 
             // Snap End onto the lattice anchored at Start; keep the residual to close with stubs.
             long ex = (long)Math.Round((req.End.X - req.Start.X) / grid, MidpointRounding.AwayFromZero);

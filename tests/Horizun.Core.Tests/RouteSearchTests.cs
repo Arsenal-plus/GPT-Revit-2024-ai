@@ -64,8 +64,7 @@ namespace Horizun.Core.Tests
         public void A_box_that_fully_encloses_the_end_point_is_refused_as_no_route()
         {
             // The end point (10,0,0) sits deep inside this box; the start (0,0,0) does not,
-            // so the refusal comes from the search failing to reach the goal, not from the
-            // upfront "start is inside an obstacle" check.
+            // so the refusal is the up-front end check (see the next test), not the start one.
             var box = new Box3(8, -2, -2, 12, 2, 2, "enclosure");
             var r = RouteSearch.Find(Req(new Point3(0, 0, 0), new Point3(10, 0, 0), box));
             Assert.False(r.Found);
@@ -120,6 +119,17 @@ namespace Horizun.Core.Tests
             Assert.True(r.Found);
             Assert.Equal(0.25, r.Polyline[0].X, 9);
             Assert.Equal(5.25, r.Polyline[r.Polyline.Count - 1].X, 9);
+        }
+
+        [Fact]
+        public void An_end_point_inside_an_obstacle_is_refused_up_front_naming_it_without_searching()
+        {
+            var column = new Box3(9, -1, -1, 11, 1, 1, "host:4242:Structural Columns");
+            var r = RouteSearch.Find(Req(new Point3(0, 0, 0), new Point3(10, 0, 0), column));
+            Assert.False(r.Found);
+            Assert.StartsWith("no_route: the end point is inside host:4242", r.Reason);
+            Assert.Equal("host:4242:Structural Columns", r.BlockingRegion.Value.Name);
+            Assert.Equal(0, r.NodesExpanded);
         }
 
         [Fact]

@@ -52,6 +52,7 @@ namespace Horizun.Revit.Commands
             private readonly List<SegRecord> _segments = new List<SegRecord>();
             private readonly List<ElementId> _elbowIds = new List<ElementId>();
             private readonly List<ElementId> _createdIds = new List<ElementId>();
+            private SpatialCoherence.Outcome _spatial; // the gate's own outcome, from the Apply that committed
 
             private struct SegRecord { public ElementId Id; public XYZ Start; public XYZ End; public BuiltInParameter[] SizeParams; public double[] SizeWanted; }
 
@@ -138,7 +139,8 @@ namespace Horizun.Revit.Commands
                 RouteSearch.Result result = RouteSearch.Find(searchReq);
                 if (!result.Found)
                 {
-                    error = "no_route: " + (result.Reason ?? "no path was found within max_nodes") +
+                    string reason = result.Reason ?? "no path was found within max_nodes";
+                    error = (reason.StartsWith("no_route", StringComparison.Ordinal) ? reason : "no_route: " + reason) +
                         (result.BlockingRegion.HasValue ? " (blocking region: " + (result.BlockingRegion.Value.Name ?? "unnamed") + ")" : "");
                     return null;
                 }
@@ -247,6 +249,7 @@ namespace Horizun.Revit.Commands
                 doc.Regenerate();
 
                 SpatialCoherence.Outcome spatial = SpatialCoherence.Check(doc, SpatialCoherence.Subjects(doc, _createdIds));
+                _spatial = spatial;
                 if (spatial.Errors > 0)
                 {
                     SpatialCoherence.Finding f = spatial.Findings.FirstOrDefault(x => x.Verdict.Severity == "error");
@@ -366,11 +369,20 @@ namespace Horizun.Revit.Commands
                     ["length_mm"] = Math.Round(_result.Length * 304.8, 1), ["bends"] = _result.Bends,
                     ["polyline_mm"] = new JArray(_result.Polyline.Select(p => (JToken)PointJson(ToXyz(p)))),
                     ["segment_ids"] = new JArray(_segments.Select(s => (JToken)Rid.Value(s.Id))),
-                    ["elbow_ids"] = new JArray(_elbowIds.Select(id => (JToken)Rid.Value(id)))
+                    ["elbow_ids"] = new JArray(_elbowIds.Select(id => (JToken)Rid.Value(id))),
+                    // Evidence of the gate that let this route commit: errors is 0 by construction
+                    // (any error threw and rolled back); partial says what the check could not see.
+                    ["spatial_check"] = _spatial == null ? (JToken)JValue.CreateNull() : new JObject
+                    {
+                        ["subjects"] = _spatial.Subjects, ["checked"] = _spatial.Checked, ["errors"] = _spatial.Errors,
+                        ["warnings"] = _spatial.Findings.Count(f => f.Verdict.Severity == "warning"),
+                        ["links_examined"] = _spatial.LinksExamined, ["partial"] = _spatial.Partial,
+                        ["partial_why"] = _spatial.PartialWhy
+                    }
                 };
             }
 
-            public override void ResetAfterRehearsal() { _segments.Clear(); _elbowIds.Clear(); _createdIds.Clear(); }
+            public override void ResetAfterRehearsal() { _segments.Clear(); _elbowIds.Clear(); _createdIds.Clear(); _spatial = null; }
 
             public override ResolvedPlan Resolved(GateResult gate, UIApplication app, string command) => NewResolved(gate, app, command);
         }
