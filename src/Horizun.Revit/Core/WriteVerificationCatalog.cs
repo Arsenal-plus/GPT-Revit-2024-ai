@@ -61,7 +61,10 @@ namespace Horizun.Revit.Core
         QueuedNotExecuted,
 
         /// <summary>The script's own testimony (execute_python): never the bridge's finding.</summary>
-        SelfReported
+        SelfReported,
+
+        /// <summary>A remote record re-read over the provider's API after the write and compared field by field.</summary>
+        RemoteReread
     }
 
     public sealed class WriteVerification
@@ -239,6 +242,8 @@ namespace Horizun.Revit.Core
             // ---- outside the model ---------------------------------------------------------
             Row("horizun_power_bi_push", VerificationMechanism.RemoteAcknowledgement, E("http_status"), F(S + "PowerBiPush.cs"),
                 "PowerBiPush.cs: a successful HTTP status is Microsoft's acknowledgement; the pushed rows cannot be re-read from the dataset by this tool, and the reply says so."),
+            Row("horizun_cde_cloud", VerificationMechanism.RemoteReread, E("host_verified", "verification"), F(S + "CdeCloudIssues.cs"),
+                "CdeCloudIssues.cs: only issue_create/issue_update write. web_url is built from the documented ACC path, not read from the API; published is sent and reported, not judged."),
             Row("horizun_submit_job", VerificationMechanism.QueuedNotExecuted, E("status"), F(C + "SubmitJobCommand.cs")),
             Row("horizun_execute_python", VerificationMechanism.SelfReported, E("evidence_status"), F(C + "ExecutePythonCommand.cs", "Horizun.Revit/Core/ScriptEvidence.cs"),
                 "Core/ScriptEvidence.cs ~l.210: any non-empty evidence array classifies as self_reported_verified - by design the script's testimony, host_verified is always false."),

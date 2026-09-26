@@ -247,7 +247,8 @@ namespace Horizun.Server.Tests
             {
                 ["horizun_budget_compare"] = Path.Combine("src", "Horizun.Server", "BudgetCompare.cs"),
                 ["horizun_project_context"] = Path.Combine("src", "Horizun.Server", "ProjectContext.cs"),
-                ["horizun_information_container"] = Path.Combine("src", "Horizun.Server", "InformationContainerTool.cs")
+                ["horizun_information_container"] = Path.Combine("src", "Horizun.Server", "InformationContainerTool.cs"),
+                ["horizun_cde_cloud"] = Path.Combine("src", "Horizun.Server", "CdeCloudIssues.cs")
             };
 
             var carrying = Contract.All
