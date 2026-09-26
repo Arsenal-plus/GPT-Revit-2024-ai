@@ -1872,7 +1872,13 @@ matches, and nothing is written. The apply sends the token and an `idempotency_k
   is named in `warnings`). Hosted doors, windows and
   rectangular wall openings are read from the wall (rough size when the family publishes
   it, else nominal, else the bounding box; each opening says which in `read_from`). A stud
-  station inside an opening is removed; no stud ever crosses one.
+  station inside an opening is removed; no stud ever crosses one. A cripple that meets
+  ANOTHER opening's framed void (a vent stacked over a door) is cut around it
+  (`cripple_cut_by_opening:<own>:<other>`), and one that would overlap a member already
+  placed (a `cripple_spacing_mm` barely above the stud width) is dropped
+  (`cripple_overlaps_member_dropped:<opening>`). The post-commit `no_stud_through_opening`
+  re-read allows the same 1 mm as `member_endpoints`, so a jack flush with the jamb read
+  back a hair inside it is round-off, not a crossing.
 - **wall.blocking**: up to 20 rows `{height_mm, type_id}`, split at the studs.
 - **ceiling.main**: `type_id`, `spacing_mm` required; `direction` `short` | `long`
   (default) | an angle in degrees. **ceiling.cross** `{type_id, spacing_mm}`,
