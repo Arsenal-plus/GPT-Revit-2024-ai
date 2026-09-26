@@ -17,10 +17,13 @@
 // or a category-class override can still hide an element GetCategoryHidden
 // calls visible; this reads the one mechanism the API exposes and says so).
 //
-// WHICH VIEW: Navisworks' own Revit exporter reads a NAMED 3D view when told
-// to publish/link one - a view named exactly "Navisworks" if the project has
-// one, else the ever-present default "{3D}". Neither is this bridge's
-// invention; both are what a coordinator actually points Navisworks at.
+// WHICH VIEW: Navisworks' own Revit reader prefers a 3D view whose name
+// CONTAINS "Navisworks" over the default "{3D}". MEASURED 2026-09-26 (Navisworks
+// Manage 2026 opening a .rvt): with {3D} at Fine and a 3D view named
+// "HZ Navisworks b3b1d996" at Medium, both pipes arrived as 1-primitive lines and
+// a Hard test found nothing; renaming only that view made them 1587/1787-triangle
+// solids. So every 3D view whose name contains "navisworks" (any case) is a
+// candidate and ALL of them must be ready; {3D} is read only when there is none.
 //
 // unhide=true, CanCategoryBeHidden FIRST: a view template governing category
 // visibility, or a dependent view, makes SetCategoryHidden a no-op or a throw
@@ -60,12 +63,25 @@ namespace Horizun.Revit.Commands
         private static CommandResult NavisworksReadiness(Document doc, JObject request)
         {
             string howNamed;
-            View3D view = FindNavisworksView(doc, out howNamed);
-            if (view == null)
+            List<View3D> candidates = FindNavisworksViews(doc, out howNamed);
+            if (candidates.Count == 0)
                 return CommandResult.Fail(
-                    "No 3D view named exactly 'Navisworks', and no default '{3D}' view either - those are the " +
-                    "two names Navisworks' own Revit exporter looks for when publishing or linking a view. " +
-                    "Create one of those two names, or point Navisworks at a different view directly. Nothing was read.");
+                    "No 3D view whose name contains 'Navisworks', and no default '{3D}' view either - those are " +
+                    "what Navisworks' own Revit reader looks for. Create one, or point Navisworks at a different " +
+                    "view directly. Nothing was read.");
+            View3D view = candidates[0];
+            // Every candidate is judged: Navisworks may read any of them.
+            var perView = new JArray();
+            bool othersReady = true;
+            foreach (View3D other in candidates)
+            {
+                bool fine = other.DetailLevel == ViewDetailLevel.Fine;
+                JArray ow; List<string> om;
+                CategoriesHiddenWithElements(doc, other, out ow, out om);
+                if (!fine || om.Count > 0) othersReady = false;
+                perView.Add(new JObject { ["view_id"] = Rid.Value(other.Id), ["view_name"] = SafeViewName(other),
+                    ["detail_level"] = other.DetailLevel.ToString(), ["hidden_mep_categories"] = new JArray(om) });
+            }
 
             ViewDetailLevel detail = view.DetailLevel;
             bool detailFine = detail == ViewDetailLevel.Fine;
@@ -94,8 +110,14 @@ namespace Horizun.Revit.Commands
             List<string> hiddenMep;
             CategoriesHiddenWithElements(doc, view, out hiddenWithElements, out hiddenMep);
 
-            bool ready = detailFine && hiddenMep.Count == 0;
+            bool ready = detailFine && hiddenMep.Count == 0 && othersReady;
             var reasons = new JArray();
+            if (candidates.Count > 1)
+                reasons.Add(candidates.Count + " 3D views have 'Navisworks' in their name; Navisworks may read any " +
+                            "of them, so each must be Fine with no MEP category hidden (see candidate_views).");
+            foreach (JObject row in perView.Skip(1).Cast<JObject>().Where(r => (string)r["detail_level"] != "Fine"))
+                reasons.Add("candidate view '" + (string)row["view_name"] + "' is " + (string)row["detail_level"] +
+                            ", not Fine - at Coarse or Medium a pipe reaches Navisworks as a line.");
             if (!detailFine)
                 reasons.Add("detail level is " + detail + ", not Fine - MEASURED 2026-09-26: at Coarse a pipe reaches " +
                             "Navisworks as a single line primitive, and a Hard clash test against that line reports " +
@@ -110,6 +132,7 @@ namespace Horizun.Revit.Commands
                 ["view_id"] = Rid.Value(view.Id),
                 ["view_name"] = SafeViewName(view),
                 ["how_named"] = howNamed,
+                ["candidate_views"] = perView,
                 ["detail_level"] = detail.ToString(),
                 ["section_box_active"] = sectionBoxActive,
                 ["section_box_mm"] = sectionBoxJson,
@@ -134,10 +157,11 @@ namespace Horizun.Revit.Commands
             Document doc = gate.Document;
 
             string howNamed;
-            View3D view = FindNavisworksView(doc, out howNamed);
-            if (view == null)
+            List<View3D> candidates = FindNavisworksViews(doc, out howNamed);
+            if (candidates.Count == 0)
                 return CommandResult.Fail(
-                    "No 3D view named exactly 'Navisworks' or the default '{3D}' to prepare. Nothing was changed.");
+                    "No 3D view whose name contains 'Navisworks' and no default '{3D}' to prepare. Nothing was changed.");
+            View3D view = candidates[0];
 
             bool unhide = request.Value<bool?>("unhide") == true;
             List<string> requestedCategories = (request["categories"] as JArray ?? new JArray())
@@ -170,7 +194,7 @@ namespace Horizun.Revit.Commands
                         "category in this document: " + string.Join(", ", notFound.Take(5)) + ". Nothing was changed.");
             }
 
-            bool alreadyFine = view.DetailLevel == ViewDetailLevel.Fine;
+            bool alreadyFine = candidates.All(v => v.DetailLevel == ViewDetailLevel.Fine);
             string planHash = DocumentGate.PlanHash(request, "categories", "unhide");
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
 
@@ -182,6 +206,8 @@ namespace Horizun.Revit.Commands
                     ["view_id"] = Rid.Value(view.Id),
                     ["view_name"] = SafeViewName(view),
                     ["detail_level_before"] = view.DetailLevel.ToString(),
+                    ["views"] = new JArray(candidates.Select(v => new JObject { ["view_id"] = Rid.Value(v.Id),
+                        ["view_name"] = SafeViewName(v), ["detail_level_before"] = v.DetailLevel.ToString() })),
                     ["detail_level_after"] = "Fine",
                     ["would_change_detail_level"] = !alreadyFine,
                     ["would_unhide"] = new JArray(toUnhide.Select(c => c.Name)),
@@ -205,7 +231,7 @@ namespace Horizun.Revit.Commands
                 tx.Start();
                 try
                 {
-                    view.DetailLevel = ViewDetailLevel.Fine;
+                    foreach (View3D v in candidates) v.DetailLevel = ViewDetailLevel.Fine;
                     foreach (Category c in toUnhide)
                         try { view.SetCategoryHidden(c.Id, false); } catch { /* re-read below decides, not this */ }
                     Guard.Commit(tx, txName);
@@ -220,9 +246,12 @@ namespace Horizun.Revit.Commands
 
             // ---- re-read from the committed model; this decides, not the call not throwing ----
             View3D reread = doc.GetElement(view.Id) as View3D;
-            bool detailOk = reread != null && reread.DetailLevel == ViewDetailLevel.Fine;
+            var rereadAll = candidates.Select(v => doc.GetElement(v.Id) as View3D).ToList();
+            bool detailOk = rereadAll.All(v => v != null && v.DetailLevel == ViewDetailLevel.Fine);
             var checklist = new PostconditionCheck("detail_level");
-            checklist.Compare("detail_level", "Fine", reread?.DetailLevel.ToString());
+            checklist.Compare("detail_level", "Fine",
+                rereadAll.All(v => v != null && v.DetailLevel == ViewDetailLevel.Fine) ? "Fine"
+                    : string.Join(",", rereadAll.Select(v => v == null ? "unreadable" : v.DetailLevel.ToString())));
 
             var unhidOk = new List<string>();
             var unhidFailed = new List<string>();
@@ -259,16 +288,22 @@ namespace Horizun.Revit.Commands
         /// "Navisworks" if the project has it, else the ever-present default "{3D}".
         /// Templates are excluded - a template cannot be exported or linked.
         /// </summary>
-        private static View3D FindNavisworksView(Document doc, out string howNamed)
+        private static List<View3D> FindNavisworksViews(Document doc, out string howNamed)
         {
             List<View3D> all = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>()
                 .Where(v => { try { return !v.IsTemplate; } catch { return false; } }).ToList();
-            View3D named = all.FirstOrDefault(v => string.Equals(SafeViewName(v), "Navisworks", StringComparison.Ordinal));
-            if (named != null) { howNamed = "a 3D view named exactly 'Navisworks'"; return named; }
+            List<View3D> named = all.Where(v => NavisworksViewRules.IsCandidateName(SafeViewName(v)))
+                .OrderBy(v => NavisworksViewRules.Rank(SafeViewName(v))).ToList();
+            if (named.Count > 0)
+            {
+                howNamed = named.Count == 1 ? "the 3D view whose name contains 'Navisworks'"
+                                            : named.Count + " 3D views whose names contain 'Navisworks' (all judged)";
+                return named;
+            }
             View3D default3d = all.FirstOrDefault(v => string.Equals(SafeViewName(v), "{3D}", StringComparison.Ordinal));
-            if (default3d != null) { howNamed = "the default '{3D}' view (no view named 'Navisworks' exists)"; return default3d; }
+            if (default3d != null) { howNamed = "the default '{3D}' view (no view name contains 'Navisworks')"; return new List<View3D> { default3d }; }
             howNamed = null;
-            return null;
+            return new List<View3D>();
         }
 
         private static string SafeViewPhaseName(Document doc, View view)

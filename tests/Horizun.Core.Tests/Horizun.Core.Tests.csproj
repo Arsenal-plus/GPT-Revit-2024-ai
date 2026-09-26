@@ -90,6 +90,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CoordinationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ClashResolveRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\NavisworksHandoff.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\NavisworksViewRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\IfcGuidCodec.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BcfMarkupReader.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\UndoJournal.cs" />

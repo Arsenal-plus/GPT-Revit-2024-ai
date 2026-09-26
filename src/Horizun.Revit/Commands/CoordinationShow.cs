@@ -72,8 +72,13 @@ namespace Horizun.Revit.Commands
                     "to keep this to 300 or fewer. Nothing was changed.");
 
             string viewName = request.Value<string>("view_name");
+            // The default used to be "Horizun - Navisworks <date>" - and Navisworks reads a
+            // view whose name contains "Navisworks" instead of {3D} (NavisworksViewRules,
+            // measured 2026-09-26), so the coordination view itself spoiled the export.
             if (string.IsNullOrWhiteSpace(viewName))
-                viewName = "Horizun - Navisworks " + DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                viewName = "Horizun - Coordination " + DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            string badName = NavisworksViewRules.RefuseCreatedViewName(viewName);
+            if (badName != null) return CommandResult.Fail("view_name '" + viewName + "': " + badName + " Nothing was changed.");
             bool selectAlso = request.Value<bool?>("select") == true;
 
             // ---- resolve every side to something paintable: a host element, or (a link

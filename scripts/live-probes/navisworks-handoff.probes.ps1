@@ -105,7 +105,7 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $recordOk) { foreach ($i in 2..3) { $cases += Out-Case $i 'not_covered' 'the imported finding was not recorded' }; return $cases }
 
             # ---- 2: show creates + re-reads the view --------------------------------
-            $viewName = 'Horizun - Navisworks probe ' + $Ctx.RunId
+            $viewName = 'Horizun - Coordination probe ' + $Ctx.RunId
             $sv = & $Ctx.Apply 'horizun_coordination' @{ operation = 'show'; target_document = $doc; finding_ids = @($fid); view_name = $viewName } ($Ctx.RunId + '-nh-show')
             $shown = $sv.stage -eq 'apply' -and -not $sv.answer.isError -and $sv.answer.data.postconditions.all_verified -eq $true -and $sv.answer.data.view_id
             if ($shown) { $viewId = [long]$sv.answer.data.view_id }
