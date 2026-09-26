@@ -1808,7 +1808,7 @@ is compiled in.
 | operation | writes | what it does |
 |---|---|---|
 | `wall` | yes | studs, tracks, kings, jacks, headers, sills, cripples and blocking inside one layer of each straight Basic wall in `element_ids` (or visible in `view_id`, where curtain, stacked and curved walls are listed in `plan.skipped` with their reason instead of refusing the call; named in `element_ids` they refuse) |
-| `ceiling` | yes | mains, cross (furring) channels, perimeter track and hangers for each Ceiling in `element_ids`, the hangers ray-cast to the structure above |
+| `ceiling` | yes | mains, cross (furring) channels, perimeter track and hangers for each Ceiling in `element_ids` (or visible in `view_id`, where sloped, multi-region and sketchless ceilings are listed in `plan.skipped` with their reason; named in `element_ids` they refuse), the hangers ray-cast to the structure above |
 | `read` | no | what a previous apply produced, per source, found by the marker on each member |
 | `remove` | yes | deletes the members (and their work planes) a previous apply produced for `element_ids`, verified |
 
@@ -1895,7 +1895,9 @@ matches, and nothing is written. The apply sends the token and an `idempotency_k
 - **Boundary**: the ceiling's own sketch, every loop chained end to end (arcs tessellated),
   the largest loop first; holes are honoured. A sketch with a second region outside the
   largest one is refused (split it into one ceiling per region), and so is a sloped
-  ceiling (its box taller than the type's compound width + 1 mm).
+  ceiling (its box taller than the type's compound width + 1 mm). Under a `view_id` scope
+  either one is listed in `plan.skipped` instead, and the call refuses only when every
+  ceiling the view shows was skipped.
 - **Heights** (model z, mm): cross and perimeter axes at top face + depth/2; mains at top
   face + `drop_mm` + depth/2; each hanger from the mains' top face up to its support.
 - **Hangers**: one ray straight up per station, from the mains' top face, against floors,

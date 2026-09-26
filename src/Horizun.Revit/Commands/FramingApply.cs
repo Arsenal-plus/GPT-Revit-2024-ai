@@ -114,7 +114,7 @@ namespace Horizun.Revit.Commands
                 }
                 else
                 {
-                    plans = op == "ceiling" ? PlanCeilings(doc, request, ceilingSpec, specHash) : PlanWalls(doc, request, wallSpec, specHash, skipped);
+                    plans = op == "ceiling" ? PlanCeilings(doc, request, ceilingSpec, specHash, skipped) : PlanWalls(doc, request, wallSpec, specHash, skipped);
                     signature = string.Join(",", plans.Select(p => Rid.Value(p.Source.Id).ToString(CultureInfo.InvariantCulture) + ":" + p.Signature));
                 }
             }

@@ -9,7 +9,8 @@
 // OUTSIDE the largest one is refused by name: the plan's direction and extent are
 // the outer loop's, and a second island would silently get no mains. The top face
 // is the ceiling's box top; a box taller than the type's compound width (+1 mm)
-// is a sloped ceiling and is refused, never framed flat.
+// is a sloped ceiling and is refused, never framed flat. Under a view_id scope
+// those refusals become 'skipped' rows instead (the wall operation's rule).
 //
 // HEIGHTS (plan mm, absolute z). Cross and perimeter members bear on the top face
 // (axis = top + depth/2); mains sit drop_mm above it (axis = top + drop + depth/2);
@@ -111,8 +112,9 @@ namespace Horizun.Revit.Commands
             return pts.Select(p => new[] { p.X * MmPerFt, p.Y * MmPerFt }).ToList();
         }
 
-        private static List<FramingSourcePlan> PlanCeilings(Document doc, JObject request, CeilingFramingSpec spec, string specHash)
+        private static List<FramingSourcePlan> PlanCeilings(Document doc, JObject request, CeilingFramingSpec spec, string specHash, List<string> skipped)
         {
+            bool viewScope = request["view_id"] != null && SourceIds(request) == null;
             var symbols = new Dictionary<string, FamilySymbol>(StringComparer.Ordinal);
             foreach (long id in spec.TypeIds())
             {
@@ -126,7 +128,15 @@ namespace Horizun.Revit.Commands
             {
                 long sid = Rid.Value(ceiling.Id);
                 FramedCeiling fc = ReadCeiling(doc, ceiling, out string refusal);
-                if (fc == null) throw new ArgumentException(refusal);
+                if (fc == null)
+                {
+                    // A view shows whatever the model has: there a sloped, multi-region or sketchless
+                    // ceiling is listed in 'skipped' with its reason, as a curtain wall is for
+                    // operation=wall. Named in element_ids it still refuses the call.
+                    if (!viewScope) throw new ArgumentException(refusal);
+                    skipped.Add(refusal);
+                    continue;
+                }
                 CeilingFramingPlan plan = CeilingFramingRules.Plan(spec.ToInput(fc.LoopsMm), MaxMembersPerSource);
                 if (!string.IsNullOrEmpty(plan.Refusal)) throw new ArgumentException("ceiling " + sid + ": " + plan.Refusal);
                 var p = new FramingSourcePlan { Source = ceiling, Operation = "ceiling", Ceiling = fc, SpecHash = specHash, Symbols = symbols, Kinds = kinds, Members = plan.Members, PlaneSpan = XYZ.BasisZ };
@@ -152,6 +162,9 @@ namespace Horizun.Revit.Commands
                 }
                 plans.Add(p);
             }
+            if (plans.Count == 0)
+                throw new ArgumentException("view " + request.Value<long?>("view_id") + " shows no ceiling this operation can frame (" + skipped.Count +
+                                            " skipped: " + string.Join("; ", skipped.Take(5)) + ").");
             CastHangers(doc, plans, spec.HangerMaxLengthMm);
 
             int total = 0;
