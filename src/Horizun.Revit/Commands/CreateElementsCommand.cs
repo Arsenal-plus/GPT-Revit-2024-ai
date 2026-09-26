@@ -385,6 +385,14 @@ namespace Horizun.Revit.Commands
                         p.WantName = Trimmed(item, "name");
                         p.WantNumber = Trimmed(item, "number");
                         break;
+                    // A sprinkler is a family_instance restricted to OST_Sprinklers: same
+                    // routing (level/host/face), same placement, same postconditions - the
+                    // category check is the only thing this kind adds over the generic route.
+                    case "sprinkler":
+                        if (Need<FamilySymbol>(doc, item, "type_id") is FamilySymbol sprinklerSymbol &&
+                            !InCategory(sprinklerSymbol, BuiltInCategory.OST_Sprinklers))
+                            throw new ArgumentException("sprinkler type_id must identify a FamilySymbol in OST_Sprinklers");
+                        goto case "family_instance";
                     case "family_instance":
                         p.Type = Need<FamilySymbol>(doc, item, "type_id"); p.Start = Point(item["point"], scale, true);
                         p.Level = Optional<Level>(doc, item, "level_id");
@@ -1203,6 +1211,7 @@ namespace Horizun.Revit.Commands
                     SetIdentity(room, BuiltInParameter.ROOM_NUMBER, p.WantNumber, "number");
                     return room;
                 }
+                case "sprinkler":
                 case "family_instance":
                 {
                     FamilySymbol symbol = (FamilySymbol)p.Type;
@@ -2134,6 +2143,7 @@ namespace Horizun.Revit.Commands
                 case "level": return e is Level; case "grid": return e is Grid; case "wall": return e is Wall;
                 case "floor": return e is Floor; case "ceiling": return e is Ceiling; case "roof": return e is FootPrintRoof;
                 case "room": return e is Autodesk.Revit.DB.Architecture.Room;
+                case "sprinkler": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_Sprinklers);
                 case "family_instance": return e is FamilyInstance; case "duct": return e is Duct;
                 case "pipe": return e is Pipe; case "conduit": return e is Conduit; case "cable_tray": return e is CableTray;
                 case "structural_framing": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_StructuralFraming);

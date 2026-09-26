@@ -36,7 +36,7 @@ namespace Horizun.Revit.Commands
                 p.Offset = p.Loops[0].First().GetEndPoint(0).Z - p.Level.ProjectElevation;
                 CheckOffset(p, p.Input["offset"]);
             }
-            if (p.Kind == "family_instance" || p.Kind == "structural_column")
+            if (p.Kind == "family_instance" || p.Kind == "sprinkler" || p.Kind == "structural_column")
             {
                 double z = GeometryInput.AbsoluteZ(p.Start.Z, p.Level?.ProjectElevation, p.Input.Value<string>("coordinate_mode"));
                 p.Start = new XYZ(p.Start.X, p.Start.Y, z);
@@ -614,9 +614,9 @@ namespace Horizun.Revit.Commands
                     Numeric("top_offset", p.TopOffset, () => e.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET).AsDouble());
                 }
             }
-            if (p.Kind == "family_instance" || p.Kind == "structural_column" || p.Kind == "structural_framing")
+            if (p.Kind == "family_instance" || p.Kind == "sprinkler" || p.Kind == "structural_column" || p.Kind == "structural_framing")
                 Exact("structural_type", p.StructuralType.ToString(), () => ((FamilyInstance)e).StructuralType.ToString());
-            if (p.Kind == "family_instance" && p.Input["flip"] != null)
+            if ((p.Kind == "family_instance" || p.Kind == "sprinkler") && p.Input["flip"] != null)
             {
                 // TWO OPERATIONS, TWO TRACES. flipHand sets HandFlipped; a
                 // reflected copy sets Mirrored and leaves HandFlipped alone.
@@ -728,7 +728,7 @@ namespace Horizun.Revit.Commands
             // Deliberately not the bounding box: MEASURED on a structural column asked
             // for 1500 mm above its level, get_BoundingBox reports a base of 0 because
             // it spans the analytical stick, while the solid starts at 1500 mm exactly.
-            if (e != null && (p.Kind == "wall" || p.Kind == "structural_column" || p.Kind == "family_instance"))
+            if (e != null && (p.Kind == "wall" || p.Kind == "structural_column" || p.Kind == "family_instance" || p.Kind == "sprinkler"))
             {
                 double[] span = SolidElevationSpan(e);
                 if (span != null) { row["geometry_base_z_feet"] = span[0]; row["geometry_top_z_feet"] = span[1]; }
