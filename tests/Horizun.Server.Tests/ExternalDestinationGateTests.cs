@@ -34,6 +34,7 @@ using Xunit;
 
 namespace Horizun.Server.Tests
 {
+    [Collection("HorizunSettingsRoot")]
     public sealed class ExternalDestinationGateTests : IDisposable
     {
         private const string ReadOnly = "read_only";

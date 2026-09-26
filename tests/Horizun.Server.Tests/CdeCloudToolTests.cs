@@ -592,11 +592,11 @@ namespace Horizun.Server.Tests
         // ---- the contract ------------------------------------------------------------------
 
         [Fact]
-        public void The_contract_declares_a_read_only_open_world_tool_with_external_content()
+        public void The_contract_declares_an_open_world_tool_that_writes_only_on_request_with_external_content()
         {
             CommandContract c = Contract.All.Single(x => x.Name == CdeCloudTool.ToolName);
             Assert.Null(c.Command);
-            Assert.Equal(ToolEffect.ReadOnly, c.Effect);
+            Assert.Equal(ToolEffect.ExternalSideEffectOnRequest, c.Effect);
             Assert.True(c.OpenWorld);
             Assert.False(c.Destructive);
             Assert.True(c.ExternalContent);
