@@ -49,6 +49,8 @@ namespace Horizun.Core.Tests
             // partial class LinkScheduleCommand: operation=write and operation=status_view
             { "LinkScheduleWrite.cs", new[] { "horizun_link_schedule" } },
             { "LinkScheduleStatusView.cs", new[] { "horizun_link_schedule" } },
+            // partial class FramingCommand: operation=wall/remove (the verified write)
+            { "FramingApply.cs", new[] { "horizun_framing" } },
             // partial class CodeCheckCommand: operation=travel_distance with create_paths
             { "CodeCheckTravel.cs", new[] { "horizun_code_check" } },
             // the abstract base of every recipe tool in RecipeTools.cs

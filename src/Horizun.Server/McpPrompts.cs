@@ -113,6 +113,10 @@ namespace Horizun.Server
                     Prompt("project-intake", "Start a BIM project the ISO 19650 way",
                         "Arrancar un proyecto BIM según ISO 19650: ask only what the project context is missing, with options, and write project-context.json from the answers.",
                         Arg("path", "Absolute path of the project's project-context.json. Optional: without it the intake starts from nothing and the draft is only rehearsed until a path is agreed.", false)),
+                    Prompt("framing-from-detail", "Read a wall or ceiling detail into a framing spec",
+                        "Turn a wall-type or ceiling detail (an image or a 2-D detail) into a horizun_framing spec, confirm it with the person, then build and verify it.",
+                        Arg("kind", "wall or ceiling: which spec the detail fills.", true),
+                        Arg("element_ids", "The walls or ceilings the detail applies to, comma-separated. Optional: without them the person is asked.", false)),
                     Prompt("material-standardisation", "Bring materials to a declared standard",
                         "Create, duplicate and edit materials to match an approved standard, re-reading every value and touching nothing else.",
                         Arg("material_standard", "The approved standard - names, classes, colours, patterns. Required because Horizun carries no organisation's catalogue.", true))
@@ -435,6 +439,39 @@ namespace Horizun.Server
                         "is UNKNOWN, never clean. Return findings by sheet with severity, evidence and element/view " +
                         "ids. Use the narrowest typed correction only after approval and its dry run.";
                     break;
+                case "framing-from-detail":
+                {
+                    string kind = (Argument(args, "kind", true) ?? "").Trim().ToLowerInvariant();
+                    if (kind != "wall" && kind != "ceiling")
+                        throw new McpError(-32602, "Invalid params: framing-from-detail 'kind' must be wall or ceiling.");
+                    string sources = Argument(args, "element_ids", false);
+                    bool wall = kind == "wall";
+                    description = "Read a " + kind + " detail into a horizun_framing spec, confirm it, build it verified.";
+                    body =
+                        "Build the " + (wall ? "light-gauge/drywall wall framing" : "suspended drywall ceiling framing") + " a detail shows. " +
+                        "YOU read the detail (an attached image or 2-D detail); horizun_framing never reads an image, it builds exactly the spec " +
+                        "you give it. 1) Call horizun_health. " +
+                        (string.IsNullOrWhiteSpace(sources)
+                            ? "Ask the person which " + kind + "s the detail applies to and resolve their ids with horizun_query_model. "
+                            : "The detail applies to " + kind + "s " + sources + ": confirm each is a " + (wall ? "straight Basic wall" : "Ceiling") + " with horizun_query_model. ") +
+                        "2) Read the detail into spec." + kind + ", every length in MILLIMETRES (convert inches: 3-5/8\" = 92.1 mm, 16\" o.c. = 406.4 mm; " +
+                        "a scale bar or a dimension string wins over proportions; never measure pixels). " +
+                        (wall
+                            ? "Fields: layer ('core' or the compound layer index the studs sit in), stud {type_id, spacing_mm, start wall_start|wall_end|centred, " +
+                              "max_first_bay_mm, double_at_ends, width_mm}, track {bottom_type_id, top_type_id or top_same_as_bottom, thickness_mm}, openings " +
+                              "{king_studs 1|2, jack_studs, header_type_id, sill_type_id, cripple_spacing_mm}, blocking [{height_mm, type_id}]. "
+                            : "Fields: main {type_id, spacing_mm, direction short|long|<angle_deg>}, cross {type_id, spacing_mm}, perimeter {type_id}, " +
+                              "hanger {type_id, spacing_mm along each main, max_length_mm (default 3000), attach structure_above}, drop_mm (ceiling top face " +
+                              "up to the mains' underside, default 0). ") +
+                        "3) Types are the person's: list candidate family types with horizun_query_model and let the person choose; a vertical member needs " +
+                        "a Structural Columns or line-based Generic Model type, a horizontal one Structural Framing or line-based Generic Model. " +
+                        "4) A value the detail does not show or you cannot read is ASKED, with the options the detail allows and what each changes - " +
+                        "never filled from a guess or a typical value. 5) Show the complete spec as JSON with, for each value, where in the detail it came from, " +
+                        "and get it confirmed. 6) Call horizun_framing operation=" + kind + " with dry_run=true; show counts per role, warnings and the openings it read. " +
+                        "7) Only after the person agrees, apply with the confirmation_token and an idempotency_key, and report the postconditions as re-read. " +
+                        "A refusal names the field to fix; framing from another spec must be removed (operation=remove) before a new one.";
+                    break;
+                }
                 case "project-intake":
                     string contextPath = Argument(args, "path", false);
                     bool hasPath = !string.IsNullOrWhiteSpace(contextPath);
