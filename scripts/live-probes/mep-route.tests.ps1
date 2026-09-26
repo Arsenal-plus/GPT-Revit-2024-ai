@@ -114,6 +114,12 @@ $script:routeResult.spatial_check.errors = 1
 $by = Run-Probe 't5'
 Check 'a spatial error in the committed result fails' (($by[$N.Detour].Outcome -eq 'fail') -and ($by[$N.Detour].Detail -match 'spatial'))
 
+# ---- a partial spatial check is 'could not look', not clean: a fail ----------------------
+Reset-Fake
+$script:routeResult.spatial_check.partial = $true
+$by = Run-Probe 't5b'
+Check 'a partial spatial check in the committed result fails' (($by[$N.Detour].Outcome -eq 'fail') -and ($by[$N.Detour].Detail -match 'spatial'))
+
 # ---- no_route that does not name the column fails ---------------------------------------
 Reset-Fake
 $script:noRouteText = 'no_route: no path was found within max_nodes Nothing was written.'

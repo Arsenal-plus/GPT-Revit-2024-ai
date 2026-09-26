@@ -208,7 +208,9 @@ namespace Horizun.Revit.Core
                 foreach (int m in margins)
                 {
                     Box3 bounds = req.SearchBounds ?? DefaultBounds(req.Start, snappedEnd, grid, m);
-                    a = RunAStar(req.Start, ex, ey, ez, grid, bendPenalty, obstacles, bounds, req.MaxNodes - nodesExpanded, req, minEndSteps, minInteriorSteps);
+                    // Only the obstacles this box can touch: the caller collects for the largest box the
+                    // search may grow to, and every step tests every obstacle it is given.
+                    a = RunAStar(req.Start, ex, ey, ez, grid, bendPenalty, Within(obstacles, bounds), bounds, req.MaxNodes - nodesExpanded, req, minEndSteps, minInteriorSteps);
                     nodesExpanded += a.NodesExpanded;
                     marginUsed = m;
                     if (a.Found || !a.BoundsExhausted || nodesExpanded >= req.MaxNodes) break;
@@ -290,6 +292,15 @@ namespace Horizun.Revit.Core
         {
             double q = delta / grid, k = Math.Round(q);
             return (long)(Math.Abs(q - k) <= 1e-9 ? k : Math.Truncate(q));
+        }
+
+        private static List<Box3> Within(IList<Box3> obstacles, Box3 bounds)
+        {
+            var list = new List<Box3>();
+            foreach (Box3 o in obstacles)
+                if (o.MinX <= bounds.MaxX && o.MaxX >= bounds.MinX && o.MinY <= bounds.MaxY && o.MaxY >= bounds.MinY && o.MinZ <= bounds.MaxZ && o.MaxZ >= bounds.MinZ)
+                    list.Add(o);
+            return list;
         }
 
         private static int StepsFor(double length, double grid) => length <= Tolerance ? 0 : (int)Math.Ceiling(length / grid - 1e-9);
@@ -412,7 +423,7 @@ namespace Horizun.Revit.Core
             while (heap.Count > 0)
             {
                 if (expanded >= maxNodes)
-                    return new AStarResult { Found = false, NodesExpanded = expanded, Reason = "no_route: max_nodes (" + maxNodes + ") was exhausted before a route was found" };
+                    return new AStarResult { Found = false, NodesExpanded = expanded, Reason = "no_route: max_nodes (" + req.MaxNodes + ") was exhausted before a route was found" };
                 StateKey cur = heap.Pop();
                 double gCur = best[cur];
                 expanded++;
