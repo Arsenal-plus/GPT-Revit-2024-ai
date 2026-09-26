@@ -3,6 +3,60 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased — coordination loop, verification coverage, fixtures
+
+- **The Navisworks loop closes in both directions, measured live (2026-09-26, Navisworks Manage 2026 + Revit 2026).** `horizun_coordination`:
+  - `navisworks_readiness` judges the 3D view(s) Navisworks will read: detail level, section box, phase, hidden MEP categories.
+  - `prepare_navisworks` (dry run -> token -> apply, re-read) sets those views to Fine.
+  - `navisworks_status` turns this ledger's measured verdicts into `navis_set_status` suggestions.
+
+  Second round on the same model:
+  1. Readiness caught a Medium view.
+  2. Prepare fixed it.
+  3. Navisworks detected a new pipe-through-column clash.
+  4. Revit reproduced it, showed it, and `resolve_clash` moved the pipe 338 mm.
+  5. `navis_set_status` marked the issue Resolved in Navisworks, verified by re-reading the document: zero active issues, without re-running the test.
+- **Navisworks reads any 3D view named with "Navisworks" before `{3D}`**, measured by renaming one view: the pipes went from 1-primitive lines back to 1587/1787-triangle solids. `show` named its own view "Horizun - Navisworks <date>", so the product planted the view that spoiled the next export.
+  - The default is now "Horizun - Coordination <date>".
+  - Such names are refused.
+  - Readiness/prepare judge every candidate view (`Core/NavisworksViewRules`).
+- **BCF from any tool.** `operation=import` resolves topics from Navisworks, ACC, Solibri or BIMcollab (BCF 2.1/3.0) by their viewpoint components:
+  - IfcGuid, through `IFC_GUID` or a Revit-free decode of `ExportUtils.GetExportId` (`Core/IfcGuidCodec`, checked against an external test vector);
+  - AuthoringToolId.
+
+  It re-detects each pair: only a reproduced pair becomes a finding (origin `bcf`), and the rest are `not_traceable` with the reason. The ledger CSV export gained six provenance columns: `scope`, `external_source`, `external_issue_id`, `priority`, `responsible`, `immovable_discipline`.
+- **`horizun_resolve_clash` sees links and moves connected runs.**
+  - Propose's box prediction and apply's solid re-detection carry the moved element(s) into every loaded link, so a new clash against a link rolls back a move like a host one.
+  - A connected MEP network (runs + fittings, up to 60 members, all host/unpinned/ungrouped, no boundary connector to equipment) can move as one rigid body (`mode: run_shift`), with every internal connection re-read.
+- **Spatial check coverage.**
+  - Data-only writes that move geometry are no longer skipped: a bounding-box cache compares before/after, and a never-seen element is checked under a 200-element cap.
+  - `horizun_verify_changes scope=session` unions every write since start or `since_utc` (cap 2000).
+  - `include_annotation` finds overlapping tags and text notes; a label-only tag without extent is `unmeasured`, never clear.
+- **Composite tools read each child's own verdict** (`Core/CompositeVerdict`). `execute_plan`, `apply_ifc_plan`, `apply_cad_plan`, `apply_cad_update` and `cad_connect` stamp an `application` block; a child that merely succeeded without a verified verdict makes the composite partial or uncertain. Fixes along the way:
+  - `apply_cad_plan`'s `required_missing` was keyed by parameter name across a batch, so one element's value hid another's gap.
+  - `CheckedWriteGroup.Keep()` was trusted without its own outcome.
+  - `family_apply` now folds a post-commit invariant breach into a `partial` verdict.
+- **Re-reads that were missing.**
+  - `manage_views` re-reads created names, `color_by_value` colours, the ids a temporary hide/isolate hid, and legend component detail/position.
+  - `export` counts the files produced for non-PDF formats; an unreadable-before file is `unmeasured`, not new.
+  - `annotate` no longer accepts a null read-back.
+  - `horizun_health` gains `include_verification_catalog`, and names a blocking modal dialog (title, text, buttons, owning module) without clicking it.
+- **New element kinds.** `create_elements`: `sprinkler`, `flex_pipe`, `flex_duct`, `space`, `area`, `area_boundary`, each rehearsed, committed and re-read. `ramp` is refused by name, because no Revit 2023–2027 API creates one.
+- **IFC and planimetry.**
+  - `deliver_ifc`'s Pset mapping tells an empty Revit parameter apart from a mapping the exporter did not apply (`model_comparison`, from a census before export).
+  - `ids_from_loin` converts length/area/volume bounds to the IFC default unit (`converted_units`).
+  - `fix_planimetry set_crop` accepts a polygon, verified vertex by vertex.
+- **Defects found by running things live.**
+  - `create_elements` rolled back every beam: a framing member has no `Element.LevelId`, and the level now comes from its Reference Level.
+  - `copy_between_documents` gave a clean dry run and then refused on type-name collisions. The rehearsal now performs the copy in a transaction that is always rolled back, and names them.
+- **Fixtures that were missing.**
+  - Workset writes run on a detached copy of the closed-workset fixture.
+  - A panelboard is staged from the year's electrical template for the panel-schedule case.
+  - Design options are read from Autodesk's own sample of the year.
+  - The library document is the year's own template (`{year}` in the path).
+  - `verify-rebar-geometry.ps1` ran live for the first time: 19/19, including Z5, M6 and M7.
+- **`horizun_cde_cloud` measured live against ACC.** On a test project, 2-legged, read-only: `list_projects`, `list_states`, `inspect` (58 files, 30 calls) and `versions`.
+- **Power BI coordination dashboard** (`examples/coordination-dashboard`): a `.pbip` over the ledger CSV. It was opened, refreshed and read back by DAX in Power BI Desktop; the sample data is synthetic.
 ## Unreleased — ISO 19650 information management
 
 - **Verified is not the same as right: a spatial coherence check after every write.** Field use (2026-09-25) left a column and a door in the same place with every postcondition true. The dispatcher now watches `DocumentChanged` for the duration of each call (`Core/ChangeWatch.cs`), keeps what the call added or modified after its own rollbacks, and checks those model elements (`Core/SpatialCoherence.cs`): shared solid with every intersecting element (`ElementIntersectsElementFilter` + `BooleanOperationsUtils`), judged by unit-tested rules (`Core/SpatialCoherenceRules.cs`) - an opening blocked by a column, wall, MEP or furniture, a duplicate of the same type, MEP through structure are errors; unjoined overlaps and contents in structure are warnings; hosts, joins, MEP connections, curtain members, the structural frame and MEP through enclosures are expected. A door clear-zone pass flags a column or wall IN FRONT of a door that touches nothing. Replies carry `spatial_check` and `attention` as their first key; data-only tools are skipped; bounded (800 elements, 8 s) and `partial` when a bound stops it; `HORIZUN_SPATIAL_CHECK=off` disables it. New read tool `horizun_verify_changes` (122 tools) checks the last write (or given ids) and returns an IMAGE from a temporary isometric view in a rolled-back transaction group, changed elements blue, errors red, warnings orange. Every call that changed a document also carries `model_changes` (added/modified/deleted as Revit reported them).
