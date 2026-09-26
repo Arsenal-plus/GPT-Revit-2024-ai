@@ -1,13 +1,16 @@
 # Live probes for horizun_mep_routing's "hangers" operation. Everything stands on the
 # module's own two levels, far from the real model: an own floor on the upper level, an
 # own pipe under it, and a second own pipe with nothing above it. The hanger type is a
-# generic model the fixture carries (the Autodesk template ships some) - discovered by
-# querying, never assumed by id or name; without one the cases are not_covered, with the
-# reason. What was created is deleted at the end; the document is never saved.
+# generic model the fixture carries - discovered by querying, never assumed by id or name;
+# without one the cases are not_covered, with the reason. rod_length_parameter needs a
+# family with an instance Length parameter, which the fixture does not guarantee, so that
+# path is NOT exercised here and no case claims it: the rod is checked against the geometry
+# instead (it must reach the floor's underside, not its top face). What was created is
+# deleted at the end; the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'mep-hangers'
     Catalog = @(
-        @{ Name = 'hangers: stations under an own floor, count, spacing and rod re-read'; Tool = 'horizun_mep_routing' }
+        @{ Name = 'hangers: stations under an own floor, count, spacing, host support and a rod to its underside'; Tool = 'horizun_mep_routing' }
         @{ Name = 'hangers: a run with nothing above is refused as no support, nothing placed'; Tool = 'horizun_mep_routing' }
         @{ Name = 'mep-hangers probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
     )
@@ -16,7 +19,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $cases = New-Object System.Collections.ArrayList
         function Case($name, $tool, $outcome, $detail) { [void]$cases.Add(@{ Name = $name; Tool = $tool; Outcome = $outcome; Detail = [string]$detail }) }
         $catalog = @(
-            'hangers: stations under an own floor, count, spacing and rod re-read',
+            'hangers: stations under an own floor, count, spacing, host support and a rod to its underside',
             'hangers: a run with nothing above is refused as no support, nothing placed',
             'mep-hangers probes: everything created is deleted')
         $tools = @('horizun_mep_routing', 'horizun_mep_routing', 'horizun_delete_verified')
@@ -94,8 +97,15 @@ $script:HzProbeModules += [pscustomobject]@{
                 if (@($gaps | Where-Object { $_ -gt 1501 }).Count -gt 0) { $problems += "a gap exceeds 1500: $($gaps -join ',')" }
                 if ($onFloor -ne $placed.Count) { $problems += "$onFloor of $($placed.Count) hang from the own floor $floor" }
                 if ($rods.Count -gt 0 -and (($rods | Measure-Object -Maximum).Maximum - ($rods | Measure-Object -Minimum).Minimum) -gt 1) { $problems += "rods differ under a flat floor: $($rods -join ',')" }
+                # Pipe centre to the floor's top is ($E + $H) - $Z = 2000 mm. A rod to the UNDERSIDE is
+                # that minus the floor's thickness and half the pipe's OD (<= 40 for a 50 mm pipe); a rod
+                # of 1960 or more went to the top face, one under 950 hit something thicker than 1 m.
+                $rodMax = ($E + $H) - $Z - 40; $rodMin = ($E + $H) - $Z - 1050
+                $offRods = @($rods | Where-Object { $_ -ge $rodMax -or $_ -lt $rodMin })
+                if ($offRods.Count -gt 0) { $problems += "rod not to the floor's underside (expected $rodMin..$rodMax): $($offRods -join ',')" }
+                if ([int]$ok.answer.data.result.gaps_above_spacing -gt 0) { $problems += "the reply names $($ok.answer.data.result.gaps_above_spacing) gap(s) above spacing on a run with no taps" }
                 if ($problems.Count -gt 0) { Case $catalog[0] $tools[0] 'fail' ($problems -join '; ') }
-                else { Case $catalog[0] $tools[0] 'pass' ("5 hangers at $($along -join ',') mm, rod $($rods[0]) mm to floor $floor, positions/rotation re-read") }
+                else { Case $catalog[0] $tools[0] 'pass' ("5 hangers at $($along -join ',') mm, rod $($rods[0]) mm to the underside of floor $floor, positions/rotation re-read") }
             }
         }
 

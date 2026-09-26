@@ -79,6 +79,20 @@ $script:hangerReply = { param($arguments) Reply ([pscustomobject]@{ state = 'com
 $bad = @(& $module.Run $ctx); $badBy = @{}; foreach ($c in $bad) { $badBy[$c.Name] = $c }
 Check 'three hangers with 2700 mm gaps fail with the count and the gap named' (($badBy[$n[0]].Outcome -eq 'fail') -and ($badBy[$n[0]].Detail -match 'expected 5') -and ($badBy[$n[0]].Detail -match 'gap exceeds'))
 
+# ---- a rod measured to the floor's TOP face (through the slab) is a fail ----
+New-State
+$script:hangerReply = { param($arguments) Reply ([pscustomobject]@{ state = 'committed_verified'; postconditions = [pscustomobject]@{ all_verified = $true }
+    result = [pscustomobject]@{ placed = (Placed $script:floorId $goodAlong 1970.0) } }) $false '' }
+$top = @(& $module.Run $ctx); $topBy = @{}; foreach ($c in $top) { $topBy[$c.Name] = $c }
+Check 'a rod to the top face of the floor fails with the rod named' (($topBy[$n[0]].Outcome -eq 'fail') -and ($topBy[$n[0]].Detail -match "underside"))
+
+# ---- a reply naming a gap above spacing is a fail ----
+New-State
+$script:hangerReply = { param($arguments) Reply ([pscustomobject]@{ state = 'committed_verified'; postconditions = [pscustomobject]@{ all_verified = $true }
+    result = [pscustomobject]@{ placed = (Placed $script:floorId $goodAlong 1725.0); gaps_above_spacing = 1 } }) $false '' }
+$gp = @(& $module.Run $ctx); $gpBy = @{}; foreach ($c in $gp) { $gpBy[$c.Name] = $c }
+Check 'a reply naming a gap above spacing fails' (($gpBy[$n[0]].Outcome -eq 'fail') -and ($gpBy[$n[0]].Detail -match 'gap'))
+
 # ---- a bare run that PLANS stations is a fail ----
 New-State
 $script:hangerReply = { param($arguments) Reply ([pscustomobject]@{ state = 'committed_verified'; postconditions = [pscustomobject]@{ all_verified = $true }
