@@ -57,7 +57,9 @@ namespace Horizun.Core.Tests
             { "ModelEditRunner.cs", new[] { "horizun_manage_curtain", "horizun_slab_shape", "horizun_create_railing" } },
             // partial class CoordinationCommand: operation=show and operation=prepare_navisworks mutate
             { "CoordinationShow.cs", new[] { "horizun_coordination" } },
-            { "CoordinationNavisworksReadiness.cs", new[] { "horizun_coordination" } }
+            { "CoordinationNavisworksReadiness.cs", new[] { "horizun_coordination" } },
+            // partial class ResolveClashCommand: operation=apply_opening cuts a host or places a sleeve
+            { "ResolveClashSleeves.cs", new[] { "horizun_resolve_clash" } }
         };
 
         private static string RepoRoot()

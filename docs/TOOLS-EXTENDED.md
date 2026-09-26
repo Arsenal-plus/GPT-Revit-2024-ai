@@ -559,6 +559,50 @@ kept apply records an undo batch covering EVERY member (not just the primary mov
 `horizun_undo` moves the whole network back together) and marks each finding
 `resolved_by_model` with the measurement written into its history.
 
+**propose_opening / apply_opening** (sleeves and structural openings). For a clash that
+moving cannot fix - an MEP run (pipe, duct, conduit, cable tray, flex run) through a
+wall, floor, roof, ceiling, structural framing or column - the run keeps its line and
+the HOST gets an opening, or a sleeve. Pure geometry lives in `Core/SleeveRules.cs`.
+
+- **propose_opening** (read-only). Both sides must be host elements (a linked side is
+  `linked_element_not_writable`), exactly one an MEP run. The run's centreline is clipped
+  against the host's bounding box (entry, exit, `crossing_point_mm` = their midpoint);
+  the size is the run's outer section + `clearance_mm` (default 50, i.e. half on each
+  side); `shape` is `round` for a round run, `rect` otherwise. The route is a property of
+  the host kind: wall -> `wall_opening` (`Document.Create.NewOpening(wall, pt1, pt2)`,
+  always rectangular); floor/roof/ceiling -> `floor_opening`
+  (`NewOpening(host, CurveArray, true)`: a circular boundary for a round run, a
+  rectangle SQUARED to its larger side for a rectangular section, because the section's
+  plan rotation is not read); framing/column -> `sleeve_only`, with `cut_refused.code =
+  host_cannot_be_cut_by_api` - the API cannot cut a beam or column except with a
+  void-cutting family instance. Any other host category is `host_kind_not_supported`.
+- **apply_opening**. `dry_run` (default) -> `confirmation_token` -> one TransactionGroup.
+  Every proposal is re-derived from the live model (pair still matches the finding, run
+  still crosses the host). Without `sleeve_type_id` a wall/floor/roof/ceiling is cut; a
+  framing/column proposal is refused by name. With `sleeve_type_id` (a family type the
+  caller loaded - nothing is compiled in) the family is placed by its own placement type:
+  wall-hosted on the host at the crossing, face-based on the host face the run enters,
+  line-based along entry->exit, anything else at the crossing point rotated about Z to a
+  horizontal run. A sleeve family with a void cuts its host through
+  `InstanceVoidCutUtils` when the host accepts it (`host_cut: true`). `approval_parameter`
+  + `approval_value` write a text mark (e.g. `pending structural approval`) on the created
+  element; a missing, read-only or non-text parameter rolls everything back.
+- **Postconditions**, re-read inside the group before it is kept: `created:<finding>`;
+  `contains_crossing:<finding>` - the opening's own boundary (`BoundaryRect` /
+  `BoundaryCurves`) or the sleeve's box clears the run by `clearance_mm/2` on the axes
+  ACROSS the run; `host_cleared:<finding>` - whenever the host was cut, a solid
+  re-detection (same `Detect` as apply) must find the run no longer meeting the host;
+  `approval:<finding>`; and `no_new_clash` around the crossing (the sleeve inside its own
+  host is the design, not a new clash; the sleeve against the run, a third element or a
+  loaded link is). Any failure rolls the whole group back. A kept apply records an undo
+  batch (`created`) for `horizun_undo`, and the finding gets an `opening_requested`
+  history entry but STAYS OPEN: only a later `horizun_clash record_findings=true`
+  measurement can resolve it. An uncut sleeve (no void) leaves the run inside the host
+  solid by design and the finding stays open for the structural decision.
+- To measure live: the orientation of a point-placed sleeve depends on how its family
+  was modelled (caught by `contains_crossing`, not predicted), and face-based placement
+  on a sloped or curved host face is not built (it fails with the reason).
+
 ### horizun_undo
 
 Revit exposes no Undo through its API. After a verified commit,
