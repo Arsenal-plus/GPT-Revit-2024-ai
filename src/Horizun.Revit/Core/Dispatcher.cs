@@ -707,6 +707,12 @@ namespace Horizun.Revit.Core
             if (contract.Effect == ToolEffect.MutatingUnlessDryRun && request?.Value<bool?>("dry_run") == true)
                 return false;
 
+            // horizun_code_check writes only with operation=travel_distance and
+            // travel.create_paths=true; a requirement-set check or a measurement is a read.
+            if (contract.Name == "horizun_code_check" &&
+                (request?["travel"] as JObject)?.Value<bool?>("create_paths") != true)
+                return false;
+
             bool? workshared = null;
             try { workshared = app?.ActiveUIDocument?.Document?.IsWorkshared; }
             catch { }

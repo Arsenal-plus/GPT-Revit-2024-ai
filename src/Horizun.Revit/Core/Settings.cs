@@ -308,7 +308,12 @@ namespace Horizun.Revit.Core
             // is one: a machine set to read_only refused to move a wall and then rewrote
             // a workbook on disk. Deciding on the ENUM rather than on a list of names is
             // what keeps the next externally-effecting tool from repeating it.
-            if (!humanPythonGrant && profile == "read_only" &&
+            // horizun_code_check is classified MutatingUnlessDryRun for its ONE write
+            // (operation=travel_distance with travel.create_paths), but its check and its
+            // measurement write nothing. Hiding it from read_only took a pure read away, so it
+            // stays listed and the command itself refuses create_paths under read_only.
+            bool writesOnlyOnRequest = contract.Name == "horizun_code_check";
+            if (!humanPythonGrant && profile == "read_only" && !writesOnlyOnRequest &&
                 (contract.Effect == ToolEffect.Mutating || contract.Effect == ToolEffect.MutatingUnlessDryRun ||
                  contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect))
             {

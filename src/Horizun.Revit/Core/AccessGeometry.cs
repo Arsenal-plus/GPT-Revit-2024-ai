@@ -254,6 +254,9 @@ namespace Horizun.Revit.Core
         /// <summary>
         /// Which room, if any, a point falls in - Revit's own Document.GetRoomAtPoint, in the view's
         /// phase, at the view's level + 4 ft (the elevation PathOfTravel.GetRoomForPoint documents).
+        /// The level's height is ProjectElevation, the internal-coordinate Z: Level.Elevation is
+        /// relative to the SHARED origin when the level's Elevation Base is Survey Point, and a
+        /// relocated survey point would put the lookup tens of feet off the floor.
         /// MEASURED at build time: GetRoomForPoint is in every year's RevitAPI.xml but the Revit 2026
         /// reference assembly does not expose it (CS0117), so the document lookup is used everywhere.
         /// </summary>
@@ -262,7 +265,7 @@ namespace Horizun.Revit.Core
             if (plan == null || point == null) return null;
             try
             {
-                var at = new XYZ(point.X, point.Y, (plan.GenLevel?.Elevation ?? point.Z) + 4.0);
+                var at = new XYZ(point.X, point.Y, (plan.GenLevel?.ProjectElevation ?? point.Z) + 4.0);
                 ElementId phaseId = plan.get_Parameter(BuiltInParameter.VIEW_PHASE)?.AsElementId();
                 Phase phase = phaseId != null ? plan.Document.GetElement(phaseId) as Phase : null;
                 return phase != null ? plan.Document.GetRoomAtPoint(at, phase) : plan.Document.GetRoomAtPoint(at);
