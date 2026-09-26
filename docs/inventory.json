@@ -3,24 +3,24 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "0fae2f229e2936fe1284bb185f2781f206099c12b9ebe77b91ae8123c7059d0c",
-  "generated_from_contract_hash": "feb0aff355f8856d63bdb40f",
+  "generated_from_server_sha": "653cc4c24ac7c519031d0502657379649030876abb88c873e8a1b67670b3ea4c",
+  "generated_from_contract_hash": "ef1a80b9df348880252ce582",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "92a251c667eb6826d853b03f14d940b6863851ed",
+  "code_candidate_commit": "516633f1305733c93c8fdd8b2948f35dc74c5e04-dirty",
   "code_candidate_version": "2.0.5",
   "code_candidate_stamp_source": "product_version",
-  "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "92a251c667eb6826d853b03f14d940b6863851ed",
+  "source_tree_clean_at_generation": false,
+  "source_tree_head_at_generation": "516633f1305733c93c8fdd8b2948f35dc74c5e04",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
     "tools": 122,
-    "reads": 47,
-    "writes": 75,
+    "reads": 45,
+    "writes": 77,
     "destructive": 20,
-    "operations": 414,
-    "enumerated_variants": 1519
+    "operations": 431,
+    "enumerated_variants": 1537
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -100,9 +100,20 @@
       "read_only": false,
       "destructive": false,
       "open_world": true,
-      "operations": 0,
-      "enumerated_variants": 6,
-      "operation_detail": []
+      "operations": 3,
+      "enumerated_variants": 9,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "check",
+            "snapshot",
+            "compare_to"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_create_schedule",
@@ -1369,12 +1380,22 @@
     },
     {
       "tool": "horizun_code_check",
-      "read_only": true,
+      "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
+      "operations": 2,
+      "enumerated_variants": 2,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "check",
+            "travel_distance"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_link_schedule",
@@ -1548,8 +1569,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 9,
-      "enumerated_variants": 20,
+      "operations": 16,
+      "enumerated_variants": 28,
       "operation_detail": [
         {
           "property": "operation",
@@ -1560,7 +1581,21 @@
             "add_sizes",
             "remove_sizes",
             "resize",
-            "size_by_flow"
+            "slope",
+            "size_by_flow",
+            "route",
+            "hangers"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "kind",
+          "path": "kind",
+          "values": [
+            "pipe",
+            "duct",
+            "conduit",
+            "cable_tray"
           ],
           "source_read_confirmed": true
         },
@@ -1671,15 +1706,17 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 2,
-      "enumerated_variants": 2,
+      "operations": 4,
+      "enumerated_variants": 4,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operation",
           "values": [
             "propose",
-            "apply"
+            "apply",
+            "propose_opening",
+            "apply_opening"
           ],
           "source_read_confirmed": true
         }
@@ -1895,11 +1932,11 @@
     },
     {
       "tool": "horizun_cde_cloud",
-      "read_only": true,
+      "read_only": false,
       "destructive": false,
       "open_world": true,
-      "operations": 4,
-      "enumerated_variants": 6,
+      "operations": 7,
+      "enumerated_variants": 9,
       "operation_detail": [
         {
           "property": "operation",
@@ -1908,7 +1945,10 @@
             "list_projects",
             "list_states",
             "inspect",
-            "versions"
+            "versions",
+            "issues_list",
+            "issue_create",
+            "issue_update"
           ],
           "source_read_confirmed": true
         }

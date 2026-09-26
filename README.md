@@ -4,7 +4,7 @@
 
 Horizun Revit MCP is a free, open-source Windows MCP server and Revit add-in for
 **Autodesk Revit 2023–2027**. Its complete catalog contains **122 tools** <!--inventory:tools-->
-with **414 named suboperations and dispatch modes** <!--inventory:operations-->
+with **431 named suboperations and dispatch modes** <!--inventory:operations-->
 for architectural and structural modeling, MEP, parametric families, drawings,
 CAD-to-BIM, model audits, quantities, Excel, Power BI and exports.
 
@@ -28,8 +28,8 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 
 | Surface | What is available | Inspect it |
 |---|---|---|
-| MCP entry points | **122 tools** <!--inventory:tools-->, including **47 read-only** <!--inventory:reads--> and **75 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
-| Internal actions | **414 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
+| MCP entry points | **122 tools** <!--inventory:tools-->, including **45 read-only** <!--inventory:reads--> and **77 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
+| Internal actions | **431 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
 | Revit coverage | 2023, 2024, 2025, 2026 and 2027 | Five matching add-ins and versioned live reports |
 | New model content | 26 element kinds; parametric RFA authoring; structural and MEP planning | [Creation and family reference](docs/FAMILY-AUTHORING.md) |
 | Drawings and deliverables | 24 view/sheet actions, 10 annotation actions, native schedules and sheet layout | [Planimetry production](docs/PLANIMETRY-PRODUCTION.md) |
@@ -367,7 +367,7 @@ A named MCP tool can dispatch many actions. For example, creating a wall, a pipe
 and a stair are choices under `horizun_create_elements`; creating a section and
 placing a schedule are different actions under `horizun_manage_views`.
 
-The table contains **414 named suboperations and dispatch modes** <!--inventory:operations-->
+The table contains **431 named suboperations and dispatch modes** <!--inventory:operations-->
 across 26 multi-operation tools. A choice is counted once per tool, selector
 property and value, including nested selectors. Repeated `oneOf` schema paths
 are deduplicated. Some selectors refine another action: these numbers describe
@@ -380,11 +380,13 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 | `horizun_repair_memory` | `operation` | `list`, `advice`, `observe`, `remedy`, `quarantine`, `release` |
 | `horizun_selection_exchange` | `operation` | `publish`, `read`, `clear`, `capabilities` |
 | `horizun_audit_model` | `operation` | `save`, `save_as`, `sync_with_central`, `export`, `publish`, `close_with_save`, `batch_open_close` |
+| `horizun_verify_changes` | `operation` | `check`, `snapshot`, `compare_to` |
 | `horizun_delete_verified` | `mode` | `ids`, `purge_unused` |
 | `horizun_navigate` | `operation` | `select`, `clear_selection`, `zoom`, `select_and_zoom`, `open_view` |
 | `horizun_validate_ids` | `operation` | `precheck`, `validate` |
 | `horizun_query_classification` | `operation` | `keynote_table`, `assembly_code`, `family_lookup_tables`, `unused_codes`, `missing_codes` |
 | `horizun_model_diff` | `operation` | `snapshot`, `list`, `compare`, `colorize`, `explain`, `record_quality`, `quality_trend` |
+| `horizun_code_check` | `operation` | `check`, `travel_distance` |
 | `horizun_undo` | `operation` | `list`, `undo_last` |
 | `horizun_create_elements` | `kind` | `level`, `grid`, `wall`, `floor`, `ceiling`, `roof`, `room`, `family_instance`, `sprinkler`, `structural_framing`, `structural_column`, `duct`, `pipe`, `conduit`, `cable_tray`, `flex_pipe`, `flex_duct`, `fitting`, `wall_opening`, `slab_opening`, `beam_system`, `wall_foundation`, `accessory_inline`, `mep_system`, `shaft`, `room_separator`, `space`, `area`, `area_boundary`, `wall_profile`, `displacement`, `stairs` |
 | `horizun_create_elements` | `fitting` | `elbow`, `union`, `transition`, `tee`, `takeoff`, `cross` |
@@ -421,10 +423,11 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 | `horizun_plan_mep` | `kind` | `pipe`, `duct` |
 | `horizun_plan_structure` | `operation` | `columns_on_grid_intersections`, `beams_along_grids` |
 | `horizun_query_structure` | `mode` | `members`, `hosts`, `covers`, `rebar`, `reinforcement_systems`, `connections`, `coverage`, `quantities` |
-| `horizun_mep_routing` | `operation` | `read`, `set_rules`, `add_sizes`, `remove_sizes`, `resize`, `size_by_flow` |
+| `horizun_mep_routing` | `operation` | `read`, `set_rules`, `add_sizes`, `remove_sizes`, `resize`, `slope`, `size_by_flow`, `route`, `hangers` |
+| `horizun_mep_routing` | `kind` | `pipe`, `duct`, `conduit`, `cable_tray` |
 | `horizun_mep_routing` | `action` | `add`, `remove`, `move` |
 | `horizun_electrical` | `operation` | `list_panels`, `list_circuits`, `create_circuit`, `assign_panel`, `add_to_circuit`, `remove_from_circuit`, `panel_schedule` |
-| `horizun_resolve_clash` | `operation` | `propose`, `apply` |
+| `horizun_resolve_clash` | `operation` | `propose`, `apply`, `propose_opening`, `apply_opening` |
 | `horizun_manage_groups` | `operation` | `list`, `create`, `add_members`, `remove_members`, `rename_type`, `duplicate_type`, `swap_type`, `ungroup`, `convert_to_link` |
 | `horizun_manage_worksets` | `operation` | `list`, `create`, `rename`, `move_elements`, `set_default`, `visibility` |
 | `horizun_quantities` | `mode` | `volume`, `takeoff` |
@@ -435,12 +438,12 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 | `horizun_run_procedure` | `operation` | `start`, `advance`, `decide`, `record`, `reconcile`, `status`, `abandon` |
 | `horizun_project_context` | `operation` | `schema`, `validate`, `questions`, `draft`, `elicit`, `ids_from_loin` |
 | `horizun_information_container` | `operation` | `name`, `stamp`, `verify`, `inspect`, `transition`, `transmittal`, `record_review`, `register` |
-| `horizun_cde_cloud` | `operation` | `list_projects`, `list_states`, `inspect`, `versions` |
+| `horizun_cde_cloud` | `operation` | `list_projects`, `list_states`, `inspect`, `versions`, `issues_list`, `issue_create`, `issue_update` |
 <!-- END SUBOPERATIONS -->
 
 Other typed options include the seven `horizun_export.format` values:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. The schema inventory
-also records **1519 enumerated argument occurrences** <!--inventory:enumerated_variants-->
+also records **1537 enumerated argument occurrences** <!--inventory:enumerated_variants-->
 across all properties and paths; that figure includes configuration choices and
 repeated paths, so it is not used as a tool count.
 
