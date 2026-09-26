@@ -189,6 +189,16 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Framing_entry_stays_within_its_tools_list_share()
+        {
+            // The assignment gave horizun_framing at most 2,000 bytes of tools/list (description
+            // plus schema); the spec itself lives in docs/TOOLS-EXTENDED.md.
+            JObject framing = Tools.List(true).OfType<JObject>().Single(t => (string)t["name"] == "horizun_framing");
+            int bytes = System.Text.Encoding.UTF8.GetByteCount(framing.ToString(Newtonsoft.Json.Formatting.None));
+            Assert.True(bytes <= 2000, "horizun_framing costs " + bytes + " bytes of tools/list");
+        }
+
+        [Fact]
         public void Prompts_require_the_declared_arguments_and_return_standard_messages()
         {
             JArray prompts = (JArray)McpPrompts.List(null)["prompts"];
