@@ -626,6 +626,11 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\TemplateComparisonRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\WarningRootCauseRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\WallSketchDriftRules.cs" />
+    <!-- Spatial coherence follow-ups (feat/next-spatial): the data-only bbox fallback,
+         the session-scope union and the tag/text-note overlap geometry are all Revit-free. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DataOnlyGeometryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SessionScopeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TagOverlapRules.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -44,6 +44,31 @@ namespace Horizun.Revit.Commands
             if (maxFindings < 1 || maxFindings > 500) return CommandResult.Fail("max_findings must be between 1 and 500.");
             int budgetS = request.Value<int?>("time_budget_seconds") ?? 60;
             if (budgetS < 5 || budgetS > 600) return CommandResult.Fail("time_budget_seconds must be between 5 and 600.");
+            string scopeMode = (request.Value<string>("scope") ?? "last_write").Trim();
+            if (scopeMode != "last_write" && scopeMode != "session")
+                return CommandResult.Fail("scope must be 'last_write' or 'session'.");
+            DateTime? sinceUtc = null;
+            if (request["since_utc"] != null)
+            {
+                string rawSince = request.Value<string>("since_utc");
+                if (string.IsNullOrWhiteSpace(rawSince) || !DateTime.TryParse(rawSince, System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out DateTime parsedSince))
+                    return CommandResult.Fail("since_utc must be a parseable ISO-8601 date/time.");
+                sinceUtc = parsedSince;
+            }
+            bool includeAnnotation = request.Value<bool?>("include_annotation") ?? false;
+            List<long> explicitViewIds = null;
+            if (request["view_ids"] != null)
+            {
+                if (!(request["view_ids"] is JArray viewArr) || viewArr.Count < 1 || viewArr.Count > 50)
+                    return CommandResult.Fail("view_ids must hold 1..50 ids.");
+                explicitViewIds = new List<long>();
+                foreach (JToken t in viewArr)
+                {
+                    if (t.Type != JTokenType.Integer) return CommandResult.Fail("view_ids must be integers.");
+                    explicitViewIds.Add(t.Value<long>());
+                }
+            }
 
             Document doc;
             GateResult gate = null;
@@ -78,6 +103,32 @@ namespace Horizun.Revit.Commands
                 }
                 scope["source"] = "element_ids";
             }
+            else if (scopeMode == "session")
+            {
+                IReadOnlyList<ChangeLedger.Entry> history = ChangeLedger.HistoryFor(doc);
+                List<SessionScopeRules.WriteEntry> rows = history
+                    .Select(h => new SessionScopeRules.WriteEntry { AtUtc = h.AtUtc, Tool = h.Tool, Added = h.Added, Modified = h.Modified }).ToList();
+                SessionScopeRules.Outcome union = SessionScopeRules.Union(rows, sinceUtc);
+                if (union.WritesConsidered == 0)
+                    return CommandResult.Ok(new JObject
+                    {
+                        ["status"] = "nothing_to_check",
+                        ["reason"] = sinceUtc.HasValue
+                            ? "No Horizun write changed this document at or after since_utc=" + sinceUtc.Value.ToString("o") + "."
+                            : "No Horizun write has changed this document since Revit started (the ledger lives in memory). Pass element_ids to check specific elements.",
+                        ["read_only"] = true
+                    });
+                ids.AddRange(union.Ids.Where(Rid.CanRepresent).Select(Rid.Make));
+                scope["source"] = "session";
+                scope["writes_considered"] = union.WritesConsidered;
+                scope["tools"] = new JArray(union.Tools);
+                scope["ids_found"] = union.TotalIdsFound;
+                scope["ids_checked"] = union.Ids.Count;
+                scope["truncated"] = union.Truncated;
+                if (union.Truncated)
+                    scope["truncated_why"] = "more than " + SessionScopeRules.MaxIds + " distinct ids were touched across the writes considered; only the first " + SessionScopeRules.MaxIds + " are checked.";
+                if (sinceUtc.HasValue) scope["since_utc"] = sinceUtc.Value.ToString("o");
+            }
             else
             {
                 ChangeLedger.Entry last = ChangeLedger.For(doc);
@@ -100,12 +151,27 @@ namespace Horizun.Revit.Commands
             scope["model_elements"] = subjects.Count;
             SpatialCoherence.Outcome outcome = SpatialCoherence.Check(doc, subjects, 5000, budgetS * 1000);
             JObject check = SpatialCoherence.ToJson(outcome, maxFindings);
-            var result = new JObject();
             string headline = SpatialCoherence.Headline(outcome);
-            if (headline != null) result["attention"] = headline;
+
+            JObject annotationCheck = null;
+            string annotationHeadline = null;
+            if (includeAnnotation)
+            {
+                List<View> annotationViews = ResolveAnnotationViews(app, doc, explicitViewIds, subjects, out CommandResult viewError);
+                if (viewError != null) return viewError;
+                annotationCheck = TagOverlapCheck.Run(doc, annotationViews);
+                int overlapCount = annotationCheck["findings"] is JArray fa ? fa.Count : 0;
+                if (overlapCount > 0)
+                    annotationHeadline = "Annotation check: " + overlapCount + " tag/text-note overlap(s) - review annotation_check.findings.";
+            }
+
+            var result = new JObject();
+            string combinedHeadline = headline == null ? annotationHeadline : annotationHeadline == null ? headline : headline + " " + annotationHeadline;
+            if (combinedHeadline != null) result["attention"] = combinedHeadline;
             result["status"] = check["status"];
             result["scope"] = scope;
             result["spatial_check"] = check;
+            if (annotationCheck != null) result["annotation_check"] = annotationCheck;
             result["read_only"] = true;
 
             if (capture && subjects.Count > 0)
@@ -122,11 +188,52 @@ namespace Horizun.Revit.Commands
                         new JObject { ["code"] = "temporary_view_not_rolled_back", ["write_started"] = true, ["result"] = result });
             }
             else if (capture) result["image"] = new JObject { ["captured"] = false, ["why"] = "no model element with geometry in scope" };
-            result["next"] = outcome.Errors + outcome.Warnings > 0
+            string next = outcome.Errors + outcome.Warnings > 0
                 ? "Fix each finding (move, delete the duplicate, reroute) or undo the write with horizun_undo; then call this again. Do not report the modelling as done while errors remain."
                 : outcome.Partial ? "Partial check - narrow element_ids or raise time_budget_seconds before calling the result clean."
                 : "No spatial conflict among the changed elements. Still look at the image: this check sees solids, not intent (wrong level, wrong room, missing element).";
+            if (annotationHeadline != null) next += " Also move or restyle the overlapping tags/text notes named in annotation_check.findings.";
+            result["next"] = next;
             return CommandResult.Ok(result);
+        }
+
+        /// <summary>
+        /// Views to check for tag/text-note overlap: view_ids when given (every id must
+        /// resolve to a View in this document - a caller-facing mistake, not a soft skip);
+        /// otherwise the OwnerView of any tag/text note already in scope; otherwise the
+        /// active view of THIS document when the UI has one open on it (never a different
+        /// document's active view). No view found is "nothing_to_check", not an error.
+        /// </summary>
+        private static List<View> ResolveAnnotationViews(UIApplication app, Document doc, List<long> explicitViewIds,
+            List<Element> subjects, out CommandResult error)
+        {
+            error = null;
+            if (explicitViewIds != null)
+            {
+                var views = new List<View>();
+                var bad = new List<long>();
+                foreach (long vid in explicitViewIds)
+                {
+                    View v = Rid.CanRepresent(vid) ? doc.GetElement(Rid.Make(vid)) as View : null;
+                    if (v == null) bad.Add(vid); else views.Add(v);
+                }
+                if (bad.Count > 0)
+                {
+                    error = CommandResult.Fail("view_ids does not resolve to a view in this document: " + string.Join(", ", bad) + ".");
+                    return null;
+                }
+                return views;
+            }
+            var derived = new HashSet<long>();
+            foreach (Element e in subjects)
+                if (e is IndependentTag || e is TextNote)
+                    try { derived.Add(Rid.Value(e.OwnerViewId)); } catch { }
+            if (derived.Count > 0)
+                return derived.Select(v => { try { return doc.GetElement(Rid.Make(v)) as View; } catch { return null; } }).Where(v => v != null).ToList();
+            View active = null;
+            try { if (app?.ActiveUIDocument?.Document != null && app.ActiveUIDocument.Document.Equals(doc)) active = app.ActiveUIDocument.ActiveView; }
+            catch { }
+            return active != null ? new List<View> { active } : new List<View>();
         }
 
         private static JObject Picture(Document doc, List<Element> subjects, SpatialCoherence.Outcome outcome, int pixel, string orientation)

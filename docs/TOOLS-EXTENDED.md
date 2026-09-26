@@ -1085,21 +1085,59 @@ how the two relate. The rules (`Core/SpatialCoherenceRules.cs`, unit-tested) jud
 
 It never rolls anything back — the write already committed and verified what was
 asked. It is bounded (800 elements, 8 s) and says `partial` when a bound stopped it.
-Data-only tools (parameters, keynotes, worksets, materials, schedules, views…) are
-skipped: `DocumentChanged` cannot tell a moved element from a renamed one. Loaded Revit
-links are examined too: each changed solid is carried into the link's coordinates and
-judged by category (host/join/connector relations do not cross files); an unloaded link
-is listed in `links_skipped`, never counted as clear. `HORIZUN_SPATIAL_CHECK=off` disables it for a
-process, for a bulk import that checks once at the end.
+Loaded Revit links are examined too: each changed solid is carried into the link's
+coordinates and judged by category (host/join/connector relations do not cross
+files); an unloaded link is listed in `links_skipped`, never counted as clear.
+`HORIZUN_SPATIAL_CHECK=off` disables it for a process, for a bulk import that checks
+once at the end.
 
-**On demand.** `horizun_verify_changes` checks the elements the LAST Horizun write in
-the active document changed (kept in memory since Revit started) or the `element_ids`
-given, and returns the findings plus an IMAGE: a temporary isometric 3D view with a
-section box around them — blue changed, red in an error, orange in a warning,
-annotations hidden — created in a transaction group that is always rolled back
-(`image.temporary_view_rollback = RolledBack`). Call it after a modelling batch and
-look at the image: the check sees solids, not intent (a wrong level or room, or a
-missing element, needs the picture).
+**Data-only tools now get a bounded look too.** Parameters, keynotes, worksets,
+materials, schedules, views… used to be skipped outright: `DocumentChanged` cannot
+tell a moved element from a renamed one, and checking every parameter write in full
+would pay a solid-intersection pass for a rename. But a parameter write CAN move
+geometry — an offset, a base height, a type swap — so `Core/DataOnlyGeometryRules.cs`
+(backed by a bounded `Core/BBoxCache.cs`) decides per element instead of skipping the
+tool: a modified element whose bounding box differs from the one recorded the last
+time ANY Horizun call saw it (moved beyond ~3 mm) is always checked; an element never
+seen before this Revit session is checked only when there are at most 200 such
+elements across the call, whole, never partially. Above that cap the check is
+skipped for that write and `spatial_check.scope` (or `.scope_note`) says exactly how
+many elements and why — a documented limit, not a silent gap. `horizun_verify_changes`
+remains the way to look at those elements explicitly afterwards.
+
+**On demand.** `horizun_verify_changes` checks the elements a Horizun write in the
+active document changed, or the `element_ids` given, and returns the findings plus an
+IMAGE: a temporary isometric 3D view with a section box around them — blue changed,
+red in an error, orange in a warning, annotations hidden — created in a transaction
+group that is always rolled back (`image.temporary_view_rollback = RolledBack`). Call
+it after a modelling batch and look at the image: the check sees solids, not intent (a
+wrong level or room, or a missing element, needs the picture).
+
+- `scope` (default `last_write`): the previous behaviour, unchanged — only the most
+  recent Horizun write in this document (kept in memory since Revit started).
+  `scope=session` instead unions every write's added/modified ids since Revit started
+  (or `since_utc`, an ISO-8601 UTC instant), so several writes in a row get checked
+  together; `ChangeLedger` now keeps a bounded (500 writes) history per document
+  alongside the "last write" entry it always kept. The union is capped at 2000 distinct
+  ids — `scope.truncated` and `scope.truncated_why` say so when it was cut. Passing
+  `element_ids` overrides `scope` entirely, as before.
+- `include_annotation=true` additionally runs the TAG/TEXT-NOTE OVERLAP check
+  (`Core/TagOverlapRules.cs` for the pure 2D rectangle geometry, `Core/TagOverlapCheck.cs`
+  for the Revit-side gathering): every `IndependentTag` and `TextNote` in the relevant
+  view(s), compared pairwise by their VIEW-COORDINATE bounding box
+  (`Element.get_BoundingBox(view)` — not model space; annotation is drawn flat on the
+  sheet or view). Two tags/text notes stacked on top of each other are reported; two
+  tags of the SAME host element that overlap are called out by name ("two tags of the
+  same element overlap"). A LABEL-ONLY tag whose extent Revit does not expose through
+  that call is `unmeasured`, never folded into "clear" — the check did not look at it.
+  `view_ids` names the view(s) explicitly (each must resolve to a view in this
+  document, or the call is refused); omitted, it defaults to the owning view of any
+  tag/text note already in scope, else the active view of THIS document. Findings
+  land in `annotation_check` and fold into the same `attention` headline as
+  `spatial_check`. `horizun_annotate` also gets this automatically and for free right
+  after it creates a tag or text note — capped to at most 3 owning views so the
+  automatic pass stays cheap; a batch that annotated more views calls
+  `horizun_verify_changes(include_annotation=true, view_ids=[...])` explicitly.
 
 ## Field notes: naming side effects and a read-only add-in's own writes
 
