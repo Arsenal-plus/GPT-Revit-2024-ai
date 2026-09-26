@@ -38,7 +38,7 @@ namespace Horizun.Server.Protocol
             {
                 ["supportedVersions"] = supported,
                 ["capabilities"] = Capabilities(McpEra.Modern),
-                ["instructions"] = ServerInstructions.Text,
+                ["instructions"] = ServerInstructions.Head, // the same head initialize sends
                 ["_meta"] = new JObject
                 {
                     ["io.horizunhub/provenance"] = ProvenanceStamp.Current(),

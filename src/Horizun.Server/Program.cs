@@ -1185,7 +1185,8 @@ namespace Horizun.Server
                         // whichever document is active, and that this bridge is
                         // deliberately organisation-neutral, so the standards a delivery
                         // actually needs are not in here and should not be invented.
-                        ["instructions"] = ServerInstructions.Text
+                        // Only the head: clients truncate long instructions (see ServerInstructions).
+                        ["instructions"] = ServerInstructions.Head
                     };
 
                 case "notifications/initialized":

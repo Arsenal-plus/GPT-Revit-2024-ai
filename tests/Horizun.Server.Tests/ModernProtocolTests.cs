@@ -275,6 +275,15 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Discover_returns_the_instructions_head()
+        {
+            // The same bounded head initialize sends: clients truncate long instructions,
+            // and the full guidance is the resource the head names.
+            JObject result = DiscoverHandler.Handle(RequestEnvelope.Read("server/discover", ModernMeta()));
+            Assert.Equal(ServerInstructions.Head, (string)result["instructions"]);
+        }
+
+        [Fact]
         public void Only_finished_extensions_are_advertised()
         {
             JObject advertised = ExtensionRegistry.Advertised();

@@ -304,6 +304,16 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Initialize_sends_the_bounded_instructions_head()
+        {
+            // Program.cs is not linked into this suite, so only the built server can
+            // prove that initialize sends the head and not the full guidance.
+            var init = ExchangeRaw(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
+            Assert.Equal(ServerInstructions.Head, (string)init[0]["result"]["instructions"]);
+        }
+
+        [Fact]
         public void Initialize_advertises_and_wire_serves_resources_and_prompts()
         {
             var init = ExchangeRaw(
