@@ -755,6 +755,18 @@ reads local or synced folders. It is host-resident (it answers with Revit closed
 **read-only**: it never uploads, moves, renames, approves or deletes anything in the
 cloud. It is classified `ReadOnly` with `openWorldHint: true`.
 
+**Measured live against ACC on 2026-09-26** with a 2-legged APS app, on a test project
+of a real account (no project content is quoted here):
+- `list_projects` listed 2 hubs.
+- `list_states` resolved `Project Files` to its folder id and listed the unmapped
+  system folders beside it.
+- `inspect` walked 58 files in 30 HTTP calls (budget 60, no retries), covered the
+  declared state and reported every name that does not follow the naming rules.
+- `versions` read one item's version history in 2 calls.
+
+The same run showed the limit stated below: a state with no folder declared is
+`covered=false`, never empty. OpenCDE has still not run against a live server.
+
 | provider | what it talks to |
 |---|---|
 | `acc` | Autodesk Construction Cloud / BIM 360 Docs through the APS Data Management API: `GET /project/v1/hubs` → `/hubs/{hub}/projects/{project}` → `/topFolders` → `GET /data/v1/projects/{project}/folders/{folder}/contents` → items and their tip versions → `GET /data/v1/projects/{project}/items/{item}/versions`. Scope `data:read`. |
