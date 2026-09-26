@@ -52,6 +52,11 @@ $fakeApply = {
         }
         'horizun_mep_routing' { return @{ stage = 'apply'; answer = (& $script:hangerReply $arguments) } }
         'horizun_delete_verified' { $script:deleted = $arguments.ids; return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{}) $false '') } }
+        'horizun_create_family' {
+            # The REAL shape (MEASURED 2026-09-26): loaded_family.symbol_ids after load_into_project.
+            if ($script:authorSymbol) { return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ loaded_family = [pscustomobject]@{ symbol_ids = @($script:authorSymbol) } }) $false '') } }
+            return @{ stage = 'apply'; answer = (Reply $null $true 'no template in the fake') }
+        }
         default { return @{ stage = 'apply'; answer = (Reply $null $true "unexpected apply $tool") } }
     }
 }
@@ -109,6 +114,23 @@ $script:genericTypes = @(); $script:bareReply = $refusedBare
 $ctxNone = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = 't3'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply }
 $none = @(& $module.Run $ctxNone); $noneBy = @{}; foreach ($c in $none) { $noneBy[$c.Name] = $c }
 Check 'no generic model type reports not_covered with the reason' (($noneBy[$n[0]].Outcome -eq 'not_covered') -and ($noneBy[$n[0]].Detail -match 'generic model') -and ($noneBy[$n[1]].Outcome -eq 'not_covered'))
+
+# ---- the probe's OWN hanger comes first, even when the fixture carries generic models ----
+# MEASURED 2026-09-26: the 2023 fixture's first generic model is a balcony the tool placed at
+# z=0; the case must measure the operation on a hanger it authored, not a stranger's family.
+New-State
+$script:genericTypes = $generic; $script:bareReply = $refusedBare; $script:authorSymbol = 777
+$fakeProgramData = Join-Path $env:TEMP ('hz-hg-pd-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path (Join-Path $fakeProgramData 'Autodesk\RVT 2026\Family Templates\English') | Out-Null
+Set-Content -LiteralPath (Join-Path $fakeProgramData 'Autodesk\RVT 2026\Family Templates\English\Metric Generic Model.rft') -Value 'fake'
+$realProgramData = $env:ProgramData
+try {
+    $env:ProgramData = $fakeProgramData
+    $own = @(& $module.Run ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = 't4'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply }))
+} finally { $env:ProgramData = $realProgramData; $script:authorSymbol = $null }
+$ownSent = $script:sent['t4-hg-apply-777']
+Check 'the authored hanger is used before the fixture''s generic models, with its rod parameter' (
+    $ownSent -and ($ownSent.hanger_type_id -eq 777) -and ($ownSent.rod_length_parameter -eq 'HZ Rod Length') -and (-not $script:sent.ContainsKey('t4-hg-apply-301')))
 
 $closed = $ctx.PSObject.Copy(); $closed.WriteGate = $true
 $shut = @(& $module.Run $closed)

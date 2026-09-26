@@ -118,9 +118,14 @@ namespace Horizun.Revit.Commands
                 long cat = symbol.Category == null ? -1 : Rid.Value(symbol.Category.Id);
                 if (!HangerCategories.Any(c => (long)(int)c == cat))
                 { error = "hanger_type_id " + typeId + " is " + (symbol.Category?.Name ?? "uncategorised") + "; hangers places generic models, pipe/duct accessories or specialty equipment."; return null; }
+                // LEVEL-BASED ONLY. MEASURED 2026-09-26 in Revit 2023: a work-plane-based generic
+                // model placed through NewFamilyInstance(point, symbol, level) stayed at z=0 - no
+                // writable offset and a Z move that did not take - so every station failed its
+                // re-read and the rehearsal refused. Refused here, before anything is placed, the
+                // same way create_elements refuses a hostless work-plane placement.
                 FamilyPlacementType placement = symbol.Family.FamilyPlacementType;
-                if (placement != FamilyPlacementType.OneLevelBased && placement != FamilyPlacementType.WorkPlaneBased)
-                { error = "hanger_type_id " + typeId + " is placed " + placement + "; hangers places non-hosted level-based or work-plane-based families."; return null; }
+                if (placement != FamilyPlacementType.OneLevelBased)
+                { error = "hanger_type_id " + typeId + " (" + symbol.FamilyName + ") is placed " + placement + "; hangers places level-based families only - a work-plane- or face-based family cannot be raised to the run's height here. Use a level-based generic model or accessory type."; return null; }
                 string rodName = (request.Value<string>("rod_length_parameter") ?? "").Trim();
                 if (rodName.Length == 0) rodName = null;
                 if (rodName != null && symbol.LookupParameter(rodName) != null)

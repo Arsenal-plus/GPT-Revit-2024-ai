@@ -5396,7 +5396,7 @@ namespace Horizun.Contracts
     ""slope_percent"": { ""type"": ""number"", ""description"": ""slope: grade to hold, e.g. 2.0 for 2%."" },
     ""fixed_end"": { ""type"": ""string"", ""description"": ""slope: 'upstream', 'downstream', or the open-end pipe id to hold, optionally ':high' or ':low'."" },
     ""min_clearance"": { ""type"": ""number"", ""description"": ""slope: refuse if any point lands below the floor under the held end plus this."" },
-    ""hanger_type_id"": { ""type"": ""integer"", ""description"": ""hangers: non-hosted family type placed at each station"" },
+    ""hanger_type_id"": { ""type"": ""integer"", ""description"": ""hangers: level-based family type placed at each station"" },
     ""spacing_mm"": { ""type"": ""number"", ""description"": ""hangers: maximum distance between supports"" },
     ""end_offset_mm"": { ""type"": ""number"", ""description"": ""hangers: clearance from each run end and each tap fitting"" },
     ""rod_length_parameter"": { ""type"": ""string"", ""description"": ""hangers: instance length parameter set to the measured rod"" },

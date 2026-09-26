@@ -49,29 +49,31 @@ $script:HzProbeModules += [pscustomobject]@{
         $pipeType = Types 'OST_PipeCurves' | Where-Object { $_.family -notmatch 'Flex' -and $_.type -notmatch 'Flex' } | Select-Object -First 1
         $system = Types 'OST_PipingSystem' | Select-Object -First 1
         $floorType = Types 'OST_Floors' | Select-Object -First 1
+        # THE PROBE AUTHORS ITS OWN HANGER with horizun_create_family - a 60 mm box on the
+        # year's Metric Generic Model template with an instance length parameter the tool then
+        # sets to the measured rod - loaded into the disposable document only. The fixture's
+        # generic models are the fallback, never the first choice: MEASURED 2026-09-26, the
+        # 2023 fixture's first loadable one is a balcony ('Stahlbalkon') that the tool placed at
+        # z=0 - the rehearsal refused honestly, but the case measured a stranger's family.
         # A LOADABLE generic model only: 'Model Text' is a system type (MEASURED 2026-09-26,
-        # Revit 2026: "hanger_type_id ... is not a loaded family type"). When the fixture has
-        # none, the probe AUTHORS its own hanger with horizun_create_family - a 60 mm box on
-        # the year's Metric Generic Model template with an instance length parameter the
-        # tool then sets to the measured rod - loaded into the disposable document only.
-        $hangerTypes = @(Types 'OST_GenericModel' | Where-Object { [string]$_.family -notmatch '(?i)model text|texto de modelo' } | Select-Object -First 3)
+        # Revit 2026: "hanger_type_id ... is not a loaded family type").
+        $hangerTypes = @()
         $rodParam = $null
-        if ($hangerTypes.Count -eq 0) {
-            $rftRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Ctx.Year)
-            $rft = if (Test-Path -LiteralPath $rftRoot) { Get-ChildItem -LiteralPath $rftRoot -Recurse -Filter 'Metric Generic Model.rft' -File -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1 } else { $null }
-            if ($rft) {
-                New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
-                $rfa = Join-Path $Ctx.ScratchRoot ('HZ_HANGER_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa')
-                $fam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $rft.FullName; output_path = $rfa
-                        units = 'mm'; overwrite = $true; load_into_project = $true
-                        parameters = @(@{ name = 'HZ Rod Length'; data_type = 'length'; group = 'geometry'; instance = $true })
-                        types = @(@{ name = 'HZ_HANGER'; values = @{} })
-                        forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 100
-                                     profile = @(, @(@(-30, -30, 0), @(30, -30, 0), @(30, 30, 0), @(-30, 30, 0))) }) } ($run + '-hg-family')
-                $sym = if ($fam.stage -eq 'apply' -and -not $fam.answer.isError -and $fam.answer.data.loaded_family) { @($fam.answer.data.loaded_family.symbol_ids)[0] } else { $null }
-                if ($sym) { $hangerTypes = @([pscustomobject]@{ element_id = [long]$sym; family = 'HZ_HANGER' }); $rodParam = 'HZ Rod Length' }
-            }
+        $rftRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Ctx.Year)
+        $rft = if (Test-Path -LiteralPath $rftRoot) { Get-ChildItem -LiteralPath $rftRoot -Recurse -Filter 'Metric Generic Model.rft' -File -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -First 1 } else { $null }
+        if ($rft) {
+            New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+            $rfa = Join-Path $Ctx.ScratchRoot ('HZ_HANGER_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa')
+            $fam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $rft.FullName; output_path = $rfa
+                    units = 'mm'; overwrite = $true; load_into_project = $true
+                    parameters = @(@{ name = 'HZ Rod Length'; data_type = 'length'; group = 'geometry'; instance = $true })
+                    types = @(@{ name = 'HZ_HANGER'; values = @{} })
+                    forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 100
+                                 profile = @(, @(@(-30, -30, 0), @(30, -30, 0), @(30, 30, 0), @(-30, 30, 0))) }) } ($run + '-hg-family')
+            $sym = if ($fam.stage -eq 'apply' -and -not $fam.answer.isError -and $fam.answer.data.loaded_family) { @($fam.answer.data.loaded_family.symbol_ids)[0] } else { $null }
+            if ($sym) { $hangerTypes = @([pscustomobject]@{ element_id = [long]$sym; family = 'HZ_HANGER' }); $rodParam = 'HZ Rod Length' }
         }
+        if ($hangerTypes.Count -eq 0) { $hangerTypes = @(Types 'OST_GenericModel' | Where-Object { [string]$_.family -notmatch '(?i)model text|texto de modelo' } | Select-Object -First 3) }
         $lvA = Create @(@{ kind = 'level'; name = "HZ_HG_A_$run"; elevation = $E }) 'level-a'
         $lvB = Create @(@{ kind = 'level'; name = "HZ_HG_B_$run"; elevation = ($E + $H) }) 'level-b'
         $floor = $null; $pipe = $null; $bare = $null
