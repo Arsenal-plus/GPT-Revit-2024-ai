@@ -47,6 +47,9 @@ namespace Horizun.Revit.Core
             public bool HostRelation;
             /// <summary>JoinGeometryUtils joined, or the walls meet at a location-curve join.</summary>
             public bool Joined;
+            /// <summary>The wall side of an opening pair runs parallel to, and in contact with,
+            /// the opening's own host wall: a lining, or a layer of a split compound wall.</summary>
+            public bool LinesOpeningHost;
             /// <summary>Connected through MEP connectors.</summary>
             public bool Connected;
             /// <summary>Nested family / super-component, or both belong to the same curtain system or stair.</summary>
@@ -149,6 +152,19 @@ namespace Horizun.Revit.Core
                 string opening = Openings.Contains(a) ? a : b, other = opening == a ? b : a;
                 if (!unmeasured && shared < OpeningMinSharedFt3)
                     return new Verdict { Kind = Kind.Expected, Reason = "the " + Label(opening) + "'s frame touches the " + Label(other) + " (less than 3 L shared)" };
+                // A WALL THAT LINES THE HOST IS NOT BLOCKING THE OPENING. MEASURED 2026-09-26
+                // (Revit 2026, a compound wall split into layers): an M_Single-Flush door kept on
+                // the core carrier had its trim, which the family lays on the host's faces, inside
+                // the plywood, air and gypsum layer walls (7.7, 2.4 and 5.1 L) - the opening itself
+                // was cut through every layer. "door is blocked by wall, move the door" sent the
+                // reader to the wrong fix. A perpendicular wall at a corner is still "blocked".
+                if (other == "OST_Walls" && p.LinesOpeningHost)
+                    return new Verdict
+                    {
+                        Kind = Kind.Conflict, Severity = "warning",
+                        Reason = "the " + Label(opening) + "'s frame or trim extends into a wall that lines its host (a layer of a split compound wall, or a lining); the opening itself is cut through the host",
+                        Suggestion = "give the family type a trim/frame projection that reaches the lining's face, or accept it - it is not an uncut opening"
+                    };
                 if (Openings.Contains(other) || Structure.Contains(other) || Enclosure.Contains(other) || Mep.Contains(other) ||
                     Contents.Contains(other) || other == "OST_Stairs" || other == "OST_Railings")
                     return new Verdict

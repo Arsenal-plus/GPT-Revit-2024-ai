@@ -118,6 +118,7 @@ namespace Horizun.Revit.Core
                         SameType = SafeType(a) != null && SafeType(a) == SafeType(b),
                         HostRelation = Hosts(a, b) || Hosts(b, a),
                         Joined = Joined(doc, a, b),
+                        LinesOpeningHost = LinesOpeningHost(a, b) || LinesOpeningHost(b, a),
                         Connected = Connected(a, b),
                         SameAssembly = SameAssembly(a, b),
                         SharedVolume = shared,
@@ -784,6 +785,29 @@ namespace Horizun.Revit.Core
             }
             catch { }
             return false;
+        }
+
+        // Does wall 'other' run parallel to, and in contact with, the host wall of 'opening' -
+        // a lining or a split layer - along the opening's own position? Straight walls only.
+        private static bool LinesOpeningHost(Element opening, Element other)
+        {
+            try
+            {
+                if (!(opening is FamilyInstance fi) || !(fi.Host is Wall host) || !(other is Wall wall)) return false;
+                if (!(host.Location is LocationCurve hc) || !(hc.Curve is Line hl)) return false;
+                if (!(wall.Location is LocationCurve wc) || !(wc.Curve is Line wl)) return false;
+                XYZ hd = new XYZ(hl.Direction.X, hl.Direction.Y, 0).Normalize(), wd = new XYZ(wl.Direction.X, wl.Direction.Y, 0).Normalize();
+                if (Math.Abs(hd.DotProduct(wd)) < 0.9999) return false;
+                XYZ normal = new XYZ(-hd.Y, hd.X, 0);
+                XYZ h0 = hl.GetEndPoint(0), w0 = wl.GetEndPoint(0);
+                double apart = Math.Abs(new XYZ(w0.X - h0.X, w0.Y - h0.Y, 0).DotProduct(normal));
+                double contact = (host.Width + wall.Width) / 2.0 + 2.0 / 304.8;
+                if (apart > contact) return false;
+                if (!(fi.Location is LocationPoint lp)) return true;
+                double along = new XYZ(lp.Point.X - w0.X, lp.Point.Y - w0.Y, 0).DotProduct(wd);
+                return along >= -1.0 / 304.8 && along <= wl.Length + 1.0 / 304.8;
+            }
+            catch { return false; }
         }
 
         private static bool Joined(Document doc, Element a, Element b)

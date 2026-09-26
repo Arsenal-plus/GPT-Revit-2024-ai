@@ -7,12 +7,32 @@ namespace Horizun.Core.Tests
     public class SpatialCoherenceRulesTests
     {
         private static SpatialCoherenceRules.Verdict V(string a, string b, double? shared = 0.5, bool sameType = false,
-            bool host = false, bool joined = false, bool connected = false, bool assembly = false, double? va = 2, double? vb = 3) =>
+            bool host = false, bool joined = false, bool connected = false, bool assembly = false, double? va = 2, double? vb = 3,
+            bool linesHost = false) =>
             SpatialCoherenceRules.Classify(new SpatialCoherenceRules.Pair
             {
                 CategoryA = a, CategoryB = b, SharedVolume = shared, SameType = sameType, HostRelation = host,
-                Joined = joined, Connected = connected, SameAssembly = assembly, VolumeA = va, VolumeB = vb
+                Joined = joined, Connected = connected, SameAssembly = assembly, VolumeA = va, VolumeB = vb,
+                LinesOpeningHost = linesHost
             });
+
+        // MEASURED 2026-09-26: after a compound wall was split into layers, the door kept on the
+        // core carrier had its trim inside the plywood/air/gypsum layer walls; the opening was
+        // cut. A wall that LINES the host is a warning naming the trim, never "blocked, move the
+        // door"; a wall that does not line it (a perpendicular wall at a corner) still blocks.
+        [Fact]
+        public void An_opening_whose_trim_reaches_a_wall_lining_its_host_is_a_warning_not_a_blocked_opening()
+        {
+            var lining = V("OST_Doors", "OST_Walls", linesHost: true);
+            Assert.Equal(K.Conflict, lining.Kind);
+            Assert.Equal("warning", lining.Severity);
+            Assert.Contains("lines its host", lining.Reason);
+            Assert.DoesNotContain("blocked", lining.Reason);
+            Assert.Equal("warning", V("OST_Walls", "OST_Windows", linesHost: true).Severity);
+            Assert.Equal("error", V("OST_Doors", "OST_Walls", linesHost: false).Severity);
+            Assert.Equal("error", V("OST_Doors", "OST_StructuralColumns", linesHost: true).Severity);
+            Assert.Equal(K.Expected, V("OST_Doors", "OST_Walls", linesHost: true, shared: 0.01).Kind);
+        }
 
         [Fact]
         public void A_door_and_a_column_in_the_same_place_is_an_error_measured_in_the_field()
