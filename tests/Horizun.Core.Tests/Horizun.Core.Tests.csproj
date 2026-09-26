@@ -640,6 +640,9 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\DataOnlyGeometryRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SessionScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\TagOverlapRules.cs" />
+    <!-- horizun_mep_routing's `route` op: 3-D A* on an orthogonal grid, boxes and
+         points only - no Autodesk.* here so the search itself is provable at a desk. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\RouteSearch.cs" />
   </ItemGroup>
 
   <ItemGroup>
