@@ -50,6 +50,18 @@ namespace Horizun.Server.Tests
             return copy;
         }
 
+        /// <summary>
+        /// What tools/list advertised before the structural steps (c56a742): the description
+        /// caps alone on a clone of the contract. Clients have seen this copy; the new one must
+        /// not accept or reject anything it did not.
+        /// </summary>
+        private static JObject PreChange(JObject full)
+        {
+            var copy = (JObject)full.DeepClone();
+            Tools.CompactSchemaNode(copy);
+            return copy;
+        }
+
         private static IEnumerable<CommandContract> WithSchemas() => Contract.All.Where(c => c.InputSchema != null);
 
         [Fact]
@@ -154,15 +166,20 @@ namespace Horizun.Server.Tests
 
             var disagreements = new List<string>();
             int accepted = 0;
-            var schemas = new Dictionary<string, (JObject full, JObject adv)>();
+            var schemas = new Dictionary<string, (JObject full, JObject adv, JObject before)>();
             foreach ((string tool, JToken args) in corpus)
             {
-                if (!schemas.TryGetValue(tool, out var pair)) schemas[tool] = pair = (Full(tool), Advertised(tool));
-                bool fullOk = ContractSchemaCheck.Validate(args, pair.full).Count == 0;
-                bool advOk = ContractSchemaCheck.Validate(args, pair.adv).Count == 0;
+                if (!schemas.TryGetValue(tool, out var s)) schemas[tool] = s = (Full(tool), Advertised(tool), PreChange(Full(tool)));
+                bool fullOk = ContractSchemaCheck.Validate(args, s.full).Count == 0;
+                bool advOk = ContractSchemaCheck.Validate(args, s.adv).Count == 0;
+                // The pre-change copy differs from the contract only in capped descriptions, which
+                // carry no verdict; checking it anyway pins that the abridgement changed nothing a
+                // client that cached the old tools/list would have been told.
+                bool beforeOk = ContractSchemaCheck.Validate(args, s.before).Count == 0;
                 if (fullOk) accepted++;
-                if (fullOk != advOk && disagreements.Count < 10)
-                    disagreements.Add(tool + " full=" + fullOk + " advertised=" + advOk + " " + args.ToString(Newtonsoft.Json.Formatting.None));
+                if ((fullOk != advOk || beforeOk != advOk) && disagreements.Count < 10)
+                    disagreements.Add(tool + " full=" + fullOk + " advertised=" + advOk + " pre-change=" + beforeOk + " "
+                        + args.ToString(Newtonsoft.Json.Formatting.None));
             }
             Assert.True(disagreements.Count == 0, "verdicts differ:\n" + string.Join("\n", disagreements));
             // Both sides must be exercised: a corpus that only fails proves nothing about acceptance.

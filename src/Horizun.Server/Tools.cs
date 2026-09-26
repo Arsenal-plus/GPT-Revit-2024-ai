@@ -500,7 +500,10 @@ namespace Horizun.Server
                 foreach (JToken item in a) DropBranchTypeEqualToParent(item);
         }
 
-        private static void CompactSchemaNode(JToken node)
+        // internal, not private: DeepClone + CompactSchemaNode alone IS the advertised copy
+        // before the structural steps existed (c56a742), and the equivalence test rebuilds it
+        // to prove the abridgement gives the verdicts clients already saw, not only the contract's.
+        internal static void CompactSchemaNode(JToken node)
         {
             if (node is JObject o)
             {
