@@ -601,7 +601,11 @@ namespace Horizun.Server.Tests
             Assert.False(c.Destructive);
             Assert.True(c.ExternalContent);
             Assert.Contains("coordination", c.Toolsets);
-            Assert.DoesNotContain("dry_run", ((JObject)c.InputSchema["properties"]).Properties().Select(p => p.Name));
+            // The only writes (ACC issue_create / issue_update) rehearse unless told otherwise.
+            JObject props = (JObject)c.InputSchema["properties"];
+            Assert.True((bool)props["dry_run"]["default"]);
+            Assert.NotNull(props["confirmation_token"]);
+            Assert.DoesNotContain("READ-ONLY", c.Description);
         }
     }
 }
