@@ -84,7 +84,8 @@ $script:HzProbeModules += [pscustomobject]@{
         $spec = @{ wall = @{ layer = 'core'
             stud = @{ type_id = $member; spacing_mm = 406.4; start = 'wall_start'; double_at_ends = $false; width_mm = 41.3 }
             track = @{ bottom_type_id = $member; top_same_as_bottom = $true; thickness_mm = 0.9 }
-            openings = @{ king_studs = 1; jack_studs = $true; header_type_id = $member; sill_type_id = $member; cripple_spacing_mm = 406.4 } } }
+            openings = @{ king_studs = 1; jack_studs = $true; header_type_id = $member; sill_type_id = $member; cripple_spacing_mm = 406.4
+                          header_depth_mm = 40; sill_depth_mm = 40 } } }
         $wallArgs = @{ operation = 'wall'; target_document = $doc; element_ids = @($wall); spec = $spec }
         $ready = $wall -and $door -and $window -and $member
         $why = "staging incomplete: wall $wall, door $door, window $window, member type $member (template found: $([bool]$rft))"

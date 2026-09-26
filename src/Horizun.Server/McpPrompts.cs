@@ -459,8 +459,8 @@ namespace Horizun.Server
                         (wall
                             ? "Fields: layer ('core' or the compound layer index the studs sit in), stud {type_id, spacing_mm, start wall_start|wall_end|centred, " +
                               "max_first_bay_mm, double_at_ends, width_mm}, track {bottom_type_id, top_type_id or top_same_as_bottom, thickness_mm}, openings " +
-                              "{king_studs 1|2, jack_studs, header_type_id, sill_type_id, cripple_spacing_mm}, blocking [{height_mm, type_id}]. "
-                            : "Fields: main {type_id, spacing_mm, direction short|long|<angle_deg>}, cross {type_id, spacing_mm}, perimeter {type_id}, " +
+                              "{king_studs 1|2, jack_studs, header_type_id, sill_type_id, cripple_spacing_mm, header_depth_mm, sill_depth_mm}, blocking [{height_mm, type_id}]. "
+                            : "Fields: main {type_id, spacing_mm, direction short|long|<angle_deg>, depth_mm}, cross {type_id, spacing_mm, depth_mm}, perimeter {type_id, depth_mm}, " +
                               "hanger {type_id, spacing_mm along each main, max_length_mm (default 3000), attach structure_above}, drop_mm (ceiling top face " +
                               "up to the mains' underside, default 0). ") +
                         "3) Types are the person's: list candidate family types with horizun_query_model and let the person choose; a vertical member needs " +

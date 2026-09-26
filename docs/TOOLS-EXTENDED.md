@@ -1808,7 +1808,7 @@ is compiled in.
 | operation | writes | what it does |
 |---|---|---|
 | `wall` | yes | studs, tracks, kings, jacks, headers, sills, cripples and blocking inside one layer of each straight Basic wall in `element_ids` (or visible in `view_id`) |
-| `ceiling` | yes | mains, cross (furring) channels, perimeter track and hangers for each Ceiling (lands in a later build; refused by name until then) |
+| `ceiling` | yes | mains, cross (furring) channels, perimeter track and hangers for each Ceiling in `element_ids`, the hangers ray-cast to the structure above |
 | `read` | no | what a previous apply produced, per source, found by the marker on each member |
 | `remove` | yes | deletes the members (and their work planes) a previous apply produced for `element_ids`, verified |
 
@@ -1827,7 +1827,8 @@ matches, and nothing is written. The apply sends the token and an `idempotency_k
     "layer": "core",
     "stud":  { "type_id": 900101, "spacing_mm": 406.4, "start": "wall_start", "double_at_ends": false, "width_mm": 41.3 },
     "track": { "bottom_type_id": 900102, "top_same_as_bottom": true, "thickness_mm": 0.9 },
-    "openings": { "king_studs": 1, "jack_studs": true, "header_type_id": 900102, "sill_type_id": 900102, "cripple_spacing_mm": 406.4 },
+    "openings": { "king_studs": 1, "jack_studs": true, "header_type_id": 900102, "sill_type_id": 900102, "cripple_spacing_mm": 406.4,
+                  "header_depth_mm": 92.1, "sill_depth_mm": 92.1 },
     "blocking": [ { "height_mm": 1200, "type_id": 900102 } ]
   } }
 }
@@ -1861,7 +1862,14 @@ matches, and nothing is written. The apply sends the token and an `idempotency_k
   (default true when no top type is named); `thickness_mm` (default 0 with a warning:
   studs then run from base to top of wall).
 - **wall.openings**: `king_studs` 1 (default) or 2, `jack_studs` (default true),
-  `header_type_id`, `sill_type_id`, `cripple_spacing_mm`. Hosted doors, windows and
+  `header_type_id`, `sill_type_id`, `cripple_spacing_mm`, `header_depth_mm`, `sill_depth_mm`
+  (the header's / sill's section depth in z: the header's axis sits at head + depth/2 on
+  the jacks and the cripples above start at head + depth; the sill's axis at sill - depth/2
+  and the cripples below end at sill - depth; a blocking row inside that framed depth is
+  skipped. Without a depth the axis sits ON the head / sill line, half the member in the
+  void, and the plan warns `no_header_depth` / `no_sill_depth`. A header that would rise
+  into the top track, or a sill that would sink into the bottom track, is not placed and
+  is named in `warnings`). Hosted doors, windows and
   rectangular wall openings are read from the wall (rough size when the family publishes
   it, else nominal, else the bounding box; each opening says which in `read_from`). A stud
   station inside an opening is removed; no stud ever crosses one.
