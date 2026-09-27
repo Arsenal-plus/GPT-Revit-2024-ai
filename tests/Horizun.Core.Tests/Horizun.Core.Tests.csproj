@@ -256,6 +256,9 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\TypeCatalogRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRouteRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ExportPresetRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExportFormatRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\EnergyReadinessRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\HeadroomRules.cs" />
 
     <!-- The DWG reading layer. These decide what a drawing MEANS - which lines
          are a wall, which ring is a room, whether this is the same entity as

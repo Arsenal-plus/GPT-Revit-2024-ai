@@ -1789,7 +1789,7 @@ namespace Horizun.Contracts
                 Name = "horizun_export",
                 Command = "horizun_export",
                 Description =
-                    "Export verified deliverables from the active document: combined PDF, one-view DWG, configurable " +
+                    "Export verified deliverables from the active document: combined PDF, DWG/DGN/DWFX view sets, gbXML, family .rfa, configurable " +
                     "IFC, model/view Navisworks NWC, one or more 3D views to FBX, one-view image or one native schedule " +
                     "as delimited text/CSV. Dry-run validates paths, exporters, " +
                     "views and overwrite policy without writing; apply requires confirmation and idempotency, then " +
@@ -1798,9 +1798,9 @@ namespace Horizun.Contracts
   ""type"": ""object"", ""required"": [""target_document"", ""format"", ""output_path""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv"", ""dwg_layers""] },
-    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file with an extension matching format (.pdf/.dwg/.ifc/.nwc/.fbx; an image extension; or .csv/.txt). Image export may create a family of names, all of which are reported."" },
-    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""PDF: one or more printable views/sheets. DWG/image: exactly one. FBX: one or more 3D views. NWC view scope: exactly one."" },
+    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""dgn"", ""dwfx"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv"", ""dwg_layers"", ""gbxml"", ""rfa""] },
+    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file with an extension matching format (.pdf/.dwg/.dgn/.dwfx/.ifc/.nwc/.fbx/.xml; an image extension; or .csv/.txt); rfa: a folder. Image export may create a family of names, all of which are reported."" },
+    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""PDF, DWG/DGN/DWFX (a file each): one or more printable views/sheets. Image: exactly one. FBX: one or more 3D views. NWC view scope: exactly one."" },
     ""schedule_id"": { ""type"": ""integer"" },
     ""image_pixels"": { ""type"": ""integer"", ""minimum"": 128, ""maximum"": 8192, ""default"": 2048 },
     ""pdf_combine"": { ""type"": ""boolean"", ""default"": true, ""description"": ""PDF: true produces one combined file; false produces deterministic stem-ordinal-viewId.pdf files. All PDFs are reopened and page counts checked."" },
@@ -1830,6 +1830,10 @@ namespace Horizun.Contracts
         ""export_in_background"": { ""type"": ""boolean"", ""description"": ""Only false is accepted. Revit 2025+ has PDFExportOptions.SetExportInBackground; measured on 2026, a background export returns before the file exists, and this tool reports only files it re-read - so true is refused by name on every year (and the option is refused outright on 2023/2024, where it does not exist)."" }
     } },
     ""preset"": { ""type"": ""object"", ""description"": ""A NAMED, HASHED option bundle handed in as an argument (organisation-neutral: nothing ships compiled in). Its options override the loose arguments, its sha256 joins the plan hash - an edited preset is a different plan and the token refuses - and after the export each option is either PROVED from the produced file (ifc_version via FILE_SCHEMA, acad_version via the DWG signature, pixel_size via the PNG IHDR, combine by counting files) or reported requested_unverifiable by name. Unknown options and out-of-list values refuse the whole call."", ""properties"": { ""name"": { ""type"": ""string"" }, ""schema_version"": { ""type"": ""integer"", ""default"": 1 }, ""overwrite_policy"": { ""type"": ""string"", ""enum"": [""refuse"", ""replace""], ""default"": ""refuse"" }, ""options"": { ""type"": ""object"" } }, ""required"": [""name""] },
+    ""file_naming"": { ""type"": ""string"", ""enum"": [""ordinal"", ""view_name"", ""sheet_number""], ""description"": ""dwg/dgn/dwfx sets: stem-<ordinal-id|view name|sheet number-name>."" },
+    ""dwg_xrefs"": { ""type"": ""string"", ""enum"": [""linked"", ""bound""], ""description"": ""dwg: a sheet's views and links as xref files beside it, or bound into it."" },
+    ""family_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""rfa: loadable Family ids."" },
+    ""category"": { ""type"": ""string"", ""description"": ""rfa: every loadable family of this category (OST_ token or name)."" },
     ""acad_version"": { ""type"": ""string"", ""enum"": [""2013"", ""2018""], ""description"": ""dwg: the file version; verified from the produced file's signature."" },
     ""dwg_setup"": { ""type"": ""object"", ""required"": [""name""], ""additionalProperties"": false, ""description"": ""dwg: export with this named setup. dwg_layers (.json output): read its layer table, create it if absent, write layers rows; re-read after commit. A new setup is seeded from source, else layer_standard, else Revit's default, the active setup or a predefined one - whichever REALLY gives the created setup a layer table (rehearsed and rolled back); all empty refuses."", ""properties"": {
       ""name"": { ""type"": ""string"" }, ""source"": { ""type"": ""string"", ""description"": ""An existing setup whose table seeds a NEW one."" },
@@ -4948,17 +4952,18 @@ namespace Horizun.Contracts
                 Description =
                     "Evaluate a declarative requirement set over the active model: parameter assertions and geometric measures " +
                     "(doors, ramps, stairs, 2R+T, space illuminance, exits per level, travel_distance_m). Examples: standards/co-*.json. " +
-                    "operation=travel_distance routes egress per room with Revit's path of travel; create_paths: dry run, token, re-read.",
+                    "operation=travel_distance routes egress per room with Revit's path of travel; create_paths: dry run, token, re-read. energy_readiness: read-only energy-model gaps, WWR by orientation. headroom: clear height by vertical rays.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""check"", ""travel_distance""], ""default"": ""check"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""check"", ""travel_distance"", ""energy_readiness"", ""headroom""], ""default"": ""check"" },
     ""target_document"": { ""type"": ""string"" },
     ""requirement_set"": { ""type"": ""object"", ""description"": ""Inline set, or give requirement_set_path."" },
     ""requirement_set_path"": { ""type"": ""string"" },
     ""max_findings"": { ""type"": ""integer"" },
     ""include_passes"": { ""type"": ""boolean"" },
     ""travel"": { ""type"": ""object"", ""description"": ""{view_ids, exits:{parameter,value?}|{mark_prefix}|{element_ids}, room_ids?, max_m?, create_paths?}"" },
+    ""headroom"": { ""type"": ""object"", ""description"": ""{view_id, element_ids|categories, min_mm, direction?, spacing_mm?, targets?}"" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   },
   ""additionalProperties"": false

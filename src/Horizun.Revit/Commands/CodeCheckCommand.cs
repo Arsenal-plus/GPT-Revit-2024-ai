@@ -46,7 +46,9 @@ namespace Horizun.Revit.Commands
             // only write this tool has (create_paths). Every other call is the read-only check.
             string operation = request.Value<string>("operation") ?? "check";
             if (operation == "travel_distance") return ExecuteTravel(app, request);
-            if (operation != "check") return CommandResult.Fail("operation must be check or travel_distance, not '" + operation + "'.");
+            if (operation == "energy_readiness") return ExecuteEnergyReadiness(app, request);
+            if (operation == "headroom") return ExecuteHeadroom(app, request);
+            if (operation != "check") return CommandResult.Fail("operation must be check, travel_distance, energy_readiness or headroom, not '" + operation + "'.");
 
             CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
             if (wrongDocument != null) return wrongDocument;
