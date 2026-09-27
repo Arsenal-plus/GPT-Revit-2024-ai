@@ -172,7 +172,7 @@ namespace Horizun.Core.Tests
             // (the spec reader's 10 mm minimum is what refuses that unit slip); a 6 x 6 m square is 6004.
             Assert.Equal("over_budget", CeilingFramingRules.Plan(Ceiling(1, Loop(0, 0, 6000, 0, 6000, 6000, 0, 6000)), Budget).Refusal);
         }
-    
+
         [Fact]
         public void Inside_and_distance_outside_honour_holes_and_edges()
         {

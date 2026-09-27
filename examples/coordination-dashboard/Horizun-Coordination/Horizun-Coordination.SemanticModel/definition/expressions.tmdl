@@ -2,4 +2,3 @@ expression LedgerCsvPath = "C:\Horizun\coordination-ledger.csv" meta [IsParamete
 	lineageTag: 6b0f2e9a-3c1d-4f7e-9a51-2d8c4b7e1a30
 
 	annotation PBI_ResultType = Text
-
