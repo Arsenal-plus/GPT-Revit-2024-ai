@@ -4392,13 +4392,14 @@ namespace Horizun.Contracts
                     "an unattended caller can close what Revit actually opened. " +
                     "Saving reports bytes/mtime/format re-read from " +
                     "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
-                    "so audit_ran only ever describes the open. It never syncs to central.",
+                    "so audit_ran only ever describes the open. sync_with_central is OFF until the machine owner enables it " +
+                    "in Revit (Advanced options); its preview is an ESTIMATE and its token binds that estimate.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect""],
-                     ""description"": ""inspect: read a file's version off disk without opening it. open/save/save_as/close do what they say."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect"", ""sync_with_central""],
+                     ""description"": ""inspect reads a file's version off disk unopened. sync_with_central is owner-gated; preview is an estimate."" },
     ""file_path"": { ""type"": ""string"",
                      ""description"": ""open/inspect: the file to read. For save/save_as/close it is an ALIAS of target_document, kept for compatibility - it no longer defaults to the active document."" },
     ""target_document"": { ""type"": ""string"",
@@ -4425,6 +4426,8 @@ namespace Horizun.Contracts
                      ""description"": ""open only: how a modal dialog raised WHILE opening is answered unattended. 'cancel' (default) presses Cancel; 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort, recorded in revit_said; scoped to the open call - every other dialog still cancels."" },
     ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path."" },
     ""compact"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save/save_as: pass Compact to the API. The response reports the byte delta it actually produced."" },
+    ""comment"": { ""type"": ""string"", ""description"": ""sync_with_central: comment stored in central."" },
+    ""relinquish"": { ""type"": ""string"", ""enum"": [""all"", ""keep_borrowed"", ""none""], ""default"": ""all"", ""description"": ""sync_with_central: ownership to give back."" },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save_as: allow overwriting an existing destination file."" },
     ""max_backups"": { ""type"": ""integer"", ""minimum"": 1, ""description"": ""save_as: cap the .000N backup pile Revit leaves behind."" },
     ""force_workshared"": { ""type"": ""boolean"", ""default"": false,
@@ -7262,7 +7265,8 @@ namespace Horizun.Contracts
             ["open"] = new[] { "file_path", "cloud_project_guid", "cloud_model_guid", "cloud_region", "expected_version", "allow_upgrade", "audit", "detach", "open_central", "open_all_worksets", "close_workset_names", "on_open_dialog" },
             ["save"] = new[] { "target_document", "file_path", "compact", "force_workshared" },
             ["save_as"] = new[] { "target_document", "file_path", "compact", "force_workshared", "save_as_path", "overwrite", "max_backups" },
-            ["close"] = new[] { "target_document", "file_path", "save_on_close", "discard_unsaved", "activate_other", "force_workshared", "confirmation_token" }
+            ["close"] = new[] { "target_document", "file_path", "save_on_close", "discard_unsaved", "activate_other", "force_workshared", "confirmation_token" },
+            ["sync_with_central"] = new[] { "target_document", "comment", "relinquish", "compact", "confirmation_token" }
         };
         private static HashSet<string> AllowedSession(string operation)
         {
@@ -7275,7 +7279,7 @@ namespace Horizun.Contracts
         public static string ValidateSession(JObject request, string operation)
         {
             var allowed = AllowedSession(operation);
-            if (allowed == null) return "operation must be inspect, open, save, save_as or close.";
+            if (allowed == null) return "operation must be inspect, open, save, save_as, close or sync_with_central.";
             foreach (var p in request.Properties())
                 if (!allowed.Contains(p.Name)) return p.Name + " is not applicable to operation '" + operation + "'. Nothing ran.";
             JToken dry = request["dry_run"];
@@ -7293,14 +7297,22 @@ namespace Horizun.Contracts
             foreach (var operation in SessionFields.Keys)
             {
                 var props = new JObject();
+                // sync_with_central's variant carries types without the descriptions the
+                // base properties already publish: tools/list is a byte budget.
+                bool terse = operation == "sync_with_central";
                 foreach (string field in AllowedSession(operation))
-                    if (properties[field] != null) props[field] = properties[field].DeepClone();
+                    if (properties[field] != null)
+                    {
+                        props[field] = properties[field].DeepClone();
+                        if (terse) ((JObject)props[field]).Remove("description");
+                    }
                 props["operation"] = new JObject { ["const"] = operation };
                 if (operation == "open") props["dry_run"] = new JObject { ["const"] = false };
                 var required = new JArray("operation");
                 if (operation == "save_as") required.Add("save_as_path");
                 if (operation == "open") required.Add("expected_version");
                 if (operation == "inspect") required.Add("file_path");
+                if (operation == "sync_with_central") required.Add("target_document");
                 var variant = new JObject { ["type"] = "object", ["properties"] = props, ["required"] = required, ["additionalProperties"] = false };
                 if (operation == "save" || operation == "save_as" || operation == "close")
                     variant["anyOf"] = new JArray(new JObject { ["required"] = new JArray("target_document") }, new JObject { ["required"] = new JArray("file_path") });

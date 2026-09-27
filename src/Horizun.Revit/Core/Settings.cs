@@ -193,6 +193,35 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// May horizun_document_session synchronize a workshared model with its central?
+        /// OFF unless the machine owner said yes from Revit's Advanced options, gated like
+        /// execute_python: a sync publishes into a file other people work from and has no
+        /// rollback. Only an explicit boolean true counts; a malformed file falls closed.
+        /// No MCP call writes this key.
+        /// </summary>
+        public static bool SyncWithCentralOwnerEnabled
+        {
+            get
+            {
+                FileState state;
+                JObject o = Read(out state);
+                return state != FileState.Malformed && o?["sync_with_central_owner_granted"]?.Type == JTokenType.Boolean &&
+                       (bool)o["sync_with_central_owner_granted"];
+            }
+        }
+
+        /// <summary>Written only by the ribbon's owner dialog (SyncCentralPermissionCommand).</summary>
+        public static bool TrySetSyncWithCentralOwnerGrant(bool enabled, out string error)
+        {
+            return TryUpdate(o =>
+            {
+                o["sync_with_central_owner_granted"] = enabled;
+                o["sync_with_central_owner_changed_from_revit_at_utc"] = DateTimeOffset.UtcNow.ToString("O");
+                return true;
+            }, out error);
+        }
+
+        /// <summary>
         /// Persist an owner-selected typed-tool permission rung. This is deliberately
         /// exposed only to the local Revit ribbon: an MCP request must never be able
         /// to make itself more capable. Python remains separately owner-gated.

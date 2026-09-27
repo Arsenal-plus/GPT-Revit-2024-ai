@@ -37,10 +37,13 @@
 //     perform the open, it does not know, and "unknown" is a DIFFERENT value from
 //     false. A handler that returned audit_ran=true off a save would be inventing
 //     a flag the API never received.
-//   * NO SYNC. Ever. Horizun does not sync to central from a robot, so there is no
-//     sync operation here and there never will be. On a workshared document a save
-//     is a save — of the local, or worse of the central — and it is refused unless
-//     force_workshared says otherwise, with the distinction spelled out.
+//   * NO SYNC THE OWNER DID NOT AUTHORISE. operation=sync_with_central exists
+//     (DocumentSessionSync.cs) and is OFF by default, gated like execute_python:
+//     only the machine owner turns it on, from Revit's Advanced options. It refuses
+//     detached copies and models under force_read_only_on_workshared, previews an
+//     ESTIMATE, and re-reads ownership and update status after the sync. On a
+//     workshared document a save is still a save — of the local, or worse of the
+//     central — and it is refused unless force_workshared says otherwise.
 //
 // Compact's whole point is the delta, so bytes_before/bytes_after are stat-ed from
 // the filesystem on both sides. bytes_after == bytes_before after a compact is
@@ -60,7 +63,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public class DocumentSessionCommand : ICommand
+    public partial class DocumentSessionCommand : ICommand
     {
         public string Name => "horizun_document_session";
 
@@ -70,7 +73,7 @@ namespace Horizun.Revit.Commands
             "version, and refuses unless both match the REQUIRED expected_version — because opening a 2025 file " +
             "on a 2026 host upgrades it and there is no downgrade. Saving reports bytes/mtime/format re-read from " +
             "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
-            "so audit_ran only ever describes the open. It never syncs to central.";
+            "so audit_ran only ever describes the open. sync_with_central is OFF until the machine owner enables it in Revit.";
 
         // Audit is an OpenOptions flag and Revit never tells you afterwards whether a
         // document was audited. So the only honest source is our own memory of the
@@ -126,9 +129,10 @@ namespace Horizun.Revit.Commands
                 case "save": return Save(app, request, false);
                 case "save_as": return Save(app, request, true);
                 case "close": return Close(app, request);
+                case "sync_with_central": return SyncWithCentral(app, request);
                 default:
                     return CommandResult.Fail(
-                        "operation is required and must be one of: inspect, open, save, save_as, close.");
+                        "operation is required and must be one of: inspect, open, save, save_as, close, sync_with_central.");
             }
         }
 

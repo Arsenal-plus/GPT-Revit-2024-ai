@@ -449,6 +449,7 @@
          else, because it needs two environments and no Revit. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SyncWithCentralRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" />
     <!-- The job-record folding behind the ribbon Jobs dialog: half-written lines
          are states, "running" is never claimed from a file alone. -->

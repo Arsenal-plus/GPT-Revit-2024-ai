@@ -100,7 +100,7 @@ namespace Horizun.Revit.Core
             Row("horizun_save_document", VerificationMechanism.SessionStateReread, E("outcome"), F(C + "SaveDocumentCommand.cs")),
             Row("horizun_relinquish_all", VerificationMechanism.SessionStateReread, E("fully_relinquished"), F(C + "RelinquishAllCommand.cs"),
                 "RelinquishAllCommand.cs ~l.156: a workset whose owner reads null is skipped rather than counted as unmeasured."),
-            Row("horizun_document_session", VerificationMechanism.SessionStateReread, E("active_document_verified"), F(C + "DocumentSessionCommand.cs"),
+            Row("horizun_document_session", VerificationMechanism.SessionStateReread, E("active_document_verified", "sync_verified"), F(C + "DocumentSessionCommand.cs", C + "DocumentSessionSync.cs"),
                 "Core/WorksetConfigurationEvidence.cs ~l.59: open_all_worksets counts as applied when zero user worksets are observed, which is right for a non-workshared model and unmeasured for a workshared one whose collector returned nothing."),
 
             // ---- typed model writes: checklists -------------------------------------------
