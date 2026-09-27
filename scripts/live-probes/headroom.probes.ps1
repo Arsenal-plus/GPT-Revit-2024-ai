@@ -92,6 +92,13 @@ $script:HzProbeModules += [pscustomobject]@{
         function RowOf($r, $id) { if ($r.data) { @($r.data.elements | Where-Object { [long]$_.element_id -eq $id }) | Select-Object -First 1 } else { $null } }
         function Describe($row) { if ($row) { "outcome=$($row.outcome) min_clear_mm=$($row.min_clear_mm) coverage=$($row.coverage) measured=$($row.measured)/$($row.on_element) surface=$($row.governing.surface.element_id)" } else { 'no row' } }
 
+        # headroom refuses a 3D view below Fine detail (MEP curves have no faces there). A fresh 3D view
+        # takes its view type's default detail level and no typed setter for View.DetailLevel exists yet, so
+        # a refusal here is a STAGING gap - cases 1-4 become unverified - never a measured result.
+        $gate = if ($viewId -and $floorB) { Headroom $floorB "down" 2000 } else { $null }
+        if ($gate -and $gate.isError -and [string]$gate.text -match "detail level") {
+            $staging += "; the own 3D view is below Fine detail, refused by name: " + (Short $gate); $viewId = $null
+        }
         $down = $null
         if (-not ($floorA -and $floorB -and $viewId)) { for ($i = 0; $i -lt 3; $i++) { Case $catalog[$i] $tools[$i] 'unverified' ('staging incomplete: ' + $staging) } }
         else {
