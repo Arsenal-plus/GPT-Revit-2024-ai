@@ -330,6 +330,14 @@ $script:HzProbeModules += [pscustomobject]@{
         $cWhy = "staging incomplete: floor $floor, ceiling $ceiling, sloped glazing type '$layerTypeId', hanger curtain type '$coreTypeId'"
         $cCommitted = $false; $layerId = $null
         if (-not ($floor -and $ceiling -and $layerTypeId -and $coreTypeId)) { Case $catalog[5] $T 'not_covered' $cWhy; Case $catalog[6] $T 'not_covered' $cWhy }
+        elseif (-not $ownLayer) {
+            # The hangers follow layer 0's grid 1 lines, and a template Sloped Glazing type may carry no
+            # grid 1 (MEASURED 2026-09-27 in Revit 2023: layout None, refused by name). Without the own
+            # layer types - staged only when the own stud mullion could be - the ceiling is not covered.
+            $noOwn = "the own layer types were not staged (" + $(if ($missing.Count -gt 0) { 'no source for ' + ($missing -join ', ') } else { [string]$typesFail }) +
+                     "), and the template's Sloped Glazing type need not carry the grid 1 the hangers follow"
+            Case $catalog[5] $T 'not_covered' $noOwn; Case $catalog[6] $T 'not_covered' $noOwn
+        }
         else {
             $cd = & $Ctx.Call $T ($cArgs + @{ dry_run = $true })
             $cs = $null

@@ -259,8 +259,12 @@ try {
     New-State; $script:typesRefused = $true
     $tplBy = RunBy (Ctx 't7')
     Check 'a refused type duplicate fails the types case with its reason' (($tplBy[$names[9]].Outcome -eq 'fail') -and ($tplBy[$names[9]].Detail -match 'read-only on the source type'))
-    Check 'without own types the wall and the ceiling run on the template types, the spacing never written' (($script:sent['t7-frc-apply'].spec.wall.curtain_type_id -eq 501) -and
-        ($tplBy[$names[1]].Outcome -eq 'pass') -and ($script:sent['t7-frc-ceiling-apply'].spec.ceiling.layers[0].type_id -eq 505) -and ($tplBy[$names[6]].Outcome -eq 'pass') -and -not $script:sent.ContainsKey('t7-frc-spacing'))
+    Check 'without own types the wall runs on the template types, the spacing never written' (($script:sent['t7-frc-apply'].spec.wall.curtain_type_id -eq 501) -and
+        ($tplBy[$names[1]].Outcome -eq 'pass') -and -not $script:sent.ContainsKey('t7-frc-spacing'))
+    # A template Sloped Glazing type may carry no grid 1 (MEASURED 2026-09-27 in Revit 2023), and the
+    # hangers follow it: without the own layer types the ceiling is not covered, never sent.
+    Check 'without own layer types the ceiling cases are not_covered naming why, and no ceiling apply is sent' (($tplBy[$names[5]].Outcome -eq 'not_covered') -and
+        ($tplBy[$names[5]].Detail -match 'own layer types were not staged') -and ($tplBy[$names[6]].Outcome -eq 'not_covered') -and -not $script:sent.ContainsKey('t7-frc-ceiling-apply'))
 
     # ---- layout 1 re-read as something else: the wall apply fails, and its pieces are still removed ----
     New-State; $script:layoutText = 'Fixed Number'
