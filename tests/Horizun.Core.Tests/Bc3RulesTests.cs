@@ -78,15 +78,16 @@ namespace Horizun.Core.Tests
         {
             string text = Bc3Rules.Write(Sample());
             string[] lines = text.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
-            Assert.Equal(7, lines.Length);
+            Assert.Equal(8, lines.Length);
             Assert.Equal("~V||FIEBDC-3/2020" + B + "26092026|Horizun Revit MCP||ANSI||2|", lines[0]);
-            Assert.Equal("~C|HZ_TAKEOFF##||Horizun takeoff|433.30957|26092026|0|", lines[1]);
-            Assert.Equal("~C|E05.01|m3|Hormigón armado, cimentación €|123.45|26092026|0|", lines[2]);
-            Assert.Equal("~D|HZ_TAKEOFF##|E05.01" + B + "1" + B + "3.5" + B + "E08-2" + B + "1" + B + "0.123457" + B + "|", lines[4]);
+            Assert.Equal(Bc3Rules.KRecord, lines[1]);
+            Assert.Equal("~C|HZ_TAKEOFF##||Horizun takeoff|433.30957|26092026|0|", lines[2]);
+            Assert.Equal("~C|E05.01|m3|Hormigón armado, cimentación €|123.45|26092026|0|", lines[3]);
+            Assert.Equal("~D|HZ_TAKEOFF##|E05.01" + B + "1" + B + "3.5" + B + "E08-2" + B + "1" + B + "0.123457" + B + "|", lines[5]);
             string fourEmpty = B + B + B + B;
             Assert.Equal("~M|HZ_TAKEOFF##" + B + "E05.01|1" + B + "|3.5|" + B + "id 101" + B + "1.25" + fourEmpty +
-                         B + "link 7 id 102" + B + "2.25" + fourEmpty + "|", lines[5]);
-            Assert.Equal("~M|HZ_TAKEOFF##" + B + "E08-2|2" + B + "|0.123457|" + B + "id 201" + B + "0.123457" + fourEmpty + "|", lines[6]);
+                         B + "link 7 id 102" + B + "2.25" + fourEmpty + "|", lines[6]);
+            Assert.Equal("~M|HZ_TAKEOFF##" + B + "E08-2|2" + B + "|0.123457|" + B + "id 201" + B + "0.123457" + fourEmpty + "|", lines[7]);
         }
 
         [Fact]
@@ -172,6 +173,35 @@ namespace Horizun.Core.Tests
             Assert.Equal("C", r[0].Type);
             Assert.Equal(6, r[0].Fields.Count);
             Assert.Equal(new[] { "A", "1", "2", "" }, r[1].Fields[1]);
+        }
+
+        [Theory]
+        [InlineData("E05%")]
+        [InlineData("E&05")]
+        public void CheckCode_refuses_the_FIEBDC_percentage_characters(string code)
+        {
+            string why = Bc3Rules.CheckCode(code, "apu[0].code");
+            Assert.NotNull(why);
+            Assert.Contains("percentage", why);
+        }
+
+        [Fact]
+        public void Write_declares_six_decimals_in_K_and_Verify_names_a_file_without_them()
+        {
+            var b = new Bc3Budget { Date = new DateTime(2026, 9, 26) };
+            var line = new Bc3Line { Code = "A1", Unit = "m2", Description = "x", UnitPrice = 10.125, Quantity = 1.234567 };
+            line.Measures.Add(new Bc3Measure { Comment = "id 1", Value = 1.234567 });
+            b.Lines.Add(line);
+            string text = Bc3Rules.Write(b);
+            string[] lines = text.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+            Assert.Equal("~K|6\\6\\6\\6\\6\\6\\6\\6\\\\||6\\6\\6\\6\\6\\6\\6\\6\\6\\6\\6\\6\\\\|", lines[1]);
+            JObject counts;
+            Assert.Empty(Bc3Rules.Verify(text, b, out counts));
+            Assert.Equal(1, (int)counts["K"]);
+            string noK = string.Join("\r\n", lines.Where(l => !l.StartsWith("~K"))) + "\r\n";
+            Assert.Contains(Bc3Rules.Verify(noK, b, out counts), p => p.Contains("~K is missing"));
+            string fewer = text.Replace(lines[1], "~K|2\\2\\2\\3\\2\\2\\2\\2\\\\||");
+            Assert.Contains(Bc3Rules.Verify(fewer, b, out counts), p => p.Contains("6 decimals"));
         }
     }
 }

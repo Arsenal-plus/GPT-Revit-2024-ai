@@ -63,7 +63,7 @@ namespace Horizun.Server
 
             // operation=export_bc3 writes a FIEBDC-3 budget instead (BudgetBc3Export.cs).
             string operation = (string)args["operation"] ?? "compare";
-            if (operation == "export_bc3") return BudgetBc3Export.Handle(args, cancellationToken);
+            if (operation == "export_bc3") return BudgetBc3Export.Handle(args, ledger, cancellationToken);
             if (operation != "compare") throw new ToolRefusal("operation must be compare or export_bc3. Nothing was read.");
 
             // ---- arguments, all of them, before any file is opened. ----

@@ -13,6 +13,7 @@ namespace Horizun.Server.Tests
     public sealed class BudgetBc3ExportTests : IDisposable
     {
         private readonly string _dir, _settingsRoot, _savedRoot;
+        private readonly DurableCommandLedger _ledger;
 
         public BudgetBc3ExportTests()
         {
@@ -24,6 +25,7 @@ namespace Horizun.Server.Tests
             _savedRoot = Environment.GetEnvironmentVariable(HorizunPaths.RootOverrideVariable);
             Environment.SetEnvironmentVariable(HorizunPaths.RootOverrideVariable, _settingsRoot);
             File.WriteAllText(HorizunPaths.SettingsPath(), @"{""permission_profile"":""full_write""}");
+            _ledger = new DurableCommandLedger(() => Path.Combine(_settingsRoot, "ledger"));
         }
 
         public void Dispose()
@@ -45,11 +47,12 @@ namespace Horizun.Server.Tests
         private static JArray Apu(params object[][] rows) =>
             new JArray(rows.Select(r => new JObject { ["code"] = (string)r[0], ["unit"] = (string)r[1], ["unit_price"] = JToken.FromObject(r[2]), ["description"] = (string)r[3] }));
 
-        private JObject Export(JArray rows, JArray apu, string name = "out.bc3", JObject extra = null)
+        private JObject Export(JArray rows, JArray apu, string name = "out.bc3", JObject extra = null, string key = null)
         {
-            var args = new JObject { ["operation"] = "export_bc3", ["model_rows"] = rows, ["apu"] = apu, ["bc3_path"] = Path.Combine(_dir, name) };
+            var args = new JObject { ["operation"] = "export_bc3", ["model_rows"] = rows, ["apu"] = apu, ["bc3_path"] = Path.Combine(_dir, name),
+                                     ["idempotency_key"] = key ?? Guid.NewGuid().ToString("N") };
             if (extra != null) foreach (var p in extra.Properties()) args[p.Name] = p.Value;
-            return BudgetCompare.Handle(args, CancellationToken.None);
+            return BudgetCompare.Handle(args, _ledger, null, CancellationToken.None);
         }
 
         [Fact]
@@ -135,6 +138,28 @@ namespace Horizun.Server.Tests
             File.WriteAllText(HorizunPaths.SettingsPath(), @"{""permission_profile"":""read_only""}");
             var ex = Assert.Throws<ToolRefusal>(() => Export(new JArray(Row("1", "E05", 1)), Apu(new object[] { "E05", "m3", 1, null })));
             Assert.Contains("profile", ex.Message);
+            Assert.Empty(Directory.GetFiles(_dir));
+        }
+
+        [Fact]
+        public void Export_is_once_per_key_a_retry_replays_after_rehashing_and_a_missing_key_is_refused()
+        {
+            var rows = new JArray(Row("1", "E05", 1.5));
+            JArray apu = Apu(new object[] { "E05", "m3", 100, "x" });
+            string key = "k-" + Guid.NewGuid().ToString("N");
+            JObject first = Export(rows, apu, "once.bc3", key: key);
+            JObject again = Export(rows, apu, "once.bc3", key: key);
+            Assert.True((bool)again["replayed"]);
+            Assert.Equal((string)first["sha256"], (string)again["sha256"]);
+            Assert.Equal(new[] { "once.bc3" }, Directory.GetFiles(_dir).Select(Path.GetFileName));
+
+            // The recorded answer no longer describes the disk: refused, nothing rewritten.
+            File.Delete(Path.Combine(_dir, "once.bc3"));
+            Assert.Contains("no longer exists", Assert.Throws<ToolRefusal>(() => Export(rows, apu, "once.bc3", key: key)).Message);
+            Assert.Empty(Directory.GetFiles(_dir));
+
+            var noKey = new JObject { ["operation"] = "export_bc3", ["model_rows"] = rows, ["apu"] = apu, ["bc3_path"] = Path.Combine(_dir, "nokey.bc3") };
+            Assert.Contains("idempotency_key is required", Assert.Throws<ToolRefusal>(() => BudgetCompare.Handle(noKey, _ledger, null, CancellationToken.None)).Message);
             Assert.Empty(Directory.GetFiles(_dir));
         }
     }

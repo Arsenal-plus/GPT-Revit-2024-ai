@@ -6341,14 +6341,15 @@ namespace Horizun.Contracts
                     "BI: through horizun_power_bi_push with dry_run defaulting to true and its ledger; a lost answer is " +
                     "reported in_doubt with the ledger key and is never re-sent automatically. PERMISSION: the " +
                     "comparison ALONE - no 'outputs' - reads a workbook and writes nothing, so it runs at ANY " +
-                    "permission_profile. DECLARING a destination is what needs full_write or unsafe_code, and under a " +
+                    "permission_profile. DECLARING a destination, or operation=export_bc3 (a FIEBDC-3 .bc3 from the takeoff and your apu " +
+                    "prices, all or nothing, never overwritten), needs full_write or unsafe_code, and under a " +
                     "lower profile the call is refused by name before anything is read.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
     ""operation"": { ""type"": ""string"", ""enum"": [""compare"", ""export_bc3""], ""default"": ""compare"" },
-    ""apu"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""description"": ""export_bc3: [{code, unit, unit_price, description?}]; a takeoff code without a price is refused."" },
-    ""bc3_path"": { ""type"": ""string"", ""description"": ""export_bc3: absolute path of the FIEBDC-3 .bc3 to create; an existing file is refused."" },
+    ""apu"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""description"": ""export_bc3: [{code, unit, unit_price, description?}]"" },
+    ""bc3_path"": { ""type"": ""string"", ""description"": ""export_bc3: absolute path of a NEW .bc3"" },
     ""model_rows"": { ""type"": [""array"", ""object""],
       ""description"": ""The takeoff: either the per-element rows array or the whole horizun_quantities mode='takeoff' reply (its 'rows' are used; a TRUNCATED reply is refused - re-run with top >= rows_matching). Exactly one of model_rows / model_rows_path."" },
     ""model_rows_path"": { ""type"": ""string"", ""description"": ""Absolute path to a JSON file holding the same thing (a takeoff reply or a rows array)."" },
@@ -6399,7 +6400,7 @@ namespace Horizun.Contracts
           } }
       } },
     ""idempotency_key"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 200,
-      ""description"": ""REQUIRED when outputs.excel is declared or outputs.power_bi.dry_run is false. An identical retry replays the recorded reply (every destination included) without writing again; the same key with different arguments is refused. The destinations use derived keys <key>/excel and <key>/powerbi in their own ledgers."" }
+      ""description"": ""export_bc3 requires it. REQUIRED when outputs.excel is declared or outputs.power_bi.dry_run is false. An identical retry replays the recorded reply (every destination included) without writing again; the same key with different arguments is refused. The destinations use derived keys <key>/excel and <key>/powerbi in their own ledgers."" }
   },
   ""additionalProperties"": false
 }")

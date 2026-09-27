@@ -15,6 +15,9 @@
 //   ~M  one measurement record per code whose lines are the ELEMENTS - comment
 //       "id <element id>" (or "link <instance> id <element id>"), units = the
 //       element's quantity - and whose total equals the yield in ~D.
+//   ~K  every decimals slot set to 6, the precision Num writes, so a reader that
+//       applies the format's defaults (2 or 3 decimals) does not round what was
+//       verified; the currency is left out - it is the caller's to state.
 //
 // NOTHING IS ESCAPED BY GUESSING. The format has no escape for its own
 // separators (~ | \) and windows-1252 has no byte for most of Unicode, so text
@@ -120,14 +123,28 @@ namespace Horizun.Revit.Core
             return null;
         }
 
-        /// <summary>A code is text with no whitespace and no '#', which FIEBDC reserves for chapters (#) and the root (##).</summary>
+        /// <summary>
+        /// A code is text with no whitespace, no '#' (FIEBDC reserves it for chapters and the root)
+        /// and no '%' or '&' (FIEBDC reads a child code carrying either as a percentage line).
+        /// </summary>
         public static string CheckCode(string code, string what)
         {
             if (string.IsNullOrWhiteSpace(code)) return what + " is empty.";
             if (code.Any(char.IsWhiteSpace)) return what + " '" + code + "' contains whitespace, which FIEBDC codes do not carry.";
             if (code.IndexOf('#') >= 0) return what + " '" + code + "' contains '#', which FIEBDC reserves for chapters and the root.";
+            if (code.IndexOf('%') >= 0 || code.IndexOf('&') >= 0)
+                return what + " '" + code + "' contains '%' or '&': FIEBDC-3 reads a child code carrying either as a percentage over the " +
+                       "lines before it in the decomposition, so its quantity would be read as a percentage.";
             return CheckText(code, what);
         }
+
+        /// <summary>
+        /// ~K: every decimals slot of field 1 (DN DD DS DR DI DP DC DM) and of the 2020 field 3
+        /// (DRC DC DFS DRS DUO DI DES DN DD DS DSP DEC) set to 6 - the precision Num writes;
+        /// DIVISA and field 2's percentages are left empty: a currency is the caller's to state.
+        /// </summary>
+        public static readonly string KRecord =
+            "~K|" + string.Concat(Enumerable.Repeat("6\\", 8)) + "\\||" + string.Concat(Enumerable.Repeat("6\\", 12)) + "\\|";
 
         public static string Num(double v) => Math.Round(v, 6).ToString("0.######", CultureInfo.InvariantCulture);
 
@@ -144,6 +161,7 @@ namespace Horizun.Revit.Core
             string root = b.RootCode + "##", date = Date(b.Date);
             var sb = new StringBuilder();
             sb.Append("~V||FIEBDC-3/2020\\").Append(date).Append('|').Append(b.Program).Append("||ANSI||2|\r\n");
+            sb.Append(KRecord).Append("\r\n");
             sb.Append("~C|").Append(root).Append("||").Append(b.Title).Append('|').Append(Num(Total(b))).Append('|').Append(date).Append("|0|\r\n");
             foreach (Bc3Line l in b.Lines)
                 sb.Append("~C|").Append(l.Code).Append('|').Append(l.Unit).Append('|').Append(l.Description ?? "").Append('|')
@@ -197,7 +215,7 @@ namespace Horizun.Revit.Core
             List<Bc3Record> recs = ParseRecords(text);
             counts = new JObject
             {
-                ["V"] = recs.Count(r => r.Type == "V"), ["C"] = recs.Count(r => r.Type == "C"),
+                ["V"] = recs.Count(r => r.Type == "V"), ["K"] = recs.Count(r => r.Type == "K"), ["C"] = recs.Count(r => r.Type == "C"),
                 ["D"] = recs.Count(r => r.Type == "D"), ["M"] = recs.Count(r => r.Type == "M")
             };
             string root = expected.RootCode + "##";
@@ -209,6 +227,10 @@ namespace Horizun.Revit.Core
                 if (v.Fields.Count < 2 || v.Fields[1][0] != "FIEBDC-3/2020") problems.Add("~V does not declare FIEBDC-3/2020.");
                 if (v.Fields.Count < 5 || v.Fields[4][0] != "ANSI") problems.Add("~V does not declare the ANSI character set.");
             }
+            Bc3Record kRec = recs.FirstOrDefault(r => r.Type == "K");
+            if (kRec == null) problems.Add("~K is missing: a reader would round to the format's default decimals.");
+            else if (kRec.Fields.Count < 3 || kRec.Fields[0].Take(8).Count(s => s == "6") != 8 || kRec.Fields[2].Take(12).Count(s => s == "6") != 12)
+                problems.Add("~K does not declare the 6 decimals the file is written with.");
 
             var concepts = new Dictionary<string, Bc3Record>(StringComparer.Ordinal);
             foreach (Bc3Record c in recs.Where(r => r.Type == "C"))

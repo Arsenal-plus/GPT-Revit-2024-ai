@@ -19,6 +19,11 @@
 // Core/Bc3Rules.Verify (~V, ~C, ~D, ~M, totals); only then is the file moved
 // into place (never over an existing one) and its SHA-256 re-read against the
 // verified bytes.
+//
+// ONCE PER KEY. The call requires an idempotency_key and claims it in the
+// durable ledger before the file is touched: a retry after a lost reply gets the
+// recorded reply back - after the file it names is re-hashed on disk - and
+// writes nothing; a refusal once claimed is the recorded answer for that key.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -35,17 +40,23 @@ namespace Horizun.Server
 {
     internal static class BudgetBc3Export
     {
-        internal static JObject Handle(JObject args, CancellationToken cancellationToken, DateTime? today = null)
+        internal static JObject Handle(JObject args, DurableCommandLedger ledger, CancellationToken cancellationToken, DateTime? today = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             foreach (JProperty p in args.Properties())
-                if (Array.IndexOf(new[] { "operation", "model_rows", "model_rows_path", "mapping", "apu", "bc3_path" }, p.Name) < 0)
+                if (Array.IndexOf(new[] { "operation", "model_rows", "model_rows_path", "mapping", "apu", "bc3_path", "idempotency_key" }, p.Name) < 0)
                     throw new ToolRefusal(p.Name + " is not applicable to operation=export_bc3 (known: model_rows, model_rows_path, mapping, " +
-                                          "apu, bc3_path). Refused rather than ignored. Nothing was written.");
+                                          "apu, bc3_path, idempotency_key). Refused rather than ignored. Nothing was written.");
 
             string profileRefusal;
             if (!Settings.AllowsExternalSideEffect(out profileRefusal))
                 throw new ToolRefusal("export_bc3 writes a file, and that needs the profile: " + profileRefusal + " Nothing was read or written.");
+
+            string key = (string)args["idempotency_key"];
+            if (string.IsNullOrWhiteSpace(key))
+                throw new ToolRefusal("idempotency_key is required for export_bc3: a budget written twice is two budgets. Generate a new UUID for " +
+                                      "each deliberate export and keep it unchanged only for retries. Nothing was written.");
+            if (key.Length > 200) throw new ToolRefusal("idempotency_key must be at most 200 characters. Nothing was written.");
 
             string path = (string)args["bc3_path"];
             if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
@@ -54,7 +65,6 @@ namespace Horizun.Server
                 throw new ToolRefusal("bc3_path must end in .bc3. Nothing was written.");
             string dir = Path.GetDirectoryName(Path.GetFullPath(path));
             if (!Directory.Exists(dir)) throw new ToolRefusal("the folder of bc3_path does not exist: " + dir + ". Nothing was written.");
-            if (File.Exists(path)) throw new ToolRefusal("bc3_path already exists and is never overwritten: " + path + ". Choose a new name. Nothing was written.");
 
             string problem;
             BudgetComparisonMapping mapping = BudgetComparisonRules.ReadMapping(args["mapping"], out problem);
@@ -122,6 +132,35 @@ namespace Horizun.Server
             if (bytes == null) throw new ToolRefusal("the budget could not be encoded: " + problem + " Nothing was written.");
 
             cancellationToken.ThrowIfCancellationRequested();
+            // The claim covers the whole call, so a retry after a lost reply finds the recorded
+            // answer (its file re-hashed on disk) before the never-overwrite rule refuses its own file.
+            string fingerprint = RequestFingerprint.OfOperation(BudgetCompare.ToolName, "export_bc3", args, "idempotency_key");
+            DurableCommandDecision decision = ledger.Claim(key, BudgetCompare.ToolName, fingerprint);
+            if (decision.Outcome == DurableCommandOutcome.Replay) return ReplayExport(decision.ReplayResult);
+            if (!decision.IsFresh) throw new ToolRefusal(decision.Message);
+
+            bool moved = false;
+            try
+            {
+                JObject reply = WriteVerified(path, bytes, budget, rows, report, unused, key, out moved);
+                ledger.Complete(decision, CommandResult.Ok(reply));
+                return reply;
+            }
+            catch (Exception ex) when (!moved)
+            {
+                // Nothing reached bc3_path, so this refusal IS the answer for the key. Once the file
+                // is in place a failure is left in doubt instead, and the ledger names it on a retry.
+                ledger.Complete(decision, CommandResult.Fail(ex.Message));
+                throw;
+            }
+        }
+
+        private static JObject WriteVerified(string path, byte[] bytes, Bc3Budget budget, List<BudgetComparisonRules.ModelRow> rows,
+                                             JArray report, JArray unused, string key, out bool moved)
+        {
+            moved = false;
+            if (File.Exists(path))
+                throw new ToolRefusal("bc3_path already exists and is never overwritten: " + path + ". Choose a new name and a new idempotency_key. Nothing was written.");
             string temp = path + ".horizun-" + Guid.NewGuid().ToString("N") + ".tmp";
             JObject counts;
             try
@@ -131,6 +170,7 @@ namespace Horizun.Server
                 if (problems.Count > 0)
                     throw new ToolRefusal("the written .bc3 did not read back as the budget, so it was discarded: " + string.Join(" ", problems));
                 File.Move(temp, path);   // never overwrites: a file that appeared meanwhile is left alone
+                moved = true;
             }
             finally
             {
@@ -150,6 +190,7 @@ namespace Horizun.Server
                 ["format"] = "FIEBDC-3/2020, character set ANSI (windows-1252)",
                 ["records"] = counts,
                 ["root_code"] = budget.RootCode + "##",
+                ["idempotency_key"] = key,
                 ["total_amount"] = Math.Round(Bc3Rules.Total(budget), 2),
                 ["lines"] = report,
                 ["apu_codes_unused"] = unused,
@@ -162,6 +203,28 @@ namespace Horizun.Server
                     ? "the file was re-read from disk: ~V, every ~C (unit, summary, price), the ~D yields and every ~M line and total match the takeoff; the SHA-256 on disk equals the verified bytes."
                     : "the file on disk does not hash to the verified bytes - something changed it after the move."
             };
+        }
+
+        /// <summary>A retry's answer: the recorded reply, but only while the file it names still hashes as recorded.</summary>
+        private static JObject ReplayExport(CommandResult result)
+        {
+            if (result == null) throw new ToolRefusal("The durable replay record had no result.");
+            if (!result.Success)
+                throw new ToolRefusal((result.Error ?? "The recorded export failed.") +
+                                      " This is the recorded answer for that idempotency_key; nothing was written now.");
+            if (!(result.Data is JObject recorded))
+                throw new ToolRefusal("The durable replay record for this key is not an export_bc3 result.");
+            string path = (string)recorded["file_path"], sha = (string)recorded["sha256"];
+            string now = path != null && File.Exists(path) ? Sha256(File.ReadAllBytes(path)) : null;
+            if (!string.Equals(now, sha, StringComparison.Ordinal))
+                throw new ToolRefusal("this idempotency_key already exported " + path + " (sha256 " + sha + "), but that file " +
+                                      (now == null ? "no longer exists" : "now hashes to " + now) + ". Nothing was written now; export " +
+                                      "again with a new idempotency_key.");
+            var clone = (JObject)recorded.DeepClone();
+            clone["replayed"] = true;
+            clone["replay_note"] = "This reply was recorded by an EARLIER call with this same idempotency_key; the file was re-hashed now " +
+                                   "and still matches. Nothing was written now.";
+            return clone;
         }
 
         private static string Sha256(byte[] bytes)
