@@ -50,6 +50,14 @@ namespace Horizun.Revit.Commands
                 string expandError = ExpandTabularPlacements(doc, tabularSource, preScale, out input, out tabularBlock);
                 if (expandError != null) return CommandResult.Fail(expandError + " Nothing ran.");
             }
+            // placement='all_enclosed' rows become one room/space row per circuit (CreateElementsEnclosed.cs).
+            JArray enclosedBlock = null;
+            if (input != null)
+            {
+                string enclosedError = ExpandEnclosed(doc, request, ref input, out enclosedBlock);
+                if (enclosedError != null) return CommandResult.Fail(enclosedError + " Nothing ran.");
+                if (enclosedBlock != null && input.Count == 0) return NothingEnclosed(request, enclosedBlock);
+            }
             if (input == null || input.Count == 0) return CommandResult.Fail("elements is required and must be non-empty.");
             if (input.Count > 2000) return CommandResult.Fail("elements exceeds the 2000 item atomic-batch limit.");
             if(input.Count!=1 && input.OfType<JObject>().Any(x=>x.Value<string>("kind")=="stairs"))
@@ -72,8 +80,12 @@ namespace Horizun.Revit.Commands
                 if (plan == null)
                 {
                     string message = item == null ? "entry is not an object" : error;
-                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
-                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
+                    // An all_enclosed row names the caller's own entry too, not only a position the caller never wrote.
+                    int? entry = item?.Value<int?>("enclosed_from");
+                    var rowError = new JObject { ["index"] = i, ["error"] = message };
+                    if (entry != null) rowError["elements_index"] = entry.Value;
+                    errors.Add(rowError);
+                    outcomes.Add(new ActionOutcome { Index = entry ?? i, Error = message, UnsupportedReason = reason });
                 }
                 else plans.Add(plan);
             }
@@ -142,7 +154,7 @@ namespace Horizun.Revit.Commands
                 }
                 var result = new JObject
                 {
-                    ["dry_run"] = true, ["tabular"] = tabularBlock,
+                    ["dry_run"] = true, ["tabular"] = tabularBlock, ["enclosed"] = enclosedBlock,
                     ["transaction_status"] = "not_started", ["requested"] = input.Count,
                     ["valid"] = plans.Count, ["invalid"] = errors.Count, ["errors"] = errors,
                     ["plan"] = new JArray(plans.Select(p => p.Summary)),
@@ -191,6 +203,7 @@ namespace Horizun.Revit.Commands
 
             var applied = ApplyPlans(doc, request, plans, input.Count);
             if (applied.Data is JObject appliedData) appliedData["tabular"] = tabularBlock;
+            if (enclosedBlock != null && applied.Data is JObject enclosedData) enclosedData["enclosed"] = enclosedBlock;
             return applied;
         }
 
@@ -315,13 +328,14 @@ namespace Horizun.Revit.Commands
             var p = new Plan { Index = index, Kind = kind, Input = item, Scale = scale };
             try
             {
-                string invalid = Horizun.Contracts.ToolInputRules.ValidateCreation(item, kind);
+                string invalid = Horizun.Contracts.ToolInputRules.ValidateCreation(EnclosedPublicView(item), kind);
                 if (invalid != null) throw new ArgumentException(invalid);
                 switch (kind)
                 {
                     case "stairs": PlanStairs(doc,p); break;
                     case "wall_profile": PlanProfileWall(doc,p); break;
                     case "displacement": PlanDisplacement(doc,p); break;
+                    case "toposolid": PlanToposolid(doc, item, p, scale); break;
                     case "level":
                         if (item["elevation"] == null) throw new ArgumentException("elevation is required");
                         p.Elevation = Finite(item.Value<double>("elevation"), "elevation") * scale;
@@ -384,7 +398,58 @@ namespace Horizun.Revit.Commands
                         // from whoever wrote the requirement set, or from nowhere.
                         p.WantName = Trimmed(item, "name");
                         p.WantNumber = Trimmed(item, "number");
+                        if (item["enclosed_from"] != null) PlanEnclosed(doc, item, p);
                         break;
+                    // Space.Create(level, uv): a 2D point on a level, exactly like a room.
+                    // Verified: level_id (generic), the placement point (generic, 2D like
+                    // room), IsPointInSpace (below), and area>0-or-unbounded (reported, not
+                    // asserted - see ReadCreated).
+                    case "space":
+                        p.Level = Need<Level>(doc, item, "level_id"); p.Start = Point(item["point"], scale, false);
+                        if (item["enclosed_from"] != null) PlanEnclosed(doc, item, p);
+                        break;
+                    // Area.Create(areaView, uv): a point in an AREA PLAN view, not a level -
+                    // Revit finds the enclosing AreaBoundaryLine loop through the view.
+                    case "area":
+                    {
+                        var areaView = Optional<View>(doc, item, "view_id") as ViewPlan;
+                        if (areaView == null || areaView.ViewType != ViewType.AreaPlan)
+                            throw new ArgumentException(
+                                "area needs view_id naming an AREA PLAN view (ViewType.AreaPlan) - the loop of " +
+                                "area_boundary lines the point falls inside is read through that view, and " +
+                                "Revit does not check a wrong view, it stops.");
+                        p.SeparatorView = areaView;
+                        p.Start = Point(item["point"], scale, false);
+                        break;
+                    }
+                    // AreaBoundaryLine, one per curve of the profile chain - same shape as
+                    // room_separator, but for an AREA PLAN view and area_boundary's own
+                    // single-curve API (there is no plural NewAreaBoundaryLines).
+                    case "area_boundary":
+                    {
+                        var boundaryView = Optional<View>(doc, item, "view_id") as ViewPlan;
+                        if (boundaryView == null || boundaryView.ViewType != ViewType.AreaPlan)
+                            throw new ArgumentException(
+                                "area_boundary needs view_id naming an AREA PLAN view (ViewType.AreaPlan). Revit " +
+                                "does not check a wrong view, it stops.");
+                        Level boundaryLevel = null;
+                        try { boundaryLevel = boundaryView.GenLevel; } catch { }
+                        if (boundaryLevel == null)
+                            throw new ArgumentException("area_boundary: the named view has no readable storey (GenLevel).");
+                        p.SeparatorView = boundaryView; p.Level = boundaryLevel;
+                        p.Chains = Chains(item["profile"] as JArray, scale);
+                        if (p.Chains.Count < 1) throw new ArgumentException("area_boundary needs at least one chain of curves");
+                        RequireHorizontalChains(p.Chains, "area_boundary");
+                        break;
+                    }
+                    // A sprinkler is a family_instance restricted to OST_Sprinklers: same
+                    // routing (level/host/face), same placement, same postconditions - the
+                    // category check is the only thing this kind adds over the generic route.
+                    case "sprinkler":
+                        if (Need<FamilySymbol>(doc, item, "type_id") is FamilySymbol sprinklerSymbol &&
+                            !InCategory(sprinklerSymbol, BuiltInCategory.OST_Sprinklers))
+                            throw new ArgumentException("sprinkler type_id must identify a FamilySymbol in OST_Sprinklers");
+                        goto case "family_instance";
                     case "family_instance":
                         p.Type = Need<FamilySymbol>(doc, item, "type_id"); p.Start = Point(item["point"], scale, true);
                         p.Level = Optional<Level>(doc, item, "level_id");
@@ -423,6 +488,58 @@ namespace Horizun.Revit.Commands
                         p.Diameter = ReadDiameter(item, scale);
                         p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<ConduitType>(doc, item, "type_id");
                         break;
+                    // FlexPipe.Create/FlexDuct.Create take the PATH directly - no start/end pair, a
+                    // list of points including both ends. Start/End are kept as the first/last point
+                    // so every generic check that reads them (join rules, endpoint postconditions
+                    // this kind opts out of below) still has something to read.
+                    case "flex_pipe":
+                        p.FlexPoints = ReadPoints(item["points"], scale);
+                        p.Start = p.FlexPoints[0]; p.End = p.FlexPoints[p.FlexPoints.Count - 1];
+                        p.Diameter = ReadDiameter(item, scale);
+                        p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<FlexPipeType>(doc, item, "type_id");
+                        p.SystemType = Need<PipingSystemType>(doc, item, "system_type_id");
+                        break;
+                    case "flex_duct":
+                    {
+                        p.FlexPoints = ReadPoints(item["points"], scale);
+                        p.Start = p.FlexPoints[0]; p.End = p.FlexPoints[p.FlexPoints.Count - 1];
+                        p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<FlexDuctType>(doc, item, "type_id");
+                        p.SystemType = Need<MechanicalSystemType>(doc, item, "system_type_id");
+                        // FlexDuctType exposes no public Shape, unlike DuctType - the shape is
+                        // whatever the created instance's connectors turn out to be, read AFTER
+                        // commit. So diameter and width/height are only checked for being
+                        // mutually exclusive and positive here; the wrong one for the type's real
+                        // shape fails at commit with Revit's own "no settable parameter" refusal.
+                        double? flexDia = item.Value<double?>("diameter");
+                        JToken flexW = item["width"], flexH = item["height"];
+                        if (flexDia != null && (flexW != null || flexH != null))
+                            throw new ArgumentException("diameter AND width/height were both given: two sections for one run. Send one.");
+                        if ((flexW == null) != (flexH == null))
+                            throw new ArgumentException("width and height come together: a section with one side is not a section");
+                        if (flexDia != null) p.Diameter = ReadDiameter(item, scale);
+                        else if (flexW != null)
+                        {
+                            double w = Finite(flexW.Value<double>(), "width") * scale, h = Finite(flexH.Value<double>(), "height") * scale;
+                            if (w <= 0 || h <= 0) throw new ArgumentException("width and height must be positive");
+                            p.SectionWidth = w; p.SectionHeight = h;
+                        }
+                        break;
+                    }
+                    // Ramps have no creation surface in the public Revit API in ANY of 2023-2027:
+                    // no Ramp class, no Ramp.Create, nothing beyond StairRampFailures (an enum
+                    // SHARED with stairs failures) in RevitAPI.xml. horizun_execute_python cannot
+                    // build one either - it is the same public API, not a bigger one - so this is
+                    // refused as an ordinary argument error rather than a capability gap: granting
+                    // the Python fallback here would send a caller to try something that fails the
+                    // same way for the same reason. Model it with Revit's own Ramp tool (Architecture
+                    // tab > Ramp) or, for coordination geometry only, a sloped floor/generic model.
+                    case "ramp":
+                        throw new ArgumentException(
+                            "kind='ramp' is refused: Revit's public API has no Ramp class or Ramp.Create method " +
+                            "in any supported year (2023-2027), so neither this command nor horizun_execute_python " +
+                            "can create one. Use Revit's own Ramp tool (Architecture tab > Ramp) and, if the model " +
+                            "needs it back for coordination, read it afterwards with horizun_query_model; or, for " +
+                            "geometry-only coordination, model its shape as a sloped floor or generic model.");
                     case "cable_tray":
                         p.Start = Point(item["start"], scale, true); p.End = Point(item["end"], scale, true); NonZero(p.Start, p.End);
                         p.Diameter = ReadDiameter(item, scale);
@@ -1057,6 +1174,8 @@ namespace Horizun.Revit.Commands
                 }
                 NormalizePlan(doc, p);
                 p.Summary = new JObject { ["index"] = index, ["kind"] = kind, ["references_resolved"] = true };
+                if (p.TopoSource != null) p.Summary["landxml"] = p.TopoSource;
+                if (p.Enclosed) p.Summary["elements_index"] = item["enclosed_from"].DeepClone();
                 if (p.FittingMembers != null)
                 {
                     // Deferred members (batch_index refs, and a takeoff's branch) have no
@@ -1151,6 +1270,7 @@ namespace Horizun.Revit.Commands
                         doc.Regenerate();
                     }
                     return wall;
+                case "toposolid": return CreateToposolid(doc, p);
                 case "floor":
                     Floor madeFloor = Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
                     // THE PARAMETER, not an overload. Floor.Create's structural
@@ -1188,6 +1308,7 @@ namespace Horizun.Revit.Commands
                     return roof;
                 case "room":
                 {
+                    if (p.Enclosed) return CreateEnclosed(doc, p);
                     Room room = doc.Create.NewRoom(p.Level, new UV(p.Start.X, p.Start.Y));
                     if (room == null)
                         throw new InvalidOperationException(
@@ -1203,6 +1324,48 @@ namespace Horizun.Revit.Commands
                     SetIdentity(room, BuiltInParameter.ROOM_NUMBER, p.WantNumber, "number");
                     return room;
                 }
+                case "space":
+                {
+                    if (p.Enclosed) return CreateEnclosed(doc, p);
+                    Space space = doc.Create.NewSpace(p.Level, new UV(p.Start.X, p.Start.Y));
+                    if (space == null)
+                        throw new InvalidOperationException(
+                            "Revit placed no space at that point. Nothing was kept - MEASURED: unlike a room, a " +
+                            "space CAN be placed unbounded (area 0), which is reported rather than refused; a " +
+                            "null here means Revit itself declined, not merely that no boundary was found.");
+                    return space;
+                }
+                case "area":
+                {
+                    var areaView = (ViewPlan)p.SeparatorView;
+                    Area area = doc.Create.NewArea(areaView, new UV(p.Start.X, p.Start.Y));
+                    if (area == null)
+                        throw new InvalidOperationException(
+                            "Revit placed no area at that point. Nothing was kept.");
+                    return area;
+                }
+                case "area_boundary":
+                {
+                    var boundaryView = (ViewPlan)p.SeparatorView;
+                    Plane boundaryPlane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, p.Level.Elevation));
+                    SketchPlane boundarySketch = SketchPlane.Create(doc, boundaryPlane);
+                    ModelCurve firstBoundary = null;
+                    int boundaryCount = 0;
+                    foreach (List<Curve> chain in p.Chains)
+                        foreach (Curve curve in chain)
+                        {
+                            ModelCurve line = doc.Create.NewAreaBoundaryLine(boundarySketch, curve, boundaryView);
+                            if (line == null)
+                                throw new InvalidOperationException(
+                                    "Revit created no area boundary line for one of the curves. Nothing was kept.");
+                            if (firstBoundary == null) firstBoundary = line; else p.AlsoCreated.Add(line.Id);
+                            boundaryCount++;
+                        }
+                    if (boundaryCount == 0) throw new ArgumentException("area_boundary was given no curves to create");
+                    p.SeparatorSegments = boundaryCount;
+                    return firstBoundary;
+                }
+                case "sprinkler":
                 case "family_instance":
                 {
                     FamilySymbol symbol = (FamilySymbol)p.Type;
@@ -1442,6 +1605,7 @@ namespace Horizun.Revit.Commands
                             ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
                             : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
                         PositionInstance(doc, p, placed);
+                        SetTop(doc, p, placed);
                     }
 
                     // THE MIRROR, BY WHICHEVER OPERATION THIS FAMILY SUPPORTS.
@@ -1503,16 +1667,30 @@ namespace Horizun.Revit.Commands
                 case "duct": return Duct.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.Start, p.End);
                 case "pipe": return Pipe.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.Start, p.End);
                 case "conduit": return Conduit.Create(doc, p.Type.Id, p.Start, p.End, p.Level.Id);
+                case "flex_pipe": return FlexPipe.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.FlexPoints);
+                case "flex_duct": return FlexDuct.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.FlexPoints);
                 case "cable_tray": return CableTray.Create(doc, p.Type.Id, p.Start, p.End, p.Level.Id);
                 case "structural_framing":
                     FamilySymbol framing = (FamilySymbol)p.Type;
                     if (!framing.IsActive) { framing.Activate(); doc.Regenerate(); }
-                    return doc.Create.NewFamilyInstance(Line.CreateBound(p.Start, p.End), framing, p.Level, p.StructuralType);
+                    FamilyInstance placedFraming = doc.Create.NewFamilyInstance(Line.CreateBound(p.Start, p.End), framing, p.Level, p.StructuralType);
+                    // Revit gives a beam the nearest level BELOW its curve as its Reference Level,
+                    // whatever level was passed (MEASURED 2026-09-27 in Revit 2026: asked a level at
+                    // 93,000 mm for a beam at 96,000 mm, got the one at 95,000 mm). The caller's level
+                    // is set back explicitly; the re-read then judges both the level and the ends.
+                    Parameter referenceLevel = placedFraming?.get_Parameter(BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM);
+                    if (referenceLevel != null && !referenceLevel.IsReadOnly && referenceLevel.AsElementId() != p.Level.Id)
+                    {
+                        referenceLevel.Set(p.Level.Id);
+                        doc.Regenerate();
+                    }
+                    return placedFraming;
                 case "structural_column":
                     FamilySymbol column = (FamilySymbol)p.Type;
                     if (!column.IsActive) { column.Activate(); doc.Regenerate(); }
                     FamilyInstance placedColumn = doc.Create.NewFamilyInstance(p.Start, column, p.Level, StructuralType.Column);
                     PositionInstance(doc, p, placedColumn);
+                    SetTop(doc, p, placedColumn);
                     return placedColumn;
                 case "wall_opening":
                     return doc.Create.NewOpening(p.OpeningHost, p.Start, p.End);
@@ -2132,8 +2310,14 @@ namespace Horizun.Revit.Commands
                 case "level": return e is Level; case "grid": return e is Grid; case "wall": return e is Wall;
                 case "floor": return e is Floor; case "ceiling": return e is Ceiling; case "roof": return e is FootPrintRoof;
                 case "room": return e is Autodesk.Revit.DB.Architecture.Room;
+                case "space": return e is Autodesk.Revit.DB.Mechanical.Space;
+                case "area": return e is Autodesk.Revit.DB.Area; case "toposolid": return IsToposolid(e);
+                case "area_boundary":
+                    return e is CurveElement && InCategory(e, BuiltInCategory.OST_AreaSchemeLines);
+                case "sprinkler": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_Sprinklers);
                 case "family_instance": return e is FamilyInstance; case "duct": return e is Duct;
                 case "pipe": return e is Pipe; case "conduit": return e is Conduit; case "cable_tray": return e is CableTray;
+                case "flex_pipe": return e is FlexPipe; case "flex_duct": return e is FlexDuct;
                 case "structural_framing": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_StructuralFraming);
                 case "structural_column": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_StructuralColumns);
                 // THREE KINDS OF HOLE, THREE CATEGORIES. "is it an Opening" is
@@ -2196,6 +2380,15 @@ namespace Horizun.Revit.Commands
             if (a == null || a.Count < minimum || a.Count > 3) throw new ArgumentException("point/start/end must contain " + minimum + " XYZ coordinates");
             return new XYZ(GeometryInput.Number(a[0], "X") * scale, GeometryInput.Number(a[1], "Y") * scale,
                 (a.Count > 2 ? GeometryInput.Number(a[2], "Z") : 0) * scale);
+        }
+        /// <summary>flex_pipe/flex_duct: the path FlexPipe.Create/FlexDuct.Create take directly, in order.</summary>
+        private static List<XYZ> ReadPoints(JToken token, double scale)
+        {
+            JArray a = token as JArray;
+            if (a == null || a.Count < 2) throw new ArgumentException("points must contain at least 2 XYZ coordinates");
+            var list = new List<XYZ>(a.Count);
+            foreach (JToken t in a) list.Add(Point(t, scale, true));
+            return list;
         }
         /// <summary>
         /// OPEN CHAINS of curves, for the things Revit takes as a run rather than
@@ -2374,11 +2567,11 @@ namespace Horizun.Revit.Commands
         {
             if (element == null) return null;
             BuiltInParameter[] candidates;
-            if (element is Autodesk.Revit.DB.Plumbing.Pipe)
+            if (element is Autodesk.Revit.DB.Plumbing.Pipe || element is Autodesk.Revit.DB.Plumbing.FlexPipe)
                 candidates = new[] { BuiltInParameter.RBS_PIPE_DIAMETER_PARAM };
             else if (element is Autodesk.Revit.DB.Electrical.Conduit)
                 candidates = new[] { BuiltInParameter.RBS_CONDUIT_DIAMETER_PARAM };
-            else if (element is Autodesk.Revit.DB.Mechanical.Duct)
+            else if (element is Autodesk.Revit.DB.Mechanical.Duct || element is Autodesk.Revit.DB.Mechanical.FlexDuct)
                 candidates = new[] { BuiltInParameter.RBS_CURVE_DIAMETER_PARAM };
             else return null;
 
@@ -2554,6 +2747,7 @@ namespace Horizun.Revit.Commands
             catch (Exception ex)
             {
                 o["verified"] = false;
+                o["measured"] = false;
                 o["means"] = "the built curve could not be re-read: " + ex.Message;
             }
             return o;
@@ -2583,6 +2777,12 @@ namespace Horizun.Revit.Commands
             /// </summary>
             public string WantName;
             public string WantNumber;
+            /// <summary>placement='all_enclosed': the phase the circuit was found in, and that the row came from one.</summary>
+            public Phase Phase; public bool Enclosed;
+            /// <summary>kind=toposolid: the top-surface points (internal feet) and the indices re-read after the commit.</summary>
+            public List<XYZ> TopoPoints; public List<int> TopoSamples;
+            /// <summary>kind=toposolid from landxml_path: what was read (file, surface, hash, counts, position), echoed in the plan.</summary>
+            public JObject TopoSource;
 
             /// <summary>shaft: the two levels it runs BETWEEN, which is what makes it a shaft.</summary>
             public Level BaseLevel;
@@ -2634,6 +2834,8 @@ namespace Horizun.Revit.Commands
             public double BeamSpacing; public FamilySymbol BeamType;
             public Wall FoundationWall;
             public MEPCurve InlineHost; public XYZ InlinePoint;
+            /// <summary>flex_pipe/flex_duct: the full path, including its two ends (Start/End mirror the first/last point).</summary>
+            public List<XYZ> FlexPoints;
             public string SystemName; public List<Element> SystemMembers;
             /// <summary>The exact connector id validated per member, so create time uses
             /// what the plan checked rather than choosing again.</summary>

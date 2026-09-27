@@ -183,6 +183,11 @@ and run `install.ps1` again.
 
 - **`horizun_health` first, always.** The commands act on the *active* document,
   and health is what tells you which one that is.
+- **tools/list schemas are abridged, never incomplete.** Every argument, kind and
+  operation is there, but per-variant text is folded to keep the list small. The exact
+  schema of one tool or one variant is the resource
+  `horizun://contract/tools/{tool}` / `horizun://contract/tools/{tool}/{variant}`,
+  and a call that breaks the contract names the failing path and that URI.
 - **Understand the objective before the first write, and say it back.** A model is
   somebody's deliverable. Before the first typed write of a task you must know
   three things: WHAT outcome is wanted in the model, WHICH elements it applies to,
@@ -247,6 +252,16 @@ and run `install.ps1` again.
   catalogues are compiled in. Where a command needs one, it is passed as an
   argument. The delivery workflows built on top live in
   [Horizun Hub](https://horizunhub.com).
+
+- **ISO 19650 is a standard, not an organisation's rule set**, so its concepts are
+  modelled directly. On a new project, before the first write, offer the MCP prompt
+  `project-intake`: `horizun_project_context` asks for what is missing (role, stage,
+  EIR, BEP, MIDP/TIDP, CDE folders and approvers, naming, classification, IDS,
+  georeference, delivery) and writes one `project-context.json`.
+  `horizun_information_container` names, seals and promotes containers across
+  WIP/Shared/Published/Archived folders; `horizun_deliver_ifc` exports an IFC and
+  proves it against IDS, a Pset mapping and its georeference. See
+  [docs/INFORMATION-MANAGEMENT.md](docs/INFORMATION-MANAGEMENT.md).
 
 ### Update
 
@@ -426,6 +441,11 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
 
 - **`horizun_health` primero, siempre.** Los comandos actúan sobre el documento
   *activo*, y health es lo que te dice cuál es.
+- **Los esquemas de tools/list están abreviados, nunca incompletos.** Están todos los
+  argumentos, tipos y operaciones, pero el texto de cada variante se pliega para que la
+  lista sea corta. El esquema exacto de una herramienta o de una variante es el recurso
+  `horizun://contract/tools/{tool}` / `horizun://contract/tools/{tool}/{variant}`,
+  y una llamada que rompe el contrato nombra la ruta que falla y esa URI.
 - **Entiende el objetivo antes de la primera escritura, y devuélvelo dicho.** Un
   modelo es el entregable de alguien. Antes de la primera escritura tipada de una
   tarea tienes que saber tres cosas: QUÉ resultado se quiere en el modelo, A QUÉ
@@ -493,6 +513,16 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
   ninguna organización compilados dentro. Donde un comando necesita uno, se pasa
   como argumento. Los flujos de entrega construidos encima viven en
   [Horizun Hub](https://horizunhub.com).
+
+- **ISO 19650 es una norma, no las reglas de una organización**, así que sus
+  conceptos se modelan directamente. En un proyecto nuevo, antes de la primera
+  escritura, ofrece el prompt MCP `project-intake`: `horizun_project_context` pregunta
+  lo que falta (rol, fase, EIR, BEP, MIDP/TIDP, carpetas del CDE y quién aprueba,
+  nomenclatura, clasificación, IDS, georreferencia, entrega) y escribe un único
+  `project-context.json`. `horizun_information_container` nombra, sella y promueve
+  contenedores entre WIP/Compartido/Publicado/Archivado; `horizun_deliver_ifc` exporta
+  un IFC y lo demuestra contra IDS, un mapeo de Psets y su georreferencia. Ver
+  [docs/INFORMATION-MANAGEMENT.md](docs/INFORMATION-MANAGEMENT.md).
 
 ### Actualizar
 

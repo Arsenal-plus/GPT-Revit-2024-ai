@@ -134,6 +134,13 @@ namespace Horizun.Core.Tests
                       "whether to call its own coverage complete." },
 
             new Entry {
+                File = "ApplyIfcPlanCommand.cs", Fragment = "refused + unsupported + skipped, 0);",
+                Classification = Kind.Argument,
+                Why = "The same tally again, folded into the composite application block's 'failed' count on a " +
+                      "real apply (updated/unchanged are 'applied'; refused/unsupported/skipped are not). A " +
+                      "count, not a decision - nothing here refuses anything." },
+
+            new Entry {
                 File = "CreateElementsCommand.cs", Fragment = "route == CadPlacementRoute.Unsupported",
                 Classification = Kind.PostWrite,
                 Why = "A family whose FamilyPlacementType this command has no route for - measured from the " +
@@ -274,6 +281,13 @@ namespace Horizun.Core.Tests
                       "ScheduleSheetInstance.Point setter) do not use the scanner's keywords: the crop is an " +
                       "UnsupportedCapability that reaches the same decision, and the API absence deliberately " +
                       "stays an ArgumentException because Python faces the same absent setter." },
+
+            new Entry {
+                File = "MepRoutingCommand.cs", Fragment = "which is unsupported by resize: it covers pipes, ducts, conduits, cable trays and flex runs",
+                Classification = Kind.StructuralGranted,
+                Why = "since 2026-09-26 resize also types flex pipes and flex ducts; any OTHER MEPCurve (a wire, " +
+                      "a fabrication part's run) is still outside it. Judged while planning, per element, before " +
+                      "any transaction, and handed to FallbackDecision over the whole batch." },
 
             new Entry {
                 File = "EditDimensionsCommand.cs", Fragment = "not supported by the Revit API itself",

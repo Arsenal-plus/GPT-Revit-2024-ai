@@ -217,6 +217,7 @@ function ConvertFrom-HzHealthReply {
             title = [string](Get-HzField $d 'title')
             path = [string](Get-HzField $d 'path')
             is_active = (Get-HzField $d 'is_active')
+            is_linked = ((Get-HzField $d 'is_linked') -eq $true)
         }
     }
     $count = Get-HzField $result 'open_document_count'
@@ -410,6 +411,35 @@ function New-HzMatrixProbes {
         }
         WaitExit = { param($ProcessInfo, [int]$Seconds)
             try { return [bool]$ProcessInfo.Process.WaitForExit($Seconds * 1000) } catch { return $false }
+        }
+        # Every visible top-level window of THIS process, with its child texts and the
+        # handle of a button labelled OK. Read-only; Test-HzCrashDialog decides.
+        ProcessWindows = { param($ProcessInfo)
+            Initialize-HzExitNative
+            $procId = [uint32]$ProcessInfo.Process.Id
+            $found = New-Object System.Collections.Generic.List[object]
+            $cb = [HzExit.Native+EnumProc] { param($h, $p)
+                $o = [uint32]0; $null = [HzExit.Native]::GetWindowThreadProcessId($h, [ref]$o)
+                if ($o -eq $procId -and [HzExit.Native]::IsWindowVisible($h)) { $found.Add($h) }
+                return $true }
+            $null = [HzExit.Native]::EnumWindows($cb, [IntPtr]::Zero)
+            $rows = @()
+            foreach ($w in $found) {
+                $texts = New-Object System.Collections.Generic.List[string]; $ok = $null
+                $ccb = [HzExit.Native+EnumProc] { param($h, $p)
+                    $t = [HzExit.Native]::Text($h)
+                    if ($t) { $texts.Add($t); if ($t -eq 'OK' -and [HzExit.Native]::Class($h) -eq 'Button') { $script:HzOkHandle = $h } }
+                    return $true }
+                $script:HzOkHandle = $null
+                $null = [HzExit.Native]::EnumChildWindows($w, $ccb, [IntPtr]::Zero)
+                $rows += [pscustomobject]@{ title = [HzExit.Native]::Text($w); class = [HzExit.Native]::Class($w)
+                                            texts = @($texts); handle = $w; ok_handle = $script:HzOkHandle }
+            }
+            return ,$rows
+        }
+        ConfirmCrashDialog = { param($Window)
+            Initialize-HzExitNative
+            try { $null = [HzExit.Native]::SendMessage($Window.ok_handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero); return $true } catch { return $false }
         }
         Enable = { param([string]$Year)
             # The script's lines go to the host, not into the return value: a function
@@ -796,6 +826,152 @@ function Register-HzOpenedDocument {
                       else { 'the register refused the entry; see registration_failures' }) }
 }
 
+function Register-HzHarnessDocuments {
+    <#
+    .SYNOPSIS
+      Adopt the models a HARNESS created for itself, from the manifest it wrote
+      (schema horizun.harness-documents/v1, see verify-live.ps1), into the SAME
+      register every other owned document lives in - kind 'harness_scratch'.
+
+      Measured 2026-09-24: verify-live creates and opens its own disposable models
+      (HZ_LINKSRC_<tag>.rvt, w12-linkcopy-<tag>.rvt, ...) under
+      %TEMP%\horizun-live-<run>, nothing registered them, and all five years ended
+      in left_running_foreign_document with the manifest not restored.
+
+      A manifest is a CLAIM, and a claim is not ownership. An entry is registered
+      only when EVERY one of these holds, and anything else is reported and left
+      out - which leaves any such document foreign, as before:
+        - the schema is exactly horizun.harness-documents/v1 and the register is
+          bound to this session's pid;
+        - scratch_root is a DIRECT child of the temp directory, named
+          horizun-live-<probe_run>, an existing directory and not a reparse point
+          (a junction there could point at anybody's folder);
+        - that directory was CREATED AT OR AFTER the moment the Revit this run
+          started came up - so an old folder, or one somebody else made before
+          this session existed, is never adopted;
+        - the path is absolute, has no '..' segment, lies INSIDE scratch_root
+          (normalised, case-insensitive), is a .rvt/.rfa file that exists and is
+          not a reparse point, and is declared created_by_harness.
+      The close path is unchanged: it still closes by registered path, through
+      the bridge's rehearsal-then-token close, discarding changes (these are the
+      harness's own disposable copies), and a document of that folder that the
+      manifest did NOT list is still foreign.
+      Returns [ordered]@{ state; why; manifest; scratch_root; registered; rejected }
+      with state registered | no_manifest | manifest_rejected.
+    #>
+    param([Parameter(Mandatory)]$Ledger, [Parameter(Mandatory)]$Identity, [Parameter(Mandatory)][string]$ManifestPath,
+          [string]$TempRoot = ([IO.Path]::GetTempPath()))
+    $result = [ordered]@{ state = $null; why = $null; manifest = $ManifestPath; scratch_root = $null
+                          registered = @(); rejected = @() }
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        $result.state = 'no_manifest'
+        $result.why = 'the harness wrote no documents manifest; nothing it created is registered, and anything it left open stays foreign'
+        return $result
+    }
+    $m = $null
+    try { $m = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json } catch { $m = $null }
+    if ($null -eq $m) {
+        $result.state = 'manifest_rejected'; $result.why = 'the manifest is not readable JSON'
+        return $result
+    }
+    if ([string](Get-HzField $m 'schema') -ne 'horizun.harness-documents/v1') {
+        $result.state = 'manifest_rejected'
+        $result.why = ("unknown manifest schema '{0}'; only horizun.harness-documents/v1 is read" -f [string](Get-HzField $m 'schema'))
+        return $result
+    }
+    # The register has to be THIS session's, exactly as for a close.
+    if (-not $Ledger.session_pid -or ([int]$Ledger.session_pid -ne [int](Get-HzField $Identity 'pid'))) {
+        $result.state = 'manifest_rejected'
+        $result.why = 'the register is not bound to this session; nothing can be attributed to it'
+        return $result
+    }
+    # When THIS run's Revit came up, read the way Get-HzSessionIdentityState reads
+    # it: round-trip with an explicit offset, or not at all.
+    $raw = Get-HzField $Identity 'start_time'
+    $sessionStart = $null
+    if ($raw -is [DateTimeOffset]) { $sessionStart = $raw }
+    elseif ($raw -is [datetime]) { $sessionStart = [DateTimeOffset]$raw }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$raw)) {
+        $parsed = [DateTimeOffset]::MinValue
+        if (([string]$raw -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$') -and
+            [DateTimeOffset]::TryParse([string]$raw, [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { $sessionStart = $parsed }
+    }
+    if (-not $sessionStart) {
+        $result.state = 'manifest_rejected'
+        $result.why = 'the session has no readable start time, so the scratch folder cannot be proved younger than it'
+        return $result
+    }
+
+    $rootRaw = [string](Get-HzField $m 'scratch_root')
+    $result.scratch_root = $rootRaw
+    $tempNorm = Get-HzNormalizedPath $TempRoot
+    $rootNorm = Get-HzNormalizedPath $rootRaw
+    $probeRun = [string](Get-HzField $m 'probe_run')
+    $rootWhy = $null
+    if (-not $rootNorm -or -not [IO.Path]::IsPathRooted($rootRaw)) { $rootWhy = 'scratch_root is missing or not an absolute path' }
+    elseif ($rootRaw -match '(^|[\\/])\.\.([\\/]|$)') { $rootWhy = "scratch_root contains a '..' segment" }
+    elseif (-not $tempNorm -or ((Get-HzNormalizedPath ([IO.Path]::GetDirectoryName($rootNorm))) -ne $tempNorm)) {
+        $rootWhy = ("scratch_root '{0}' is not directly under the temp directory '{1}'" -f $rootRaw, $TempRoot)
+    }
+    elseif ([string]::IsNullOrWhiteSpace($probeRun) -or
+            ([IO.Path]::GetFileName($rootNorm) -ne ('horizun-live-' + $probeRun).ToLowerInvariant())) {
+        $rootWhy = ("scratch_root '{0}' is not named horizun-live-<probe_run> (probe_run '{1}')" -f $rootRaw, $probeRun)
+    }
+    else {
+        $di = [IO.DirectoryInfo]::new($rootNorm)
+        if (-not $di.Exists) { $rootWhy = "scratch_root '$rootRaw' does not exist" }
+        elseif (($di.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $rootWhy = "scratch_root '$rootRaw' is a reparse point (junction or link); where it leads is not the harness's folder"
+        }
+        elseif ($di.CreationTimeUtc -lt $sessionStart.UtcDateTime) {
+            $rootWhy = ("scratch_root '{0}' was created {1:o}, BEFORE this run's Revit started {2:o}; an older folder is never adopted" -f
+                        $rootRaw, $di.CreationTimeUtc, $sessionStart.UtcDateTime)
+        }
+    }
+    if ($rootWhy) {
+        $result.state = 'manifest_rejected'; $result.why = $rootWhy
+        foreach ($d in @(Get-HzField $m 'documents')) {
+            if ($null -eq $d) { continue }
+            $result.rejected += [ordered]@{ path = [string](Get-HzField $d 'path'); why = 'scratch_root refused: ' + $rootWhy }
+        }
+        return $result
+    }
+
+    foreach ($d in @(Get-HzField $m 'documents')) {
+        if ($null -eq $d) { continue }
+        $p = [string](Get-HzField $d 'path')
+        $why = $null
+        if ([string]::IsNullOrWhiteSpace($p)) { $why = 'the entry has no path' }
+        elseif (-not [IO.Path]::IsPathRooted($p)) { $why = 'the path is not absolute' }
+        elseif ($p -match '(^|[\\/])\.\.([\\/]|$)') { $why = "the path contains a '..' segment" }
+        elseif ((Get-HzField $d 'created_by_harness') -ne $true) { $why = 'the entry does not declare created_by_harness' }
+        else {
+            $np = Get-HzNormalizedPath $p
+            if (-not $np.StartsWith($rootNorm + '\')) { $why = ("the path is outside scratch_root '{0}'" -f $rootRaw) }
+            elseif ([IO.Path]::GetExtension($np) -notin @('.rvt', '.rfa')) { $why = 'not a Revit model or family file' }
+            elseif (-not (Test-Path -LiteralPath $p -PathType Leaf)) { $why = 'the file does not exist' }
+            elseif (((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $why = 'the file is a reparse point'
+            }
+        }
+        if ($why) {
+            $result.rejected += [ordered]@{ path = $p; why = $why }
+            continue
+        }
+        $full = [IO.Path]::GetFullPath($p)
+        $ok = Add-HzRehearsalDocument -Ledger $Ledger -Title ([IO.Path]::GetFileNameWithoutExtension($full)) -Path $full `
+            -SourceFile $ManifestPath -Kind 'harness_scratch'
+        if ($ok) { $result.registered += $full }
+        else { $result.rejected += [ordered]@{ path = $p; why = 'the register refused the entry; see registration_failures' } }
+    }
+    $result.state = 'registered'
+    if (@($result.rejected).Count -gt 0) {
+        $result.why = ("{0} entr(ies) refused and NOT registered; a document among them left open stays foreign" -f @($result.rejected).Count)
+    }
+    return $result
+}
+
 function Test-HzOnlyRehearsalDocuments {
     <#
     .SYNOPSIS
@@ -820,7 +996,7 @@ function Test-HzOnlyRehearsalDocuments {
         $title = [string](Get-HzField $d 'title')
         $path = [string](Get-HzField $d 'path')
         $np = Get-HzNormalizedPath $path
-        $row = [ordered]@{ title = $title; path = $path; path_normalized = $np; verdict = $null; why = $null; target = $null }
+        $row = [ordered]@{ title = $title; path = $path; path_normalized = $np; verdict = $null; why = $null; target = $null; is_linked = ((Get-HzField $d 'is_linked') -eq $true) }
         if (-not $title -and -not $np) {
             $row.verdict = 'foreign'; $row.why = 'the bridge published neither a title nor a path for this document'
             $foreign += $row; continue
@@ -893,6 +1069,48 @@ function Test-HzDialogTitleAllowed {
     if ($Title -match '(?i)save|guardar|discard|descartar|security|seguridad|unsigned|firm|sync|sincron|close|cerrar') { return $false }
     foreach ($a in $Allowed) { if ($Title -like $a) { return $true } }
     return $false
+}
+
+function Initialize-HzExitNative {
+    if ('HzExit.Native' -as [type]) { return }
+    Add-Type -Namespace HzExit -Name Native -MemberDefinition @"
+public delegate bool EnumProc(System.IntPtr h, System.IntPtr p);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, System.IntPtr p);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool EnumChildWindows(System.IntPtr parent, EnumProc cb, System.IntPtr p);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, out uint pid);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr SendMessage(System.IntPtr h, uint msg, System.IntPtr w, System.IntPtr l);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int max);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern int GetClassName(System.IntPtr h, System.Text.StringBuilder s, int max);
+public static string Text(System.IntPtr h) { var b = new System.Text.StringBuilder(2048); GetWindowText(h, b, 2048); return b.ToString(); }
+public static string Class(System.IntPtr h) { var b = new System.Text.StringBuilder(256); GetClassName(h, b, 256); return b.ToString(); }
+"@
+}
+
+function Test-HzCrashDialog {
+    <#
+    .SYNOPSIS
+      Is the ONLY visible window of an exiting Revit its own unrecoverable-error
+      dialog? $Windows: @{ title; class; texts[]; handle; ok_handle }. Returns
+      @{ ok; window; why }. Anything else - a second window, a save prompt, a text
+      that does not say the program will be terminated - is never pressed.
+    #>
+    param([object[]]$Windows)
+    $visible = @($Windows | Where-Object { $null -ne $_ })
+    $dialogs = @($visible | Where-Object { [string]$_.class -eq '#32770' })
+    if ($dialogs.Count -ne 1) { return @{ ok = $false; window = $null; why = ("{0} dialog(s) visible; only exactly one is ever pressed" -f $dialogs.Count) } }
+    $others = @($visible | Where-Object { [string]$_.class -ne '#32770' -and -not ([string]$_.title -match 'Monitor$') -and [string]$_.title })
+    if ($others.Count -gt 0) { return @{ ok = $false; window = $null; why = 'another titled window is still open: ' + ((@($others | ForEach-Object { $_.title })) -join ', ') } }
+    $d = $dialogs[0]
+    $text = (@($d.texts) -join ' ')
+    if ($text -notmatch 'An unrecoverable error has occurred' -or $text -notmatch 'will now be terminated') {
+        return @{ ok = $false; window = $null; why = "the only dialog is not Revit's unrecoverable-error notice: '" + [string]$d.title + "'" }
+    }
+    if ($text -match '(?i)do you want to save|save changes|save the|guardar los cambios|desea guardar|discard|descartar|synchroni') {
+        return @{ ok = $false; window = $null; why = 'the dialog mentions saving, discarding or synchronising; it is a person''s decision' }
+    }
+    if (-not $d.ok_handle) { return @{ ok = $false; window = $null; why = 'the dialog has no OK button to press' } }
+    return @{ ok = $true; window = $d; why = $null }
 }
 
 function Close-HzRehearsalSession {
@@ -1003,8 +1221,12 @@ function Close-HzRehearsalSession {
                            (($now.foreign | ForEach-Object { "'" + $_.title + "' (" + $_.why + ")" }) -join '; '))
             return $record
         }
-        if (@($now.own).Count -eq 0) { break }
-        $doc = @($now.own)[0]
+        # A LINKED model cannot be closed on its own: it unloads with its host, and
+        # document_session refuses it by path (measured 2026-09-24 on
+        # w12-linkcopy2). Own links are left to the process exit below.
+        $closable = @(@($now.own) | Where-Object { -not $_.is_linked })
+        if ($closable.Count -eq 0) { break }
+        $doc = $closable[0]
         $target = if ($doc.target) { $doc.target } else { $doc.title }
         $r = & $Probes.CloseDocument ([ordered]@{
             year = $Year; dir = $Dir; target = $target
@@ -1060,11 +1282,14 @@ function Close-HzRehearsalSession {
                        (($lastCheck.foreign | ForEach-Object { "'" + $_.title + "' (" + $_.why + ")" }) -join '; '))
         return $record
     }
-    if (@($lastCheck.own).Count -gt 0) {
+    $ownLinks = @(@($lastCheck.own) | Where-Object { $_.is_linked })
+    if ($ownLinks.Count -gt 0) { $record.unloaded_with_host = @($ownLinks | ForEach-Object { $_.title }) }
+    $ownOpen = @(@($lastCheck.own) | Where-Object { -not $_.is_linked })
+    if ($ownOpen.Count -gt 0) {
         $record.state = 'left_running_close_unverified'
-        $record.left_open = @($lastCheck.own | ForEach-Object { $_.title })
+        $record.left_open = @($ownOpen | ForEach-Object { $_.title })
         $record.why = ("documents this run opened are still open after the close sequence: {0}. Left running." -f
-                       ((@($lastCheck.own) | ForEach-Object { $_.title }) -join ', '))
+                       (($ownOpen | ForEach-Object { $_.title }) -join ', '))
         return $record
     }
     $asked = & $Probes.CloseMainWindow $id.process
@@ -1074,6 +1299,27 @@ function Close-HzRehearsalSession {
         return $record
     }
     if (& $Probes.WaitExit $id.process $ExitTimeoutSec) { $record.state = 'closed'; return $record }
+    # REVIT CRASHED WHILE EXITING (measured 2026-09-24 on 2025 and 2027: the main
+    # frame closed, then "An unrecoverable error has occurred. The program will now
+    # be terminated." sat modal and the process never ended). The process is
+    # already terminating and says nothing needs saving; its OK is the only way out.
+    # It is pressed ONLY when that dialog is the one and only visible window of this
+    # pid - a save, discard or any other prompt is a person's decision and stops it.
+    if ($Probes.ContainsKey('ProcessWindows') -and $Probes.ContainsKey('ConfirmCrashDialog')) {
+        # Flattened: a probe may return its rows wrapped (`return ,$rows`) or bare.
+        $windows = @(& $Probes.ProcessWindows $id.process | ForEach-Object { $_ })
+        $crash = Test-HzCrashDialog -Windows $windows
+        $record.exit_windows = @($windows | ForEach-Object { [ordered]@{ title = $_.title; text = (@($_.texts) -join ' | ') } })
+        if ($crash.ok) {
+            $pressed = & $Probes.ConfirmCrashDialog $crash.window
+            if ($pressed -and (& $Probes.WaitExit $id.process 60)) {
+                $record.state = 'closed_after_revit_crash'
+                $record.why = 'Revit raised its own unrecoverable-error dialog while exiting (after its main window closed); its OK ended the process. Nothing was saved or discarded by this driver.'
+                return $record
+            }
+        }
+        elseif ($crash.why) { $record.crash_dialog_not_pressed = $crash.why }
+    }
     $record.state = 'left_running_no_exit'
     $record.why = "the process did not exit within $ExitTimeoutSec s after a normal close request (a dialog may be waiting for a person). It is not killed."
     return $record

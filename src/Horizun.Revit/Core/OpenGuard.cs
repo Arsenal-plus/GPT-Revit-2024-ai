@@ -335,7 +335,9 @@ namespace Horizun.Revit.Core
                 FileVersion = plan.FileVersion,
                 ReadError = plan.BasicInfoError,
                 IsCentral = plan.FileIsCentral,
-                DisplayName = FileName(path)
+                DisplayName = FileName(path),
+                Path = path,
+                CentralPath = plan.CentralPath
             };
         }
 

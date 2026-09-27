@@ -38,15 +38,16 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class FixPlanimetryCommand : ICommand
+    public sealed partial class FixPlanimetryCommand : ICommand
     {
         public string Name => "horizun_fix_planimetry";
         public string Description =>
-            "Apply typed corrections to findings from horizun_audit_planimetry - view template/scale/name, sheet " +
+            "Apply typed corrections to findings from horizun_audit_planimetry - view template/scale/name/detail " +
+            "level/discipline, sheet " +
             "number/name, title-block placement, viewport/schedule moves, element-override clearing and " +
-            "rectangular crops - each bound to the finding it corrects, rehearsed provisionally, confirmed, " +
-            "committed atomically, re-read from the model, and re-audited so resolved, persistent and new " +
-            "findings are told apart.";
+            "rectangular or polygon crops - each bound to the finding it corrects, rehearsed provisionally, " +
+            "confirmed, committed atomically, re-read from the model, and re-audited so resolved, persistent and " +
+            "new findings are told apart.";
 
         public const int MaxActions = 100;
         private const int MaxReportedNewFindings = 50;
@@ -591,11 +592,14 @@ namespace Horizun.Revit.Commands
             // Final values, resolved.
             public ElementId TemplateId; public string TemplateName;
             public int Scale;
+            public string DetailLevel; public string Discipline;     // set_view_display, null = not requested
             public string NewName; public string NewNumber;
             public ElementId TitleBlockTypeId; public string TitleBlockTypeName;
             public double PxFeet, PyFeet;
             public ElementId ViewId;                       // clear_element_override / set_crop target view
-            public double CropMinX, CropMinY, CropMaxX, CropMaxY;   // view-plane feet
+            public double CropMinX, CropMinY, CropMaxX, CropMaxY;   // view-plane feet (rectangle, or the polygon's bbox)
+            public bool CropIsPolygon;
+            public List<double[]> CropLoopFeet;             // view-plane feet, one [x,y] per vertex, polygon only
 
             // Before-state, for the resolved plan and for unchanged-postconditions.
             public Dictionary<string, string> Before = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -636,6 +640,7 @@ namespace Horizun.Revit.Commands
                 {
                     case "set_view_template": o["template_id"] = Rid.Value(TemplateId); o["template"] = TemplateName; break;
                     case "set_view_scale": o["scale"] = Scale; break;
+                    case "set_view_display": o["detail_level"] = DetailLevel; o["discipline"] = Discipline; break;
                     case "rename_view": o["new_name"] = NewName; break;
                     case "rename_sheet":
                         o["new_number"] = NewNumber == null ? (JToken)JValue.CreateNull() : NewNumber;
@@ -647,7 +652,11 @@ namespace Horizun.Revit.Commands
                         o["point_feet"] = new JArray(PxFeet, PyFeet); break;
                     case "clear_element_override": o["view_id"] = Rid.Value(ViewId); break;
                     case "set_crop":
-                        o["crop_feet"] = new JArray(CropMinX, CropMinY, CropMaxX, CropMaxY); break;
+                        o["crop_feet"] = new JArray(CropMinX, CropMinY, CropMaxX, CropMaxY);
+                        o["crop_shape"] = CropIsPolygon ? "polygon" : "rectangle";
+                        if (CropIsPolygon)
+                            o["crop_loop_feet"] = new JArray(CropLoopFeet.Select(p => (JToken)new JArray(p[0], p[1])));
+                        break;
                 }
                 return o;
             }
@@ -735,6 +744,7 @@ namespace Horizun.Revit.Commands
                     case "move_schedule": PlanMoveSchedule(doc, a, cited, toFeet, snapBefore, plan); break;
                     case "clear_element_override": PlanClearOverride(doc, a, cited, plan); break;
                     case "set_crop": PlanSetCrop(doc, a, cited, toFeet, plan); break;
+                    case "set_view_display": PlanSetDisplay(doc, a, cited, plan); break;
                     default: throw new InvalidOperationException("operation escaped the catalog");
                 }
 
@@ -1110,12 +1120,7 @@ namespace Horizun.Revit.Commands
             if (view.IsTemplate)
                 throw new ArgumentException("view_id " + Rid.Value(view.Id) + " is a view template; a template " +
                                             "has no crop of its own to set.");
-            if (PlanimetryFixRules.NonRectangularCrop(a["crop"]))
-                throw new UnsupportedCapability(
-                    "a NON-RECTANGULAR crop shape was requested (crop.loop). This phase reproduces rectangular " +
-                    "crops only, because an arbitrary loop cannot be verified against the request without " +
-                    "geometry this contract does not carry. Nothing was written.",
-                    FallbackSignal.ReasonUnsupportedKind);
+            bool polygon = PlanimetryFixRules.NonRectangularCrop(a["crop"]);
             bool active;
             try { active = view.CropBoxActive; }
             catch (Exception ex)
@@ -1124,11 +1129,42 @@ namespace Horizun.Revit.Commands
                 throw new ArgumentException("view " + Rid.Value(view.Id) + "'s crop is NOT ACTIVE. Activating a " +
                     "crop changes what the view shows everywhere it is placed - a display decision this fix does " +
                     "not take as a side effect. Activate it deliberately, re-run the audit, then fix the shape.");
-            // CanHaveShape is deliberately NOT required: it answers whether the view
-            // can carry a NON-rectangular shape, and this operation writes a
-            // rectangle through View.CropBox. Requiring it would refuse views whose
-            // crop is perfectly settable. What IS required is a readable CropBox,
-            // because that is what the write and the re-read both stand on.
+
+            if (polygon)
+            {
+                // CanHaveShape answers whether THIS view can carry a non-rectangular
+                // shape at all (some view types cannot); a view that cannot is refused
+                // BY NAME here, not as a capability gap - a script would hit the exact
+                // same Revit refusal, so no fallback is owed for it.
+                ViewCropRegionShapeManager shapeManager = view.GetCropRegionShapeManager();
+                bool canHaveShape;
+                try { canHaveShape = shapeManager != null && shapeManager.CanHaveShape; }
+                catch (Exception ex)
+                { throw new ArgumentException("whether view " + Rid.Value(view.Id) + " can carry a non-rectangular " +
+                                              "crop shape could not be read (" + ex.Message + ")."); }
+                if (!canHaveShape)
+                    throw new ArgumentException("view " + Rid.Value(view.Id) + " cannot carry a NON-RECTANGULAR " +
+                        "crop shape (ViewCropRegionShapeManager.CanHaveShape is false). Set a rectangular crop " +
+                        "(crop.min/crop.max) instead; nothing was written.");
+                List<double[]> loopUnits;
+                string loopError = PlanimetryFixRules.PolygonCropError(a["crop"], out loopUnits);
+                if (loopError != null) throw new ArgumentException(loopError);
+                plan.CropIsPolygon = true;
+                plan.CropLoopFeet = loopUnits.Select(p => new[] { p[0] * toFeet, p[1] * toFeet }).ToList();
+                plan.CropMinX = plan.CropLoopFeet.Min(p => p[0]); plan.CropMinY = plan.CropLoopFeet.Min(p => p[1]);
+                plan.CropMaxX = plan.CropLoopFeet.Max(p => p[0]); plan.CropMaxY = plan.CropLoopFeet.Max(p => p[1]);
+            }
+            else
+            {
+                double minX, minY, maxX, maxY;
+                string cropError = PlanimetryFixRules.CropError(a["crop"], out minX, out minY, out maxX, out maxY);
+                if (cropError != null) throw new ArgumentException(cropError);
+                plan.CropMinX = minX * toFeet; plan.CropMinY = minY * toFeet;
+                plan.CropMaxX = maxX * toFeet; plan.CropMaxY = maxY * toFeet;
+            }
+            // A readable CropBox is required either way: the rectangular write reads and
+            // rewrites it directly, and the polygon write removes any existing shape
+            // through the SAME rectangular box before installing the new one (see Apply).
             BoundingBoxXYZ currentBox;
             try { currentBox = view.CropBox; }
             catch (Exception ex)
@@ -1137,15 +1173,10 @@ namespace Horizun.Revit.Commands
             if (currentBox == null)
                 throw new ArgumentException("view " + Rid.Value(view.Id) + " returned no CropBox, so there is " +
                                             "nothing to set.");
-            double minX, minY, maxX, maxY;
-            string cropError = PlanimetryFixRules.CropError(a["crop"], out minX, out minY, out maxX, out maxY);
-            if (cropError != null) throw new ArgumentException(cropError);
             plan.TargetId = view.Id;
             plan.TargetUniqueId = SafeUid(view);
             plan.TargetClass = view.GetType().Name;
             plan.ViewId = view.Id;
-            plan.CropMinX = minX * toFeet; plan.CropMinY = minY * toFeet;
-            plan.CropMaxX = maxX * toFeet; plan.CropMaxY = maxY * toFeet;
             plan.CropVisibleBefore = Try(() => (bool?)view.CropBoxVisible);
             PlanBox current = ReadCropBox(view);
             plan.Before["crop"] = current.Valid
@@ -1180,6 +1211,7 @@ namespace Horizun.Revit.Commands
                     view.Name = plan.NewName;
                     return;
                 }
+                case "set_view_display": ApplyDisplay(doc, plan); return;
                 case "rename_sheet":
                 {
                     var sheet = (ViewSheet)doc.GetElement(plan.TargetId);
@@ -1218,23 +1250,48 @@ namespace Horizun.Revit.Commands
                 }
                 case "set_crop":
                 {
-                    // A RECTANGULAR crop is set through the RECTANGULAR api.
-                    //
-                    // MEASURED on Revit 2026 (2026-08-25, the live gate): using
-                    // ViewCropRegionShapeManager.SetCropShape installed a crop-region
-                    // SKETCH, and Revit models that sketch's constraints as two
-                    // non-view-specific Dimension elements - the model's dimension
-                    // census rose by exactly two per call, and they were still there
-                    // after the crop was set back. For a command whose entire contract
-                    // is that it writes only what it names, adding two undeclared
-                    // elements to somebody's model is not an acceptable side effect.
-                    //
-                    // View.CropBox takes the rectangle directly and creates no sketch.
-                    // An existing shape is removed first, because a shape-set crop
-                    // ignores CropBox - and removing it is exactly what the caller
-                    // asked for by naming a rectangle.
                     var view = (View)doc.GetElement(plan.TargetId);
                     ViewCropRegionShapeManager manager = view.GetCropRegionShapeManager();
+
+                    if (plan.CropIsPolygon)
+                    {
+                        // A NON-RECTANGULAR crop can only be set through
+                        // ViewCropRegionShapeManager.SetCropShape(CurveLoop) - View.CropBox
+                        // has no more than two corners. MEASURED on Revit 2026 (2026-08-25,
+                        // the live gate, on a RECTANGLE loop): SetCropShape installs a
+                        // crop-region SKETCH and Revit models its constraints as two
+                        // non-view-specific Dimension elements, still there after the
+                        // shape was removed again. For a command whose contract is that it
+                        // writes only what it names, those are deleted here, in the SAME
+                        // transaction, right after Revit creates them. The shape's
+                        // geometry is the CurveLoop, not the witness dimensions it drives
+                        // in the UI, so this is expected to leave the shape intact - but
+                        // that is exactly what VerifyCrop's re-read of the loop, a few
+                        // lines below this call, actually proves: a wrong assumption here
+                        // fails the postcondition (and rolls the whole batch back) rather
+                        // than silently keeping the extra elements or claiming success.
+                        var before = new HashSet<long>(new FilteredElementCollector(doc)
+                            .OfClass(typeof(Dimension)).Select(e => Rid.Value(e.Id)));
+                        var loop = new CurveLoop();
+                        int n = plan.CropLoopFeet.Count;
+                        for (int i = 0; i < n; i++)
+                        {
+                            double[] p1 = plan.CropLoopFeet[i], p2 = plan.CropLoopFeet[(i + 1) % n];
+                            loop.Append(Line.CreateBound(OnViewPlane(view, p1[0], p1[1]), OnViewPlane(view, p2[0], p2[1])));
+                        }
+                        manager.SetCropShape(loop);
+                        doc.Regenerate();
+                        var newDimensionIds = new FilteredElementCollector(doc).OfClass(typeof(Dimension))
+                            .Where(e => !before.Contains(Rid.Value(e.Id))).Select(e => e.Id).ToList();
+                        if (newDimensionIds.Count > 0) doc.Delete(newDimensionIds);
+                        return;
+                    }
+
+                    // A RECTANGULAR crop is set through the RECTANGULAR api. View.CropBox
+                    // takes the rectangle directly and creates no sketch (see the polygon
+                    // branch above for why the shape api is not used here too). An existing
+                    // shape is removed first, because a shape-set crop ignores CropBox - and
+                    // removing it is exactly what the caller asked for by naming a rectangle.
                     if (manager != null && manager.ShapeSet) manager.RemoveCropRegionShape();
 
                     BoundingBoxXYZ box = view.CropBox;
@@ -1391,6 +1448,7 @@ namespace Horizun.Revit.Commands
                     case "move_schedule": check = VerifyScheduleMove(doc, plan, toleranceFeet, row); break;
                     case "clear_element_override": check = VerifyOverrideCleared(doc, plan); break;
                     case "set_crop": check = VerifyCrop(doc, plan, toleranceFeet); break;
+                    case "set_view_display": check = VerifyDisplay(doc, plan); break;
                     default:
                         check = new PostconditionCheck("operation");
                         check.Unreadable("operation", plan.Op.Name, "operation escaped the catalog");
@@ -1714,7 +1772,7 @@ namespace Horizun.Revit.Commands
             {
                 check.Unreadable("crop_active", true, "the view is gone");
                 check.Unreadable("crop_visible_unchanged", plan.CropVisibleBefore, "the view is gone");
-                check.Unreadable("crop_shape", RequestedCrop(plan), "the view is gone");
+                check.Unreadable("crop_shape", plan.CropIsPolygon ? RequestedLoop(plan) : RequestedCrop(plan), "the view is gone");
                 return check;
             }
             try { check.Compare("crop_active", true, view.CropBoxActive); }
@@ -1732,6 +1790,24 @@ namespace Horizun.Revit.Commands
                         "CropBoxVisible could not be read before the write, so 'unchanged' cannot be measured");
             }
             catch (Exception ex) { check.Unreadable("crop_visible_unchanged", plan.CropVisibleBefore, ex.Message); }
+
+            if (plan.CropIsPolygon)
+            {
+                // The committed SHAPE, vertex by vertex - not its bounding box, which a
+                // rotated or concave polygon could share with a very different shape.
+                // Compared against the same batch tolerance as every other postcondition
+                // here (default 0.1 mm, tighter than the 1 mm this feature targets).
+                List<double[]> afterLoop = ReadCropLoop(view);
+                if (afterLoop == null)
+                    check.Unreadable("crop_shape", RequestedLoop(plan), "the committed crop shape's loop would not read");
+                else
+                {
+                    bool matches = LoopVerticesMatch(plan.CropLoopFeet, afterLoop, toleranceFeet);
+                    check.Record("crop_shape", RequestedLoop(plan), FormatLoop(afterLoop), matches);
+                }
+                return check;
+            }
+
             PlanBox after = ReadCropBox(view);
             if (!after.Valid)
                 check.Unreadable("crop_shape", RequestedCrop(plan), "the committed crop shape would not read");
@@ -1748,6 +1824,58 @@ namespace Horizun.Revit.Commands
             }
             return check;
         }
+
+        /// <summary>The crop-region shape's own loop, one [x,y] view-plane point per
+        /// vertex (an endpoint of each of its curves - the polygon this fix writes is
+        /// straight-edged, so no tessellation is needed). Null when there is no shape,
+        /// it has fewer than 3 vertices, or it does not read.</summary>
+        private static List<double[]> ReadCropLoop(View view)
+        {
+            try
+            {
+                ViewCropRegionShapeManager manager = view.GetCropRegionShapeManager();
+                if (manager == null) return null;
+                CurveLoop loop = null;
+                try { foreach (CurveLoop l in manager.GetCropShape()) { loop = l; break; } }
+                catch { return null; }
+                if (loop == null) return null;
+                var points = new List<double[]>();
+                foreach (Curve curve in loop)
+                {
+                    XYZ d = curve.GetEndPoint(0).Subtract(view.Origin);
+                    points.Add(new[] { d.DotProduct(view.RightDirection), d.DotProduct(view.UpDirection) });
+                }
+                return points.Count >= 3 ? points : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Every requested vertex has a distinct, unused read vertex within
+        /// tolerance. Unordered on purpose: Revit is free to start the loop, or wind it,
+        /// wherever it likes - the shape is what matters, not the vertex order.</summary>
+        private static bool LoopVerticesMatch(List<double[]> requested, List<double[]> actual, double toleranceFeet)
+        {
+            if (requested.Count != actual.Count) return false;
+            var used = new bool[actual.Count];
+            foreach (double[] r in requested)
+            {
+                int found = -1;
+                for (int i = 0; i < actual.Count; i++)
+                {
+                    if (used[i]) continue;
+                    if (Math.Abs(actual[i][0] - r[0]) <= toleranceFeet && Math.Abs(actual[i][1] - r[1]) <= toleranceFeet)
+                    { found = i; break; }
+                }
+                if (found < 0) return false;
+                used[found] = true;
+            }
+            return true;
+        }
+
+        private static string RequestedLoop(Plan plan) => FormatLoop(plan.CropLoopFeet);
+
+        private static string FormatLoop(List<double[]> points)
+            => string.Join(";", points.Select(p => PlanimetryFixRules.CanonicalPoint2D(p[0], p[1])));
 
         /// <summary>The crop as a view-plane rectangle, read the way the INVENTORY reads
         /// it - shape when there is one, CropBox otherwise, every point projected.</summary>

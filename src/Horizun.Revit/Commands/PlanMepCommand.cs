@@ -20,7 +20,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class PlanMepCommand : ICommand
+    public sealed partial class PlanMepCommand : ICommand
     {
         public string Name => "horizun_plan_mep";
         public string Description =>
@@ -39,8 +39,9 @@ namespace Horizun.Revit.Commands
 
             string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
             if (operation == "network_census") return NetworkCensus(doc, request);
+            if (operation == "system_analysis") return SystemAnalysis(doc, request);
             if (operation != "route_run")
-                return CommandResult.Fail("operation must be route_run or network_census.");
+                return CommandResult.Fail("operation must be route_run, network_census or system_analysis.");
 
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
             double toFeet;

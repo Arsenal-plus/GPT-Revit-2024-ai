@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - graphic control: view filters, overrides, temporary
 // hide/isolate, and colour by parameter value. Original Horizun code.
 //
@@ -107,6 +107,8 @@ namespace Horizun.Revit.Commands
                     if (a["overrides"] != null) ReadOverrides(doc, a["overrides"] as JObject);
                     if (a["visible"] != null && a["visible"].Type != JTokenType.Boolean)
                         throw new ArgumentException("visible must be a boolean when given");
+                    if (a["enabled"] != null && a["enabled"].Type != JTokenType.Boolean)
+                        throw new ArgumentException("enabled must be a boolean when given");
                     break;
                 }
 
@@ -123,6 +125,13 @@ namespace Horizun.Revit.Commands
                         throw new ArgumentException(
                             "max_values must be 1..60. Beyond that the legend stops being readable and the " +
                             "palette repeats so often that two colours mean nothing.");
+                    // NOTHING TO COLOUR IS KNOWN BEFORE ANY WRITE. The values come from the
+                    // elements the view shows; a view that shows none of these categories
+                    // would commit an empty legend, which the post-commit check rightly
+                    // refuses - so say it here, in the rehearsal, and issue no token.
+                    // (A view created earlier in this same batch is checked at apply.)
+                    if (view != null && DistinctValues(doc, view, categories, parameter).Count == 0)
+                        throw new ArgumentException(NothingToColour(view, categories));
                     break;
                 }
 
@@ -168,10 +177,20 @@ namespace Horizun.Revit.Commands
                 case "set_category_visibility":
                 {
                     View view = GraphicsView(doc, a, known);
-                    ElementId category = ResolveCategory(doc, a.Value<string>("category"));
-                    if (a["hidden"] == null || a["hidden"].Type != JTokenType.Boolean)
-                        throw new ArgumentException("hidden is required and must be a boolean");
-                    RequireCategoryHideable(doc, view, category, a.Value<string>("category"));
+                    ElementId category = ResolveVisibilityCategory(doc, a);
+                    bool hasHidden = a["hidden"] != null && a["hidden"].Type == JTokenType.Boolean;
+                    if (!hasHidden && a["overrides"] == null)
+                        throw new ArgumentException("set_category_visibility needs hidden (a boolean), overrides, or both - an action with neither changes nothing.");
+                    if (a["hidden"] != null && !hasHidden) throw new ArgumentException("hidden must be a boolean");
+                    RequireCategoryVgNotTemplated(doc, view, category);
+                    if (hasHidden) RequireCategoryHideable(doc, view, category, a.Value<string>("category"));
+                    if (a["overrides"] != null)
+                    {
+                        if (view != null && !view.IsCategoryOverridable(category))
+                            throw new ArgumentException("category '" + a.Value<string>("category") + "' cannot take graphic overrides in view '" +
+                                view.Name + "' (View.IsCategoryOverridable is false). Nothing was written.");
+                        ReadOverrides(doc, a["overrides"] as JObject);
+                    }
                     break;
                 }
             }
@@ -204,6 +223,7 @@ namespace Horizun.Revit.Commands
                     JObject overrides = a["overrides"] as JObject;
                     if (overrides != null) view.SetFilterOverrides(filterId, ReadOverrides(doc, overrides));
                     if (a["visible"] != null) view.SetFilterVisibility(filterId, a.Value<bool>("visible"));
+                    if (a["enabled"] != null) view.SetIsFilterEnabled(filterId, a.Value<bool>("enabled"));
                     a["__filter_id"] = Rid.Value(filterId);
                     return view;
                 }
@@ -246,8 +266,9 @@ namespace Horizun.Revit.Commands
                 case "set_category_visibility":
                 {
                     View view = GraphicsViewApply(doc, a, aliases);
-                    ElementId category = ResolveCategory(doc, a.Value<string>("category"));
-                    view.SetCategoryHidden(category, a.Value<bool>("hidden"));
+                    ElementId category = ResolveVisibilityCategory(doc, a);
+                    if (a["hidden"] != null) view.SetCategoryHidden(category, a.Value<bool>("hidden"));
+                    if (a["overrides"] != null) view.SetCategoryOverrides(category, ReadOverrides(doc, a["overrides"] as JObject));
                     a["__category_id"] = Rid.Value(category);
                     return view;
                 }
@@ -267,6 +288,7 @@ namespace Horizun.Revit.Commands
             // from a list somebody typed colours the values they remembered and
             // leaves the rest grey, which is exactly the case a reviewer needs to see.
             List<string> values = DistinctValues(doc, view, categories, parameter);
+            if (values.Count == 0) throw new InvalidOperationException(NothingToColour(view, categories));
             values.Sort(StringComparer.Ordinal);   // deterministic: same model, same colours
 
             var legend = new JArray();
@@ -343,6 +365,8 @@ namespace Horizun.Revit.Commands
                     if (!view.GetFilters().Contains(filterId)) return false;
                     if (action["visible"] != null &&
                         view.GetFilterVisibility(filterId) != action.Value<bool>("visible")) return false;
+                    if (action["enabled"] != null &&
+                        view.GetIsFilterEnabled(filterId) != action.Value<bool>("enabled")) return false;
                     // The overrides are re-READ rather than assumed: a template that
                     // governs filters accepts the call and keeps its own value, and the
                     // only way to know which happened is to ask the view afterwards.
@@ -354,7 +378,8 @@ namespace Horizun.Revit.Commands
                 {
                     if (!(e is View coloured)) return false;
                     JArray legend = action["__legend"] as JArray;
-                    if (legend == null) return false;
+                    // An EMPTY legend coloured nothing: the loop below would pass it vacuously.
+                    if (legend == null || legend.Count == 0) return false;
                     foreach (JToken row in legend)
                     {
                         long raw = row.Value<long?>("filter_id") ?? -1;
@@ -362,6 +387,16 @@ namespace Horizun.Revit.Commands
                         ElementId id = Rid.Make(raw);
                         if (!coloured.GetFilters().Contains(id)) return false;
                         if (!coloured.GetFilterVisibility(id)) return false;
+                        // The colour itself, not only that a filter got attached and shown:
+                        // a template or a stale filter can keep filters/visibility exactly
+                        // as set while wearing a DIFFERENT colour - re-read from the view.
+                        try
+                        {
+                            OverrideGraphicSettings settings = coloured.GetFilterOverrides(id);
+                            Color wanted = ReadColour(row.Value<string>("rgb"), "rgb");
+                            if (!SameColour(settings.ProjectionLineColor, wanted)) return false;
+                        }
+                        catch { return false; }
                     }
                     return true;
                 }
@@ -370,7 +405,9 @@ namespace Horizun.Revit.Commands
                 {
                     if (!(e is View target)) return false;
                     JObject wanted = action["overrides"] as JObject;
-                    foreach (ElementId id in ReadElementIds(doc, action, "element_ids"))
+                    var overridden = ReadElementIds(doc, action, "element_ids").ToList();
+                    if (overridden.Count == 0) return false;   // nothing compared is not a pass
+                    foreach (ElementId id in overridden)
                         if (!OverridesMatch(target.GetElementOverrides(id), wanted)) return false;
                     return true;
                 }
@@ -379,20 +416,41 @@ namespace Horizun.Revit.Commands
                 {
                     if (!(e is View hiding)) return false;
                     bool permanent = action.Value<bool?>("permanent") ?? false;
-                    foreach (ElementId id in ReadElementIds(doc, action, "element_ids"))
+                    var hidden = ReadElementIds(doc, action, "element_ids").ToList();
+                    if (hidden.Count == 0) return false;   // nothing compared is not a pass
+                    if (!permanent && !hiding.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate)) return false;
+                    foreach (ElementId id in hidden)
                     {
                         Element element = doc.GetElement(id);
                         if (element == null) return false;
-                        if (permanent && !element.IsHidden(hiding)) return false;
+                        if (permanent) { if (!element.IsHidden(hiding)) return false; continue; }
+                        // Element.IsHidden reports the PERMANENT hidden state only; a
+                        // temporary hide is a VIEW-MODE fact the element itself does not
+                        // carry, so exactly the requested ids are re-read from the view.
+                        bool visible;
+                        try { visible = hiding.IsElementVisibleInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate, id); }
+                        catch { return false; }
+                        if (visible) return false;
                     }
-                    // The temporary mode is a view state, not an element property, so
-                    // the check is that the mode is ON - IsHidden does not report it.
-                    return permanent || hiding.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate);
+                    return true;
                 }
 
                 case "isolate_elements":
-                    return e is View isolating &&
-                           isolating.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate);
+                {
+                    if (!(e is View isolating) || !isolating.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate)) return false;
+                    var isolated = ReadElementIds(doc, action, "element_ids").ToList();
+                    if (isolated.Count == 0) return false;   // nothing compared is not a pass
+                    foreach (ElementId id in isolated)
+                    {
+                        bool visible;
+                        try { visible = isolating.IsElementVisibleInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate, id); }
+                        catch { return false; }
+                        // Isolating keeps exactly the requested ids visible; anything not
+                        // still visible was not actually isolated by this call.
+                        if (!visible) return false;
+                    }
+                    return true;
+                }
 
                 case "reset_temporary":
                     return e is View reset &&
@@ -403,35 +461,109 @@ namespace Horizun.Revit.Commands
                     if (!(e is View categoryView)) return false;
                     long raw = action.Value<long?>("__category_id") ?? -1;
                     if (!Rid.CanRepresent(raw)) return false;
-                    return categoryView.GetCategoryHidden(Rid.Make(raw)) == action.Value<bool>("hidden");
+                    ElementId categoryId = Rid.Make(raw);
+                    if (action["hidden"] != null && categoryView.GetCategoryHidden(categoryId) != action.Value<bool>("hidden")) return false;
+                    return action["overrides"] == null ||
+                           OverridesMatch(categoryView.GetCategoryOverrides(categoryId), action["overrides"] as JObject);
                 }
             }
             return false;
         }
 
-        /// <summary>What a graphic-control action reports back beyond its id.</summary>
-        internal static JObject GraphicsDetail(JObject action, string op)
+        /// <summary>
+        /// What a graphic-control action reports back beyond its id - POST-COMMIT, so
+        /// 'doc' and 'e' (the re-fetched element) let this re-read each value's colour
+        /// and each requested id's actual hidden/visible state, rather than echoing
+        /// back what the apply phase intended to write.
+        /// </summary>
+        internal static JObject GraphicsDetail(Document doc, JObject action, string op, Element e)
         {
             if (op == "color_by_value")
+            {
+                View coloured = e as View;
+                var byValue = new JArray();
+                bool allVerified = coloured != null;
+                foreach (JToken row in (action["__legend"] as JArray) ?? new JArray())
+                {
+                    string wantHex = row.Value<string>("rgb");
+                    string gotHex = null; bool visible = false; bool readable = false;
+                    long raw = row.Value<long?>("filter_id") ?? -1;
+                    if (coloured != null && Rid.CanRepresent(raw))
+                    {
+                        try
+                        {
+                            ElementId id = Rid.Make(raw);
+                            visible = coloured.GetFilters().Contains(id) && coloured.GetFilterVisibility(id);
+                            Color c = coloured.GetFilterOverrides(id).ProjectionLineColor;
+                            if (c != null && c.IsValid)
+                            {
+                                gotHex = string.Format("#{0:X2}{1:X2}{2:X2}", c.Red, c.Green, c.Blue);
+                                readable = true;
+                            }
+                        }
+                        catch { readable = false; }
+                    }
+                    bool matches = readable && visible && string.Equals(gotHex, wantHex, StringComparison.OrdinalIgnoreCase);
+                    if (!matches) allVerified = false;
+                    byValue.Add(new JObject
+                    {
+                        ["value"] = row.Value<string>("value"), ["filter_id"] = row["filter_id"],
+                        ["requested_rgb"] = wantHex, ["found_rgb"] = gotHex, ["visible"] = visible, ["matches"] = matches
+                    });
+                }
                 return new JObject
                 {
                     ["legend"] = action["__legend"],
                     ["values_found"] = action["__values_found"],
                     ["values_coloured"] = action["__values_coloured"],
                     ["palette_wrapped"] = action["__palette_wrapped"],
+                    ["overrides_verified"] = new JObject { ["all_verified"] = allVerified, ["by_value"] = byValue },
                     ["means"] = "values_found counts the distinct values present in this view; " +
                                 "values_coloured is how many got a colour before max_values. When " +
                                 "palette_wrapped is true, two different values share a colour and the " +
-                                "legend is the only way to tell them apart."
+                                "legend is the only way to tell them apart. overrides_verified RE-READS each " +
+                                "value's filter override colour from the committed view; a template or a stale " +
+                                "filter can keep the filter attached and visible while wearing a different colour."
                 };
+            }
             if (op == "hide_elements" || op == "isolate_elements")
+            {
+                bool permanent = action.Value<bool?>("permanent") ?? false;
+                View view = e as View;
+                var byElement = new JArray();
+                bool allVerified = view != null;
+                foreach (ElementId id in ReadElementIds(doc, action, "element_ids"))
+                {
+                    bool hidden = false; bool measured = false;
+                    if (view != null)
+                    {
+                        try
+                        {
+                            hidden = permanent
+                                ? (doc.GetElement(id)?.IsHidden(view) ?? false)
+                                : !view.IsElementVisibleInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate, id);
+                            measured = true;
+                        }
+                        catch { measured = false; }
+                    }
+                    // isolate_elements keeps the requested ids VISIBLE (everything else is
+                    // what disappears); "hidden" here always means "not part of what stayed".
+                    bool wantHidden = op == "hide_elements";
+                    bool matches = measured && hidden == wantHidden;
+                    if (!matches) allVerified = false;
+                    byElement.Add(new JObject { ["element_id"] = Rid.Value(id), ["measured"] = measured, ["hidden"] = hidden, ["matches"] = matches });
+                }
                 return new JObject
                 {
-                    ["temporary"] = !(action.Value<bool?>("permanent") ?? false),
+                    ["temporary"] = !permanent,
+                    ["elements_verified"] = new JObject { ["all_verified"] = allVerified, ["by_element"] = byElement },
                     ["means"] = "a temporary hide/isolate is a VIEW MODE. It does not survive closing the " +
                                 "document, it is not what a printed sheet shows, and reset_temporary undoes it. " +
-                                "A permanent hide is stored on the view and is what prints."
+                                "A permanent hide is stored on the view and is what prints. elements_verified " +
+                                "RE-READS exactly the requested ids' hidden/visible state from the view, not only " +
+                                "whether the view's temporary-mode flag is on."
                 };
+            }
             return null;
         }
 
@@ -481,7 +613,8 @@ namespace Horizun.Revit.Commands
                 "view '" + view.Name + "' does not accept " + what + ": View.AreGraphicsOverridesAllowed() is " +
                 "false. Its view template is " + template + ", and a template that governs V/G takes the write " +
                 "silently - Revit would accept this call and keep the template's value. Nothing was written. " +
-                "Duplicate the view without the template, or change the template itself.");
+                "Duplicate the view without the template, or change the template itself" +
+                (view.ViewTemplateId != ElementId.InvalidElementId ? " by sending the same action with view_id=" + Rid.Value(view.ViewTemplateId) : "") + ".");
         }
 
         private static void RequireCategoryHideable(Document doc, View view, ElementId category, string name)
@@ -778,6 +911,19 @@ namespace Horizun.Revit.Commands
             catch { return null; }
         }
 
+        private static string NothingToColour(View view, ICollection<ElementId> categories)
+        {
+            string names = string.Join(", ", categories.Select(id =>
+            {
+                try { return Category.GetCategory(view.Document, id)?.Name ?? Rid.Value(id).ToString(); }
+                catch { return Rid.Value(id).ToString(); }
+            }));
+            return "color_by_value found nothing to colour: view '" + view.Name + "' (id " + Rid.Value(view.Id) +
+                   ") shows no element of " + names + ". The legend is built from the values the view's own " +
+                   "elements carry, so an empty view would commit filters that colour nothing. Choose a view " +
+                   "that shows these categories, or categories this view shows. Nothing was written.";
+        }
+
         private static List<string> DistinctValues(Document doc, View view, ICollection<ElementId> categories,
                                                    ElementId parameter)
         {
@@ -883,6 +1029,19 @@ namespace Horizun.Revit.Commands
             bool? halftone = o.Value<bool?>("halftone");
             if (halftone != null) settings.SetHalftone(halftone.Value);
 
+            string pattern = o.Value<string>("line_pattern");
+            if (!string.IsNullOrWhiteSpace(pattern))
+            {
+                ElementId patternId = string.Equals(pattern, "Solid", StringComparison.OrdinalIgnoreCase)
+                    ? LinePatternElement.GetSolidPatternId()
+                    : LinePatternElement.GetLinePatternElementByName(doc, pattern)?.Id;
+                if (patternId == null)
+                    throw new ArgumentException("line_pattern '" + pattern + "' is not a line pattern in this document (or 'Solid').");
+                settings.SetProjectionLinePatternId(patternId);
+                settings.SetCutLinePatternId(patternId);
+                o["__line_pattern_id"] = Rid.Value(patternId);
+            }
+
             int? weight = o.Value<int?>("line_weight");
             if (weight != null)
             {
@@ -939,11 +1098,46 @@ namespace Horizun.Revit.Commands
                 bool? halftone = wanted.Value<bool?>("halftone");
                 if (halftone != null && actual.Halftone != halftone.Value) return false;
 
+                long? pattern = wanted.Value<long?>("__line_pattern_id");
+                if (pattern != null && Rid.Value(actual.ProjectionLinePatternId) != pattern.Value) return false;
+
                 int? weight = wanted.Value<int?>("line_weight");
                 if (weight != null && actual.ProjectionLineWeight != weight.Value) return false;
             }
             catch { return false; }
             return true;
+        }
+
+        /// <summary>The category, or its named subcategory (V/G rows are both).</summary>
+        private static ElementId ResolveVisibilityCategory(Document doc, JObject a)
+        {
+            ElementId main = ResolveCategory(doc, a.Value<string>("category"));
+            string sub = a.Value<string>("subcategory");
+            if (string.IsNullOrWhiteSpace(sub)) return main;
+            Category parent = Category.GetCategory(doc, main);
+            foreach (Category c in parent.SubCategories)
+                if (string.Equals(c.Name, sub, StringComparison.OrdinalIgnoreCase)) return c.Id;
+            throw new ArgumentException("subcategory '" + sub + "' is not under '" + parent.Name + "'. It has: " +
+                string.Join(", ", parent.SubCategories.Cast<Category>().Select(c => c.Name).Take(40)));
+        }
+
+        /// <summary>
+        /// A template that governs this category's V/G row takes any write to the view
+        /// silently. Refused with the one alternative that works: edit the template.
+        /// </summary>
+        private static void RequireCategoryVgNotTemplated(Document doc, View view, ElementId categoryId)
+        {
+            if (view == null || view.ViewTemplateId == ElementId.InvalidElementId) return;
+            View template = doc.GetElement(view.ViewTemplateId) as View;
+            Category category = Category.GetCategory(doc, categoryId);
+            bool annotation = category != null && category.CategoryType == CategoryType.Annotation;
+            if (!TemplateGoverns(template, annotation ? BuiltInParameter.VIS_GRAPHICS_ANNOTATION : BuiltInParameter.VIS_GRAPHICS_MODEL))
+                return;
+            throw new ArgumentException(
+                "view '" + view.Name + "' takes its " + (annotation ? "annotation" : "model") + " V/G from template '" +
+                template.Name + "' (id " + Rid.Value(template.Id) + "): Revit would accept this write and keep the template's " +
+                "value. Nothing was written. Edit the template instead - the same action with view_id=" + Rid.Value(template.Id) +
+                " - or release that row with set_template_controls controlled=false.");
         }
 
         private static bool SameColour(Color actual, Color wanted)

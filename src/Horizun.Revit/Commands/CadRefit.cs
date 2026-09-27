@@ -92,11 +92,27 @@ namespace Horizun.Revit.Commands
                         if (why == null && check.Value<bool>("holds"))
                         {
                             group.Keep();
-                            row["state"] = dryRun ? "would_refit" : "refitted";
-                            row["new_fitting_id"] = check["new_fitting_id"];
-                            row["identity"] = "the fitting is replaced: " + u.Spec["fitting_id"] + " -> " + check["new_fitting_id"] +
-                                              " (a new element id; the runs keep theirs)";
-                            kept++;
+                            // KEEP() IS FOLLOWED, NOT TRUSTED BLIND. It sets Outcome to "kept" only when the
+                            // TransactionGroup's own Assimilate() returned Committed; anything else - including
+                            // a silent failure Revit reports as merely "uncertain" - must not be read as a landed
+                            // refit just because the code that ASKED for it ran without throwing.
+                            if (string.Equals(group.Outcome, "kept", StringComparison.Ordinal))
+                            {
+                                row["state"] = dryRun ? "would_refit" : "refitted";
+                                row["new_fitting_id"] = check["new_fitting_id"];
+                                row["identity"] = "the fitting is replaced: " + u.Spec["fitting_id"] + " -> " + check["new_fitting_id"] +
+                                                  " (a new element id; the runs keep theirs)";
+                                kept++;
+                            }
+                            else
+                            {
+                                row["state"] = "uncertain";
+                                row["failed_at"] = "group_assimilate";
+                                row["why"] = "every step and the post-write check passed, but the group's own Keep() did " +
+                                            "not confirm a commit (outcome: " + group.Outcome + "). Whether this refit " +
+                                            "landed is UNKNOWN, not known to have failed - it is not reported as refitted.";
+                                failed++;
+                            }
                         }
                         else
                         {
@@ -134,6 +150,13 @@ namespace Horizun.Revit.Commands
                             "when the new fitting joins every run with the new section at every end and every run's other " +
                             "connections are unchanged; otherwise the group is rolled back and the step that failed is named."
             };
+            // THE COMPOSITE'S OWN application BLOCK, from every row's own final state - never
+            // from the `state`/`means` prose above. A dry run expects every row to have
+            // rehearsed cleanly; a real apply expects verified_applied.
+            ApplicationOutcome.Stamp(result, dryRun
+                ? CompositeVerdict.AggregateRehearsal(rows.OfType<JObject>().Select(CadConnectVerdict.RefitRowChild))
+                : CompositeVerdict.Aggregate(ApplicationOutcome.Committed, rows.OfType<JObject>().Select(CadConnectVerdict.RefitRowChild)));
+
             // A refit that did not happen whole is not a success, and a composing caller (the update's
             // apply) must see a refusal - its rehearsal then stops before anything is written.
             if (failed > 0 || notViable > 0)

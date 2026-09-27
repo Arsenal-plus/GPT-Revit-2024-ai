@@ -61,8 +61,13 @@ namespace Horizun.Server
             cancellationToken.ThrowIfCancellationRequested();
             args = args ?? new JObject();
 
+            // operation=export_bc3 writes a FIEBDC-3 budget instead (BudgetBc3Export.cs).
+            string operation = (string)args["operation"] ?? "compare";
+            if (operation == "export_bc3") return BudgetBc3Export.Handle(args, ledger, cancellationToken);
+            if (operation != "compare") throw new ToolRefusal("operation must be compare or export_bc3. Nothing was read.");
+
             // ---- arguments, all of them, before any file is opened. ----
-            RefuseUnknownKeys(args, "", "model_rows", "model_rows_path", "baseline", "mapping", "outputs", "idempotency_key");
+            RefuseUnknownKeys(args, "", "operation", "model_rows", "model_rows_path", "baseline", "mapping", "outputs", "idempotency_key");
 
             JToken modelRowsTok = args["model_rows"];
             string modelRowsPath = (string)args["model_rows_path"];

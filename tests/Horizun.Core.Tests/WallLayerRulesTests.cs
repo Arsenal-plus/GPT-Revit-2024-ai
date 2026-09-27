@@ -1162,5 +1162,26 @@ namespace Horizun.Core.Tests
             Assert.Equal(WallLayerRules.EdgeKey(10, 20), WallLayerRules.EdgeKey(20, 10));
             Assert.NotEqual(WallLayerRules.EdgeKey(10, 20), WallLayerRules.EdgeKey(10, 21));
         }
+    
+        // A window's 'Wall Thickness' (a family reporting parameter) and 'Extension Jamb' (a
+        // formula on it) follow the host the conversion makes one layer thick: MEASURED
+        // 2026-09-26, every wall with such a window rolled back on them. What says WHERE or
+        // WHAT the element is never counts as derived, read-only or not.
+        [Theory]
+        [InlineData("def:Wall Thickness", true)]
+        [InlineData("def:Extension Jamb", true)]
+        [InlineData("guid:7c1b1c2e-0000-0000-0000-000000000001", true)]
+        [InlineData("bip:HOST_ID_PARAM", false)]
+        [InlineData("bip:INSTANCE_SILL_HEIGHT_PARAM", false)]
+        [InlineData("bip:INSTANCE_HEAD_HEIGHT_PARAM", false)]
+        [InlineData("bip:ELEM_TYPE_PARAM", false)]
+        [InlineData("bip:PHASE_CREATED", false)]
+        [InlineData("bip:FAMILY_LEVEL_PARAM", false)]
+        [InlineData("", false)]
+        [InlineData(null, false)]
+        public void A_hosted_familys_read_only_value_may_follow_its_host_but_never_its_identity(string key, bool mayChange)
+        {
+            Assert.Equal(mayChange, WallLayerRules.HostedDerivedMayChange(key));
+        }
     }
 }

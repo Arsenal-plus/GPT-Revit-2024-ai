@@ -1,4 +1,5 @@
-using System;
+﻿using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -26,7 +27,7 @@ namespace Horizun.Server.Tests
     /// </summary>
     public class JsonRpcErrorCodeTests
     {
-        private static string ServerExe()
+        internal static string ServerExe()
         {
             var d = new DirectoryInfo(AppContext.BaseDirectory);
             while (d != null && !Directory.Exists(Path.Combine(d.FullName, "src", "Horizun.Server")))
@@ -72,6 +73,9 @@ namespace Horizun.Server.Tests
                 "Run: dotnet build src/Horizun.Server -c " + configuration);
         }
 
+        private static readonly string WireTestDataRoot =
+            Path.Combine(Path.GetTempPath(), "horizun-wire-tests-" + Environment.ProcessId);
+
         /// <summary>Send raw lines, read every reply line back. One process, one round.</summary>
         private static List<JObject> ExchangeRaw(params string[] lines)
         {
@@ -84,6 +88,12 @@ namespace Horizun.Server.Tests
                 CreateNoWindow = true,
                 StandardOutputEncoding = new UTF8Encoding(false)
             };
+            // THIS SUITE SENDS BAD LINES ON PURPOSE, and used to send them into the
+            // machine owner's own %USERPROFILE%\.horizun\logs\server.log: 132 "parse
+            // error answered" warnings over five days, each of which read like a client
+            // corrupting its stream until traced back here (2026-09-24). The negative
+            // tests now log into a throwaway data root of their own.
+            psi.Environment[Horizun.Revit.Core.HorizunPaths.RootOverrideVariable] = WireTestDataRoot;
 
             var replies = new List<JObject>();
             using (var proc = Process.Start(psi))
@@ -195,6 +205,26 @@ namespace Horizun.Server.Tests
 
             // And it must not echo the offending text back - it can carry a path or a token.
             Assert.DoesNotContain("this is not json", err.ToString(), StringComparison.Ordinal);
+
+            // But it does say WHERE and WHAT KIND, over the real transport.
+            JObject data = err["error"]["data"] as JObject;
+            Assert.NotNull(data);
+            Assert.Equal("bare_word", (string)data["hint"]);
+            Assert.Equal(6, (int)data["offset"]);
+            Assert.Equal("{aaaa aa aaa aaaa", (string)data["shape"]);
+            Assert.Contains("character 6 of 17", (string)err["error"]["message"]);
+        }
+
+        [Fact]
+        public void An_unescaped_windows_path_is_answered_32700_with_the_backslash_hint()
+        {
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"horizun_target\"," +
+                "\"arguments\":{\"path\":\"C:\\hz-live\\model.rvt\"}}}");
+            JObject err = FindError(replies, -32700);
+            Assert.NotNull(err);
+            Assert.Equal("unescaped_backslash", (string)err["error"]["data"]["hint"]);
+            Assert.DoesNotContain("hz-live", err.ToString(), StringComparison.Ordinal);
         }
 
         [Fact]
@@ -275,6 +305,29 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Initialize_sends_the_bounded_instructions_head()
+        {
+            // Program.cs is not linked into this suite, so only the built server can
+            // prove that initialize sends the head and not the full guidance.
+            var init = ExchangeRaw(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
+            Assert.Equal(ServerInstructions.Head, (string)init[0]["result"]["instructions"]);
+        }
+
+        [Fact]
+        public void Resource_templates_are_listed_and_a_variant_is_readable_on_the_wire()
+        {
+            // Program.cs is not linked here: only the built server proves the method is wired.
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"resources/templates/list\",\"params\":{}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"resources/read\",\"params\":{\"uri\":\"horizun://contract/tools/horizun_document_session/save\"}}");
+            JObject list = replies.Single(r => (int?)r["id"] == 21);
+            Assert.Equal(2, ((JArray)list["result"]["resourceTemplates"]).Count);
+            JObject read = replies.Single(r => (int?)r["id"] == 22);
+            Assert.Equal("save", (string)JObject.Parse((string)read["result"]["contents"][0]["text"])["value"]);
+        }
+
+        [Fact]
         public void Initialize_advertises_and_wire_serves_resources_and_prompts()
         {
             var init = ExchangeRaw(
@@ -294,9 +347,9 @@ namespace Horizun.Server.Tests
                 "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tasks/list\",\"params\":{}}");
 
             Assert.Equal(5, replies.Count);
-            Assert.Equal(6, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
+            Assert.Equal(9, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 12)["result"]["contents"]);
-            Assert.Equal(27, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
+            Assert.Equal(29, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 14)["result"]["messages"]);
             Assert.Equal(-32601, (int)replies.Find(x => (int?)x["id"] == 15)["error"]["code"]);
         }

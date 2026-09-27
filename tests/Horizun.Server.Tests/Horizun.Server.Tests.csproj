@@ -52,6 +52,14 @@
          property that matters - that the app and the text render the same payload from
          the same fields - is only assertable against the shipped source. -->
     <Compile Include="..\..\src\Horizun.Server\McpAppResources.cs" Link="McpAppResources.cs" />
+    <!-- The impact preview, with its three files under the server's logical names so
+         the page the tests read is the page the server serves. -->
+    <Compile Include="..\..\src\Horizun.Server\ImpactPreviewApp.cs" Link="ImpactPreviewApp.cs" />
+    <EmbeddedResource Include="..\..\src\Horizun.Server\Apps\impact-preview.html" LogicalName="Horizun.Apps.impact-preview.html" />
+    <EmbeddedResource Include="..\..\src\Horizun.Server\Apps\impact-preview-adapter.js" LogicalName="Horizun.Apps.impact-preview-adapter.js" />
+    <EmbeddedResource Include="..\..\src\Horizun.Server\Apps\impact-preview-view.js" LogicalName="Horizun.Apps.impact-preview-view.js" />
+    <None Include="ImpactPreview\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="McpApps\**\*" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="..\..\src\Horizun.Server\McpWorkflowCatalog.cs" Link="McpWorkflowCatalog.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpPrompts.cs" Link="McpPrompts.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpCompletions.cs" Link="McpCompletions.cs" />
@@ -59,13 +67,39 @@
     <Compile Include="..\..\src\Horizun.Server\ToolListMonitor.cs" Link="ToolListMonitor.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpTasks.cs" Link="McpTasks.cs" />
     <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
+    <!-- The ISO 19650 project context tool, with the schema embedded under the SAME
+         logical name the server uses, so the tests read the resource the shipped
+         code reads rather than a file next to the test. -->
+    <Compile Include="..\..\src\Horizun.Server\ProjectContext.cs" Link="ProjectContext.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ModelExplainIso.cs" Link="ModelExplainIso.cs" />
+    <EmbeddedResource Include="..\..\schemas\project-context.v1.schema.json" LogicalName="Horizun.Schemas.project-context.v1.schema.json" />
+    <!-- LOIN -> IDS and the bSDD lookup, with the resources under the server's logical
+         names and the IDS reader the generated file is proved with. -->
+    <Compile Include="..\..\src\Horizun.Server\LoinIds.cs" Link="LoinIds.cs" />
+    <Compile Include="..\..\src\Horizun.Server\BsddLookup.cs" Link="BsddLookup.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsDocument.cs" Link="IdsDocument.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsRestriction.cs" Link="IdsRestriction.cs" />
+    <EmbeddedResource Include="..\..\schemas\ids\ids-1.0.xsd" LogicalName="Horizun.Schemas.ids-1.0.xsd" />
+    <EmbeddedResource Include="..\..\schemas\ids\xmlschema-subset.xsd" LogicalName="Horizun.Schemas.xmlschema-subset.xsd" />
+    <EmbeddedResource Include="..\..\schemas\ids\ifc-entities.txt" LogicalName="Horizun.Schemas.ifc-entities.txt" />
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelReadRows.cs" Link="ExcelReadRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
     <!-- The budget comparison and the rules it runs, so the Excel destination can be
          proved against a disposable workbook and the Power BI one in dry_run only. -->
     <Compile Include="..\..\src\Horizun.Server\BudgetCompare.cs" Link="BudgetCompare.cs" />
+    <Compile Include="..\..\src\Horizun.Server\BudgetBc3Export.cs" Link="BudgetBc3Export.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BudgetComparisonRules.cs" Link="BudgetComparisonRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Bc3Rules.cs" Link="Bc3Rules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\InformationContainer.cs" Link="InformationContainer.cs" />
+    <Compile Include="..\..\src\Horizun.Server\InformationContainerTool.cs" Link="InformationContainerTool.cs" />
+    <Compile Include="..\..\src\Horizun.Server\InformationContainerTool.Register.cs" Link="InformationContainerTool.Register.cs" />
+    <!-- The inspection core both CDE readers share, and the cloud reader proved against a
+         fake HttpMessageHandler: no network, no credential. -->
+    <Compile Include="..\..\src\Horizun.Server\ContainerInspection.cs" Link="ContainerInspection.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CdeCloudHttp.cs" Link="CdeCloudHttp.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CdeCloudTool.cs" Link="CdeCloudTool.cs" />
+    <Compile Include="..\..\src\Horizun.Server\CdeCloudIssues.cs" Link="CdeCloudIssues.cs" />
     <!-- The repair memory and the tool that works it. The property worth proving here is
          the privacy one: that nothing specific survives normalisation, and that a message
          the redactor could not clean is never written at all. -->
@@ -83,6 +117,10 @@
          tested by starting two Revits, so the directory and the liveness probe are
          injectable and this proves the rules against a temp folder. -->
     <Compile Include="..\..\src\Horizun.Server\PipeClient.cs" Link="PipeClient.cs" />
+    <!-- What an identical retry does after a cancellation or timeout, and the
+         masked diagnosis a -32700 carries. Pure, so tested directly. -->
+    <Compile Include="..\..\src\Horizun.Server\CancellationAdvice.cs" Link="CancellationAdvice.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\ParseErrorDiagnosis.cs" Link="Protocol\ParseErrorDiagnosis.cs" />
     <!-- PipeClient asks this where the discovery files are. Linked so the server side
          of the shared-root property is under test with the same source the add-in
          compiles. -->
@@ -144,6 +182,10 @@
     <Compile Include="..\..\src\Horizun.Server\TargetSelection.cs" Link="TargetSelection.cs" />
     <Compile Include="..\..\src\Horizun.Server\Targets.cs" Link="Targets.cs" />
     <Compile Include="..\..\src\Horizun.Server\Errors.cs" Link="Errors.cs" />
+    <!-- Server-to-client requests (elicitation): ProjectContext's elicit reads the
+         per-call ClientContext, and the in-memory client drives McpClientRequests. -->
+    <Compile Include="..\..\src\Horizun.Server\McpClientRequests.cs" Link="McpClientRequests.cs" />
+    <Compile Include="..\..\src\Horizun.Server\MrtrRequestState.cs" Link="MrtrRequestState.cs" />
     <!-- The bounded stdin reader. The case it exists for - a payload with no newline
          in it, larger than memory - can only be proved against a stream that never
          allocates the payload, which is a test fixture and never a client. -->
@@ -159,8 +201,16 @@
     <Compile Include="..\..\src\Horizun.Server\SharedRecordFile.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptInvocation.cs" />
     <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
+    <!-- The contract schema check: the advertised-schema equivalence proof and schema_help judge arguments with the same rules. -->
+    <Compile Include="..\..\src\Horizun.Server\ContractSchemaCheck.cs" Link="ContractSchemaCheck.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ContractVariants.cs" Link="ContractVariants.cs" />
+    <Compile Include="..\..\src\Horizun.Server\SchemaHelp.cs" Link="SchemaHelp.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" Link="Settings.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" Link="ToolPacks.cs" />
+    <!-- The model-data neutraliser and injection marker every tool reply passes through. -->
+    <Compile Include="..\..\src\Horizun.Server\ContentSafety.cs" Link="ContentSafety.cs" />
+    <!-- The toolset measurement behind horizun://session/toolsets and health. -->
+    <Compile Include="..\..\src\Horizun.Server\ToolsetReport.cs" Link="ToolsetReport.cs" />
     <Compile Include="..\..\src\Horizun.Server\Log.cs" Link="Log.cs" />
   </ItemGroup>
 

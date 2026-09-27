@@ -86,13 +86,13 @@ namespace Horizun.Core.Tests
         // =====================================================================
 
         [Fact]
-        public void The_catalog_holds_exactly_the_nine_operations_this_phase_implements()
+        public void The_catalog_holds_exactly_the_ten_operations_this_phase_implements()
         {
             var expected = new[]
             {
                 "set_view_template", "set_view_scale", "rename_view", "rename_sheet",
                 "place_title_block", "move_viewport", "move_schedule",
-                "clear_element_override", "set_crop"
+                "clear_element_override", "set_crop", "set_view_display"
             };
             Assert.Equal(expected.OrderBy(x => x, StringComparer.Ordinal),
                          PlanimetryFixRules.Catalog.Select(o => o.Name).OrderBy(x => x, StringComparer.Ordinal));
@@ -109,6 +109,37 @@ namespace Horizun.Core.Tests
                 foreach (string required in op.RequiredFields)
                     Assert.Contains(required, op.Fields);
             }
+        }
+
+        [Fact]
+        public void Set_view_display_needs_at_least_one_of_detail_level_or_discipline()
+        {
+            PlanimetryFixOperation op = PlanimetryFixRules.Operation("set_view_display");
+            Assert.NotNull(op);
+            Assert.Contains("detail_level", PlanimetryFixRules.RequiredFieldError(op, f => f == "view_id"));
+            Assert.Null(PlanimetryFixRules.RequiredFieldError(op, f => f == "view_id" || f == "discipline"));
+            Assert.Null(PlanimetryFixRules.RequiredFieldError(op, f => f == "view_id" || f == "detail_level"));
+            Assert.Contains("'scale'", PlanimetryFixRules.UnknownFieldError(op, new[] { "view_id", "scale" }));
+        }
+
+        [Fact]
+        public void Display_values_are_the_audit_spelling_exactly()
+        {
+            Assert.Null(PlanimetryFixRules.EnumNameError("detail_level", "Fine", PlanimetryFixRules.DetailLevels));
+            Assert.Null(PlanimetryFixRules.EnumNameError("detail_level", null, PlanimetryFixRules.DetailLevels));
+            // Undefined is a reading, never a target; case is not forgiven.
+            Assert.NotNull(PlanimetryFixRules.EnumNameError("detail_level", "Undefined", PlanimetryFixRules.DetailLevels));
+            Assert.NotNull(PlanimetryFixRules.EnumNameError("detail_level", "fine", PlanimetryFixRules.DetailLevels));
+            Assert.NotNull(PlanimetryFixRules.EnumNameError("discipline", 1, PlanimetryFixRules.Disciplines));
+            Assert.Null(PlanimetryFixRules.EnumNameError("discipline", "Coordination", PlanimetryFixRules.Disciplines));
+        }
+
+        [Fact]
+        public void Set_view_display_addresses_view_findings_only()
+        {
+            PlanimetryFixOperation op = PlanimetryFixRules.Operation("set_view_display");
+            Assert.Null(PlanimetryFixRules.RemedyError("views.detail", "office-set", "view", op));
+            Assert.NotNull(PlanimetryFixRules.RemedyError("sheets.number", "office-set", "sheet", op));
         }
 
         [Fact]
@@ -629,7 +660,7 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void A_non_rectangular_crop_is_a_capability_question_not_a_typo()
+        public void A_non_rectangular_crop_is_named_by_the_loop_key()
         {
             JObject crop = Crop(0, 0, 100, 50);
             crop["loop"] = new JArray(new JArray(0, 0), new JArray(10, 0), new JArray(10, 10));
@@ -639,6 +670,83 @@ namespace Horizun.Core.Tests
 
         private static JObject Crop(double minX, double minY, double maxX, double maxY)
             => new JObject { ["min"] = new JArray(minX, minY), ["max"] = new JArray(maxX, maxY) };
+
+        private static JObject Loop(params double[][] points)
+            => new JObject { ["loop"] = new JArray(points.Select(p => (JToken)new JArray(p[0], p[1]))) };
+
+        [Fact]
+        public void A_polygon_loop_of_at_least_three_points_is_accepted()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }, new[] { 100.0, 50.0 }, new[] { 0.0, 50.0 }), out points);
+            Assert.Null(error);
+            Assert.Equal(4, points.Count);
+            Assert.Equal(0.0, points[0][0]); Assert.Equal(0.0, points[0][1]);
+            Assert.Equal(0.0, points[3][0]); Assert.Equal(50.0, points[3][1]);
+        }
+
+        [Fact]
+        public void A_polygon_loop_needs_at_least_three_points()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }), out points);
+            Assert.NotNull(error);
+            Assert.Null(points);
+        }
+
+        [Fact]
+        public void A_polygon_loop_with_an_unknown_key_is_refused()
+        {
+            JObject crop = Loop(new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }, new[] { 100.0, 50.0 });
+            crop["min"] = new JArray(0, 0);
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(crop, out points);
+            Assert.NotNull(error);
+            Assert.Contains("unknown key 'min'", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void An_explicit_closing_point_equal_to_the_first_is_dropped()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }, new[] { 100.0, 50.0 }, new[] { 0.0, 0.0 }), out points);
+            Assert.Null(error);
+            Assert.Equal(3, points.Count);
+        }
+
+        [Fact]
+        public void Two_consecutive_coincident_points_are_refused()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 0.0, 0.0 }, new[] { 100.0, 0.0 }, new[] { 100.0, 50.0 }), out points);
+            Assert.NotNull(error);
+            Assert.Contains("coincide", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_degenerate_collinear_loop_is_refused()
+        {
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(
+                Loop(new[] { 0.0, 0.0 }, new[] { 50.0, 0.0 }, new[] { 100.0, 0.0 }), out points);
+            Assert.NotNull(error);
+            Assert.Contains("no area", error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_polygon_point_with_the_wrong_shape_is_refused_by_index()
+        {
+            JObject crop = new JObject { ["loop"] = new JArray(
+                new JArray(0, 0), new JArray(100, 0), new JArray(1, 2, 3)) };
+            List<double[]> points;
+            string error = PlanimetryFixRules.PolygonCropError(crop, out points);
+            Assert.NotNull(error);
+            Assert.Contains("crop.loop[2]", error, StringComparison.Ordinal);
+        }
 
         [Fact]
         public void The_default_tolerance_is_a_tenth_of_a_millimetre_in_internal_feet()
@@ -1018,6 +1126,22 @@ namespace Horizun.Core.Tests
             PlanimetryFixRules.CitedFinding cited = PlanimetryFixRules.ParseFinding(json, out error);
             Assert.True(cited != null, "the finding did not parse: " + error);
             return cited;
+        }
+
+        [Fact]
+        public void Set_view_display_changes_only_what_its_finding_is_about()
+        {
+            var detail = new PlanimetryFixRules.CitedFinding
+            { RuleId = "r1", Observed = new JObject { ["field"] = "detail_level", ["value"] = "Coarse" } };
+            Assert.Null(PlanimetryFixRules.DisplayPropertyError(detail, "detail_level"));
+            Assert.Contains("asserts 'detail_level'", PlanimetryFixRules.DisplayPropertyError(detail, "discipline"));
+            var name = new PlanimetryFixRules.CitedFinding
+            { RuleId = "r2", Observed = new JObject { ["field"] = "name", ["value"] = "x" } };
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(name, "detail_level"));
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(name, "discipline"));
+            var keyed = new PlanimetryFixRules.CitedFinding { RuleId = "r3", Observed = new JObject { ["discipline"] = "Structural" } };
+            Assert.Null(PlanimetryFixRules.DisplayPropertyError(keyed, "discipline"));
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(keyed, "detail_level"));
         }
     }
 }

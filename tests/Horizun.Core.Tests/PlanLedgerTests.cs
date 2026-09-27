@@ -252,6 +252,37 @@ namespace Horizun.Core.Tests
             Assert.Equal(1, payload.Value<int>("actions_no_op"));
         }
 
+        // ---- The plan's OWN application block ------------------------------------
+
+        [Fact]
+        public void The_success_payload_carries_its_own_application_block_and_it_is_verified_applied()
+        {
+            // By construction every row reaching SuccessPayload already passed
+            // IsFullyApplied (RecordExecuted throws otherwise), so the composite's own
+            // block must agree - this is not a second opinion, just the standard shape.
+            var ledger = new PlanLedger();
+            Run(ledger, 0, "params", "horizun_write_params_verified", Verified(4));
+            Run(ledger, 1, "keynote", "horizun_set_keynote", Verified(2));
+
+            JObject payload = ledger.SuccessPayload("g", new JObject());
+            JObject application = (JObject)payload["application"];
+
+            Assert.NotNull(application);
+            Assert.Equal("verified_applied", application.Value<string>("state"));
+            Assert.True(application.Value<bool>("fully_applied"));
+            Assert.Equal(2, application.Value<int>("requested"));
+        }
+
+        [Fact]
+        public void A_plan_whose_every_action_was_a_legitimate_no_op_declares_no_op_not_verified_applied()
+        {
+            var ledger = new PlanLedger();
+            Run(ledger, 0, "already", "horizun_family_apply", Apply(ApplicationOutcome.NotStarted, 0, 0, 0));
+
+            JObject application = (JObject)ledger.SuccessPayload("g", new JObject())["application"];
+            Assert.Equal("no_op", application.Value<string>("state"));
+        }
+
         // ---- Rehearsals and the executable confirmation --------------------------
 
         [Fact]

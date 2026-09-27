@@ -224,6 +224,55 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_central_that_records_another_central_is_named_as_a_copy_or_a_never_opened_local()
+        {
+            // MEASURED 2026-09-27 in Revit 2026: a local made by CreateNewLocal and never opened
+            // reads IsCentral=true exactly like a copy of the central, and only the recorded
+            // central path differs from the file's own. Still refused - the two cannot be told
+            // apart - but the refusal says which two things it could be and what makes a local.
+            var facts = LocalFile("2026", central: true);
+            facts.Path = @"C:\scratch\Tower_local.rvt";
+            facts.CentralPath = @"C:\scratch\Tower.rvt";
+
+            OpenVerdict v = OpenDecision.Decide(facts, Intent());
+
+            Assert.False(v.Ok);
+            Assert.Contains("the central it records is 'C:\\scratch\\Tower.rvt'", v.Refusal);
+            Assert.Contains("CreateNewLocal", v.Refusal);
+            Assert.Contains("SAVES it", v.Refusal);
+            Assert.Contains("detach=true", v.Refusal);
+            Assert.True(OpenDecision.Decide(facts, Intent(detach: true)).Ok);
+        }
+
+        [Theory]
+        [InlineData(@"C:\scratch\Tower.rvt", @"C:\scratch\Tower.rvt", false)]
+        [InlineData(@"C:\scratch\Tower.rvt", @"c:\SCRATCH\tower.rvt", false)]
+        [InlineData(@"C:\scratch\Tower.rvt", "C:/scratch/Tower.rvt", false)]
+        [InlineData(@"C:\scratch\Tower_local.rvt", @"C:\scratch\Tower.rvt", true)]
+        [InlineData(@"C:\scratch\Tower_local.rvt", "RSN://server/Tower.rvt", true)]
+        [InlineData(@"C:\scratch\Tower.rvt", null, false)]
+        [InlineData(null, @"C:\scratch\Tower.rvt", false)]
+        public void Another_central_is_a_different_full_path_or_a_server_one_and_unknown_is_not_another(string path, string central, bool expected)
+        {
+            if (System.IO.Path.DirectorySeparatorChar != '\\' && path != null && central != null && !central.Contains("://")) return;
+            Assert.Equal(expected, OpenDecision.RecordsAnotherCentral(path, central));
+        }
+
+        [Fact]
+        public void A_central_that_records_itself_keeps_the_plain_central_refusal()
+        {
+            var facts = LocalFile("2026", central: true);
+            facts.Path = @"C:\scratch\Tower.rvt";
+            facts.CentralPath = @"C:\scratch\Tower.rvt";
+
+            OpenVerdict v = OpenDecision.Decide(facts, Intent());
+
+            Assert.False(v.Ok);
+            Assert.Contains("is a workshared CENTRAL model", v.Refusal);
+            Assert.DoesNotContain("CreateNewLocal", v.Refusal);
+        }
+
+        [Fact]
         public void Detach_is_the_safe_way_through_the_central_guard()
         {
             OpenVerdict v = OpenDecision.Decide(LocalFile("2026", central: true), Intent(detach: true));

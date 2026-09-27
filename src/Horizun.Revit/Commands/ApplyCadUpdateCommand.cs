@@ -433,6 +433,12 @@ namespace Horizun.Revit.Commands
             var keptInPlace = new JArray();
             int failures = 0;
             bool wroteAlready = false;
+            // EVERY ACTION'S CHILD, as the composite verdict below needs to see it: the
+            // transport answer AND the child's own reply data - never just r.Success. An
+            // action already confirmed by an earlier call of this operation is excluded
+            // (like a legitimate no-op): it did not run this call, and it was itself a
+            // verified application when the earlier call recorded it.
+            var actionChildren = new List<CompositeChild>();
             foreach (JObject action in actions.OfType<JObject>())
             {
                 string key = action.Value<string>("key") ?? "";
@@ -503,6 +509,11 @@ namespace Horizun.Revit.Commands
                     }
                 }
                 wroteAlready = true;
+                // THE CHILD'S OWN VERDICT, not just whether it answered. Every typed
+                // command on this operation's allowlist stamps its own application block
+                // (verified_applied/partial/rolled_back/...), and that - not r.Success
+                // alone - is what the composite verdict below is built from.
+                actionChildren.Add(CompositeChild.Of(r.Success, r.Data));
                 var row = new JObject
                 {
                     ["key"] = key, ["tool"] = tool, ["ok"] = r.Success,
@@ -894,6 +905,13 @@ namespace Horizun.Revit.Commands
                 ["re_plan_note"] = "the elements stamped above now carry THIS revision, so planning the next " +
                                    "update against this drawing will read them as built rather than missing."
             };
+            // THE COMPOSITE'S OWN application BLOCK, from every action's own declared
+            // verdict - never from `failures`/`state` above, which count transport
+            // success (r.Success), not application. An action that answered success over
+            // a rollback or a partial write downgrades this block without changing the
+            // `state`/`verdict` fields above, which stay exactly as measured until those
+            // are routed through the same check.
+            ApplicationOutcome.Stamp(result, CompositeVerdict.Aggregate(ApplicationOutcome.Committed, actionChildren));
             // RECORDED AFTER THE WRITE, so a retry replays what actually happened
             // - partial included. A partial run also leaves its note against the
             // placement, and the next plan applied there carries it.

@@ -122,12 +122,23 @@ namespace Horizun.Server.Protocol
 
         private static void ResourceHint(string uri, out long ttl, out string scope)
         {
+            // One tool's or one variant's cut of the contract (horizun://contract/tools/{tool}
+            // [/{variant}]) is as fixed and as machine-scoped as the whole document it is
+            // cut from; without this it fell to the default and was refetched on every
+            // self-correcting re-read.
+            if (uri != null && uri.StartsWith(McpResources.ContractToolPrefix, System.StringComparison.Ordinal))
+            {
+                ttl = BuildFixedTtlMs;
+                scope = Private;
+                return;
+            }
             switch (uri)
             {
                 // Compiled text. Identical for every caller of this build.
                 // The MCP App is here too: it is one HTML file baked into the binary,
                 // it fetches nothing, and it says nothing about this machine.
                 case "ui://horizun/clash-viewer":
+                case "ui://horizun/impact-preview":
                 case "horizun://guidance/typed-first":
                 case "horizun://workflows/bim-production":
                     ttl = BuildFixedTtlMs;
@@ -151,8 +162,9 @@ namespace Horizun.Server.Protocol
                     return;
 
                 default:
-                    // An unknown URI never reaches here (Read throws first). If one ever
-                    // did, the safe answer is "do not cache this, and do not share it".
+                    // An unknown URI never reaches here (Read throws first, and the contract
+                    // templates are answered above). If one ever did, the safe answer is
+                    // "do not cache this, and do not share it".
                     ttl = 0;
                     scope = Private;
                     return;

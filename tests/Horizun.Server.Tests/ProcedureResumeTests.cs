@@ -158,6 +158,28 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void An_error_reply_is_failed_whatever_its_structured_content_holds()
+        {
+            // McpResult.Error with a fallback block, and a plain error that schema advice
+            // was added to: neither structuredContent repeats isError.
+            var fallback = new JObject { ["recommended_tool"] = "horizun_execute_python", ["allowed"] = false };
+            JObject withFallback = McpResult.Error("refused: row 0 is missing fields.", fallback, null);
+            JObject withAdvice = McpResult.Text("no Revit is reachable.", true);
+            withAdvice["structuredContent"] = new JObject { ["schema_help"] = new JObject() };
+            foreach (JObject reply in new[] { withFallback, withAdvice })
+            {
+                var structured = (JObject)reply["structuredContent"];
+                ProcedureRun.Judge(ProcedureRun.Ok, ProcedureRun.JudgeInput(reply, structured), out string state, out string why);
+                Assert.Equal(ProcedureRun.Failed, state);
+                Assert.Contains("error result", why);
+            }
+
+            // A success is still judged by its structured payload.
+            JObject ok = McpResult.Structured(new JObject { ["status"] = "healthy" }, "{\"status\":\"healthy\"}");
+            Assert.Same(ok["structuredContent"], ProcedureRun.JudgeInput(ok, (JObject)ok["structuredContent"]));
+        }
+
+        [Fact]
         public void The_assessment_keeps_operation_geometry_coverage_and_intervention_apart()
         {
             JObject plan = ProcedureRun.Assess("horizun_plan_from_cad", JObject.Parse(

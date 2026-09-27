@@ -109,7 +109,14 @@ namespace Horizun.Revit.Commands
             "on a transaction opened by other code. What happens instead: Document.IsModifiable is re-read after " +
             "the script, and a document left modifiable makes this command FAIL and says so. Wrap every " +
             "Transaction in try/finally with RollBack in the finally. Prefer a typed command for anything " +
-            "recurring: a typed command is verified BY THE HOST, and this can only ever be self-reported.";
+            "recurring: a typed command is verified BY THE HOST, and this can only ever be self-reported. " +
+            "read_only=true runs the script inside a TransactionGroup this handler ALWAYS rolls back, then " +
+            "re-reads Document.IsModified and a cheap element/type census to CONFIRM the model did not move - " +
+            "reported as read_only_check, never assumed. It does not lower the permission gate above, and it " +
+            "does not sandbox the machine: a Save()/SaveAs()/Close()/open-document call escapes the rollback " +
+            "entirely (it writes outside any transaction), so those are REFUSED before the script runs rather " +
+            "than reported as a violation afterwards - remove them, or drop read_only if a real write is meant. " +
+            "Not combinable with run_async=true.";
 
         /// <summary>
         /// The rule, carried on EVERY response rather than left in a description
@@ -242,6 +249,51 @@ namespace Horizun.Revit.Commands
             (new Regex(@"(?<!\w)doc\s*\.\s*Delete\s*\(", RegexOptions.Compiled),
              "horizun_delete_verified",
              "deletes elements and confirms they are actually gone afterwards."),
+            (new Regex(@"\b(RoutingPreferenceManager|ConduitSizeSettings|CableTraySizes|DuctSizeSettings)\b|\.(AddSize|RemoveSize)\s*\(", RegexOptions.Compiled),
+             "horizun_mep_routing",
+             "reads and edits routing rules and size catalogs, and resizes runs to catalog sizes, re-reading each after commit."),
+            (new Regex(@"\b(LinearArray|RadialArray)\s*\.\s*(Create|ArrayElements?WithoutAssociation)\s*\(", RegexOptions.Compiled),
+             "horizun_transform_elements",
+             "operation=\"array_linear\" / \"array_radial\" arrays elements and re-reads every copy at its formula position."),
+            (new Regex(@"\bRailing\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_create_railing",
+             "creates a railing on a stair/ramp or along a path and re-reads its type, host and path."),
+            (new Regex(@"\b(AddGridLine|AddMullions|ChangePanelType)\s*\(", RegexOptions.Compiled),
+             "horizun_manage_curtain",
+             "edits curtain grid lines, mullions and panel types and re-reads the committed grid."),
+            (new Regex(@"\b(DrawPoint|AddPoint|DrawSplitLine|AddSplitLine|ModifySubElement|ResetSlabShape)\s*\(", RegexOptions.Compiled),
+             "horizun_slab_shape",
+             "edits a floor or roof shape and re-reads every touched vertex elevation."),
+            (new Regex(@"\bIFCExportOptions\s*\(", RegexOptions.Compiled),
+             "horizun_deliver_ifc",
+             "exports the IFC with explicit options and re-reads the file: header, IDS on the file, mapped property sets, optional BCF."),
+            (new Regex(@"\b(CreatedPhaseId|DemolishedPhaseId)\s*=(?!=)|\bPhaseFilter\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_manage_phases",
+             "operation=\"set_element_phases\" / \"create_phase_filter\" set phases and phase filters and re-read them."),
+            (new Regex(@"\bPartUtils\s*\.\s*(CreateParts|DivideParts)\s*\(|\bAssemblyInstance\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_manage_assemblies_parts",
+             "creates parts and assemblies and re-reads their associations and members."),
+            (new Regex(@"\bParameterFilterElement\s*\.\s*Create\s*\(|\.\s*SetElementFilter\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"create_filter\"/\"edit_filter\" builds or edits a filter's rules and re-reads them after the commit."),
+            (new Regex(@"\.\s*SetCategory(Hidden|Overrides)\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"set_category_visibility\" hides or overrides a category/subcategory and refuses a view whose template governs V/G."),
+            (new Regex(@"\bViewSchedule\s*\.\s*CreateKeySchedule\s*\(", RegexOptions.Compiled),
+             "horizun_create_schedule",
+             "key_schedule=true creates the key schedule and its key rows and re-reads them."),
+            (new Regex(@"\.\s*SetExportLayerTable\s*\(", RegexOptions.Compiled),
+             "horizun_export",
+             "format=\"dwg_layers\" writes a named DWG setup's layer table and re-reads it from a fresh lookup."),
+            (new Regex(@"\b(LinePatternElement|FillPatternElement)\s*\.\s*Create\s*\(|\bNewSubcategory\s*\(", RegexOptions.Compiled),
+             "horizun_manage_styles",
+             "creates line patterns, fill patterns and subcategories and re-reads them after commit."),
+            (new Regex(@"\.\s*SetUnits\s*\(|\bSetProjectPosition\s*\(", RegexOptions.Compiled),
+             "horizun_manage_units",
+             "operation=set / base_points writes units or shared coordinates and re-reads them after commit."),
+            (new Regex(@"\bElectricalSystem\s*\.\s*Create\s*\(|\bSelectPanel\s*\(", RegexOptions.Compiled),
+             "horizun_electrical",
+             "creates circuits and assigns panels, re-reading members and panel after commit."),
         };
 
         /// <summary>
@@ -283,6 +335,15 @@ namespace Horizun.Revit.Commands
             // Checked HERE as well as in the server. The two halves ship separately, so a
             // stale server that still advertises this tool must not be able to run code on
             // a machine whose owner switched it off.
+            //
+            // read_only=true (below) does NOT relax this gate, and that is a deliberate
+            // decision, not an oversight: a script labelled read_only can still write a
+            // file to disk, open a socket, or shell out - the TransactionGroup rollback
+            // only ever protects the REVIT MODEL, never the machine. Trusting the caller's
+            // own label to unlock a lower permission tier would let "read_only=true" become
+            // the new way to run unsafe_code from safe_write. The permission ladder in
+            // Settings.cs is unchanged; read_only only adds a stronger, VERIFIED promise
+            // on top of the same gate everything else here already requires.
             if (!Horizun.Revit.Core.Settings.ExecutePythonEnabled)
             {
                 Log.Warn("execute_python REFUSED: disabled in settings");
@@ -292,12 +353,17 @@ namespace Horizun.Revit.Commands
             JObject request;
             bool runAsync;
             bool preflight;
+            bool readOnly;
             string idempotencyKey;
             try
             {
                 request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
                 runAsync = request.Value<bool?>("run_async") ?? false;
                 preflight = request.Value<bool?>("preflight") ?? false;
+                // Field 6.x: run the script inside a TransactionGroup that is ALWAYS
+                // rolled back, and prove afterwards that the model did not move. See
+                // Core/ReadOnlyPythonGuard.cs for what this can and cannot promise.
+                readOnly = request.Value<bool?>("read_only") ?? false;
                 idempotencyKey = request.Value<string>("idempotency_key");
             }
             catch (Exception ex)
@@ -333,6 +399,12 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail(
                     "preflight=true cannot be combined with run_async=true: a preflight executes nothing, so " +
                     "there is nothing to queue. Preflight synchronously, then submit the real run. Nothing ran.");
+            if (readOnly && runAsync)
+                return CommandResult.Fail(
+                    "read_only=true cannot be combined with run_async=true: the read-only TransactionGroup is " +
+                    "opened and rolled back around a SINGLE synchronous run of this handler, and there is no " +
+                    "place in the async dispatcher today that would open and roll it back for a queued job. " +
+                    "Run it synchronously, or drop read_only if the queued script is meant to write. Nothing ran.");
 
             // Computed before the gate and before anything is queued, and carried on the
             // response either way: a script that duplicates a typed command's own API
@@ -340,6 +412,24 @@ namespace Horizun.Revit.Commands
             // the composite script and the uncovered variant are exactly what this
             // fallback exists for.
             JArray typedAlternatives = TypedAlternatives(code);
+
+            // Same treatment: computed before the gate, before anything queues, and
+            // carried into the preflight report so a caller sees the refusal coming.
+            // Save/SaveAs/Close/open-a-document escape a TransactionGroup rollback (they
+            // write outside any transaction), so read_only refuses them OUTRIGHT rather
+            // than letting them run and reporting a violation afterwards - by the time
+            // "afterwards" arrives, the file on disk is already real.
+            // EVERY source that runs in the scope is scanned: the includes execute before the
+            // main script in the same scope, so a scan of `code` alone is a guard with a side
+            // door. Masked once, and only when a guard needs it.
+            var rawSources = new List<string> { code };
+            foreach (var include in source.Includes) rawSources.Add((string)include["code"] ?? "");
+            List<string> maskedSources = null;
+            Func<List<string>> masked = () => maskedSources ?? (maskedSources = rawSources
+                .Select(s => PythonTokenMask.Mask(GetEngine(), s) ?? PythonSourceMask.StripCommentsAndStrings(s)).ToList());
+            List<string> readOnlyViolations = readOnly
+                ? masked().SelectMany(ReadOnlyPythonGuard.Violations).Distinct().ToList()
+                : new List<string>();
 
             // THE SAME GATE AS EVERY TYPED MUTATION, and it used to be the one command
             // without it.
@@ -357,6 +447,26 @@ namespace Horizun.Revit.Commands
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
 
+            // The owner's Synchronize-with-central switch covers scripts as well as
+            // horizun_document_session: a sync the owner did not authorise, or any sync while
+            // shared models are protected (that policy wins over the grant), is refused here,
+            // before preflight or run, whatever read_only says - over the main source AND its
+            // includes. Best-effort text scan - see
+            // SyncWithCentralRules.PythonSyncRefusal for its honest ceiling.
+            if (rawSources.Any(s => s.IndexOf("Synchroniz", StringComparison.Ordinal) >= 0))
+            {
+                // Unreadable settings fall CLOSED, exactly as in the typed operation.
+                bool syncGranted, protectedShared;
+                try { syncGranted = Horizun.Revit.Core.Settings.SyncWithCentralOwnerEnabled; } catch { syncGranted = false; }
+                try { protectedShared = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared; } catch { protectedShared = true; }
+                SyncRefusal syncRefusal = SyncWithCentralRules.PythonSyncRefusal(masked(), syncGranted, protectedShared);
+                if (syncRefusal != null)
+                    return CommandResult.FailWithDetail(syncRefusal.Message, new JObject
+                    {
+                        ["code"] = syncRefusal.Code, ["write_started"] = false, ["changes_applied"] = false
+                    });
+            }
+
             // ---- preflight: validate everything checkable, execute NOTHING. ----
             //
             // Runs AFTER the same gate as the real run, so a preflight that passes has
@@ -368,6 +478,12 @@ namespace Horizun.Revit.Commands
             {
                 var warnings = new JArray();
                 foreach (JToken advisory in typedAlternatives) warnings.Add(advisory);
+
+                if (readOnly && readOnlyViolations.Count > 0)
+                    warnings.Add(
+                        "read_only=true would be REFUSED for this script: it mentions " +
+                        string.Join(", ", readOnlyViolations) + ", which write outside any transaction and " +
+                        "escape a TransactionGroup rollback. Remove the call, or drop read_only.");
 
                 if (code.IndexOf("Transaction", StringComparison.Ordinal) >= 0 &&
                     code.IndexOf("finally", StringComparison.Ordinal) < 0)
@@ -408,8 +524,9 @@ namespace Horizun.Revit.Commands
                 {
                     ["mode"] = "preflight",
                     ["executed"] = false,
-                    ["would_run"] = syntaxError == null,
+                    ["would_run"] = syntaxError == null && !(readOnly && readOnlyViolations.Count > 0),
                     ["source"] = source.Describe(),
+                    ["read_only"] = readOnly,
                     ["checks"] = new JObject
                     {
                         ["permission"] = "ok",
@@ -418,7 +535,12 @@ namespace Horizun.Revit.Commands
                         ["source"] = source.Path == null
                             ? "ok - inline"
                             : "ok - read from " + source.Path + " as " + source.Encoding,
-                        ["syntax"] = syntaxError == null ? "ok" : "failed"
+                        ["syntax"] = syntaxError == null ? "ok" : "failed",
+                        ["read_only_scan"] = !readOnly
+                            ? "not requested"
+                            : (readOnlyViolations.Count == 0
+                                ? "ok - no Save/SaveAs/Close/open-document call found in the source"
+                                : "WOULD BE REFUSED: " + string.Join(", ", readOnlyViolations))
                     },
                     ["syntax_error"] = syntaxError,
                     // Named for what it actually is. It is the hash of the SOURCE that was
@@ -449,6 +571,21 @@ namespace Horizun.Revit.Commands
                     ["transaction_policy"] = TransactionPolicy
                 });
             }
+
+            // read_only's REAL refusal - not a preflight report, an actual stop. Checked
+            // after the gate (so the document check above ran for real) and before
+            // anything executes or queues: a Save() this scan caught is a real file on
+            // disk that no TransactionGroup rollback could undo, so this has to happen
+            // BEFORE the script runs, not as a violation reported afterwards.
+            if (readOnly && readOnlyViolations.Count > 0)
+                return CommandResult.Fail(
+                    "read_only=true REFUSES to run this script: it mentions " + string.Join(", ", readOnlyViolations) +
+                    ". These write OUTSIDE any transaction - a TransactionGroup rollback undoes MODEL writes, not " +
+                    "a file Save() already put on disk or a document Close()/open that already changed the " +
+                    "session. read_only can only guarantee the MODEL is unchanged, never the filesystem or the " +
+                    "document session. Remove the call, or drop read_only if you accept a real write. This is a " +
+                    "static, best-effort scan of the masked source text, not a sandbox: code built with " +
+                    "getattr()/string concatenation to dodge these exact names will not be caught. Nothing ran.");
 
             // ---- run_async: hand back a job_id and get off the request. ----
             //
@@ -505,6 +642,13 @@ namespace Horizun.Revit.Commands
                     ["code"] = code,
                     ["code_origin_path"] = source.Path,
                     ["source_includes"] = source.Includes.DeepClone(),
+                    // MEASURED 2026-09-25: a field session found the deferred run read
+                    // HORIZUN_ARGS_JSON as '{}' and KeyError'd on its own arguments, because
+                    // this queued copy never carried them - only the synchronous path (below,
+                    // request["arguments"]) ever read them. The dispatcher replays the run by
+                    // re-Executing THIS command with 'queued' as the whole request, so
+                    // whatever this object omits, the deferred script never sees.
+                    ["arguments"] = request["arguments"]?.DeepClone(),
                     ["response_mode"] = request["response_mode"],
                     ["max_output_chars"] = outputLimit,
                     // The dispatcher runs the script itself; a second async hop would
@@ -771,6 +915,25 @@ namespace Horizun.Revit.Commands
             bool leftModifiable = false;
             PythonStreamRestorer streamRestorer = PythonStreamRestorer.Capture(engine);
 
+            // read_only=true: wrap the whole run in a TransactionGroup this handler
+            // always rolls back, no matter what the script does inside it. The script
+            // still opens and commits its own Transaction(s) exactly as it would
+            // normally - that is what a nested transaction inside a group is for - and
+            // rolling back the GROUP discards everything committed inside it. Measured
+            // BEFORE the group opens, so the comparison after rollback has a real
+            // baseline rather than a baseline taken after this handler already touched
+            // the document.
+            TransactionGroup readOnlyGroup = null;
+            bool? readOnlyModifiedBefore = null;
+            int? readOnlyInstancesBefore = null, readOnlyTypesBefore = null;
+            if (readOnly)
+            {
+                try { readOnlyModifiedBefore = doc.IsModified; } catch { }
+                CheapCensus(doc, out readOnlyInstancesBefore, out readOnlyTypesBefore);
+                readOnlyGroup = new TransactionGroup(doc, "Horizun: read-only python (always rolled back)");
+                readOnlyGroup.Start();
+            }
+
             try
             {
                 // checkpoint(), revit_raised() and dialog_answer(), plus the stdout
@@ -869,6 +1032,20 @@ namespace Horizun.Revit.Commands
                         "transaction opened by other code. Do not rely on Revit's cleanup - it is a host behaviour " +
                         "this command observes, not a guarantee it offers. Commit or RollBack in a finally.";
 
+            // read_only's own finish line. Runs AFTER the leftModifiable check above, on
+            // purpose: rolling back a TransactionGroup while a Transaction it contains is
+            // still open is not something this add-in will attempt, so leftModifiable and
+            // rolled_back are mutually exclusive by construction, never raced.
+            JObject readOnlyCheck = readOnly
+                ? FinishReadOnly(doc, readOnlyGroup, leftModifiable, readOnlyModifiedBefore, readOnlyInstancesBefore, readOnlyTypesBefore)
+                : null;
+            if (readOnly && readOnlyCheck.Value<bool>("ok") == false)
+            {
+                string readOnlyNote = "READ_ONLY GUARANTEE NOT CONFIRMED: " + readOnlyCheck.Value<string>("note") +
+                    " Treat this run as a REAL write until you check the model, not as a rehearsal.";
+                error = error == null ? readOnlyNote : error + " " + readOnlyNote;
+            }
+
             if (ownsJob) job.Finish(error == null ? "ok" : "failed", error);
             Log.Warn("execute_python " + (error == null ? "ok" : "FAILED") + " in " +
                      auditClock.ElapsedMilliseconds + " ms on '" + SafeTitle(doc) + "'" +
@@ -892,6 +1069,8 @@ namespace Horizun.Revit.Commands
                 : printedCaptureError;
 
             raised["warning_delta"] = PythonHostObservations.Delta(warningsBefore, PythonHostObservations.Warnings(doc));
+            raised["read_only"] = readOnly;
+            raised["read_only_check"] = readOnlyCheck;
             if (error != null)
             {
                 raised["code"] = "python_execution_failed";
@@ -981,6 +1160,8 @@ namespace Horizun.Revit.Commands
                 checkpoints = job.Checkpoints
             });
             response["warning_delta"] = raised["warning_delta"];
+            response["read_only"] = readOnly;
+            response["read_only_check"] = readOnlyCheck;
             response["host_observations"] = PythonHostObservations.CreatedIds(doc, rendered.Value);
             response["execution_sha256"] = request["execution_sha256"];
             response["runtime"] = new JObject { ["python"] = typeof(IronPython.Hosting.Python).Assembly.GetName().Version.ToString(), ["clr"] = Environment.Version.ToString(), ["helpers_version"] = 1 };
@@ -1079,6 +1260,81 @@ namespace Horizun.Revit.Commands
         private static string SafeTitle(Document d)
         {
             try { return d == null ? "(no document)" : d.Title; } catch { return "(title unreadable)"; }
+        }
+
+        /// <summary>
+        /// Cheap and deliberately shallow: two GetElementCount() calls, no properties of
+        /// any element read. It is the same class of measurement DeleteCommand's Census2
+        /// takes before/after a delete - a count, not a full model diff - and it is
+        /// exactly what read_only's guarantee claims: nothing was added or removed.
+        /// </summary>
+        private static void CheapCensus(Document doc, out int? instances, out int? types)
+        {
+            instances = null; types = null;
+            try { instances = new FilteredElementCollector(doc).WhereElementIsNotElementType().GetElementCount(); } catch { }
+            try { types = new FilteredElementCollector(doc).WhereElementIsElementType().GetElementCount(); } catch { }
+        }
+
+        /// <summary>
+        /// Close out read_only: roll back the group (unless a transaction the script
+        /// opened is still open, in which case rolling back a group around it is not
+        /// attempted - see the comment on leftModifiable above), then measure whether
+        /// the document actually held still. Never assumes the rollback worked; always
+        /// re-reads.
+        /// </summary>
+        private static JObject FinishReadOnly(Document doc, TransactionGroup group, bool leftModifiable,
+            bool? modifiedBefore, int? instancesBefore, int? typesBefore)
+        {
+            bool rolledBack = false;
+            string rollbackError = null;
+            if (leftModifiable)
+            {
+                rollbackError = "the script left a Transaction open, so the read-only TransactionGroup was NOT " +
+                    "rolled back here - rolling back a group while a Transaction it contains is still open is not " +
+                    "something this add-in will attempt. What happens to it is the same host behaviour named in " +
+                    "transaction_policy, MEASURED there only for a bare Transaction, not re-confirmed here for a " +
+                    "Transaction nested inside a TransactionGroup - so this run's read_only guarantee is " +
+                    "UNVERIFIED, not upheld, and the command fails rather than guessing which one it was.";
+            }
+            else
+            {
+                try
+                {
+                    Guard.RollbackResult result = Guard.RollBack(group);
+                    rolledBack = result.Confirmed;
+                    if (!rolledBack)
+                        rollbackError = "the read-only group's rollback returned " + result.StatusName +
+                            ", not RolledBack - it did not confirm.";
+                }
+                catch (Exception ex) { rollbackError = "rolling back the read-only group threw: " + ex.Message; }
+            }
+
+            bool? modifiedAfter = null;
+            try { modifiedAfter = doc.IsModified; } catch { }
+            int? instancesAfter, typesAfter;
+            CheapCensus(doc, out instancesAfter, out typesAfter);
+
+            ReadOnlyOutcome outcome = rolledBack
+                ? ReadOnlyPythonGuard.CompareCensus(modifiedBefore, modifiedAfter, instancesBefore, instancesAfter, typesBefore, typesAfter)
+                : new ReadOnlyOutcome { Ok = false, Reason = rollbackError };
+
+            return new JObject
+            {
+                ["rolled_back"] = rolledBack,
+                ["is_modified_before"] = modifiedBefore,
+                ["is_modified_after"] = modifiedAfter,
+                ["census_before"] = new JObject { ["instances"] = instancesBefore, ["types"] = typesBefore },
+                ["census_after"] = new JObject { ["instances"] = instancesAfter, ["types"] = typesAfter },
+                ["ok"] = outcome.Ok,
+                ["note"] = outcome.Reason,
+                ["compares"] =
+                    "Document.IsModified and a cheap element/type instance census (FilteredElementCollector." +
+                    "GetElementCount(), no property of any element read) taken before the read-only " +
+                    "TransactionGroup opened and after it rolled back. Equal on both sides is the evidence this " +
+                    "run left the MODEL unchanged; it does not prove every parameter value is byte-identical, and " +
+                    "it says nothing about files written or network calls made outside the transaction - " +
+                    "read_only's guarantee is scoped to the Revit model only."
+            };
         }
     }
 }

@@ -298,10 +298,9 @@ declare the distance), `cover_not_usable`. In the set itself: `declared` needs
 `distance_mm`, `host` refuses one beside it, and the words are `host` and
 `declared`.
 
-**Not live-verified.** This block was implemented and tested offline (the
-arithmetic, the boundary counts at exact multiples, the refusals); the live
-probe that would prove the prediction on a real host is defined in
-`verify-rebar-geometry.ps1` as Z5 and has not yet been run.
+**Live-verified 2026-09-26** (Revit 2026, disposable HZ_WRITE): Z5 in
+`verify-rebar-geometry.ps1` passed - a zone told the host cover predicts the
+stations Revit draws, and all three sets verify against the host solid.
 
 ## Slab and wall mats
 
@@ -417,10 +416,12 @@ rings could not be read — remove the block to build against the outer extents
 and let containment decide), `openings_leave_no_bars` (the policy removes every
 bar of a component).
 
-**Not live-verified.** Implemented and tested offline against a synthetic slab
-with a hole (loop extraction, the three policies, the boundary bars, the
-refusals); the live probes M6 and M7 in `verify-rebar-geometry.ps1` are defined
-and have not yet been run against Revit.
+**Live-verified 2026-09-26** (Revit 2026, disposable HZ_WRITE): M6 (omit drops
+the bars over the hole and every run verifies clear of it) and M7 (no openings
+policy is refused by name, naming the hole) passed in `verify-rebar-geometry.ps1`,
+19 of 19 cases. That first run also caught a create_elements defect: a beam
+carries no Element.LevelId, so the level postcondition rolled back every beam
+until it read the Reference Level parameter.
 
 ## What is not implemented
 

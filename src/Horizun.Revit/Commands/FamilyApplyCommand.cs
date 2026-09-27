@@ -710,8 +710,39 @@ namespace Horizun.Revit.Commands
             // one of those is enough to make the whole reply uncertain rather than done -
             // which is the difference between a partially homologated family and a
             // homologated one.
-            ApplicationOutcome.StampApplied(applied, txStatus, plan.Sets.Count, setsConfirmed,
-                                            setsConfirmed, 0, setsFailed, setsUnknown);
+            //
+            // BUT THE INVARIANT ITSELF IS A POSTCONDITION, checked after every value write is
+            // already counted, and a breach of it must reach THIS verdict - not stay a fact
+            // reported only in parameter_schema_check for a reader to notice separately. This
+            // is exactly the family_apply defect closed one row up in the catalog: an invariant
+            // that reads violated_after_commit or unknown_after_commit did not reach the
+            // application block, so a batch whose value writes all confirmed could read
+            // verified_applied over a family whose geometry moved or became unmeasurable at the
+            // moment nothing could be done about it.
+            //
+            // NEVER SUCCESS, AND NEVER "FAILED" EITHER. Rollback is impossible from here - the
+            // transaction already committed (see the comment above invariantFinal) - so this
+            // is not a batch that produced nothing; something is in the model and something
+            // about it is wrong or unmeasured. 'partial' is the state that means exactly that,
+            // and it is forced regardless of how many value writes confirmed: a family that
+            // moved its geometry while writing ten parameters correctly is not "10/10 verified".
+            if (invariantFinal == "proven_unchanged")
+            {
+                ApplicationOutcome.StampApplied(applied, txStatus, plan.Sets.Count, setsConfirmed,
+                                                setsConfirmed, 0, setsFailed, setsUnknown);
+            }
+            else
+            {
+                JObject breach = ApplicationOutcome.Declare(ApplicationState.Partial, txStatus,
+                    plan.Sets.Count, setsConfirmed, setsConfirmed, 0, setsFailed, setsUnknown);
+                breach["invariant_breach"] = invariantFinal;
+                breach["invariant_breach_means"] =
+                    "the geometry/parameter-schema invariant did not hold after the commit (" + invariantFinal +
+                    "). See parameter_schema_check for what changed or could not be read. The commit cannot be " +
+                    "rolled back from here, so this can never read as verified_applied - reported partial " +
+                    "regardless of how many value writes above confirmed.";
+                ApplicationOutcome.Stamp(applied, breach);
+            }
             return CommandResult.Ok(applied);
         }
 

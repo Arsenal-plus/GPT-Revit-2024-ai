@@ -31,8 +31,13 @@ param(
     # fact off a file on disk instead, and a file describes whatever binary last
     # wrote it, not the one that just answered.
     [string]$Resource,
-    # JSON object. Defaults to no arguments.
+    # JSON object. Defaults to no arguments. Hand-typed JSON is where Windows paths
+    # go wrong ("C:\x" is an invalid escape; it must be "C:\\x" or "C:/x"): prefer
+    # -ArgumentsObject from PowerShell, or -ArgumentsPath written by ConvertTo-Json.
     [string]$Arguments = '{}',
+    # The arguments as a PowerShell hashtable/object, serialized here with
+    # ConvertTo-Json - no hand-built JSON, so no escaping to get wrong.
+    [object]$ArgumentsObject,
     # Exact transport for callers that launch a separate PowerShell process.
     # JSON quotes and Windows paths are not reliably preserved through the
     # native Windows command line.
@@ -46,6 +51,36 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# ARGUMENTS FIRST, before any server is looked for or started: a malformed
+# argument string is the caller's mistake and is reported as one, with the
+# position and the usual cause, instead of costing a server process.
+if ($PSBoundParameters.ContainsKey('ArgumentsObject') -and
+    ($ArgumentsPath -or $PSBoundParameters.ContainsKey('Arguments'))) {
+    throw "Use exactly one of -Arguments, -ArgumentsPath or -ArgumentsObject."
+}
+if ($ArgumentsPath) {
+    if (-not (Test-Path -LiteralPath $ArgumentsPath -PathType Leaf)) {
+        throw "-ArgumentsPath does not exist: $ArgumentsPath"
+    }
+    $Arguments = Get-Content -LiteralPath $ArgumentsPath -Raw
+}
+if ($PSBoundParameters.ContainsKey('ArgumentsObject')) {
+    $Arguments = if ($null -eq $ArgumentsObject) { '{}' } else { $ArgumentsObject | ConvertTo-Json -Depth 40 -Compress }
+}
+try { $argObj = $Arguments | ConvertFrom-Json } catch {
+    $why = $_.Exception.Message
+    $hint = ''
+    if ($why -match 'escape' -or $Arguments -match '[^\\]\\[^\\"/bfnrtu]') {
+        $hint = ' A backslash inside a JSON string must be doubled - a Windows path like C:\folder is written ' +
+                '"C:\\folder" (or "C:/folder"). Pass -ArgumentsObject @{ path = ''C:\folder'' } and let ' +
+                'ConvertTo-Json do the escaping.'
+    }
+    throw "arguments must be a JSON object: $why.$hint Nothing was sent."
+}
+if ($null -ne $argObj -and ($argObj -isnot [System.Management.Automation.PSCustomObject])) {
+    throw "arguments must be a JSON object ({...}), not $($argObj.GetType().Name). Nothing was sent."
+}
+
 if (-not $Server -and $env:HORIZUN_SERVER_EXE) {
     # A development session drives a freshly built server against a development
     # add-in WITHOUT replacing the installed pair (scripts/live/dev-addin-session.ps1).
@@ -58,14 +93,6 @@ if (-not $Server) {
     $Server = if ($env:HORIZUN_SERVER_EXE) { $env:HORIZUN_SERVER_EXE } else { Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
 }
 if (-not (Test-Path $Server)) { throw "MCP server not found: $Server" }
-
-if ($ArgumentsPath) {
-    if (-not (Test-Path -LiteralPath $ArgumentsPath -PathType Leaf)) {
-        throw "-ArgumentsPath does not exist: $ArgumentsPath"
-    }
-    $Arguments = Get-Content -LiteralPath $ArgumentsPath -Raw
-}
-try { $argObj = $Arguments | ConvertFrom-Json } catch { throw "arguments must be a JSON object: $($_.Exception.Message)" }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $Server
@@ -85,6 +112,31 @@ function Send($obj) {
     $line = $obj | ConvertTo-Json -Depth 40 -Compress
     $proc.StandardInput.WriteLine($line)
     $proc.StandardInput.Flush()
+}
+
+# A reply PowerShell's object model refuses although it is valid JSON - a property named
+# "" or two names differing only in case - is still the reply. It is read as a hashtable
+# (PowerShell 6+), exactly those keys are renamed so every later ConvertFrom-Json of the
+# saved file works, and reply_parse_note SAYS so. Dropping the line instead left the caller
+# waiting out -TimeoutSec on an answer it already had (MEASURED 2026-09-27: a structural
+# load with no load case was grouped under "", and a finished call looked hung for 15 min).
+$script:replyParseNote = $null
+function Repair-JsonKeys($node) {
+    if ($node -is [System.Collections.IDictionary]) {
+        $fixed = [ordered]@{}
+        foreach ($k in @($node.Keys)) {
+            $name = [string]$k
+            if ($name -eq '') { $name = '(empty key)' }
+            while ($fixed.Contains($name)) { $name = $name + ' (case duplicate)' }
+            $fixed[$name] = Repair-JsonKeys $node[$k]
+        }
+        return $fixed
+    }
+    if ($node -is [System.Collections.IList] -and -not ($node -is [string])) {
+        $items = @(foreach ($item in $node) { , (Repair-JsonKeys $item) })
+        return , $items
+    }
+    return $node
 }
 
 function ReadReply($seconds) {
@@ -107,9 +159,19 @@ function ReadReply($seconds) {
         Write-Verbose ("stdout line: {0} characters" -f $(if ($null -eq $line) { -1 } else { $line.Length }))
         if ($null -eq $line) { return $null }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $o = $null
         try { $o = $line | ConvertFrom-Json } catch {
-            Write-Verbose ("stdout was not JSON: {0}" -f $_.Exception.Message)
-            continue
+            $why = $_.Exception.Message
+            if ($PSVersionTable.PSVersion.Major -ge 6) {
+                try { $o = Repair-JsonKeys ($line | ConvertFrom-Json -AsHashtable) } catch { $o = $null }
+            }
+            if ($null -eq $o) {
+                Write-Verbose ("stdout was not JSON: {0}" -f $why)
+                continue
+            }
+            $script:replyParseNote = "valid JSON that ConvertFrom-Json refused ($why); read as a hashtable, " +
+                "with an empty key renamed '(empty key)' and a key differing only in case suffixed ' (case duplicate)'"
+            Write-Verbose $script:replyParseNote
         }
         # Notifications carry no id. Only a reply to OUR request ends the wait -
         # taking the first line that parses is how a caller ends up reading a
@@ -166,7 +228,8 @@ elseif ($reply) {
     # harness then dies reporting a missing property instead of reporting that the
     # bridge lost Revit. That is the transport hiding the finding.
     $resultNames = @()
-    if ($null -ne $reply.result) { $resultNames = @($reply.result.PSObject.Properties.Name) }
+    if ($reply.result -is [System.Collections.IDictionary]) { $resultNames = @($reply.result.Keys) }
+    elseif ($null -ne $reply.result) { $resultNames = @($reply.result.PSObject.Properties.Name) }
     if ($resultNames -contains 'structuredContent' -and $null -ne $reply.result.structuredContent) {
         $data = $reply.result.structuredContent
     }
@@ -187,6 +250,8 @@ $out = [pscustomobject]@{
     # becomes unexplainable an hour later.
     result        = $data
     raw           = $text
+    # Set only when the reply parsed as a hashtable with renamed keys (see Repair-JsonKeys).
+    reply_parse_note = $script:replyParseNote
 }
 
 if ($Json) {

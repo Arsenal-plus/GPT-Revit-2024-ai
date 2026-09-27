@@ -7,7 +7,7 @@
 // hand that guesses is worse than no hand. Every decision that is arithmetic
 // rather than API lives here, where it is an ordinary unit test:
 //
-//   * THE OPERATION CATALOG is closed. Nine operations, each with a closed field
+//   * THE OPERATION CATALOG is closed. Ten operations, each with a closed field
 //     set, a named target field, and the finding entity kinds it may address. An
 //     operation outside the catalog is a capability gap (the standard fallback
 //     contract applies); a FIELD outside an operation's set is the caller's typo
@@ -141,6 +141,14 @@ namespace Horizun.Revit.Core
                 RequiredFields = new[] { "view_id", "crop" },
                 EntityKinds = new[] { "view", "dimension", "tag", "text_note", "detail_2d", "annotation" },
                 Geometric = true
+            },
+            new PlanimetryFixOperation
+            {
+                Name = "set_view_display", TargetField = "view_id",
+                Fields = new[] { "view_id", "detail_level", "discipline" },
+                // At least one of detail_level/discipline - enforced by RequiredFieldError.
+                RequiredFields = new[] { "view_id" },
+                EntityKinds = new[] { "view" }
             }
         };
 
@@ -276,6 +284,9 @@ namespace Horizun.Revit.Core
             if (op.Name == "rename_sheet" && !has("new_number") && !has("new_name"))
                 return "operation 'rename_sheet' requires new_number, new_name or both - a rename that names " +
                        "nothing renames nothing.";
+            if (op.Name == "set_view_display" && !has("detail_level") && !has("discipline"))
+                return "operation 'set_view_display' requires detail_level, discipline or both - a display " +
+                       "change that names nothing changes nothing.";
             return null;
         }
 
@@ -309,6 +320,32 @@ namespace Horizun.Revit.Core
             if (bad != null)
                 return "'" + field + "' contains " + bad + ", which Revit refuses in element names.";
             return null;
+        }
+
+        /// <summary>
+        /// The ViewDetailLevel names a view may be SET to - the same spelling the audit
+        /// reports (View.DetailLevel.ToString()). `Undefined` is what Revit reports for a
+        /// view without detail level; it is a reading, never a target.
+        /// </summary>
+        public static readonly string[] DetailLevels = { "Coarse", "Medium", "Fine" };
+
+        /// <summary>The ViewDiscipline names, as the audit reports them (View.Discipline.ToString()).</summary>
+        public static readonly string[] Disciplines =
+            { "Architectural", "Structural", "Mechanical", "Electrical", "Plumbing", "Coordination" };
+
+        /// <summary>
+        /// Null when `value` is one of `allowed` EXACTLY; otherwise the refusal. Case is not
+        /// forgiven: the value is compared against the audit's own spelling at re-read, and a
+        /// request that only matches case-insensitively would verify against a string the
+        /// caller never sent.
+        /// </summary>
+        public static string EnumNameError(string field, JToken token, string[] allowed)
+        {
+            if (token == null || token.Type == JTokenType.Null) return null;
+            if (token.Type != JTokenType.String) return "'" + field + "' must be a string.";
+            string value = token.Value<string>();
+            if (allowed.Contains(value, StringComparer.Ordinal)) return null;
+            return "'" + field + "' = '" + value + "' is not one of: " + string.Join(", ", allowed) + ".";
         }
 
         /// <summary>Revit accepts view scales 1..24000.</summary>
@@ -347,8 +384,8 @@ namespace Horizun.Revit.Core
             minX = minY = maxX = maxY = 0;
             var o = token as JObject;
             if (o == null) return "'crop' must be an object with min and max.";
-            // A caller asking for a non-rectangular crop is a CAPABILITY question, not a
-            // typo, and is answered before this - see NonRectangularCrop.
+            // A caller asking for a non-rectangular crop is answered by PolygonCropError
+            // instead - see NonRectangularCrop.
             foreach (JProperty p in o.Properties())
                 if (p.Name != "min" && p.Name != "max" && p.Name != "loop")
                     return "'crop' has unknown key '" + p.Name + "'. Known: min, max.";
@@ -361,17 +398,62 @@ namespace Horizun.Revit.Core
             return null;
         }
 
-        /// <summary>True when the caller asked for a crop shape this phase cannot
-        /// reproduce safely. The refusal is BY CAPABILITY - a script could build the
-        /// loop - so it earns the standard fallback contract, unlike a typo.</summary>
+        /// <summary>True when the caller named a polygon shape (crop.loop) rather than a
+        /// rectangle (crop.min/max). The KEY's presence is the request, not its value:
+        /// `"loop": null` used to fall through to the rectangular path and be silently
+        /// ignored - which this file's own rule calls a request the caller believes was
+        /// honoured.</summary>
         public static bool NonRectangularCrop(JToken token)
         {
-            // The KEY's presence is the request, not its value. `"loop": null` used to
-            // fall through to the rectangular path and be silently ignored - which this
-            // file's own rule calls a request the caller believes was honoured.
             var o = token as JObject;
             return o != null && o.Property("loop") != null;
         }
+
+        /// <summary>A non-rectangular crop: a closed polygon of at least 3 [x, y]
+        /// view-plane points in the call's units. An explicit closing point equal to
+        /// the first is accepted and dropped (CurveLoop closes itself); consecutive
+        /// coincident points and a degenerate (zero-area / collinear) loop are refused,
+        /// because both would ask Revit to build a shape from a line, not a region.</summary>
+        public static string PolygonCropError(JToken token, out List<double[]> points)
+        {
+            points = null;
+            var o = token as JObject;
+            if (o == null) return "'crop' must be an object with 'loop'.";
+            foreach (JProperty p in o.Properties())
+                if (p.Name != "loop")
+                    return "'crop' has unknown key '" + p.Name + "' for a polygon crop (crop.loop present). Known: loop.";
+            var arr = o["loop"] as JArray;
+            if (arr == null || arr.Count < 3)
+                return "'crop.loop' must be an array of at least 3 [x, y] points.";
+            var list = new List<double[]>();
+            for (int i = 0; i < arr.Count; i++)
+            {
+                double x, y;
+                string e = PointError("crop.loop[" + i + "]", arr[i], out x, out y);
+                if (e != null) return e;
+                list.Add(new[] { x, y });
+            }
+            if (list.Count > 3 && PointsCoincide(list[0], list[list.Count - 1]))
+                list.RemoveAt(list.Count - 1);   // an explicit closing point; the loop closes itself
+            if (list.Count < 3)
+                return "'crop.loop' must have at least 3 distinct points once a repeated closing point is dropped.";
+            for (int i = 0; i < list.Count; i++)
+                if (PointsCoincide(list[i], list[(i + 1) % list.Count]))
+                    return "'crop.loop' has two consecutive points that coincide (index " + i + ").";
+            double area2 = 0;
+            for (int i = 0; i < list.Count; i++)
+            {
+                double[] p1 = list[i], p2 = list[(i + 1) % list.Count];
+                area2 += p1[0] * p2[1] - p2[0] * p1[1];
+            }
+            if (Math.Abs(area2) < 1e-9)
+                return "'crop.loop' encloses no area - its points are collinear or the polygon is degenerate.";
+            points = list;
+            return null;
+        }
+
+        private static bool PointsCoincide(double[] a, double[] b)
+            => Math.Abs(a[0] - b[0]) < 1e-9 && Math.Abs(a[1] - b[1]) < 1e-9;
 
         /// <summary>The declared default tolerance for geometric postconditions: 0.1 mm in
         /// internal feet - the same canonical grid the before-values are rounded to.</summary>
@@ -395,6 +477,24 @@ namespace Horizun.Revit.Core
         // ---------------------------------------------------------------------
 
         /// <summary>What an action's `finding` block resolved to, validated pure.</summary>
+        /// <summary>
+        /// set_view_display may change only a property its finding is ABOUT. A requirement-set
+        /// finding names its asserted field in observed.field; a finding of any other shape must
+        /// carry the property among its observed keys. Null when licensed, else the refusal.
+        /// </summary>
+        public static string DisplayPropertyError(CitedFinding cited, string property)
+        {
+            JObject observed = cited?.Observed;
+            string field = (observed?["field"] as JValue)?.Value as string;
+            bool about = field != null ? string.Equals(field, property, StringComparison.Ordinal)
+                                       : observed?.Property(property) != null;
+            if (about) return null;
+            return "set_view_display sets " + property + " only when the cited finding is about " + property +
+                   ": finding '" + (cited?.RuleId ?? "?") + "' " +
+                   (field != null ? "asserts '" + field + "'" : "does not name " + property) +
+                   ". Cite the finding about " + property + " (one action per finding). Nothing was written.";
+        }
+
         public sealed class CitedFinding
         {
             public string RuleId;

@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - views and sheets as one dependency-aware atomic batch.
 // -----------------------------------------------------------------------------
 using System;
@@ -25,7 +25,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : ParseVerbatim(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -57,7 +57,20 @@ namespace Horizun.Revit.Commands
                 {
                     string key = a.Value<string>("key");
                     if (!string.IsNullOrWhiteSpace(key)) knownKeys.Add(key, ResultType(a.Value<string>("operation")));
-                    plans.Add(new JObject { ["index"] = i, ["operation"] = a.Value<string>("operation"), ["key"] = key });
+                    var planRow = new JObject { ["index"] = i, ["operation"] = a.Value<string>("operation"), ["key"] = key };
+                    // The precedence report is a READ: the rehearsal already carries it.
+                    if (string.Equals(a.Value<string>("operation"), "explain_graphics", StringComparison.OrdinalIgnoreCase) &&
+                        a["view_id"] != null && doc.GetElement(Rid.Make(a.Value<long>("view_id"))) is View explained)
+                        planRow["report"] = ExplainGraphics(doc, explained, ReadElementIds(doc, a, "element_ids"));
+                    // So is the sheet-set census (measured 2026-09-25: a list asked as a
+                    // rehearsal came back without the sets it exists to list).
+                    if (string.Equals(a.Value<string>("operation"), "sheet_set_list", StringComparison.OrdinalIgnoreCase))
+                        planRow["report"] = SheetSetCensus(doc);
+                    // The renumbering is shown step by step, temporaries included, before any write.
+                    if (IsRenumberOperation(a.Value<string>("operation"))) planRow["renumber"] = RenumberPreview(doc, a);
+                    if (IsPerspectiveOperation(a.Value<string>("operation"))) planRow["perspective"] = PerspectivePreview(a, scale);
+                    if (IsSunStudyOperation(a.Value<string>("operation"))) planRow["sun"] = SunStudyPreview(doc, a);
+                    plans.Add(planRow);
                 }
             }
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
@@ -96,6 +109,8 @@ namespace Horizun.Revit.Commands
                     BeforeValues = new Dictionary<string, string>()
                 };
                 row.ProposedValues = new Dictionary<string,string> { { "specification", a.ToString(Formatting.None) } };
+                if (IsRenumberOperation(op)) BindRenumber(doc, row.BeforeValues);
+                if (IsSunStudyOperation(op)) BindSunStudy(doc, a, row.BeforeValues);
                 if (op == "apply_template" && a["view_id"] != null)
                 {
                     View targetView = doc.GetElement(Rid.Make(a.Value<long>("view_id"))) as View;
@@ -238,8 +253,12 @@ namespace Horizun.Revit.Commands
                 // permanent one. Both are things the caller would otherwise have to
                 // guess at, and guessing wrong about the second means expecting a
                 // printed sheet to show something that was never stored.
-                JObject detail = GraphicsDetail(a.Action, a.Operation.ToLowerInvariant());
+                JObject detail = GraphicsDetail(doc, a.Action, a.Operation.ToLowerInvariant(), e)
+                                 ?? ControlDetail(a.Action, a.Operation.ToLowerInvariant());
                 if (detail != null) row["graphics"] = detail;
+                if (IsRenumberOperation(a.Operation)) row["renumber"] = RenumberDetail(a.Action);
+                if (IsPerspectiveOperation(a.Operation)) row["perspective"] = PerspectiveDetail(a.Action);
+                if (IsSunStudyOperation(a.Operation)) row["sun"] = SunStudyDetail(a.Action);
                 rows.Add(row);
             }
             if (verified != applied.Count)
@@ -268,7 +287,9 @@ namespace Horizun.Revit.Commands
         {
             "apply_template", "place_view", "place_schedule",
             "convert_placeholder_sheet", "set_phase", "assign_scope_box", "set_view_range",
-            "set_crop", "set_annotation_crop", "set_viewport_type", "align_viewports"
+            "set_crop", "set_annotation_crop", "set_viewport_type", "align_viewports",
+            "edit_filter", "order_filters", "set_template_controls", "explain_graphics",
+            "sheet_set_list", "sheet_set_update", "sheet_set_delete", "renumber_sheets", "set_sun_study"
         };
 
         /// <summary>
@@ -328,7 +349,7 @@ namespace Horizun.Revit.Commands
                     case "create_floor_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.FloorPlan); break;
                     case "create_ceiling_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.CeilingPlan); break;
                     case "create_structural_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.StructuralPlan); break;
-                    case "create_3d": OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); break;
+                    case "create_3d": OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); Reserve3DViewName(a.Value<string>("name"), known); break;
                     case "create_drafting": OptionalViewFamilyType(doc, a, ViewFamily.Drafting); break;
                     case "create_section": OptionalViewFamilyType(doc, a, ViewFamily.Section); SectionBox(a, 1); break;
                     case "create_elevation":
@@ -354,6 +375,7 @@ namespace Horizun.Revit.Commands
                         break;
                     case "apply_template":
                         Reference<View>(doc, a, "view_id", "view_key", known);
+                        if (a.Value<long?>("template_view_id") == -1) break;   // -1 removes the template
                         View template = Need<View>(doc, a, "template_view_id"); if (!template.IsTemplate) throw new ArgumentException("template_view_id is not a view template"); break;
                     case "create_sheet":
                         if (a["title_block_type_id"] != null)
@@ -375,8 +397,7 @@ namespace Horizun.Revit.Commands
                     case "place_schedule": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); Reference<ViewSchedule>(doc, a, "schedule_id", "schedule_key", known); Point(a["point"]); break;
                     case "create_area_plan":
                         Need<Level>(doc, a, "level_id");
-                        if (!(Need<Element>(doc, a, "area_scheme_id") is AreaScheme))
-                            throw new ArgumentException("area_scheme_id must identify an AreaScheme");
+                        AreaSchemeOf(doc, a);
                         break;
                     case "create_callout":
                         Reference<View>(doc, a, "parent_view_id", "parent_view_key", known);
@@ -547,6 +568,14 @@ namespace Horizun.Revit.Commands
                         // through its API; those refuse with the exact manual step rather
                         // than with a generic failure. See ManageViewsLegends.cs.
                         if (IsLegendOperation(op)) { ValidateLegend(doc, a, op, known); break; }
+                        // Filter editing/order, the precedence report and templates. See ManageViewsControl.cs.
+                        if (IsControlOperation(op)) { ValidateControl(doc, a, op, known); break; }
+                        // Register-wide renumbering by map. See ManageViewsRenumber.cs.
+                        if (IsRenumberOperation(op)) { ValidateRenumber(doc, a, known); break; }
+                        // A camera from eye/target/up, or a fan of them. See ManageViewsPerspective.cs.
+                        if (IsPerspectiveOperation(op)) { ValidatePerspective(doc, a, known); break; }
+                        // A view's sun: still, single-day or multi-day. See ManageViewsSunStudy.cs.
+                        if (IsSunStudyOperation(op)) { ValidateSunStudy(doc, a, known); break; }
                         // A capability gap, not a fixable argument: this command implements a
                         // fixed set of documentation operations and this is not one of them.
                         unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
@@ -607,6 +636,10 @@ namespace Horizun.Revit.Commands
             string op = a.Value<string>("operation").ToLowerInvariant();
             if (IsGraphicsOperation(op)) return ApplyGraphics(doc, a, op, aliases);
             if (IsLegendOperation(op)) return ApplyLegend(doc, a, op, aliases, scale);
+            if (IsControlOperation(op)) return ApplyControl(doc, a, op, aliases);
+            if (IsRenumberOperation(op)) return ApplyRenumber(doc, a);
+            if (IsPerspectiveOperation(op)) return ApplyPerspective(doc, a, scale);
+            if (IsSunStudyOperation(op)) return ApplySunStudy(doc, a, aliases);
             if (op == "create_floor_plan" || op == "create_ceiling_plan" || op == "create_structural_plan")
             {
                 ViewFamily family = op == "create_floor_plan" ? ViewFamily.FloorPlan :
@@ -654,8 +687,10 @@ namespace Horizun.Revit.Commands
             }
             if (op == "apply_template")
             {
-                View view = Resolve<View>(doc, a, "view_id", "view_key", aliases); View template = Need<View>(doc, a, "template_view_id");
-                view.ViewTemplateId = template.Id; return view;
+                View view = Resolve<View>(doc, a, "view_id", "view_key", aliases);
+                view.ViewTemplateId = a.Value<long?>("template_view_id") == -1
+                    ? ElementId.InvalidElementId : Need<View>(doc, a, "template_view_id").Id;
+                return view;
             }
             if (op == "create_sheet")
             {
@@ -668,7 +703,7 @@ namespace Horizun.Revit.Commands
             }
             if (op == "create_area_plan")
             {
-                ViewPlan view = ViewPlan.CreateAreaPlan(doc, Need<Element>(doc, a, "area_scheme_id").Id,
+                ViewPlan view = ViewPlan.CreateAreaPlan(doc, AreaSchemeOf(doc, a).Id,
                                                         Need<Level>(doc, a, "level_id").Id);
                 SetName(view, a); return view;
             }
@@ -900,10 +935,37 @@ namespace Horizun.Revit.Commands
             known.Add(reserved, typeof(ViewSheet));
         }
 
+        /// <summary>
+        /// Operations whose 'name' field this command actually WRITES on the created
+        /// element (SetName on a View, .Name on a ViewSheet). Any other action's
+        /// 'name' - if it even carries one - is not this command's promise to keep.
+        /// </summary>
+        private static readonly HashSet<string> NamedOps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "create_floor_plan", "create_ceiling_plan", "create_structural_plan", "create_3d", "create_drafting",
+            "create_section", "create_elevation", "duplicate_view", "create_sheet", "create_area_plan",
+            "create_callout", "create_placeholder_sheet", "duplicate_sheet",
+        };
+
+        /// <summary>
+        /// A requested name is only a promise when the request GAVE one - a duplicate
+        /// with no explicit name inherits Revit's own "Copy of ..." naming, which is
+        /// not something this command chose and so not something it re-reads here.
+        /// </summary>
+        private static bool NameMatches(Element e, JObject action)
+        {
+            string want = action.Value<string>("name");
+            if (string.IsNullOrWhiteSpace(want)) return true;
+            string got;
+            try { got = (e as View)?.Name; } catch { return false; }
+            return got != null && string.Equals(got, want, StringComparison.Ordinal);
+        }
+
         private static bool Verify(Document doc, Applied a, Element e)
         {
             if (e == null) return false;
             if (a.Action["view_scale"] != null && (!(e is View scaleView) || scaleView.Scale != a.Action.Value<int>("view_scale"))) return false;
+            if (NamedOps.Contains(a.Operation) && !NameMatches(e, a.Action)) return false;
             switch (a.Operation.ToLowerInvariant())
             {
                 case "create_floor_plan": return e is ViewPlan floor && floor.ViewType == ViewType.FloorPlan;
@@ -930,8 +992,8 @@ namespace Horizun.Revit.Commands
                 case "apply_template": return e is View && a.TargetId != null && ((View)e).ViewTemplateId == a.TargetId;
                 case "create_sheet":
                     if (!(e is ViewSheet sheet) || !NumberMatches(sheet, a.Action)) return false;
-                    string sheetName = a.Action.Value<string>("name");
-                    if (!string.IsNullOrWhiteSpace(sheetName) && sheet.Name != sheetName) return false;
+                    // name is checked generically above (NamedOps), by the same
+                    // NameMatches every other named create/duplicate op goes through.
                     if (a.Action["title_block_type_id"] != null && !new FilteredElementCollector(doc, sheet.Id)
                         .OfCategory(BuiltInCategory.OST_TitleBlocks).WhereElementIsNotElementType()
                         .Any(b => Rid.Value(b.GetTypeId()) == a.Action.Value<long>("title_block_type_id"))) return false;
@@ -1104,7 +1166,11 @@ namespace Horizun.Revit.Commands
                 {
                     string graphicsOp = a.Operation.ToLowerInvariant();
                     if (IsGraphicsOperation(graphicsOp)) return VerifyGraphics(doc, a.Action, graphicsOp, e);
-                    if (IsLegendOperation(graphicsOp)) return VerifyLegend(doc, a.Action, graphicsOp, e);
+                    if (IsLegendOperation(graphicsOp)) return VerifyLegend(doc, a.Action, graphicsOp, e, a.Scale);
+                    if (IsControlOperation(graphicsOp)) return VerifyControl(doc, a.Action, graphicsOp, e);
+                    if (IsRenumberOperation(graphicsOp)) return VerifyRenumber(doc, a.Action);
+                    if (IsPerspectiveOperation(graphicsOp)) return VerifyPerspective(doc, a.Action, e);
+                    if (IsSunStudyOperation(graphicsOp)) return VerifySunStudy(doc, a.Action, e);
                     return false;
                 }
             }
@@ -1125,11 +1191,40 @@ namespace Horizun.Revit.Commands
         {
             try
             {
-                return string.Equals(a.Value<string>("operation"), "apply_template", StringComparison.OrdinalIgnoreCase)
-                    ? Need<View>(d, a, "template_view_id").Id : null;
+                if (!string.Equals(a.Value<string>("operation"), "apply_template", StringComparison.OrdinalIgnoreCase)) return null;
+                return a.Value<long?>("template_view_id") == -1 ? ElementId.InvalidElementId : Need<View>(d, a, "template_view_id").Id;
             }
             catch { return null; }
         }
+        // AN AREA SCHEME HAS NO CATEGORY A QUERY CAN NAME. MEASURED 2026-09-26: query_model
+        // with OST_AreaSchemes matches nothing even though every project carries at least
+        // one scheme, so an id the caller cannot discover is not a usable argument on its
+        // own. area_scheme_name resolves by name, and any refusal lists the schemes the
+        // document really holds - the discovery path is the refusal itself.
+        private static AreaScheme AreaSchemeOf(Document doc, JObject a)
+        {
+            List<AreaScheme> schemes = new FilteredElementCollector(doc).OfClass(typeof(AreaScheme)).Cast<AreaScheme>().ToList();
+            string available = schemes.Count == 0 ? "none"
+                : string.Join(", ", schemes.Select(s => "'" + s.Name + "' (id " + Rid.Value(s.Id) + ")"));
+            if (a["area_scheme_id"] != null)
+            {
+                long raw = a.Value<long?>("area_scheme_id") ?? -1;
+                AreaScheme byId = Rid.CanRepresent(raw) ? doc.GetElement(Rid.Make(raw)) as AreaScheme : null;
+                if (byId == null)
+                    throw new ArgumentException("area_scheme_id " + raw + " is not an AreaScheme in this document. Schemes: " + available + ".");
+                return byId;
+            }
+            string name = a.Value<string>("area_scheme_name");
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                AreaScheme byName = schemes.FirstOrDefault(s => string.Equals(s.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (byName == null)
+                    throw new ArgumentException("no AreaScheme is named '" + name + "'. Schemes: " + available + ".");
+                return byName;
+            }
+            throw new ArgumentException("create_area_plan needs area_scheme_id or area_scheme_name. Schemes: " + available + ".");
+        }
+
         private static void SetName(View view, JObject a) { string name = a.Value<string>("name"); if (!string.IsNullOrWhiteSpace(name)) view.Name = name; }
         private static BoundingBoxXYZ SectionBox(JObject a, double scale)
         {
@@ -1210,7 +1305,7 @@ namespace Horizun.Revit.Commands
             switch ((operation ?? "").ToLowerInvariant())
             {
                 case "create_floor_plan": case "create_ceiling_plan": case "create_structural_plan": return typeof(ViewPlan);
-                case "create_3d": return typeof(View3D);
+                case "create_3d": case "create_perspective": return typeof(View3D);
                 case "create_drafting": return typeof(ViewDrafting);
                 case "create_section": case "create_elevation": return typeof(ViewSection);
                 case "duplicate_view": case "apply_template": return typeof(View);
@@ -1224,6 +1319,7 @@ namespace Horizun.Revit.Commands
                 case "set_phase": case "assign_scope_box": case "set_crop": case "set_annotation_crop":
                     return typeof(View);
                 case "set_view_range": return typeof(ViewPlan);
+                case "set_sun_study": return typeof(View);
                 case "set_viewport_type": case "align_viewports": return typeof(Viewport);
                 // Graphic control. create_filter yields the filter itself, so a later
                 // action in the same batch can reference it by key; everything else
@@ -1233,6 +1329,11 @@ namespace Horizun.Revit.Commands
                 case "hide_elements": case "isolate_elements": case "reset_temporary":
                 case "set_category_visibility": return typeof(View);
                 case "create_legend": return typeof(View);
+                case "edit_filter": return typeof(ParameterFilterElement);
+                case "order_filters": case "explain_graphics": case "create_template": case "set_template_controls":
+                    return typeof(View);
+                case "sheet_set_create": return typeof(ViewSheetSet);
+                case "sheet_set_list": case "sheet_set_update": case "sheet_set_delete": return typeof(Element);
                 case "place_legend_component": return typeof(Element);
                 default: return typeof(Element);
             }

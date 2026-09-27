@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Mechanical;
+using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.DB.Structure;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
@@ -36,7 +38,7 @@ namespace Horizun.Revit.Commands
                 p.Offset = p.Loops[0].First().GetEndPoint(0).Z - p.Level.ProjectElevation;
                 CheckOffset(p, p.Input["offset"]);
             }
-            if (p.Kind == "family_instance" || p.Kind == "structural_column")
+            if (p.Kind == "family_instance" || p.Kind == "sprinkler" || p.Kind == "structural_column")
             {
                 double z = GeometryInput.AbsoluteZ(p.Start.Z, p.Level?.ProjectElevation, p.Input.Value<string>("coordinate_mode"));
                 p.Start = new XYZ(p.Start.X, p.Start.Y, z);
@@ -48,6 +50,41 @@ namespace Horizun.Revit.Commands
                     throw new ArgumentException("host_id requires a hosted or work-plane-based family.");
                 if (p.Host == null && placement != FamilyPlacementType.OneLevelBased && placement != FamilyPlacementType.TwoLevelsBased)
                     throw new ArgumentException("This family placement requires an explicit compatible host or a different placement route.");
+                if (placement == FamilyPlacementType.TwoLevelsBased)
+                {
+                    // A column's TOP, stated rather than left to Revit's default (which puts it at
+                    // whatever level happens to be above, or nowhere useful on the top level).
+                    if (p.Level == null) throw new ArgumentException("a column (two-level family) needs level_id: its base level.");
+                    p.TopLevel = Optional<Level>(doc, p.Input, "top_level_id");
+                    if (p.Input["top_offset"] != null && p.TopLevel == null) throw new ArgumentException("top_offset requires top_level_id.");
+                    double? height = p.Input["height"] == null ? (double?)null : GeometryInput.Number(p.Input["height"], "height") * p.Scale;
+                    if (height.HasValue && height.Value <= 0) throw new ArgumentException("height must be positive.");
+                    if (p.TopLevel != null)
+                    {
+                        p.TopOffset = (p.Input.Value<double?>("top_offset") ?? 0) * p.Scale;
+                        double top = p.TopLevel.ProjectElevation + p.TopOffset;
+                        // The base plane is p.Level.ProjectElevation + p.Offset, NOT p.Start.Z read
+                        // directly - even though they hold the same value right here. p.Start.Z was
+                        // set two lines above (line 42) to z = GeometryInput.AbsoluteZ(...), and
+                        // p.Offset was computed FROM that same z as z - p.Level.ProjectElevation
+                        // (line 43), so today base == p.Start.Z exactly. p.Offset is the quantity
+                        // that actually governs the instance - it is what gets written to the
+                        // family instance's own Level Offset parameter - while p.Start is a working
+                        // XYZ that a future change (a host projection, a snap) could legitimately
+                        // update without also touching p.Offset. Anchoring this check to p.Offset
+                        // keeps it correct against what will actually be placed, not against a
+                        // coordinate that happens to agree with it today.
+                        double baseZ = p.Level.ProjectElevation + p.Offset;
+                        if (top - baseZ <= GeometryInput.Tolerance) throw new ArgumentException("the column's top (top_level_id + top_offset) is not above its base.");
+                        if (height.HasValue && Math.Abs(top - baseZ - height.Value) > GeometryInput.Tolerance)
+                            throw new ArgumentException("height disagrees with top_level_id/top_offset and the base.");
+                    }
+                    else if (height.HasValue)
+                    {
+                        p.TopLevel = p.Level;
+                        p.TopOffset = p.Offset + height.Value;
+                    }
+                }
             }
         }
         private static void CheckOffset(Plan p, JToken offset)
@@ -111,6 +148,26 @@ namespace Horizun.Revit.Commands
         // So the translation is confined to XY and the elevation goes through the
         // parameter that governs it; an instance with no such parameter keeps the
         // whole-vector move it always had.
+        /// <summary>
+        /// A column's top, when the row stated one: FAMILY_TOP_LEVEL_PARAM and
+        /// FAMILY_TOP_LEVEL_OFFSET_PARAM set and READ BACK in the same transaction - a
+        /// Set that Revit ignores fails the row here instead of leaving a column of
+        /// whatever height it chose.
+        /// </summary>
+        private static void SetTop(Document doc, Plan p, FamilyInstance placed)
+        {
+            if (p.TopLevel == null || placed == null) return;
+            Parameter topLevel = placed.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+            Parameter topOffset = placed.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM);
+            if (topLevel == null || topOffset == null || topLevel.IsReadOnly || topOffset.IsReadOnly)
+                throw new InvalidOperationException("this column exposes no writable top level/offset, so the top that was asked for cannot be set.");
+            if (!topLevel.Set(p.TopLevel.Id) || !topOffset.Set(p.TopOffset))
+                throw new InvalidOperationException("Revit refused the column's top level/offset.");
+            doc.Regenerate();
+            if (topLevel.AsElementId() != p.TopLevel.Id || Math.Abs(topOffset.AsDouble() - p.TopOffset) > 1e-6)
+                throw new InvalidOperationException("the column's top did not read back as set.");
+        }
+
         private static void PositionInstance(Document doc, Plan p, FamilyInstance instance)
         {
             doc.Regenerate();
@@ -130,6 +187,12 @@ namespace Horizun.Revit.Commands
             }
             if (p.Input["rotation_degrees"] != null)
                 ElementTransformUtils.RotateElement(doc, instance.Id, Line.CreateBound(p.Start, p.Start + XYZ.BasisZ), p.Rotation - point.Rotation);
+        }
+
+        // A spatial element's committed area in square feet, 0 when unbounded or unreadable.
+        private static double SpatialAreaNow(Element e)
+        {
+            try { return e is SpatialElement spatial ? spatial.Area : 0; } catch { return 0; }
         }
 
         // The lowest and highest Z of the element's real solids, in project feet, or
@@ -366,6 +429,11 @@ namespace Horizun.Revit.Commands
                 ["verification"] = new JObject { ["intended"] = requested, ["actual"] = verified, ["verified"] = verified == requested }
             };
             ApplicationOutcome.StampApplied(result, ApplicationOutcome.Committed, requested, verified, verified, 0, 0, 0);
+            // horizun_undo: created elements are deleted by the inverse.
+            result["undo"] = UndoCapture.Record(doc, "horizun_create_elements", new List<UndoEntry>
+            {
+                UndoCapture.Entry(doc, "created", created.Select(x => Rid.Value(x.Id)), new JObject(), new JObject())
+            });
             return CommandResult.Ok(result);
         }
 
@@ -425,6 +493,22 @@ namespace Horizun.Revit.Commands
             if (intersection == null) throw new InvalidOperationException("The elbow connector axes do not define one measurable junction.");
             return new XYZ(intersection[0], intersection[1], intersection[2]);
         }
+        private static ElementId LevelFromParameters(Element e)
+        {
+            foreach (BuiltInParameter bip in new[] { BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
+                         BuiltInParameter.FAMILY_LEVEL_PARAM, BuiltInParameter.SCHEDULE_LEVEL_PARAM })
+            {
+                try
+                {
+                    Parameter prm = e?.get_Parameter(bip);
+                    if (prm != null && prm.StorageType == StorageType.ElementId && prm.AsElementId() != ElementId.InvalidElementId)
+                        return prm.AsElementId();
+                }
+                catch { }
+            }
+            return ElementId.InvalidElementId;
+        }
+
         private static JObject ReadCreated(Document doc, Created made)
         {
             Plan p = made.Plan;
@@ -446,8 +530,14 @@ namespace Horizun.Revit.Commands
                 // binds another level in some models - fails the postcondition on the
                 // elevation too, instead of passing a check about a level the element
                 // is not on.
+                // A framing member (beam/brace) carries NO Element.LevelId - MEASURED
+                // 2026-09-26 in Revit 2026: a committed beam read LevelId = -1 and the
+                // postcondition rolled back every beam this tool created. Its level is
+                // the Reference Level parameter.
                 Func<ElementId> actualLevel = () => e is MEPCurve mep ? mep.ReferenceLevel.Id
-                    : e is BeamSystem beamSystem ? beamSystem.Level.Id : e.LevelId;
+                    : e is BeamSystem beamSystem ? beamSystem.Level.Id
+                    : e.LevelId != ElementId.InvalidElementId ? e.LevelId
+                    : LevelFromParameters(e);
                 Exact("level_id", Rid.Value(p.Level.Id), () => Rid.Value(actualLevel()));
                 Numeric("level_elevation", p.Level.ProjectElevation,
                     () => doc.GetElement(actualLevel()) is Level carried ? carried.ProjectElevation : double.NaN);
@@ -529,18 +619,83 @@ namespace Horizun.Revit.Commands
                     return worst * 304.8;
                 }, allowanceFt * 304.8);
             }
-            else if (p.Start != null && p.Kind != "wall_opening")
+            else if (p.Start != null && p.Kind != "wall_opening" && p.Kind != "flex_pipe" && p.Kind != "flex_duct")
             {
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.Start) : null;
                 XYZ PointNow() => elbow != null ? ReadElbowJunction(doc, made, elbow, 0) : e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
-                for (int axis = 0; axis < (p.Kind == "room" ? 2 : 3); axis++)
+                for (int axis = 0; axis < (p.Kind == "room" || p.Kind == "space" || p.Kind == "area" ? 2 : 3); axis++)
                 { int a = axis; Numeric((elbow == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => a == 2 && elbow == null ? (GovernedBaseZ(doc, e) ?? PointNow()[2]) : PointNow()[a]); }
             }
-            if (p.End != null && p.Kind != "wall_opening" && !(p.Kind == "wall" && p.ArcThird == null))
+            if (p.End != null && p.Kind != "wall_opening" && p.Kind != "flex_pipe" && p.Kind != "flex_duct" && !(p.Kind == "wall" && p.ArcThird == null))
             {
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.End) : null;
                 for (int axis = 0; axis < 3; axis++)
                 { int a = axis; Numeric((elbow == null ? "end_" : "end_junction_") + "xyz"[a], p.End[a], () => a == 2 && elbow == null && GovernedBaseZ(doc, e) is double governed ? governed : elbow != null ? ReadElbowJunction(doc, made, elbow, 1)[a] : (e is Grid grid ? grid.Curve : ((LocationCurve)e.Location).Curve).GetEndPoint(1)[a]); }
+            }
+            // FLEX RUNS ARE NOT ONE CURVE. FlexPipe/FlexDuct expose their path as Points
+            // (including both ends), not as a LocationCurve.Curve with two endpoints - the
+            // generic checks above assume the latter and would misread or throw on the
+            // former. Points is re-read after commit and compared point-for-point, in
+            // order and in COUNT: Revit is free to keep or discard interior points it
+            // considers redundant, and a run that came back with fewer of them is a
+            // different path even when both ends still land correctly.
+            if ((p.Kind == "flex_pipe" || p.Kind == "flex_duct") && p.FlexPoints != null)
+            {
+                IList<XYZ> FlexPointsNow() => p.Kind == "flex_pipe" ? ((FlexPipe)e).Points : ((FlexDuct)e).Points;
+                Exact("flex_point_count", p.FlexPoints.Count, () => FlexPointsNow().Count);
+                for (int i = 0; i < p.FlexPoints.Count; i++)
+                {
+                    int idx = i;
+                    for (int axis = 0; axis < 3; axis++)
+                    {
+                        int a = axis;
+                        Numeric("flex_point_" + idx + "_" + "xyz"[a], p.FlexPoints[idx][a],
+                            () => FlexPointsNow().Count > idx ? FlexPointsNow()[idx][a] : double.NaN);
+                    }
+                }
+            }
+            // SPACE: the 2D point and the level re-read via the generic checks above
+            // (level_id already covers Space.LevelId, set directly from p.Level at
+            // creation). This adds what those do not - whether the placement point
+            // still reads as INSIDE the enclosed region via Space.IsPointInSpace, at a
+            // height inside the space's own vertical range rather than an arbitrary one.
+            // ONLY FOR AN ENCLOSED SPACE. MEASURED in Revit 2023-2027: a space placed where
+            // no boundary closes around the point is created with Area 0 and
+            // IsPointInSpace answers false for every point, because an unbounded space has
+            // no volume to be inside of. That case is legitimate and REPORTED (area_enclosed
+            // below), so asserting inside-ness there would refuse every unbounded space.
+            if (p.Kind == "space" && p.Level != null && SpatialAreaNow(e) > 0)
+            {
+                Exact("point_inside_space", true, () =>
+                {
+                    var space = (Space)e;
+                    double testZ = p.Level.ProjectElevation + (space.UnboundedHeight > 0 ? Math.Min(space.UnboundedHeight, 1.0) : 1.0);
+                    try { return space.IsPointInSpace(new XYZ(p.Start.X, p.Start.Y, testZ)); } catch { return false; }
+                });
+            }
+            // ALL_ENCLOSED rows: the circuit really was filled - a positive area, every
+            // boundary loop closing on itself, the phase asked for, the interior point inside.
+            if (p.Enclosed)
+            {
+                Exact("area_positive", true, () => SpatialAreaNow(e) > 0);
+                Exact("boundary_closed", true, () => BoundaryClosed(e));
+                Exact("phase_id", Rid.Value(p.Phase.Id), () => PhaseOf(e));
+                if (p.Kind == "room")
+                    Exact("point_inside_room", true, () =>
+                    {
+                        try { return ((Autodesk.Revit.DB.Architecture.Room)e).IsPointInRoom(new XYZ(p.Start.X, p.Start.Y, p.Level.ProjectElevation + 0.5)); } catch { return false; }
+                    });
+            }
+            // TOPOSOLID rows: the top of the committed solid at each sampled input point stands at
+            // that point's Z (CreateElementsToposolid.cs); the vertices are read once, on first use.
+            if (p.Kind == "toposolid" && p.TopoPoints != null && p.TopoSamples != null)
+            {
+                List<XYZ> topoVerts = null;
+                foreach (int k in p.TopoSamples)
+                {
+                    XYZ at = p.TopoPoints[k];
+                    Numeric("top_z_at_point_" + k, at.Z, () => TopoZAt(e, topoVerts ?? (topoVerts = TopoVertices(e)), at), TopoZToleranceFeet);
+                }
             }
             if (p.Kind == "wall")
             {
@@ -554,9 +709,9 @@ namespace Horizun.Revit.Commands
                     Numeric("top_offset", p.TopOffset, () => e.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET).AsDouble());
                 }
             }
-            if (p.Kind == "family_instance" || p.Kind == "structural_column" || p.Kind == "structural_framing")
+            if (p.Kind == "family_instance" || p.Kind == "sprinkler" || p.Kind == "structural_column" || p.Kind == "structural_framing")
                 Exact("structural_type", p.StructuralType.ToString(), () => ((FamilyInstance)e).StructuralType.ToString());
-            if (p.Kind == "family_instance" && p.Input["flip"] != null)
+            if ((p.Kind == "family_instance" || p.Kind == "sprinkler") && p.Input["flip"] != null)
             {
                 // TWO OPERATIONS, TWO TRACES. flipHand sets HandFlipped; a
                 // reflected copy sets Mirrored and leaves HandFlipped alone.
@@ -663,12 +818,29 @@ namespace Horizun.Revit.Commands
                 row["location_point_z_feet"] = point.Point.Z;
                 row["level_elevation_feet"] = p.Level.ProjectElevation; row["offset_feet"] = governedZ - p.Level.ProjectElevation;
             }
+            // AREA (square feet), REPORTED RATHER THAN ASSERTED. Space and Area are both
+            // SpatialElement: Area<=0 means the placement point found no closed boundary
+            // around it - Revit still creates the element, at the requested point - and
+            // that is a legitimate finding about the model's boundaries, not a placement
+            // failure this row caused. Same convention as ModelScanCommand's rooms:
+            // unreadable and unbounded are told apart, never folded into one "0".
+            if ((p.Kind == "space" || p.Kind == "area") && e is SpatialElement spatial)
+            {
+                double? areaSqFt = null;
+                try { areaSqFt = spatial.Area; } catch { }
+                row["area_sqft"] = areaSqFt.HasValue ? (JToken)Math.Round(areaSqFt.Value, 4) : JValue.CreateNull();
+                row["area_enclosed"] = areaSqFt.HasValue ? (JToken)(areaSqFt.Value > 0) : JValue.CreateNull();
+                row["area_means"] = areaSqFt.HasValue
+                    ? (areaSqFt.Value > 0 ? "the placement point found a closed boundary; area is measured, not assumed."
+                                          : "area is 0: the point found no enclosing boundary at commit time - the element exists, unbounded.")
+                    : "the Area property could not be read.";
+            }
             // The SOLID Revit actually built, measured independently of every parameter
             // above, so a reader can compare the governed plane against real geometry.
             // Deliberately not the bounding box: MEASURED on a structural column asked
             // for 1500 mm above its level, get_BoundingBox reports a base of 0 because
             // it spans the analytical stick, while the solid starts at 1500 mm exactly.
-            if (e != null && (p.Kind == "wall" || p.Kind == "structural_column" || p.Kind == "family_instance"))
+            if (e != null && (p.Kind == "wall" || p.Kind == "structural_column" || p.Kind == "family_instance" || p.Kind == "sprinkler"))
             {
                 double[] span = SolidElevationSpan(e);
                 if (span != null) { row["geometry_base_z_feet"] = span[0]; row["geometry_top_z_feet"] = span[1]; }

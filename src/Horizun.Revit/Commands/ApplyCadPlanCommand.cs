@@ -282,6 +282,11 @@ namespace Horizun.Revit.Commands
             int created = 0, verified = 0, failedStages = 0;
             bool stopped = false;
             string stoppedBecause = null;
+            // EVERY STAGE'S CHILD, as the composite verdict below needs to see it: the
+            // transport answer AND the child's own reply data - never just r.Success. A
+            // stage that never got to call create_elements (a malformed action) is a
+            // failed child with no data, same as one whose child refused outright.
+            var stageChildren = new List<CompositeChild>();
 
             // The candidate id per action, so provenance can be written per element.
             var candidateByStageBatch = ReadCandidateIndex(request["candidate_index"] as JArray);
@@ -304,6 +309,7 @@ namespace Horizun.Revit.Commands
                     failedStages++;
                     stopped = true;
                     stoppedBecause = "an action was malformed";
+                    stageChildren.Add(CompositeChild.Of(false, null));
                     break;
                 }
 
@@ -359,6 +365,11 @@ namespace Horizun.Revit.Commands
                 callArgs.Remove("batch_of_stage");
 
                 CommandResult r = create.Execute(app, callArgs.ToString(Formatting.None));
+                // THE CHILD'S OWN VERDICT, not just whether it answered. create_elements
+                // stamps its own application block (rehearsed/verified_applied/partial/...),
+                // and that - not r.Success alone - is what the composite verdict below is
+                // built from.
+                stageChildren.Add(CompositeChild.Of(r.Success, r.Data));
                 var row = new JObject
                 {
                     ["key"] = (string)action["key"],
@@ -517,6 +528,15 @@ namespace Horizun.Revit.Commands
                     ? (dryRun ? "rehearsed" : (created > 0 ? "applied" : "applied_nothing"))
                     : "partial"
             };
+            // THE COMPOSITE'S OWN application BLOCK, from every stage's own declared
+            // verdict - never from the 'state' prose above, which this command wrote
+            // about itself. A dry run expects every stage's create_elements call to
+            // have rehearsed cleanly; a real apply expects verified_applied (or a
+            // legitimate no-op).
+            ApplicationOutcome.Stamp(result, dryRun
+                ? CompositeVerdict.AggregateRehearsal(stageChildren)
+                : CompositeVerdict.Aggregate(ApplicationOutcome.Committed, stageChildren));
+
             // THE REHEARSAL RETURNS HERE, and it returns something the caller can
             // act on: every confirmation token the delegated rehearsals issued,
             // in the order the stages must run. Falling through from a rehearsal
@@ -567,6 +587,9 @@ namespace Horizun.Revit.Commands
                                                string idempotencyKey, string actionKey)
         {
             var writes = new JArray();
+            // Origin of each entry in `writes`, at the SAME position - see the note where
+            // it is populated.
+            var writeOrigins = new List<(int ElementIndex, string Parameter)>();
             var skipped = new JArray();
             // WHAT THE RULES DECLARED, which is the number all_written has to be
             // measured against. It used to be measured against the writes that
@@ -580,11 +603,17 @@ namespace Horizun.Revit.Commands
             // nowhere, so a nice-to-have that could not be written stopped the whole
             // conversion - the opposite of what the key means and of what this
             // bridge's own documentation promises.
-            var requiredNames = new HashSet<string>(StringComparer.Ordinal);
+            //
+            // KEYED BY (ELEMENT INDEX, PARAMETER NAME), never by name alone. A name-only
+            // set means a required value missing on element B hides behind the SAME name
+            // landing on element A - measured: two doors in one stage both require
+            // FireRating, A's write confirms and B's is refused, and the name-only set
+            // reported required_missing: 0 over a door with no fire rating at all.
+            var requiredKeys = new HashSet<(int Index, string Parameter)>();
             foreach (var pending in parameterRows)
                 foreach (JObject w in pending.Value.OfType<JObject>())
                     if ((w.Value<bool?>("required") ?? true) && !string.IsNullOrWhiteSpace(w.Value<string>("parameter")))
-                        requiredNames.Add(w.Value<string>("parameter"));
+                        requiredKeys.Add((pending.Key, w.Value<string>("parameter")));
             var byIndex = new Dictionary<int, JObject>();
             foreach (JObject made in (createdRows ?? new JArray()).OfType<JObject>())
             {
@@ -647,6 +676,11 @@ namespace Horizun.Revit.Commands
                         ["parameter"] = write.Value<string>("parameter"),
                         ["value"] = write["value"]
                     });
+                    // horizun_write_params_verified answers with row["index"] equal to the
+                    // POSITION in the writes array it was sent (WriteParamsCommand: Index =
+                    // i, one row per input row, in order) - so this is the exact origin of
+                    // whatever comes back at that position, never a name to match by.
+                    writeOrigins.Add((kv.Key, write.Value<string>("parameter")));
                 }
             }
 
@@ -654,7 +688,7 @@ namespace Horizun.Revit.Commands
             {
                 ["declared"] = declared,
                 ["requested"] = writes.Count,
-                ["required"] = requiredNames.Count,
+                ["required"] = requiredKeys.Count,
                 ["skipped"] = skipped,
                 ["written_by"] = "horizun_write_params_verified",
                 ["atomic_with_creation"] = false,
@@ -699,7 +733,7 @@ namespace Horizun.Revit.Commands
                 // none of the values they asked for.
                 outcome["all_written"] = false;
                 outcome["landed"] = 0;
-                outcome["required_missing"] = requiredNames.Count;
+                outcome["required_missing"] = requiredKeys.Count;
                 outcome["why"] =
                     "every declared parameter was dropped before the writer was called - see `skipped` for " +
                     "the reason on each. The elements exist and carry none of the declared values. The ids " +
@@ -799,20 +833,30 @@ namespace Horizun.Revit.Commands
             // land stops the conversion; a comment that did not is reported and
             // does not. That distinction is the whole point of the key, and the
             // apply used to treat every unwritten parameter the same.
-            var landedNames = new HashSet<string>(StringComparer.Ordinal);
+            //
+            // MATCHED BY POSITION, never by name: row["index"] is the position in
+            // `writes` this reply row answers for (WriteParamsCommand assigns Index = i
+            // in submission order, one row per input row), so writeOrigins[index] is
+            // this row's exact (element, parameter) origin - the same key requiredKeys
+            // is built from above, so a value confirmed for element A can never be read
+            // as landing for element B's identically-named requirement.
+            var landedKeys = new HashSet<(int Index, string Parameter)>();
             foreach (JObject r2 in (data?["rows"] as JArray ?? new JArray()).OfType<JObject>())
             {
-                string name = r2.Value<string>("parameter");
                 // The writer's own three-way split: confirmed | not_written | unknown.
                 // Only the first is a value that landed; unknown is deliberately
                 // NOT counted as one, because "could not re-read what I set" is the
                 // answer this bridge exists not to round up.
                 bool ok2 = string.Equals(r2.Value<string>("outcome"), "confirmed", StringComparison.Ordinal);
-                if (ok2 && !string.IsNullOrWhiteSpace(name)) landedNames.Add(name);
+                if (!ok2) continue;
+                int? writeIndex = r2.Value<int?>("index");
+                if (!writeIndex.HasValue || writeIndex.Value < 0 || writeIndex.Value >= writeOrigins.Count) continue;
+                landedKeys.Add(writeOrigins[writeIndex.Value]);
             }
-            var requiredMissing = requiredNames.Where(n => !landedNames.Contains(n)).ToList();
+            var requiredMissing = requiredKeys.Where(k => !landedKeys.Contains(k)).ToList();
             outcome["required_missing"] = requiredMissing.Count;
-            outcome["required_missing_names"] = new JArray(requiredMissing.Cast<object>().ToArray());
+            outcome["required_missing_names"] = new JArray(
+                requiredMissing.Select(k => (object)(k.Parameter + " (element_index " + k.Index + ")")).ToArray());
             outcome["required_means"] =
                 "a parameter declared required: false may fail to land without stopping the conversion - that " +
                 "is what the key is for. required_missing counts only the ones that may not.";
@@ -828,7 +872,7 @@ namespace Horizun.Revit.Commands
         private static readonly string[] VerificationFields =
         {
             "index", "kind", "element_id", "element_ids", "elements_created",
-            "postconditions", "source_comparison", "unique_id", "coordinate_reference",
+            "postconditions", "production_postconditions", "source_comparison", "unique_id", "coordinate_reference",
             "absolute_z_feet", "level_elevation_feet", "offset_feet",
             "elements_created_means", "present_after_commit", "verified",
             "kind_verified", "type_verified", "host_verified", "curve_verified",

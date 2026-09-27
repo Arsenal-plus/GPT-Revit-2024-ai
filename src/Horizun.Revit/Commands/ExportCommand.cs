@@ -14,10 +14,10 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class ExportCommand : ICommand
+    public sealed partial class ExportCommand : ICommand
     {
         public string Name => "horizun_export";
-        public string Description => "Export PDF, DWG, IFC, Navisworks NWC, FBX, image or schedule CSV and verify actual files.";
+        public string Description => "Export PDF, DWG/DGN/DWFX view sets, IFC, NWC, FBX, image, schedule CSV, gbXML, family .rfa or a COBie workbook and verify actual files.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -29,15 +29,64 @@ namespace Horizun.Revit.Commands
             Document doc = gate.Document;
 
             string format = (request.Value<string>("format") ?? "").ToLowerInvariant();
-            if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv")
-                return CommandResult.Fail("format must be pdf, dwg, ifc, nwc, fbx, image or schedule_csv.");
+            if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv" && format != "dwg_layers"
+                && format != "dgn" && format != "dwfx" && format != "gbxml" && format != "rfa" && format != "cobie")
+                return CommandResult.Fail("format must be pdf, dwg, dgn, dwfx, ifc, nwc, fbx, image, schedule_csv, dwg_layers, gbxml, rfa or cobie.");
+            if (format != "cobie" && request["cobie"] != null && request["cobie"].Type != JTokenType.Null)
+                return CommandResult.Fail("cobie applies to format cobie only. Nothing was exported.");
             string output = request.Value<string>("output_path");
             if (string.IsNullOrWhiteSpace(output) || !System.IO.Path.IsPathRooted(output))
                 return CommandResult.Fail("output_path must be absolute.");
             try { output = System.IO.Path.GetFullPath(output); }
             catch (Exception ex) { return CommandResult.Fail("output_path is invalid: " + ex.Message); }
+            // rfa writes one file per family into a FOLDER; see ExportSets.cs.
+            if (format == "rfa") return ExecuteRfa(app, gate, doc, request, output);
             if (!ExpectedExtension(format, output))
                 return CommandResult.Fail("output_path extension does not match format=" + format + ". Use " + ExpectedExtensionDescription(format) + ".");
+            // The DWG layer table: a named export setup read, created and written in the
+            // document, with its re-read table written to output_path. See ExportDwgSetup.cs.
+            if (format == "dwg_layers") return ExecuteDwgLayers(app, gate, doc, request, output);
+            // gbXML and the DWG/DGN/DWFX view sets (one file per view or sheet). See ExportSets.cs.
+            if (format == "gbxml") return ExecuteGbXml(app, gate, doc, request, output);
+            // A COBie 2.4 workbook written by the Core writer and re-read cell by cell. See ExportCobie.cs.
+            if (format == "cobie") return ExecuteCobie(app, gate, doc, request, output);
+            if (format == "dgn" || format == "dwfx" || (format == "dwg" && IsDwgSet(request)))
+                return ExecuteViewSet(app, gate, doc, request, format, output);
+            foreach (string setField in new[] { "file_naming", "dwg_xrefs", "family_ids", "category" })
+                if (request[setField] != null)
+                    return CommandResult.Fail(setField + " applies to the dwg/dgn/dwfx view sets and rfa only. Nothing was exported.");
+            if (request["dwg_setup"] != null && format != "dwg")
+                return CommandResult.Fail("dwg_setup applies to format dwg (export with it) and dwg_layers (read/write it).");
+            DWGExportOptions dwgOptions = null;
+            if (format == "dwg")
+            {
+                string dwgRefusal;
+                dwgOptions = BuildDwgOptions(doc, request, out dwgRefusal);
+                if (dwgOptions == null) return CommandResult.Fail(dwgRefusal);
+            }
+
+            // ---- ISO 19650 information container (optional). ----
+            // Validated BEFORE anything else is decided, so an invalid container refuses
+            // here with every problem named and nothing exported. With a valid one the
+            // produced file takes the container's name (directory and extension from
+            // output_path) and, after the export is verified, a sidecar is written beside
+            // it and read back. Without the argument nothing below changes.
+            ContainerSpec container = null; ContainerValidation containerCheck = null; string requestedOutput = null;
+            if (request["information_container"] != null && request["information_container"].Type != JTokenType.Null)
+            {
+                if (format == "image")
+                    return CommandResult.Fail("information_container cannot name an image export: Revit derives image file names " +
+                        "from the view, so the file produced would not carry the container's name. Nothing was exported.");
+                try { container = InformationContainer.ParseSpec(request["information_container"]); }
+                catch (ContainerRuleException ex) { return CommandResult.Fail("information_container refused: " + ex.Message + " Nothing was exported."); }
+                containerCheck = InformationContainer.Validate(container, true);
+                if (!containerCheck.Valid)
+                    return CommandResult.FailWithDetail("information_container does not validate: " +
+                        string.Join("; ", containerCheck.Problems.Select(p => (string)p["field"] + ": " + (string)p["reason"])) +
+                        ". Nothing was exported.", new JObject { ["information_container"] = containerCheck.ToJson() });
+                requestedOutput = output;
+                output = InformationContainer.ContainerOutputPath(output, containerCheck);
+            }
             string folder = System.IO.Path.GetDirectoryName(output);
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
                 return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly.");
@@ -145,6 +194,12 @@ namespace Horizun.Revit.Commands
             bool emitManifest = request.Value<bool?>("emit_manifest") ?? false;
             if (format != "pdf" && (request["pdf_combine"] != null || emitManifest || request["pdf_print"] != null))
                 return CommandResult.Fail("pdf_combine, emit_manifest and pdf_print are PDF-only options.");
+            if (container != null && format == "pdf" && !pdfCombine)
+                return CommandResult.Fail("information_container names ONE file; pdf_combine=false produces one file per view. " +
+                    "Export combined, or export each view with its own container. Nothing was exported.");
+            if (container != null && File.Exists(InformationContainer.SidecarPath(output)))
+                return CommandResult.Fail("An information-container sidecar already exists at " + InformationContainer.SidecarPath(output) +
+                    " and is never overwritten, whatever overwrite says. Nothing was exported.");
             // THE PRINT POLICY. Parsed before anything else is decided so that a
             // wrong field refuses here, by name, and is never silently dropped on
             // the way to the exporter. Absent -> the policy defaults, with nothing
@@ -198,11 +253,11 @@ namespace Horizun.Revit.Commands
                         string.Join("; ", deliveryGate["reasons"].Values<string>()) + ". Nothing was exported.",
                         new JObject { ["publish_gate"] = deliveryGate, ["reverification"] = deliveryReverification });
             }
-            string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset",
+            string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset", "dwg_setup",
                 "ifc_version", "ifc_filter_view_id", "ifc_export_base_quantities", "ifc_split_walls_and_columns", "ifc_space_boundary_level",
                 "nwc_scope", "nwc_coordinates", "nwc_parameters", "nwc_export_links", "nwc_export_element_ids", "nwc_export_room_geometry",
                 "nwc_export_parts", "fbx_without_boundary_edges", "fbx_use_lod", "fbx_lod", "fbx_stop_on_error", "pdf_combine", "emit_manifest",
-                "pdf_print", "units", "delivery_id");
+                "pdf_print", "units", "delivery_id", "information_container");
             // ---- The MATERIALISED plan: the SOURCES and the DESTINATION as they stand. --
             // An export publishes the model outward, and two ambient facts shape what
             // lands on disk: WHICH views/schedule the ids resolve to - a renamed or
@@ -264,6 +319,12 @@ namespace Horizun.Revit.Commands
                     ["exporter_available"] = exporterAvailable,
                     ["note"] = "Nothing was exported and no file was created."
                 };
+                if (container != null)
+                    result["information_container"] = new JObject
+                    {
+                        ["validation"] = containerCheck.ToJson(), ["requested_output_path"] = requestedOutput,
+                        ["container_output_path"] = output, ["sidecar_path"] = InformationContainer.SidecarPath(output)
+                    };
                 if (gateDecision.Requested) result["prevention"] = gateDecision.Prevention;
                 if (exporterAvailable) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, exporterAvailable,
@@ -283,7 +344,7 @@ namespace Horizun.Revit.Commands
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
 
-            var before = Snapshot(folder);
+            var before = Snapshot(folder, format, output, pdfPaths);
             bool apiAccepted = false;
             JObject pdfApplied = null;
             try
@@ -306,7 +367,7 @@ namespace Horizun.Revit.Commands
                         break;
                     case "dwg":
                         apiAccepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output),
-                            new List<ElementId> { views[0].Id }, BuildDwgOptions(request)); break;
+                            new List<ElementId> { views[0].Id }, dwgOptions); break;
                     case "ifc":
                         var ifc = new IFCExportOptions
                         {
@@ -370,16 +431,36 @@ namespace Horizun.Revit.Commands
                 new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
                     ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) }); }
 
-            var after = Snapshot(folder);
-            List<string> produced = after.Where(kv => kv.Value.Size > 0 &&
-                    (format == "pdf" ? pdfPaths.Contains(kv.Key,StringComparer.OrdinalIgnoreCase) : MatchesOutput(format, output, kv.Key)) &&
-                    (!before.TryGetValue(kv.Key, out Stamp old) || old.Size != kv.Value.Size || old.Mtime != kv.Value.Mtime))
-                .Select(kv => kv.Key).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+            var after = Snapshot(folder, format, output, pdfPaths);
+            (List<string> produced, List<string> unmeasured) = ExportFileDiff.Diff(before, after);
             if (produced.Count == 0)
                 return CommandResult.FailWithDetail("Revit returned from export (accepted=" + apiAccepted +
-                    "), but no new or changed non-empty file was measured in " + folder + ". Success is not claimed.",
+                    "), but no new or changed non-empty file was measured in " + folder +
+                    (unmeasured.Count > 0 ? ". " + unmeasured.Count + " matching file(s) existed before this call and could " +
+                        "not be read then, so a change could not be proven either way: " + string.Join(", ", unmeasured) + "." : ".") +
+                    " Success is not claimed.",
                     new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
-                        ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) });
+                        ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}),
+                        ["unmeasured_files"]=new JArray(unmeasured) });
+            // Non-PDF formats produce exactly one file per call (dwg/image/nwc(view) take
+            // exactly one view_id, ifc/nwc(model)/schedule_csv take none, fbx combines every
+            // 3D view_id into ONE .fbx) - so, unlike PDF's per-view pdfPaths, the expected
+            // set here is always {output}. More than one matching produced file, as much as
+            // fewer, is reported by name rather than folded into a bare count.
+            if (format != "pdf")
+            {
+                (List<string> missing, List<string> extra) = ExportFileDiff.AgainstExpectedSingleFile(produced, output);
+                if (missing.Count > 0 || extra.Count > 0)
+                    return CommandResult.FailWithDetail("Expected exactly 1 produced file for format=" +
+                        format + "; measured " + produced.Count + "." +
+                        (missing.Count > 0 ? " Missing: " + string.Join(", ", missing) + "." : "") +
+                        (extra.Count > 0 ? " Unexpected: " + string.Join(", ", extra) + "." : "") +
+                        " Success is not claimed.",
+                        new JObject { ["external_files_may_exist"] = true, ["rollback_available"] = false,
+                            ["planned_files"] = new JArray(new[] { output }), ["produced_files"] = new JArray(produced),
+                            ["missing_files"] = new JArray(missing), ["unexpected_files"] = new JArray(extra),
+                            ["unmeasured_files"] = new JArray(unmeasured) });
+            }
 
             var files = new JArray();
             foreach (string path in produced)
@@ -394,6 +475,14 @@ namespace Horizun.Revit.Commands
                 ["note"] = produced.Count == 1 ? "One produced file was re-read from disk." :
                     "Revit produced multiple sidecar/output files; every changed non-empty file is reported."
             };
+            if (unmeasured.Count > 0)
+                exportResult["unmeasured_files"] = new JObject
+                {
+                    ["paths"] = new JArray(unmeasured),
+                    ["means"] = "matching file(s) existed before this call and could not be read (or hashed) at that " +
+                                "moment - a lock, a permission blip. Whether THIS export touched them cannot be proven " +
+                                "either way, so they are reported here rather than folded into files_verified as new."
+                };
             if (preset != null)
                 exportResult["preset"] = VerifyPreset(preset, presetHash, produced);
             if (format == "pdf")
@@ -481,6 +570,36 @@ namespace Horizun.Revit.Commands
                 }
                 catch(Exception ex) { return CommandResult.FailWithDetail("PDF package verification failed: "+ex.Message,
                     new JObject { ["files"]=files,["pdf_evidence"]=verifiedPdf,["external_files_may_exist"]=true,["rollback_available"]=false }); }
+            }
+            if (container != null)
+            {
+                // The container names ONE file, the effective output. Revit not producing
+                // it means no sidecar: the other files exist and are reported, but none of
+                // them is sealed as the container.
+                if (!produced.Contains(output, StringComparer.OrdinalIgnoreCase))
+                    return CommandResult.FailWithDetail("The export ran but did not produce " + output + ", the file the information " +
+                        "container names. No sidecar was written.", new JObject { ["files"] = files,
+                        ["external_files_may_exist"] = true, ["rollback_available"] = false });
+                try
+                {
+                    long containerBytes;
+                    string containerSha = InformationContainer.Sha256File(output, out containerBytes);
+                    JObject sidecar = InformationContainer.BuildSidecar(container, containerCheck, output, containerBytes, containerSha,
+                        Name, doc.Title, hostYear.ToString(CultureInfo.InvariantCulture), DateTime.UtcNow,
+                        new JObject { ["state"] = JValue.CreateNull(), ["format"] = format });
+                    JObject evidence = InformationContainer.WriteSidecarVerified(output, sidecar);
+                    exportResult["information_container"] = new JObject
+                    {
+                        ["name"] = containerCheck.Name, ["file"] = output, ["requested_output_path"] = requestedOutput,
+                        ["sidecar"] = sidecar, ["verification"] = evidence, ["warnings"] = containerCheck.Warnings
+                    };
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException)
+                {
+                    return CommandResult.FailWithDetail("The export was produced and verified, but its information-container sidecar " +
+                        "could not be written and verified: " + ex.Message, new JObject { ["files"] = files,
+                        ["external_files_may_exist"] = true, ["rollback_available"] = false });
+                }
             }
             if (gateDecision.Requested) exportResult["prevention"] = gateDecision.Prevention;
             return CommandResult.Ok(exportResult);
@@ -616,9 +735,27 @@ namespace Horizun.Revit.Commands
             catch { return null; }
         }
 
-        private static DWGExportOptions BuildDwgOptions(JObject request)
+        private static DWGExportOptions BuildDwgOptions(Document doc, JObject request, out string refusal)
         {
+            refusal = null;
             var options = new DWGExportOptions();
+            JObject setup = request["dwg_setup"] as JObject;
+            if (setup != null)
+            {
+                string name = setup.Value<string>("name");
+                if (setup["layers"] != null || setup["source"] != null)
+                {
+                    refusal = "format dwg EXPORTS with a setup; writing its layers or creating it is format dwg_layers. Nothing was exported.";
+                    return null;
+                }
+                options = string.IsNullOrWhiteSpace(name) ? null : DWGExportOptions.GetPredefinedOptions(doc, name);
+                if (options == null)
+                {
+                    refusal = "dwg_setup '" + name + "' is not a DWG export setup in this document. It has: " +
+                              string.Join(", ", ExportDWGSettings.ListNames(doc)) + ". Nothing was exported.";
+                    return null;
+                }
+            }
             string acad = request.Value<string>("acad_version");
             if (acad == "2013") options.FileVersion = ACADVersion.R2013;
             else if (acad == "2018") options.FileVersion = ACADVersion.R2018;
@@ -634,6 +771,7 @@ namespace Horizun.Revit.Commands
         {
             var optionRows = new JArray();
             bool allProvableHeld = true;
+            int provable = 0, proven = 0;
             foreach (KeyValuePair<string, string> option in preset.Options)
             {
                 var row = new JObject { ["option"] = option.Key, ["requested"] = option.Value };
@@ -686,14 +824,21 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex) { row["verified"] = false; row["error"] = ex.Message; }
                 row["read_back"] = readBack;
-                if (row["verified"] != null && !(bool)row["verified"]) allProvableHeld = false;
+                provable++;
+                // A verifiable key this switch has no reader for leaves verified unset: that is
+                // an option nobody proved, and it used to leave the verdict true.
+                if ((bool?)row["verified"] != true) allProvableHeld = false;
+                else proven++;
                 row["status"] = row["status"] ?? ((bool?)row["verified"] == true ? "verified" : "failed");
                 optionRows.Add(row);
             }
             return new JObject
             {
                 ["name"] = preset.Name, ["format"] = preset.Format, ["sha256"] = presetHash,
-                ["options"] = optionRows, ["all_provable_options_held"] = allProvableHeld
+                // Held only when at least one option was provable and every provable one was
+                // proved: a preset of unverifiable options proves nothing, and says so.
+                ["options"] = optionRows, ["all_provable_options_held"] = allProvableHeld && provable > 0,
+                ["provable_options"] = provable, ["proven_options"] = proven
             };
         }
 
@@ -763,6 +908,10 @@ namespace Horizun.Revit.Commands
                 case "ifc": return ext == ".ifc";
                 case "nwc": return ext == ".nwc";
                 case "fbx": return ext == ".fbx";
+                case "dgn": return ext == ".dgn";
+                case "dwfx": return ext == ".dwfx";
+                case "gbxml": return ext == ".xml";
+                case "cobie": return ext == ".xlsx";
                 case "image": return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff";
                 case "schedule_csv": return ext == ".csv" || ext == ".txt";
                 default: return false;
@@ -778,8 +927,13 @@ namespace Horizun.Revit.Commands
                 case "ifc": return ext == ".ifc";
                 case "nwc": return ext == ".nwc";
                 case "fbx": return ext == ".fbx";
+                case "dgn": return ext == ".dgn";
+                case "dwfx": return ext == ".dwfx";
+                case "gbxml": return ext == ".xml";
+                case "cobie": return ext == ".xlsx";
                 case "image": return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff";
                 case "schedule_csv": return ext == ".csv" || ext == ".txt";
+                case "dwg_layers": return ext == ".json";
                 default: return false;
             }
         }
@@ -787,21 +941,64 @@ namespace Horizun.Revit.Commands
         {
             if (format == "image") return ".png, .jpg, .jpeg, .bmp, .tif or .tiff";
             if (format == "schedule_csv") return ".csv or .txt";
+            if (format == "dwg_layers") return ".json";
+            if (format == "gbxml") return ".xml";
+            if (format == "cobie") return ".xlsx";
             return "." + format;
         }
-        private static Dictionary<string, Stamp> Snapshot(string folder)
+        /// <summary>
+        /// Only files this export could plausibly touch (MatchesOutput/the exact
+        /// PDF paths) are snapshotted - bounded cost even in a folder that also
+        /// holds other people's large CAD files this call never looks at.
+        ///
+        /// MEASURED gap this closes: the old version dropped a file from the
+        /// snapshot entirely when its FileInfo threw (locked, permission blip) -
+        /// so a pre-existing file that was merely unreadable AT THAT INSTANT came
+        /// back missing from 'before', and the diff then called it NEW. Now every
+        /// matching path Directory.GetFiles returned gets an entry: Existed is
+        /// always true for it, and Readable is true only when size, mtime AND a
+        /// content hash could all be measured. The comparison itself is Revit-free
+        /// (Core/ExportFileDiff.cs) and unit-tested without a Revit in the room.
+        /// </summary>
+        private static Dictionary<string, ExportFileStamp> Snapshot(string folder, string format, string output, string[] pdfPaths)
         {
-            var result = new Dictionary<string, Stamp>(StringComparer.OrdinalIgnoreCase);
-            foreach (string file in Directory.GetFiles(folder))
-            { try { var f = new FileInfo(file); result[file] = new Stamp { Size = f.Length, Mtime = f.LastWriteTimeUtc.Ticks }; } catch { } }
+            var result = new Dictionary<string, ExportFileStamp>(StringComparer.OrdinalIgnoreCase);
+            string[] files;
+            try { files = Directory.GetFiles(folder); } catch { return result; }
+            foreach (string file in files)
+            {
+                bool relevant = format == "pdf"
+                    ? pdfPaths != null && pdfPaths.Contains(file, StringComparer.OrdinalIgnoreCase)
+                    : MatchesOutput(format, output, file);
+                if (!relevant) continue;
+                var stamp = new ExportFileStamp { Existed = true };
+                try
+                {
+                    var f = new FileInfo(file);
+                    stamp.Size = f.Length;
+                    stamp.Mtime = f.LastWriteTimeUtc.Ticks;
+                    stamp.Hash = FileHash(file);
+                    stamp.Readable = true;
+                }
+                catch { /* Existed stays true; Size/Mtime/Hash stay unmeasured. */ }
+                result[file] = stamp;
+            }
             return result;
         }
+
+        /// <summary>SHA-256 of the file's bytes. Bounded to the handful of matching output/sidecar files, never the whole folder.</summary>
+        private static string FileHash(string path)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var stream = File.OpenRead(path))
+                return Convert.ToBase64String(sha.ComputeHash(stream));
+        }
+
         private static T ParseEnum<T>(string raw, T fallback, string field) where T : struct
         {
             if (string.IsNullOrWhiteSpace(raw)) return fallback;
             if (Enum.TryParse(raw, true, out T value) && Enum.IsDefined(typeof(T), value)) return value;
             throw new ArgumentException(field + " has unsupported value '" + raw + "'.");
         }
-        private sealed class Stamp { public long Size, Mtime; }
     }
 }

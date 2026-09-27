@@ -289,7 +289,15 @@ namespace Horizun.Revit.Core
                 _gate.Abandon(req);
                 Log.Warn($"'{name}' REMOVED FROM QUEUE after {waitedSoFarMs} ms: Revit is on modal dialog " +
                          declaredModal + " and the request never started");
-                return CommandResult.Fail(
+                // Re-probed once more for the structured detail: the persistence check
+                // above is deliberately string-only (ModalSighting is Revit-free and
+                // unit-tested on that arithmetic), so the richer read - title, best-effort
+                // body text, buttons, owning module - is taken now, right before the
+                // reply is built. The dialog that triggered the declaration is still up
+                // in every measured case; if it has already changed, detail.dialog_window
+                // reflects that rather than inventing continuity with 'declaredModal'.
+                JObject modalDetail = ModalProbe.DescribeModalDetail()?.ToJson();
+                return CommandResult.FailWithDetail(
                     "Revit has a MODAL DIALOG open: " + declaredModal + ". '" + name + "' was queued but Revit " +
                     "does not service the bridge until the dialog is answered by a human, so the request was " +
                     "removed from the queue after " + waitedSoFarMs + " ms instead of holding this call for the " +
@@ -297,7 +305,8 @@ namespace Horizun.Revit.Core
                     "The dialog persisted across " + ModalSighting.ConsecutiveSightingsToDeclare + " probes " +
                     "about a second apart, so it is not one the bridge auto-cancels during a command - it " +
                     "predates this request. Answer or close it in the Revit UI (check every monitor: it can " +
-                    "open on another screen) and retry.");
+                    "open on another screen) and retry.",
+                    modalDetail == null ? null : new JObject { ["modal_dialog"] = modalDetail });
             }
 
             if (!completed)
@@ -306,10 +315,11 @@ namespace Horizun.Revit.Core
                 // The probe again, once, for the final message: a modal seen here could
                 // not be declared above (the request had started, or it never persisted),
                 // but naming what is on screen right now beats "may be waiting".
-                string modalNow = ModalProbe.DescribeModal();
+                ModalDialogInfo modalNowDetail = ModalProbe.DescribeModalDetail();
+                string modalNow = modalNowDetail?.ToSummaryLine();
                 Log.Warn($"'{name}' TIMED OUT after {timeoutMs} ms - Revit busy or on a modal dialog" +
                          (req.Started ? " (it is still running; its result will be discarded)" : " (it never started)"));
-                return CommandResult.Fail(
+                return CommandResult.FailWithDetail(
                     $"'{name}' timed out after {timeoutMs} ms. Revit may be busy or waiting on a modal dialog. " +
                     (req.Started
                         ? "The command is STILL RUNNING inside Revit - it cannot be cancelled from here, and whatever " +
@@ -317,7 +327,8 @@ namespace Horizun.Revit.Core
                         : "It was removed from the FIFO queue before Revit started it, so nothing was done.") +
                     (modalNow != null
                         ? " Revit is showing a modal dialog RIGHT NOW: " + modalNow + "."
-                        : ""));
+                        : ""),
+                    modalNowDetail == null ? null : new JObject { ["modal_dialog"] = modalNowDetail.ToJson() });
             }
 
             clock.Stop();
@@ -376,13 +387,19 @@ namespace Horizun.Revit.Core
                     result.Data as Newtonsoft.Json.Linq.JObject,
                     waitedMs, clock.ElapsedMilliseconds,
                     req.Ticket.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    DateTime.UtcNow);
+                    DateTime.UtcNow, ReceiptRequest(paramsJson));
                 ReceiptLedger.Append(ReceiptLedger.DefaultDirectory(), receipt,
                                      Settings.RawValue, DateTime.UtcNow);
             }
             catch { /* counted inside Append; a diary must never cost an answer */ }
 
             return result;
+        }
+
+        private static Newtonsoft.Json.Linq.JObject ReceiptRequest(string paramsJson)
+        {
+            try { return string.IsNullOrWhiteSpace(paramsJson) ? null : Newtonsoft.Json.Linq.JObject.Parse(paramsJson); }
+            catch { return null; }
         }
 
         private CommandResult SubmitJobWithoutWaitingForUi(string name, string paramsJson)
@@ -588,6 +605,7 @@ namespace Horizun.Revit.Core
                 // times out, and a dismissed warning that nobody reports is a lie by
                 // omission. Both are caught here and travel back with the result.
                 using (var watch = new Interference(app))
+                using (var changes = new ChangeWatch(app?.Application))
                 {
                     try
                     {
@@ -598,6 +616,9 @@ namespace Horizun.Revit.Core
                         // and a write is never allowed to ask at all.
                         CooperativeRead.Abandoned = () => req.Abandoned;
                         req.Result = cmd.Execute(app, req.ParamsJson);
+                        // What the command left changed in the model gets the spatial
+                        // coherence check (Core/SpatialAfterWrite.cs); reads cost nothing.
+                        SpatialAfterWrite.Attach(req.Name, changes, req.Result);
                     }
                     finally
                     {
@@ -686,6 +707,12 @@ namespace Horizun.Revit.Core
             if (contract.Effect == ToolEffect.MutatingUnlessDryRun && request?.Value<bool?>("dry_run") == true)
                 return false;
 
+            // horizun_code_check writes only with operation=travel_distance and
+            // travel.create_paths=true; a requirement-set check or a measurement is a read.
+            if (contract.Name == "horizun_code_check" &&
+                (request?["travel"] as JObject)?.Value<bool?>("create_paths") != true)
+                return false;
+
             bool? workshared = null;
             try { workshared = app?.ActiveUIDocument?.Document?.IsWorkshared; }
             catch { }
@@ -719,6 +746,8 @@ namespace Horizun.Revit.Core
                     string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
                     if (operation == "inspect" || string.IsNullOrEmpty(operation)) return false;
                     if (request.Value<bool?>("dry_run") == true) return false;
+                    // sync_with_central previews when dry_run is omitted; only false syncs.
+                    if (operation == "sync_with_central" && request["dry_run"] == null) return false;
                     return true;
                 default:
                     return false;
@@ -822,7 +851,9 @@ namespace Horizun.Revit.Core
                         AsyncResumeGuard.Begin(work.Record);
                         began = true;
                         Job.Ambient = work.Record;
-                        try { result = cmd.Execute(app, work.ParamsJson); }
+                        using (var changes = new ChangeWatch(app?.Application))
+                        {
+                            try { result = cmd.Execute(app, work.ParamsJson); SpatialAfterWrite.Attach(work.Command, changes, result); }
                         finally
                         {
                             Job.Ambient = null;
@@ -833,6 +864,7 @@ namespace Horizun.Revit.Core
                                 if (result == null) result = CommandResult.Fail("'" + work.Command + "' produced no result.");
                                 result.RevitSaid = said;
                             }
+                        }
                         }
                     }
                 }

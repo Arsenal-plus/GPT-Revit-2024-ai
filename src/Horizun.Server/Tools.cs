@@ -25,6 +25,12 @@ namespace Horizun.Server
         public bool Destructive;
         public bool OpenWorld;
 
+        /// <summary>The toolsets this tool belongs to, as declared in the contract.</summary>
+        public string[] Toolsets;
+
+        /// <summary>Its replies carry text authored outside this bridge (model, file, job).</summary>
+        public bool ExternalContent;
+
         // A host-resident tool answers inside the server and never touches Revit. When Host
         // is non-null the server invokes it locally and does NOT forward to the plugin; when
         // it is null the tool forwards to Command over the pipe, exactly as before.
@@ -44,6 +50,9 @@ namespace Horizun.Server
             {
                 { "horizun_job_status",       (a, ct) => JobStatus.Handle(a, ct) },
                 { "horizun_catalog_lookup",   (a, ct) => CatalogLookup.Handle(a, ct) },
+                { "horizun_project_context",  (a, ct) => ProjectContext.Handle(a, ct) },
+                { "horizun_information_container", (a, ct) => InformationContainerTool.Handle(a, ct) },
+                { "horizun_cde_cloud",        (a, ct) => CdeCloudTool.Handle(a, ct) },
                 { "horizun_excel_write_rows", (a, ct) => ExcelWriteRows.Handle(a, ct) },
                 { "horizun_excel_read_rows",  (a, ct) => { ct.ThrowIfCancellationRequested(); return ExcelReadRows.Handle(a); } },
                 { "horizun_power_bi_push",    (a, ct) => PowerBiPush.Handle(a, ct) },
@@ -87,6 +96,8 @@ namespace Horizun.Server
                     Effect = c.Effect,
                     Destructive = c.Destructive,
                     OpenWorld = c.OpenWorld,
+                    Toolsets = c.Toolsets ?? new string[0],
+                    ExternalContent = c.ExternalContent,
                     Host = host
                 });
             }
@@ -202,6 +213,20 @@ namespace Horizun.Server
         public static JArray ListIgnoringPacks(bool advertiseTaskSupport = false)
             => Build(advertiseTaskSupport, IsEnabledIgnoringPacks);
 
+        /// <summary>
+        /// The list a session selecting exactly <paramref name="packs"/> (toolsets, with
+        /// their dependencies and core) WOULD see, at the current permission posture. It
+        /// answers "what would selecting mep cost?" for horizun://session/toolsets; it is
+        /// never dispatched and never shown to a client as its tool list.
+        /// </summary>
+        public static JArray ListForPacks(IEnumerable<string> packs, bool advertiseTaskSupport = false)
+        {
+            Horizun.Revit.Core.ToolPacks.Resolution selection =
+                Horizun.Revit.Core.ToolPacks.Resolve(null, packs, false);
+            HashSet<string> visible = selection.Tools();
+            return Build(advertiseTaskSupport, t => visible.Contains(t.Name) && IsEnabledIgnoringPacks(t));
+        }
+
         private static JArray Build(bool advertiseTaskSupport, Func<ToolDef, bool> enabled)
         {
             var arr = new JArray();
@@ -216,37 +241,52 @@ namespace Horizun.Server
             {
                 if (!enabled(t)) continue;
                 if (WithheldReason(t, live) != null) continue;
-                var published = new JObject
-                {
-                    ["name"] = t.Name,
-                    ["title"] = Title(t.Name),
-                    ["description"] = CompactDescription(t.Description),
-                    ["inputSchema"] = t.InputSchema,
-                    ["outputSchema"] = t.OutputSchema,
-                    ["annotations"] = Annotations(t)
-
-                    // execution/taskSupport is added below only for a negotiated
-                    // 2025-11-25 session. Down-level clients never see the field. The
-                    // optional/forbidden decision is the same rule the durable submit
-                    // queue enforces, through McpTasks.Supports.
-                };
-                if (advertiseTaskSupport)
-                    published["execution"] = new JObject
-                    {
-                        ["taskSupport"] = McpTasks.Supports(t) ? "optional" : "forbidden"
-                    };
-
-                // MCP Apps: a tool declares its interactive view in its own description,
-                // through _meta.ui.resourceUri, and the host may preload it before the
-                // tool is ever called. Only horizun_clash has one, and only because the
-                // app renders that reply and nothing else - an app attached to a tool
-                // whose payload it cannot render is a blank panel the user blames their
-                // client for.
-                if (t.Name == "horizun_clash") published["_meta"] = McpAppResources.ToolUiMeta();
-
-                arr.Add(published);
+                arr.Add(Publish(t, advertiseTaskSupport));
             }
             return arr;
+        }
+
+        /// <summary>
+        /// The one entry tools/list publishes for <paramref name="t"/>, with no enablement
+        /// or withholding decision in it. Build decides WHETHER a tool is listed; this decides
+        /// WHAT a listed tool looks like. It is separate so the per-tool byte ledger
+        /// (ToolsListLedgerTests) can measure every contract row regardless of the posture of
+        /// the machine running it.
+        /// </summary>
+        internal static JObject Publish(ToolDef t, bool advertiseTaskSupport)
+        {
+            var published = new JObject
+            {
+                ["name"] = t.Name,
+                ["title"] = Title(t.Name),
+                ["description"] = CompactDescription(t.Description),
+                ["inputSchema"] = CompactSchema(t.Name, t.InputSchema),
+                ["outputSchema"] = t.OutputSchema,
+                ["annotations"] = Annotations(t)
+
+                // execution/taskSupport is added below only for a negotiated
+                // 2025-11-25 session. Down-level clients never see the field. The
+                // optional/forbidden decision is the same rule the durable submit
+                // queue enforces, through McpTasks.Supports.
+            };
+            if (advertiseTaskSupport)
+                published["execution"] = new JObject
+                {
+                    ["taskSupport"] = McpTasks.Supports(t) ? "optional" : "forbidden"
+                };
+
+            // MCP Apps: a tool declares its interactive view in its own description,
+            // through _meta.ui.resourceUri, and the host may preload it before the
+            // tool is ever called. Only horizun_clash has one, and only because the
+            // app renders that reply and nothing else - an app attached to a tool
+            // whose payload it cannot render is a blank panel the user blames their
+            // client for.
+            if (t.Name == "horizun_clash") published["_meta"] = McpAppResources.ToolUiMeta();
+            // The impact preview: the five bulk writes whose rehearsal payload
+            // (change_preview / plan_resolved / confirmation_token) the app reads.
+            else if (ImpactPreviewApp.Renders(t.Name)) published["_meta"] = ImpactPreviewApp.ToolUiMeta();
+
+            return published;
         }
 
         private static string Title(string name)
@@ -277,6 +317,218 @@ namespace Horizun.Server
             if (cut < Math.Min(160, limit / 2)) cut = limit;
             else cut += 1;
             return normalized.Substring(0, cut).TrimEnd() + "…" + suffix;
+        }
+
+        // ARGUMENT DESCRIPTIONS ARE BUDGETED LIKE TOOL DESCRIPTIONS. Measured 2026-09-24:
+        // of a 519 KB tools/list, 417 KB were input schemas and 237 KB of those were
+        // argument descriptions, some of them essays. A description longer than
+        // SchemaDescriptionMax is cut at a sentence boundary and points at the full
+        // contract resource, exactly as CompactDescription does one level up. Only the
+        // ADVERTISED copy is compacted: argument validation reads t.InputSchema, and
+        // horizun://contract/tools serves every word. The copy is computed once per tool.
+        // 250 since 2026-09-26: the coordination loop, element kinds and re-read work took
+        // tools/list to 526 KB against the 512 KiB budget.
+        internal const int SchemaDescriptionMax = 250;
+        private const string SchemaDescriptionSuffix = " (full text: horizun://contract/tools)";
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> CompactSchemas =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.Ordinal);
+
+        internal static JObject CompactSchema(string toolName, JObject schema)
+        {
+            if (schema == null) return null;
+            return CompactSchemas.GetOrAdd(toolName, _ =>
+            {
+                var copy = (JObject)schema.DeepClone();
+                // The structural steps run on the FULL text, before the description caps,
+                // so "is this annotation identical to the union's" is an exact comparison.
+                SubtractBranchDuplicates(copy);
+                DropBranchTypeEqualToParent(copy);
+                ApplyAdvertisedShortForms(copy);
+                CompactSchemaNode(copy);
+                return copy;
+            });
+        }
+
+        // STRUCTURAL SUBTRACTION (2026-09-26). A node that has both a `properties` map (the
+        // union of every field) and a oneOf/anyOf/allOf whose branches restate some of those
+        // fields was advertising each field's schema twice: once in the union, once more in
+        // every branch. Both apply to the SAME instance - JSON Schema evaluates the node's
+        // `properties` and the chosen branch's `properties` against the same object - so
+        // (union AND branch) == (union AND branch'), where branch' keeps only what the branch
+        // adds or tightens. Nothing about what is ACCEPTED changes; the validators read the
+        // full contract in any case (ToolInputRules, the command parsers), and the full
+        // schema of any branch is served by horizun://contract/tools/{tool}/{variant}.
+        //
+        // What is never subtracted: const (the discriminator), references and combinators
+        // (their meaning depends on the whole subschema), and `type` - kept on every field
+        // so a client that infers a missing type (codex-rs sanitize_json_schema coerces an
+        // untyped or boolean schema to a string) still sees the right one. Property KEYS
+        // are never removed: a fully redundant field becomes {"type": ...}, never {}.
+        //
+        // MEASURED 2026-09-26 (with DropBranchTypeEqualToParent): tools/list 524,199 ->
+        // 465,146 bytes for all 122 tools; horizun_create_elements 81,409 -> ~30.8 KB and
+        // horizun_document_session 17,551 -> ~9.1 KB.
+        private static readonly string[] Combinators = { "oneOf", "anyOf", "allOf" };
+        private static readonly HashSet<string> NeverSubtracted = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "type", "const", "$ref", "$defs", "definitions", "oneOf", "anyOf", "allOf", "not",
+            "unevaluatedProperties", "unevaluatedItems"
+        };
+        private static readonly HashSet<string> AnnotationKeywords = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "description", "default", "title", "examples", "$comment"
+        };
+        // Keywords that only mean something together (additionalProperties depends on the
+        // properties beside it; minItems on the items; then/else on the if). A group is
+        // dropped all-or-none, and only when EVERY key in it equals the union's.
+        private static readonly string[][] KeywordGroups =
+        {
+            new[] { "properties", "patternProperties", "additionalProperties", "required", "propertyNames", "minProperties", "maxProperties" },
+            new[] { "items", "prefixItems", "additionalItems", "minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains" },
+            new[] { "if", "then", "else" }
+        };
+
+        internal static void SubtractBranchDuplicates(JToken node)
+        {
+            if (node is JObject o)
+            {
+                if (o["properties"] is JObject union)
+                    foreach (string combinator in Combinators)
+                        if (o[combinator] is JArray branches)
+                            foreach (JToken branch in branches)
+                                if (branch is JObject b && b["properties"] is JObject own)
+                                    foreach (JProperty field in own.Properties())
+                                        if (field.Value is JObject f && union[field.Name] is JObject u)
+                                            field.Value = SubtractField(f, u);
+                foreach (JProperty p in o.Properties())
+                {
+                    if (p.Name == "properties" && p.Value is JObject props)
+                        foreach (JProperty arg in props.Properties()) SubtractBranchDuplicates(arg.Value);
+                    else
+                        SubtractBranchDuplicates(p.Value);
+                }
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) SubtractBranchDuplicates(item);
+        }
+
+        private static JObject SubtractField(JObject branch, JObject union)
+        {
+            var kept = new JObject();
+            foreach (JProperty kw in branch.Properties())
+            {
+                bool keep;
+                if (NeverSubtracted.Contains(kw.Name)) keep = true;
+                else if (AnnotationKeywords.Contains(kw.Name)) keep = !JToken.DeepEquals(union[kw.Name], kw.Value);
+                else
+                {
+                    string[] group = null;
+                    foreach (string[] g in KeywordGroups)
+                        if (Array.IndexOf(g, kw.Name) >= 0) { group = g; break; }
+                    if (group == null) keep = !JToken.DeepEquals(union[kw.Name], kw.Value);
+                    else
+                    {
+                        keep = false;
+                        foreach (string k in group)
+                            if (!JToken.DeepEquals(branch[k], union[k])) { keep = true; break; }
+                    }
+                }
+                if (keep) kept.Add(kw.Name, kw.Value.DeepClone());
+            }
+            // Never an empty schema: {} reads as "anything" to a client that ignores the
+            // union. A typed union lends its type (it applies anyway); otherwise the branch
+            // field is left exactly as the contract wrote it.
+            if (kept.Count == 0 && branch.Count > 0)
+                return union["type"] != null ? new JObject { ["type"] = union["type"].DeepClone() } : branch;
+            return kept;
+        }
+
+        // SHORT FORMS OF TEXT THE CONTRACT REPEATS VERBATIM. The idempotency_key description
+        // is attached to every mutating tool (65 occurrences, MEASURED 2026-09-26), 305
+        // characters each time. The advertised copy shows a short form that keeps the three
+        // things a caller must act on; the contract and horizun://contract/tools keep every
+        // word. Keyed by the EXACT full text on purpose: if the contract's wording changes,
+        // the short form silently stops applying, nothing breaks, the 250-character cap
+        // applies as before, and the tools/list ledger shows the growth.
+        internal static readonly Dictionary<string, string> AdvertisedShortForms = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["REQUIRED whenever this call will mutate or change the Revit session. A retry " +
+             "with the same key and identical operation returns the recorded result without " +
+             "executing twice. Reusing it for different arguments is refused. Generate a new " +
+             "UUID for each deliberate operation; keep it unchanged only for retries."] =
+                "Required when the call mutates the model or session: a new UUID per deliberate change; " +
+                "reuse it only to retry the identical call."
+        };
+
+        private static void ApplyAdvertisedShortForms(JToken node)
+        {
+            if (node is JObject o)
+            {
+                if (o["description"] is JValue d && d.Type == JTokenType.String &&
+                    AdvertisedShortForms.TryGetValue((string)d, out string shortForm))
+                    o["description"] = shortForm;
+                foreach (JProperty p in o.Properties())
+                    if (p.Name != "description") ApplyAdvertisedShortForms(p.Value);
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) ApplyAdvertisedShortForms(item);
+        }
+
+        // A combinator branch restating its parent's `type` adds nothing: the parent's
+        // `type` already applies to the same instance. Kept when it is all the branch has,
+        // so no branch is ever advertised as {}.
+        internal static void DropBranchTypeEqualToParent(JToken node)
+        {
+            if (node is JObject o)
+            {
+                JToken parentType = o["type"];
+                if (parentType != null)
+                    foreach (string combinator in Combinators)
+                        if (o[combinator] is JArray branches)
+                            foreach (JToken branch in branches)
+                                if (branch is JObject b && b.Count > 1 && b["type"] != null && JToken.DeepEquals(b["type"], parentType))
+                                    b.Remove("type");
+                foreach (JProperty p in o.Properties())
+                {
+                    if (p.Name == "properties" && p.Value is JObject props)
+                        foreach (JProperty arg in props.Properties()) DropBranchTypeEqualToParent(arg.Value);
+                    else
+                        DropBranchTypeEqualToParent(p.Value);
+                }
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) DropBranchTypeEqualToParent(item);
+        }
+
+        // internal, not private: DeepClone + CompactSchemaNode alone IS the advertised copy
+        // before the structural steps existed (c56a742), and the equivalence test rebuilds it
+        // to prove the abridgement gives the verdicts clients already saw, not only the contract's.
+        internal static void CompactSchemaNode(JToken node)
+        {
+            if (node is JObject o)
+            {
+                foreach (JProperty p in o.Properties())
+                {
+                    if (p.Name == "description" && p.Value.Type == JTokenType.String)
+                        p.Value = CompactSchemaDescription((string)p.Value);
+                    else if (p.Name == "properties" && p.Value is JObject props)
+                        foreach (JProperty arg in props.Properties()) CompactSchemaNode(arg.Value); // argument NAMES are never touched
+                    else
+                        CompactSchemaNode(p.Value);
+                }
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) CompactSchemaNode(item);
+        }
+
+        internal static string CompactSchemaDescription(string description)
+        {
+            if (description == null || description.Length <= SchemaDescriptionMax) return description;
+            int limit = SchemaDescriptionMax - SchemaDescriptionSuffix.Length - 1;
+            int cut = description.LastIndexOf(". ", limit, StringComparison.Ordinal);
+            if (cut < limit / 2) cut = limit;
+            else cut += 1;
+            return description.Substring(0, cut).TrimEnd() + "…" + SchemaDescriptionSuffix;
         }
 
         // The task-support rule lives in McpTasks.Supports so the advertised hint and

@@ -211,7 +211,7 @@ final value — the template, the scale, the name, the number, the type, the poi
 the crop — arrives explicit in the request, and a missing instruction is a
 refusal rather than a choice.
 
-### The nine operations
+### The ten operations
 
 | Operation | Target | What is re-read after the commit |
 | --- | --- | --- |
@@ -224,6 +224,7 @@ refusal rather than a choice.
 | `move_schedule` | `schedule_instance_id` + `point` | `ScheduleSheetInstance.Point` within the declared tolerance |
 | `clear_element_override` | `view_id` + `element_id` | the element's `OverrideGraphicSettings` back to defaults, AND proof that the CATEGORY override and the view template did not move |
 | `set_crop` | `view_id` + rectangular `crop` (view-plane) | crop active, crop visibility unchanged, and the committed shape within tolerance |
+| `set_view_display` | `view_id` + `detail_level` and/or `discipline` - each one only when the cited finding asserts it (`observed.field`) | `View.DetailLevel` / `View.Discipline`, and the property NOT set against its before-value (unreadable is named, never passed); refused by name when the view's template controls the parameter |
 
 Scale, template and title-block types are always ElementIds; nothing is resolved
 from a name, because two elements may share one.
@@ -386,7 +387,7 @@ so their absence is never read as "the model is fine in these respects":
 - **applying any correction** — `horizun_audit_planimetry` itself is read-only
   and `fixable` stays false on every finding it returns. Correction is a
   separate, explicitly confirmed call: `horizun_fix_planimetry` above, which
-  covers the nine operations listed there and refuses everything else by name.
+  covers the ten operations listed there and refuses everything else by name.
 
 Two measured behaviours worth knowing: Revit may return **no bounding box** for
 an element hidden by an active crop, in which case the element is reported

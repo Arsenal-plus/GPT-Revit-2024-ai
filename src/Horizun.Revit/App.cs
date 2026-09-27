@@ -51,6 +51,7 @@ namespace Horizun.Revit
                 // fully working bridge and one fewer window.
                 try
                 {
+                    try { Horizun.Revit.Ui.OperationsPane.Spanish = RibbonText.IsSpanish(app.ControlledApplication.Language); } catch { }
                     app.RegisterDockablePane(
                         Horizun.Revit.Ui.OperationsPaneIdentity.PaneId,
                         Horizun.Revit.Ui.OperationsPaneIdentity.Title,
@@ -180,15 +181,25 @@ namespace Horizun.Revit
             d.Register(new QuantitiesCommand());
             d.Register(new ClashCommand());
             d.Register(new CoordinationCommand());
+            d.Register(new ResolveClashCommand());
+            d.Register(new UndoCommand());
             d.Register(new PlanStructureCommand());
             d.Register(new ManageLinksCommand());
             d.Register(new PlanMepCommand());
             d.Register(new ConnectMepCommand());
+            d.Register(new MepRoutingCommand());
+            d.Register(new FramingCommand());
             d.Register(new StructuralConnectionsCommand());
             d.Register(new ManageMaterialsCommand());
+            d.Register(new ManageStylesCommand());
+            d.Register(new ManageUnitsCommand());
+            d.Register(new ElectricalCommand());
             d.Register(new ValidateIdsCommand());
             d.Register(new CopyBetweenDocumentsCommand());
             d.Register(new AuditAccessCommand());
+            d.Register(new CodeCheckCommand());
+            d.Register(new LinkScheduleCommand());
+            d.Register(new FederationCheckCommand());
             d.Register(new PlanFromIfcCommand());
             d.Register(new SetKeynoteCommand());
             d.Register(new FamilyApplyCommand());
@@ -202,14 +213,19 @@ namespace Horizun.Revit
             d.Register(new AccUploadStatusCommand());
             d.Register(new RelinquishAllCommand());
             d.Register(new CaptureViewCommand());
+            d.Register(new VerifyChangesCommand());
             d.Register(new CreateScheduleCommand());
             d.Register(new ListElementsCommand());
             d.Register(new QueryModelCommand());
             d.Register(new NavigateCommand());
             d.Register(new CreateElementsCommand());
             d.Register(new TransformElementsCommand());
+            d.Register(new ManageCurtainCommand());
+            d.Register(new SlabShapeCommand());
+            d.Register(new CreateRailingCommand());
             d.Register(new ManageViewsCommand());
             d.Register(new ExportCommand());
+            d.Register(new DeliverIfcCommand());
             d.Register(new AnnotateCommand());
             d.Register(new DimensionReferencesCommand());
             d.Register(new QueryDimensionsCommand());
@@ -233,6 +249,12 @@ namespace Horizun.Revit
             d.Register(new PlanViewsCommand());
             d.Register(new ManageSchedulesCommand());
             d.Register(new ManageRevisionsCommand());
+            d.Register(new ManagePhasesCommand());
+            d.Register(new ManageAssembliesPartsCommand());
+            d.Register(new ManageGroupsCommand());
+            d.Register(new ManageWorksetsCommand());
+            d.Register(new ManageParametersCommand());
+            d.Register(new QueryClassificationCommand());
             d.Register(new ListSchedulesCommand());
             d.Register(new GetScheduleDataCommand());
 
@@ -263,6 +285,8 @@ namespace Horizun.Revit
             d.Register(new ApplyCadUpdateCommand(d.ResolveCommand));
             d.Register(new CadConnectCommand(d.ResolveCommand));
             d.Register(new CadReviewCommand());
+            // Composes model_scan / audit_model in process for record_quality.
+            d.Register(new ModelDiffCommand(d.ResolveCommand));
             d.Register(new ManageCadLinksCommand());
             d.Register(new SubmitJobCommand(d.ResolveCommand, () => d.DocumentSnapshot));
             // more commands land here as they are ported.

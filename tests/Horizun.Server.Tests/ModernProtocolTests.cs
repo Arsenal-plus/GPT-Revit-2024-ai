@@ -275,6 +275,15 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Discover_returns_the_instructions_head()
+        {
+            // The same bounded head initialize sends: clients truncate long instructions,
+            // and the full guidance is the resource the head names.
+            JObject result = DiscoverHandler.Handle(RequestEnvelope.Read("server/discover", ModernMeta()));
+            Assert.Equal(ServerInstructions.Head, (string)result["instructions"]);
+        }
+
+        [Fact]
         public void Only_finished_extensions_are_advertised()
         {
             JObject advertised = ExtensionRegistry.Advertised();
@@ -289,10 +298,16 @@ namespace Horizun.Server.Tests
             JArray listed = (JArray)McpResources.List(null)["resources"];
             foreach (JToken mime in (JArray)ui["mimeTypes"])
             {
-                JObject app = listed.OfType<JObject>().Single(r => (string)r["mimeType"] == (string)mime);
-                JObject read = McpResources.Read(new JObject { ["uri"] = app["uri"] });
-                Assert.Equal((string)mime, (string)read["contents"][0]["mimeType"]);
-                Assert.False(string.IsNullOrWhiteSpace((string)read["contents"][0]["text"]));
+                // Two apps share the mime type now (clash viewer, impact preview): every one
+                // listed under it must be served under it.
+                var apps = listed.OfType<JObject>().Where(r => (string)r["mimeType"] == (string)mime).ToList();
+                Assert.NotEmpty(apps);
+                foreach (JObject app in apps)
+                {
+                    JObject read = McpResources.Read(new JObject { ["uri"] = app["uri"] });
+                    Assert.Equal((string)mime, (string)read["contents"][0]["mimeType"]);
+                    Assert.False(string.IsNullOrWhiteSpace((string)read["contents"][0]["text"]));
+                }
             }
             foreach (McpExtension e in ExtensionRegistry.All)
                 Assert.Equal(e.Implemented, advertised[e.Id] != null);
@@ -308,7 +323,7 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void The_legacy_capability_block_still_advertises_logging()
+        public void Both_capability_blocks_advertise_logging()
         {
             // logging/setLevel exists in every legacy revision. Dropping the capability
             // there would be removing a method those clients may legitimately call.
@@ -316,8 +331,10 @@ namespace Horizun.Server.Tests
             Assert.NotNull(legacy["logging"]);
             Assert.Null(legacy["extensions"]);
 
+            // 2026-07-28 removed setLevel, not logging: a request that names a logLevel is
+            // sent notifications/message, and a server that emits them MUST declare it.
             JObject modern = DiscoverHandler.Capabilities(McpEra.Modern);
-            Assert.Null(modern["logging"]);
+            Assert.NotNull(modern["logging"]);
             Assert.NotNull(modern["extensions"]);
         }
 

@@ -57,6 +57,17 @@ namespace Horizun.Revit.Core
 
         /// <summary>Named in messages so the caller knows which file is being refused.</summary>
         public string DisplayName = "this model";
+
+        /// <summary>The file's own path, when it is a file on disk. Null for cloud.</summary>
+        public string Path;
+
+        /// <summary>
+        /// The central the file RECORDS (BasicFileInfo.CentralPath), null when unread. A file
+        /// that reads as a central but records another file as its central is either a copy of
+        /// that central or a local made by CreateNewLocal and never opened: Revit reports both
+        /// alike (MEASURED 2026-09-27 in Revit 2026: IsCentral=true, IsLocal=false, IsCreatedLocal=false).
+        /// </summary>
+        public string CentralPath;
     }
 
     /// <summary>What the caller asked for, reduced to the flags that decide.</summary>
@@ -179,6 +190,17 @@ namespace Horizun.Revit.Core
                         "opened. THIS GUARD IS NEW for cloud opens: it was applied to central models on disk and " +
                         "not to the same models in the cloud.");
 
+                if (f.IsCentral == true && RecordsAnotherCentral(f.Path, f.CentralPath))
+                    return Refuse(v,
+                        "REFUSING TO OPEN: '" + name + "' reads as a workshared CENTRAL model, but the central it " +
+                        "records is '" + f.CentralPath + "', not this file. Revit reports a COPY of that central and " +
+                        "a new local made by CreateNewLocal that was never opened the same way (IsCentral=true, " +
+                        "IsLocal=false), so this cannot tell them apart. A new local becomes a local on disk once " +
+                        "Revit opens it and SAVES it (opened and closed without saving it still reads as a " +
+                        "central). If it is a copy of the central, detach=true reads it safely; open_central=true " +
+                        "opens it as it is, and anything synchronized from it goes to the central it records. " +
+                        "Nothing was opened.");
+
                 if (f.IsCentral == true)
                     return Refuse(v,
                         "REFUSING TO OPEN: '" + name + "' is a workshared CENTRAL model. Opening it directly " +
@@ -202,6 +224,25 @@ namespace Horizun.Revit.Core
         }
 
         // ------------------------------------------------------------------ small
+        /// <summary>
+        /// Does the file record a central OTHER than itself? Only when both paths are known and,
+        /// compared as full paths ignoring case, differ; a server or cloud central ("RSN://",
+        /// "...://") is another central by definition. Unknown is not "another": it answers false,
+        /// and the plain central refusal stands.
+        /// </summary>
+        public static bool RecordsAnotherCentral(string path, string centralPath)
+        {
+            if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(centralPath)) return false;
+            if (centralPath.Contains("://")) return true;
+            try
+            {
+                return !string.Equals(System.IO.Path.GetFullPath(path).TrimEnd('\\', '/'),
+                                      System.IO.Path.GetFullPath(centralPath).TrimEnd('\\', '/'),
+                                      StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
         /// <summary>A Revit year out of anything that contains one, or null.</summary>
         public static string NormalizeVersion(string s)
         {

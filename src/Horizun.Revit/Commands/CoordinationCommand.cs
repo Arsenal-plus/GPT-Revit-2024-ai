@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
 // horizun_coordination - the durable side of clash detection. horizun_clash
@@ -58,8 +58,13 @@ namespace Horizun.Revit.Commands
                 case "update": return Update(doc, request, ledgerPath);
                 case "export": return Export(doc, request, ledgerPath);
                 case "import": return Import(doc, request, ledgerPath);
+                case "import_navisworks": return ImportNavisworks(doc, request, ledgerPath);
+                case "show": return Show(app, request);
+                case "navisworks_readiness": return NavisworksReadiness(doc, request);
+                case "prepare_navisworks": return PrepareNavisworks(app, request);
+                case "navisworks_status": return NavisworksStatus(doc, request, ledgerPath);
                 default:
-                    return CommandResult.Fail("operation '" + operation + "' (known: list, update, export, import, evidence) is not one this command understands. " +
+                    return CommandResult.Fail("operation '" + operation + "' (known: list, update, export, import, import_navisworks, show, evidence, navisworks_readiness, prepare_navisworks, navisworks_status) is not one this command understands. " +
                         "(Detection and folding live in horizun_clash record_findings.)");
             }
         }
@@ -153,6 +158,26 @@ namespace Horizun.Revit.Commands
                 CoordinationRules.AppendEvent(finding, "comment", comment, nowUtc);
             }
             finding.UpdatedUtc = nowUtc;
+
+            // AN EXPLICIT dry_run=true IS A REHEARSAL. update is not a token operation - it
+            // applies directly - but a caller who sends dry_run=true is asking not to write.
+            // MEASURED 2026-09-26: such a call rewrote the ledger and answered
+            // verified_after_reread=true, so a rehearse-then-apply client wrote on its
+            // rehearsal. Nothing is saved here; the row shows what the update would leave.
+            if (request["dry_run"] != null && request["dry_run"].Type == JTokenType.Boolean && (bool)request["dry_run"])
+            {
+                JObject would = CoordinationLedger.ToJson(finding);
+                would["finding_id"] = findingId;
+                return CommandResult.Ok(new JObject
+                {
+                    ["document"] = doc.Title,
+                    ["dry_run"] = true,
+                    ["ledger_path"] = ledgerPath,
+                    ["status_before"] = statusBefore,
+                    ["would_leave"] = would,
+                    ["note"] = "NOTHING WAS WRITTEN. update applies without a confirmation token: call again without dry_run (or with dry_run=false) to write it; the ledger is re-read before success is claimed."
+                });
+            }
 
             CoordinationLedger.Save(ledgerPath, doc.Title, findings);
 

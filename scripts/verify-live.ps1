@@ -51,6 +51,10 @@
     # the write tier: COMMITS into the model the fixtures file declares disposable
     pwsh scripts/verify-live.ps1 -Year 2026 -WriteProbes
 
+    # plus the opt-in ISO 19650 case that writes the delivery code into that
+    # disposable model to prove deliverable_ready=true (live-iso19650.probes.ps1)
+    pwsh scripts/verify-live.ps1 -Year 2026 -WriteProbes -IsoReadyProbe
+
   Requires: that Revit open with the add-in loaded.
 
   WHERE THE FIXTURE NAMES COME FROM. The parameters below name real things on
@@ -92,6 +96,10 @@ param(
     # distinction it claimed to test was never tested. It needs a document that
     # really is open and really is not active; without one, say so.
     [string]$InactiveDocument,
+    # A SAME-YEAR model to open as the small (S) scan workload when -InactiveDocument
+    # is not already open. It is COPIED into this run's scratch folder first, so the
+    # original is never touched and the year driver closes it as a harness document.
+    [string]$InactiveFixturePath,
     # A real shared parameter file and a definition inside it, for the
     # bind_shared_param rehearsal probe. Without them that probe is NOT COVERED:
     # a rehearsal that refuses because the SPF does not exist proves nothing about
@@ -181,7 +189,17 @@ param(
     # Two separate things on purpose: the switch says what kind of run this is, the
     # fixture says WHICH model may be written into. Neither implies the other.
     [string]$WriteDocument,
-    [string]$WriteDocumentDisposable
+    [string]$WriteDocumentDisposable,
+
+    # ISO 19650 (scripts/live-iso19650.probes.ps1). The section itself writes no
+    # parameter; this switch adds the one case that does - the mapped delivery
+    # code on every element of the discovered class in the DISPOSABLE model - to
+    # prove deliverable_ready=true on the exported file. Off by default.
+    [switch]$IsoReadyProbe,
+    # The Revit parameter the generated Pset mapping reads, by its display name
+    # (the exporter looks it up by name, so it follows the Revit language; the
+    # release runner forces ENU).
+    [string]$IsoMappedParameter = 'Comments'
 )
 
 $probeRun = [guid]::NewGuid().ToString('N')
@@ -360,6 +378,57 @@ $target = $live[0]
 # ---------------------------------------------------------------------------
 $scratchDir = Join-Path $env:TEMP "horizun-live-$probeRun"
 New-Item -ItemType Directory -Force $scratchDir | Out-Null
+
+# ---------------------------------------------------------------------------
+# THE DOCUMENTS THIS HARNESS CREATED, declared to whoever drives it.
+#
+# run-year-matrix.ps1 closes only documents it registered, by path. The models
+# this harness makes for itself (HZ_LINKSRC_<tag>.rvt, w12-linkcopy-<tag>.rvt,
+# ...) live in $scratchDir and were never in that register, so every year ended
+# in left_running_foreign_document (measured 2026-09-24, five years out of five).
+# When the driver sets HORIZUN_HARNESS_DOCUMENTS_MANIFEST, this harness writes
+# there the model files that exist under ITS OWN scratch folder - written now,
+# and rewritten in the finally below, so a run that dies half-way still declares
+# what it had made. The driver decides what to believe (schema, folder under
+# TEMP, folder younger than the Revit it started, path inside the folder, file
+# present); this only lists. Without the variable nothing is written.
+# ---------------------------------------------------------------------------
+function Write-HzHarnessDocumentsManifest {
+    $target = $env:HORIZUN_HARNESS_DOCUMENTS_MANIFEST
+    if ([string]::IsNullOrWhiteSpace($target)) { return }
+    try {
+        $docs = @()
+        if (Test-Path -LiteralPath $scratchDir) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $scratchDir -Recurse -File -ErrorAction SilentlyContinue |
+                             Where-Object { $_.Extension -in @('.rvt', '.rfa') } | Sort-Object FullName)) {
+                $docs += [ordered]@{ path = $f.FullName; created_by_harness = $true }
+            }
+        }
+        $manifest = [ordered]@{
+            schema = 'horizun.harness-documents/v1'
+            harness = $harnessFile
+            probe_run = $probeRun
+            scratch_root = [IO.Path]::GetFullPath($scratchDir)
+            written_utc = (Get-Date).ToUniversalTime().ToString('o')
+            documents = $docs
+        }
+        $parent = Split-Path -Parent $target
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force $parent | Out-Null }
+        ($manifest | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $target -Encoding utf8
+    }
+    catch {
+        # The declaration is a courtesy to the driver: failing it must not fail the
+        # run. The driver then finds no manifest and leaves the Revit running.
+        Write-Host ("WARNING: the harness-documents manifest could not be written: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+Write-HzHarnessDocumentsManifest
+
+# EVERYTHING FROM HERE ON runs inside this try, so the finally rewrites the
+# manifest on every way out: the exits at the end, a throw half-way, a Ctrl+C.
+# (Not re-indented: a try/finally at script level opens no new scope, so every
+# function and variable below is still script-scoped exactly as before.)
+try {
 
 # A ZIP wearing a .rvt name - the measured case in four bytes. This is what cost
 # two false diagnoses ("a newer Revit", then "a corrupt download").
@@ -1425,10 +1494,18 @@ $proc = [System.Diagnostics.Process]::Start($psi)
 # comfortably above every closed tool schema's maximum nesting.
 function Send-Rpc($obj) { $proc.StandardInput.WriteLine(($obj | ConvertTo-Json -Depth 32 -Compress)); $proc.StandardInput.Flush() }
 $script:rpcNotifications = [System.Collections.Generic.List[object]]::new()
-function Read-Rpc([int]$TimeoutMs = 620000) {
+# MEASURED 2026-09-25 (run at a66968c): one call outlived its wait, the read it had
+# started was abandoned still pending, and the NEXT call's ReadLineAsync threw "the
+# stream is currently in use" - every probe module after it became unverified. The
+# pending read is now kept and reused, and a caller that knows its request id skips a
+# late answer to an earlier call instead of taking it as its own.
+$script:pendingRead = $null
+$script:lateReplies = [System.Collections.Generic.List[object]]::new()
+function Read-Rpc([int]$TimeoutMs = 620000, $ExpectId = $null) {
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
     while ($true) {
-        $t = $proc.StandardOutput.ReadLineAsync()
+        if ($null -eq $script:pendingRead) { $script:pendingRead = $proc.StandardOutput.ReadLineAsync() }
+        $t = $script:pendingRead
         # See hz-call.ps1: use WhenAny rather than Task.Wait or IsCompleted
         # polling for redirected StreamReader reads on Windows PowerShell 5.1.
         $remaining = [Math]::Max(1, [int](($deadline - (Get-Date)).TotalMilliseconds))
@@ -1436,8 +1513,21 @@ function Read-Rpc([int]$TimeoutMs = 620000) {
         $winner = [Threading.Tasks.Task]::WhenAny(
             [Threading.Tasks.Task[]]@($t, $delay)).Result
         if (-not [object]::ReferenceEquals($winner, $t)) { return $null }
+        $script:pendingRead = $null
         if (-not $t.Result) { return $null }
-        try { $m = $t.Result | ConvertFrom-Json } catch { continue }
+        try { $m = $t.Result | ConvertFrom-Json }
+        catch {
+            # A reply PowerShell cannot parse (e.g. two keys differing only in case) is
+            # still THE reply to its id. Skipping it left the caller waiting ten minutes
+            # for an answer that had already arrived (2026-09-25); hand it back as an
+            # error naming why, so the case fails with the cause instead of hanging.
+            $idMatch = [regex]::Match($t.Result, '^\s*\{\s*"jsonrpc"\s*:\s*"2\.0"\s*,\s*"id"\s*:\s*(\d+)')
+            if (-not $idMatch.Success) { $idMatch = [regex]::Match($t.Result, '"id"\s*:\s*(\d+)') }
+            if (-not $idMatch.Success) { continue }
+            $m = [pscustomobject]@{ jsonrpc = '2.0'; id = [long]$idMatch.Groups[1].Value
+                                    error = [pscustomobject]@{ code = -32700; message = ('the harness could not parse this reply as JSON: ' + $_.Exception.Message + ' | first 300 chars: ' + $t.Result.Substring(0, [Math]::Min(300, $t.Result.Length))) } }
+        }
+        if ($null -ne $ExpectId -and $m.id -and "$($m.id)" -ne "$ExpectId") { [void]$script:lateReplies.Add($m); continue }
         # Progress and list-change notifications carry no id and are not
         # anybody's answer. Keep them in the one stdout reader's inbox so a
         # probe can inspect them without starting a second ReadLineAsync on the
@@ -1924,7 +2014,7 @@ function Invoke-Write($tool, $arguments) {
     $script:writeCallId++
     Send-Rpc @{ jsonrpc='2.0'; id=$script:writeCallId; method='tools/call'
                 params=@{ name=$tool; arguments=$arguments } }
-    $m = Read-Rpc
+    $m = Read-Rpc -ExpectId $script:writeCallId
     if (-not $m) { return @{ replied = $false; isError = $true; text = 'no reply'; data = $null } }
 
     # A JSON-RPC error reply carries no result at all, so reaching into
@@ -2124,6 +2214,7 @@ $writeNames = @(
     @{ N = 'the reply separates resolved, persistent and NEW findings';                        T = 'horizun_fix_planimetry' }
     @{ N = 'reverting the section returns the census to its reference';                        T = 'horizun_fix_planimetry' }
     @{ N = 'no model was saved by the correction section';                                     T = 'horizun_fix_planimetry' }
+    @{ N = 'set_crop writes a non-rectangular (polygon) crop and the loop is re-read vertex by vertex'; T = 'horizun_fix_planimetry' }
 
     # ---- W9+: AUTONOMOUS PLANIMETRY PRODUCTION.
     @{ N = 'automatic packing commits one complete obstacle-aware sheet arrangement';          T = 'horizun_pack_sheets' }
@@ -2221,7 +2312,7 @@ $writeNames = @(
 
 # The dimension probes are addressed by CASE NUMBER 1..17, the 2D-detail probes
 # by 1..11, the planimetry read probes by 1..22 and the planimetry FIX probes by
-# 1..23, each against its own slice of the tail of $writeNames. Computed from the
+# 1..24, each against its own slice of the tail of $writeNames. Computed from the
 # end backwards, not hard-coded, so inserting a probe above cannot silently
 # misattribute every verdict to its neighbour's name - and each base is derived
 # from the one after it, so adding a section means adding one line here.
@@ -2231,7 +2322,7 @@ $w12NameBase = $w13NameBase - 14
 $mpNameBase = $w12NameBase - 13
 $dp2NameBase = $mpNameBase - 18
 $productionNameBase = $dp2NameBase - 5
-$fixNameBase = $productionNameBase - 23
+$fixNameBase = $productionNameBase - 24
 $planNameBase = $fixNameBase - 22
 $d2dNameBase = $planNameBase - 11
 $dimNameBase = $d2dNameBase - 17
@@ -5821,6 +5912,31 @@ else:
                 code = $unloadCode; target_document = $wDoc
                 idempotency_key = "live-plm-unload-$probeRun"
             }
+            # A write document with no link at all (the 2023 one, measured 2026-09-25)
+            # cannot degrade coverage by unloading one. Stage one typed: a scratch COPY
+            # of the write document itself, linked in, then unloaded as above. The
+            # document is disposable and never saved; the copy lives in the scratch dir.
+            if (-not $unload.isError -and [string]$unload.text -match 'no RevitLinkType exists') {
+                $covStage = $null
+                $hCov = Invoke-Write 'horizun_health' @{}
+                $meCov = @($hCov.data.open_documents | Where-Object { $_.title -eq $wDoc }) | Select-Object -First 1
+                if ($meCov -and $meCov.path -and (Test-Path -LiteralPath ([string]$meCov.path))) {
+                    New-Item -ItemType Directory -Force -Path $scratchDir | Out-Null
+                    $covCopy = Join-Path $scratchDir ("HZ_COVLINK_{0}.rvt" -f ($probeRun -replace '[^A-Za-z0-9]', ''))
+                    Copy-Item -LiteralPath ([string]$meCov.path) -Destination $covCopy -Force
+                    $covStage = Invoke-WriteApply 'horizun_manage_links' @{ operation = 'add'; target_document = $wDoc; path = $covCopy.Replace([char]92, '/') } 'plm-covlink'
+                }
+                if ($covStage -and $covStage.stage -eq 'apply' -and -not $covStage.answer.isError) {
+                    $unload = Invoke-Write 'horizun_execute_python' @{
+                        code = $unloadCode; target_document = $wDoc
+                        idempotency_key = "live-plm-unload2-$probeRun"
+                    }
+                }
+                else {
+                    $unload = @{ isError = $true; data = $null; text = ('the write document has no link and one could not be staged: ' +
+                        $(if ($covStage) { Get-DimShortText $covStage.answer.text } else { "the write document's path is not readable from health: " + $meCov.path })) }
+                }
+            }
             if ($unload.isError -or -not $unload.data -or $unload.data.evidence_status -ne 'self_reported_verified') {
                 Complete-PlanCase 15 $t0 'unverified' ('the coverage fixture (an unloaded link) could not be staged: ' + (Get-DimShortText $unload.text))
             }
@@ -6217,7 +6333,7 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified an
         }
 
         if ($fixGap) {
-            for ($fc = 1; $fc -le 23; $fc++) { Complete-FixCase $fc (Get-Date) 'not_covered' $fixGap }
+            for ($fc = 1; $fc -le 24; $fc++) { Complete-FixCase $fc (Get-Date) 'not_covered' $fixGap }
         }
         else {
             # ---- case 1: the contract, as a client sees it --------------------
@@ -6238,9 +6354,10 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified an
                     $ops = @($e.inputSchema.properties.actions.items.properties.operation.enum)
                     $okAnn = ($ann.readOnlyHint -eq $false -and $ann.destructiveHint -eq $false -and
                               $ann.idempotentHint -eq $true -and $ann.openWorldHint -eq $false)
+                    # Ten since batch 1 added set_view_display (2026-09-27); each one is named, never counted alone.
                     $okSchema = ($e.inputSchema.additionalProperties -eq $false -and
-                                 $ops.Count -eq 9 -and
-                                 ($ops -contains 'set_view_template') -and ($ops -contains 'set_crop') -and
+                                 $ops.Count -eq 10 -and
+                                 ($ops -contains 'set_view_template') -and ($ops -contains 'set_crop') -and ($ops -contains 'set_view_display') -and
                                  -not ($ops -contains 'pack_sheet') -and
                                  $null -ne $e.inputSchema.properties.confirmation_token -and
                                  $null -ne $e.inputSchema.properties.idempotency_key -and
@@ -6265,7 +6382,7 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified an
             }
             $au = Get-FixAudit
             if ($au.isError -or -not $au.data) {
-                for ($fc = 2; $fc -le 23; $fc++) {
+                for ($fc = 2; $fc -le 24; $fc++) {
                     Complete-FixCase $fc (Get-Date) 'unverified' ('the audit these corrections cite could not be read: ' + (Get-DimShortText $au.text))
                 }
             }
@@ -6833,6 +6950,61 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified an
                     }
                 }
 
+                # ---- case 24: set_crop (polygon) --------------------------------
+                # Reshapes the SAME view case 11 just cropped rectangularly, into a
+                # non-rectangular (polygon) crop - crop.loop rather than min/max. The
+                # finding case 11 cited is now stale (the crop it observed has moved),
+                # so this re-audits to get a finding the model shows RIGHT NOW, exactly
+                # as every other correction here does.
+                $t0 = Get-Date
+                if (-not $f11 -or $fix11.stage -ne 'apply' -or -not (Test-FixVerified $fix11.answer)) {
+                    Complete-FixCase 24 $t0 'unverified' 'case 11 (the rectangular crop) did not commit, so there is no crop to reshape into a polygon'
+                }
+                else {
+                    $auP = Get-FixAudit
+                    $f24 = $null
+                    if ($auP.data) {
+                        foreach ($rule in @('text.outside-annotation-crop', 'detail_2d.outside-crop', 'tag.outside-annotation-crop')) {
+                            $f24 = Find-FixFinding $auP $rule $null
+                            if ($f24) { break }
+                        }
+                    }
+                    if (-not $f24) {
+                        Complete-FixCase 24 $t0 'unverified' 'the re-audit after the rectangular crop produced no outside-crop finding, so no polygon correction is licensed'
+                    }
+                    else {
+                        $srcP = @{ finding_set_fingerprint = $auP.data.finding_set_fingerprint; units = 'mm' }
+                        # A diamond quadrilateral strictly inside the -20000..20000 mm
+                        # rectangle case 11 just committed, in the same view-plane
+                        # convention (x along RightDirection, y along UpDirection).
+                        $fix24 = Invoke-FixApply @{
+                            target_document = $wDoc; units = 'mm'; tolerance = 1.0; source_audit = $srcP
+                            actions = @(@{ operation = 'set_crop'; view_id = $cropView
+                                           crop = @{ loop = @(@(0, -15000), @(15000, 0), @(0, 15000), @(-15000, 0)) }
+                                           finding = (New-FixFinding $f24) })
+                        } 'setcroppolygon'
+                        if ($fix24.stage -ne 'apply') {
+                            Complete-FixCase 24 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix24.answer.text))
+                        }
+                        elseif (Test-FixVerified $fix24.answer) {
+                            $row = @($fix24.answer.data.rows)[0]
+                            $props = @($row.postconditions.properties | ForEach-Object { $_.property })
+                            $proves = (($props -contains 'crop_active') -and ($props -contains 'crop_shape') -and
+                                       ($props -contains 'crop_visible_unchanged'))
+                            if ($proves -and $row.postconditions.all_verified -eq $true) {
+                                Complete-FixCase 24 $t0 'pass' 'the non-rectangular (polygon) crop committed and its loop was re-read vertex by vertex within tolerance; active and visibility unchanged' `
+                                    -Evidence @{ postconditions = $row.postconditions }
+                            }
+                            else {
+                                Complete-FixCase 24 $t0 'fail' ("the polygon crop checklist is incomplete: properties={0}" -f ($props -join ','))
+                            }
+                        }
+                        else {
+                            Complete-FixCase 24 $t0 'fail' ('the polygon crop did not verify: ' + (Get-DimShortText $fix24.answer.text))
+                        }
+                    }
+                }
+
                 # ---- case 6: rename_sheet ---------------------------------------
                 $t0 = Get-Date
                 $auR = Get-FixAudit
@@ -7221,7 +7393,7 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'restored the pre-s
 
         # Every case number reports exactly once - the same harness rule the other
         # three sections live under.
-        for ($fixCase = 1; $fixCase -le 23; $fixCase++) {
+        for ($fixCase = 1; $fixCase -le 24; $fixCase++) {
             if (-not $script:fixCasesDone.ContainsKey($fixCase)) {
                 Complete-FixCase $fixCase (Get-Date) 'unverified' 'the fix section ended before this probe ran - a harness bug, not a product verdict'
             }
@@ -10343,6 +10515,22 @@ __output__ = {'status': 'self_reported_verified', 'cover_id': cid, 'name': name}
         if ($sizeHealth.data) { $openFacts = @($sizeHealth.data.open_documents) }
         $releaseFact = $openFacts | Where-Object { [string]$_.title -eq $wDoc } | Select-Object -First 1
         $inactiveFact = $openFacts | Where-Object { [string]$_.title -eq $InactiveDocument } | Select-Object -First 1
+        # MEASURED 2026-09-25: under the year driver only the write document is open, so
+        # the S workload was never measured ("only 2 of 3 sizes"). Open a scratch COPY of
+        # this year's small fixture - never the original - and use it as S.
+        if (-not $inactiveFact -and $InactiveFixturePath -and (Test-Path -LiteralPath $InactiveFixturePath)) {
+            New-Item -ItemType Directory -Force -Path $scratchDir | Out-Null
+            $sCopy = Join-Path $scratchDir ('HZ_S_' + $probeRun + '.rvt')
+            Copy-Item -LiteralPath $InactiveFixturePath -Destination $sCopy -Force
+            $sOpen = Invoke-Write 'horizun_open_document' @{ path = $sCopy.Replace([char]92, '/'); expected_version = [string]$Year
+                                                              idempotency_key = ('live-w14-open-s-' + $probeRun) }
+            if (-not $sOpen.isError) {
+                $sizeHealth = Invoke-Write 'horizun_health' @{}
+                if ($sizeHealth.data) { $openFacts = @($sizeHealth.data.open_documents) }
+                $inactiveFact = $openFacts | Where-Object { [string]$_.title -eq [IO.Path]::GetFileNameWithoutExtension($sCopy) } | Select-Object -First 1
+                $releaseFact = $openFacts | Where-Object { [string]$_.title -eq $wDoc } | Select-Object -First 1
+            }
+        }
         $sizePlan = @()
         if ($inactiveFact -and $inactiveFact.path) {
             $sizePlan += @{ size='S'; title=[string]$inactiveFact.title; path=[string]$inactiveFact.path
@@ -11127,6 +11315,110 @@ if ($writeGate) {
     Add-Write 'async results survive repeated submission and completed jobs refuse replay' 'horizun_submit_job' $asyncProof.outcome $asyncProof.detail
 }
 
+# ---------------------------------------------------------------------------
+# ISO 19650 INFORMATION MANAGEMENT. deliver_ifc and export-with-container
+# commit files OUTSIDE the model (write tier, disposable document); the
+# project context and the CDE are host-resident and run in every run. All of
+# it lives in live-iso19650.probes.ps1 and is exercised WITHOUT Revit by
+# live-iso19650.tests.ps1 before a matrix run pays for Revit.
+#
+# Every temporary file goes into ONE folder per run under $scratchDir, removed
+# only when every ISO case passed. The consolidator's record
+# (horizun.live-evidence/2) is written beside -Json, or into $scratchDir.
+# ---------------------------------------------------------------------------
+. (Join-Path $PSScriptRoot 'live-iso19650.probes.ps1')
+# <iso19650-section> (live-iso19650.tests.ps1 executes the text between these markers)
+$isoLive = $null
+try {
+    $isoHealth = Invoke-Write 'horizun_health' @{}
+    $isoProfile = $null
+    if ($isoHealth.data -and $isoHealth.data.operational_controls) {
+        $isoProfile = [string]$isoHealth.data.operational_controls.permission_profile
+    }
+    $isoSection = Invoke-HorizunIsoSection -Year $Year -Document $WriteDocument -ScratchRoot $scratchDir `
+        -RepoRoot $repositoryRoot -RunId $probeRun -WriteGate $writeGate -PreferredCategory $QuantityCategory `
+        -ReadyWrite:$IsoReadyProbe -MappedParameter $IsoMappedParameter -PermissionProfile $isoProfile `
+        -Call { param($tool, $arguments) Invoke-Write $tool $arguments } `
+        -Apply { param($tool, $arguments, $key) Invoke-WriteApply $tool $arguments $key }
+
+    # The identity the consolidator needs: the running add-in's commit and hash,
+    # the contract hash from the server that answered, and this harness.
+    $isoBuildIdentity = $null
+    Send-Rpc @{ jsonrpc = '2.0'; id = 990601; method = 'resources/read'; params = @{ uri = 'horizun://build/identity' } }
+    $isoIdentityReply = Read-Rpc 60000
+    if ($isoIdentityReply -and $isoIdentityReply.id -eq 990601 -and $isoIdentityReply.result) {
+        try { $isoBuildIdentity = @($isoIdentityReply.result.contents)[0].text | ConvertFrom-Json } catch { $isoBuildIdentity = $null }
+    }
+    $isoRepoClean = $null
+    try {
+        $isoDirty = @(& git -C $repositoryRoot status --porcelain --untracked-files=no 2>$null)
+        if ($LASTEXITCODE -eq 0) { $isoRepoClean = ($isoDirty.Count -eq 0) }
+    } catch { $isoRepoClean = $null }
+    $isoIdentity = New-HorizunIsoIdentity -Health $isoHealth.data -BuildIdentity $isoBuildIdentity `
+        -ServerSha256 $serverSha -HarnessFile $harnessFile -HarnessSha256 $harnessSha256 -HarnessGitBlob $harnessGitBlob `
+        -HarnessTrackedClean $harnessTrackedClean -RepoHead $harnessCommit -RepoClean $isoRepoClean `
+        -Year $Year -RunId $probeRun -Document $(if ($writeGate) { $Document } else { $WriteDocument })
+    $isoEvidenceDir = $scratchDir
+    if ($Json) { $isoEvidenceDir = Split-Path -Parent $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Json) }
+    $isoLive = Complete-HorizunIsoLiveRun -Section $isoSection -Identity $isoIdentity `
+        -EvidencePath (Join-Path $isoEvidenceDir ('iso19650-{0}-{1}.json' -f $Year, $probeRun)) `
+        -ScratchRoot $scratchDir -RunId $probeRun
+    foreach ($isoCase in $isoLive.cases) { Add-Write $isoCase.name $isoCase.tool $isoCase.outcome $isoCase.detail }
+}
+catch {
+    # A harness defect must not take the run down, and must not read like a pass:
+    # every ISO case is recorded UNVERIFIED with the reason.
+    $isoWhy = 'HARNESS: the ISO 19650 section threw before it could report: ' + $_.Exception.Message
+    foreach ($isoEntry in (Get-HorizunIsoCaseCatalog -IncludeReadyWrite:$IsoReadyProbe)) {
+        if (-not ($writeResults | Where-Object { $_.Name -eq $isoEntry.Name })) {
+            Add-Write $isoEntry.Name $isoEntry.Tool 'unverified' $isoWhy
+        }
+    }
+}
+# </iso19650-section>
+
+# ---------------------------------------------------------------------------
+# PROBE MODULES (scripts/live-probes/*.probes.ps1, see its README). Each one
+# registers itself in $script:HzProbeModules with a Catalog and a Run block;
+# a module that throws records every catalogued case UNVERIFIED, never passed.
+# ---------------------------------------------------------------------------
+# <probe-modules-section>
+$script:HzProbeModules = @()
+$probeModuleDir = if ($env:HORIZUN_PROBE_MODULE_DIR) { $env:HORIZUN_PROBE_MODULE_DIR } else { Join-Path $PSScriptRoot 'live-probes' }
+if (Test-Path -LiteralPath $probeModuleDir) {
+    foreach ($probeModuleFile in (Get-ChildItem -LiteralPath $probeModuleDir -Filter '*.probes.ps1' | Sort-Object Name)) {
+        try { . $probeModuleFile.FullName }
+        catch { Add-Write ('probe module ' + $probeModuleFile.Name + ' loads') 'harness' 'unverified' ('HARNESS: ' + $_.Exception.Message) }
+    }
+}
+$probeModuleCtx = [pscustomobject]@{
+    Year = $Year; Document = $WriteDocument; ScratchRoot = $scratchDir; RunId = $probeRun; WriteGate = [bool]$writeGate
+    ClosedWorksetDocument = $ClosedWorksetDocument
+    Call = { param($tool, $arguments) Invoke-Write $tool $arguments }
+    Apply = { param($tool, $arguments, $key) Invoke-WriteApply $tool $arguments $key }
+}
+foreach ($probeModule in $script:HzProbeModules) {
+    $probeCases = $null
+    try { $probeCases = @(& $probeModule.Run $probeModuleCtx) }
+    catch {
+        $probeWhy = 'HARNESS: probe module ' + $probeModule.Name + ' threw: ' + $_.Exception.Message
+        foreach ($probeEntry in @($probeModule.Catalog)) { Add-Write $probeEntry.Name $probeEntry.Tool 'unverified' $probeWhy }
+        continue
+    }
+    $probeSeen = @{}
+    foreach ($probeCase in $probeCases) {
+        if ($null -eq $probeCase) { continue }
+        $probeSeen[[string]$probeCase.Name] = $true
+        Add-Write $probeCase.Name $probeCase.Tool $probeCase.Outcome $probeCase.Detail
+    }
+    foreach ($probeEntry in @($probeModule.Catalog)) {
+        if (-not $probeSeen.ContainsKey([string]$probeEntry.Name)) {
+            Add-Write $probeEntry.Name $probeEntry.Tool 'unverified' ('HARNESS: probe module ' + $probeModule.Name + ' did not report this case')
+        }
+    }
+}
+# </probe-modules-section>
+
 $proc.StandardInput.Close()
 if (-not $proc.WaitForExit(130000)) { $proc.Kill() }
 
@@ -11604,6 +11896,10 @@ $report = [pscustomobject]@{
         }
         cases = @($script:mpEvidence)
     }
+    # ISO 19650: the same cases folded into the probes above, with their ids,
+    # tiers and evidence, plus where the consolidator's own record was written.
+    # Null only when the section could not run at all; its probes then say why.
+    iso19650          = $isoLive
     summary           = @{
         passed      = $passed
         failed      = $failed
@@ -11682,3 +11978,9 @@ if ($notCovered.Count -gt 0) {
     Write-Host "  (exit 0: not a release gate. Under -ReleaseGate the line above is exit 3.)" -ForegroundColor DarkYellow
 }
 exit 0
+}
+finally {
+    # Opened right after $scratchDir was created: whatever the way out, the
+    # driver is told which models this run made, as they are at this moment.
+    Write-HzHarnessDocumentsManifest
+}

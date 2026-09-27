@@ -65,6 +65,11 @@ namespace Horizun.Server
         private static readonly McpSession _session = new McpSession();
         private static string _negotiatedProtocol;
 
+        // The client's self-declared software name from initialize (clientInfo.name),
+        // reduced to a short safe token. Only for attributing log lines: a parse error
+        // or a cancellation in server.log used to name no origin at all.
+        private static string _clientName;
+
         /// <summary>
         /// True once a LEGACY initialize handshake has completed in this process.
         ///
@@ -79,6 +84,13 @@ namespace Horizun.Server
         private static bool _legacyHandshake;
 
         private static ToolListMonitor _toolListMonitor;
+
+        /// <summary>
+        /// Requests this server sends TO the client (elicitation/create), and what the
+        /// client declared it can answer. See McpClientRequests.cs.
+        /// </summary>
+        private static McpClientRequests _clientRequests;
+        private static ClientElicitationSupport _elicitation = ClientElicitationSupport.NotInitialized();
 
         /// <summary>
         /// Set once the response channel has failed. The read loop stops on it, so no
@@ -108,9 +120,12 @@ namespace Horizun.Server
                           "shutting down. Nothing further will be accepted: results could not be delivered, " +
                           "and a mutation whose outcome cannot be reported must not be started.", null);
                 Volatile.Write(ref _responseChannelLost, 1);
+                _clientRequests?.FailAll("the response channel was lost (" + reason + ")");
                 Protocol.SubscriptionStream.MarkAllTermination(Protocol.SubscriptionStream.TransportLost);
                 try { _inFlight.CancelAll(); } catch (Exception ex) { Log.Warn("cancel-all after channel loss: " + ex.Message); }
             });
+
+            _clientRequests = new McpClientRequests(_writer.Write);
 
             Log.Start();
 
@@ -199,12 +214,26 @@ namespace Horizun.Server
                         // is still a line the caller sent, and it can carry a path, a token,
                         // or a model name; reporting its length and the parser's position
                         // says where to look without repeating the content.
-                        Log.Warn("parse error answered: " + ex.Message);
-                        _writer.TryError(null, -32700,
-                            "Parse error: that line is not valid JSON (" + ex.Message + "). The line was " +
-                            line.Length + " characters. Nothing was run, and no id could be read from it, so this " +
-                            "reply carries id null - it cannot be matched to your request. The content is not " +
-                            "echoed back because a line that failed to parse can still contain a path or a token.");
+                        //
+                        // WHERE and WHAT KIND, never WHAT: the position, a hint for the
+                        // causes that actually occur on this transport, and a window in
+                        // which every letter and digit is masked (Protocol/ParseErrorDiagnosis.cs).
+                        // The client name makes the log entry attributable on its own.
+                        var diagnosis = Protocol.ParseErrorDiagnosis.Of(line, ex);
+                        Log.Warn(diagnosis.LogLine(Volatile.Read(ref _clientName)));
+                        _writer.TryError(null, Protocol.McpErrorCodes.ParseError, diagnosis.Message(),
+                                         diagnosis.ToJson());
+                        continue;
+                    }
+
+                    // A RESPONSE TO ONE OF OUR REQUESTS (elicitation/create), recognised
+                    // by shape before anything else: it reuses an id WE chose, so the
+                    // lifetime rule for the client's request ids below does not apply
+                    // to it, and it is never answered. Handing it over never blocks -
+                    // the tool waiting for it runs on its own thread.
+                    if (McpClientRequests.IsResponse(msg))
+                    {
+                        _clientRequests.TryDeliver(msg);
                         continue;
                     }
 
@@ -380,6 +409,12 @@ namespace Horizun.Server
             // host-resident call that answered in 3 ms, and too SHORT for a scan of a
             // 200k-element model which is entitled to ten minutes - so the arbitrary
             // number could discard the very answer the drain was added to protect.
+            //
+            // A tool waiting for the CLIENT (elicitation) can never be answered now -
+            // the answer would arrive on the stdin that just closed - so those waits end
+            // first, and the tool reports the question as unanswered instead of holding
+            // the drain for its full timeout.
+            _clientRequests.FailAll("the client closed stdin, so no answer can arrive");
             if (_inFlight.Count > 0)
             {
                 DateTime? deadline = _inFlight.DrainDeadlineUtc();
@@ -489,7 +524,16 @@ namespace Horizun.Server
                 {
                     try
                     {
-                        JToken result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status), envelope);
+                        JToken result;
+                        // What THIS call may ask the client. It flows with the call into
+                        // the host handler's own task. A modern request is never SENT a
+                        // server-to-client request: it is answered with an
+                        // InputRequiredResult and retried (MRTR), so its context carries
+                        // what the retry brought back instead of a channel. A
+                        // task-augmented call outlives the request that could carry a form.
+                        ClientContext context = ClientContextFor(prms, envelope);
+                        using (ClientContext.Enter(context))
+                            result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status), envelope);
                         if (cts.IsCancellationRequested)
                         {
                             // Two events race after cancellation: PipeClient may observe
@@ -500,7 +544,8 @@ namespace Horizun.Server
                             metric.Outcome = "cancelled";
                             silencedByCancellation = AnswerCancellation(
                                 reply, envelope, toolName,
-                                proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                                proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds,
+                                                          prms?["arguments"] as JObject));
                             ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice", envelope, id);
                         }
                         else
@@ -524,6 +569,18 @@ namespace Horizun.Server
                                 clock.ElapsedMilliseconds, resultError ? "warning" : "info", envelope, id);
                         }
                     }
+                    catch (InputRequiredException ir) when (envelope != null && envelope.Era == Protocol.McpEra.Modern &&
+                                                            !cts.IsCancellationRequested)
+                    {
+                        // Not an error and not the end: the tool needs the person's input.
+                        // The tools/call is answered with the InputRequiredResult itself -
+                        // resultType "input_required", no content, no cache hints - and the
+                        // client calls again with inputResponses and the requestState.
+                        metric.Outcome = "input_required";
+                        reply.TryReply(Protocol.ResultEnvelope.Stamp(
+                            ir.Result, Protocol.McpEra.Modern, "tools/call", prms, Protocol.ResultEnvelope.InputRequired));
+                        ClientToolFinished(toolName, "input_required", clock.ElapsedMilliseconds, "info", envelope, id);
+                    }
                     catch (McpError me)
                     {
                         metric.Outcome = "error";
@@ -536,7 +593,8 @@ namespace Horizun.Server
                         string exact = oce.Message;
                         silencedByCancellation = AnswerCancellation(
                             reply, envelope, toolName,
-                            IsNeverStartedProof(exact) ? exact : CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                            IsNeverStartedProof(exact) ? exact : CancelledMessage(toolName, clock.ElapsedMilliseconds,
+                                                                                  prms?["arguments"] as JObject));
                         ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice", envelope, id);
                     }
                     catch (Exception ex)
@@ -569,6 +627,37 @@ namespace Horizun.Server
                     }
                 }
             });
+        }
+
+        /// <summary>
+        /// What one tools/call may ask its client, and - under 2026-07-28 - what it brought
+        /// back from the previous round. Legacy: the handshake's answer, unchanged. Modern:
+        /// THIS request's declared capabilities; params.inputResponses and
+        /// params.requestState (SEP-2322 InputResponseRequestParams) are checked for shape
+        /// here, because a malformed one is a protocol error (-32602), not a tool refusal.
+        /// </summary>
+        private static ClientContext ClientContextFor(JObject prms, Protocol.RequestEnvelope envelope)
+        {
+            bool task = prms?["task"] != null;
+            if (envelope == null || envelope.Era != Protocol.McpEra.Modern)
+                return new ClientContext(_clientRequests, task ? _elicitation.ForTask() : _elicitation);
+
+            JToken responses = prms?["inputResponses"];
+            if (responses != null && responses.Type != JTokenType.Object && responses.Type != JTokenType.Null)
+                throw new McpError(-32602, "Invalid params: 'inputResponses' must be an object keyed by the inputRequests " +
+                                           "keys, not " + responses.Type + ". Nothing was run.");
+            JToken state = prms?["requestState"];
+            if (state != null && state.Type != JTokenType.String && state.Type != JTokenType.Null)
+                throw new McpError(-32602, "Invalid params: 'requestState' must be the string this server returned, " +
+                                           "echoed unchanged, not " + state.Type + ". Nothing was run.");
+
+            ClientElicitationSupport support =
+                ClientElicitationSupport.FromModernRequest(envelope.DeclaredVersion, envelope.ClientCapabilities);
+            if (task) support = support.ForTask();
+            JToken principal = envelope.ClientInfo?["name"];
+            return new ClientContext(support, (string)prms?["name"], responses as JObject,
+                                     state != null && state.Type == JTokenType.String ? (string)state : null,
+                                     principal != null && principal.Type == JTokenType.String ? (string)principal : null);
         }
 
         /// <summary>
@@ -935,11 +1024,14 @@ namespace Horizun.Server
         /// PipeClient supplies a stronger exact message when cancellation wins before start;
         /// this path must preserve uncertainty for work that may already be on the UI thread.
         /// </summary>
-        private static string CancelledMessage(string tool, long ms) =>
+        private static string CancelledMessage(string tool, long ms, JObject args) =>
             "'" + tool + "' was cancelled after " + ms + " ms. IMPORTANT: this stops this server waiting for it; it " +
             "could not prove the request was removed before it started. If the command had already reached Revit, " +
             "it is still running there and will finish - the Revit API offers no way to interrupt a command on its " +
-            "UI thread. Do not resend it assuming the model is untouched.";
+            "UI thread. Do not resend it assuming the model is untouched. " +
+            CancellationAdvice.Sentence(
+                CancellationAdvice.Classify(false, CancellationAdvice.HasKey(args)),
+                CancellationAdvice.BatchSize(args), ms);
 
         private static string CancellationProof(JToken result)
         {
@@ -1037,10 +1129,18 @@ namespace Horizun.Server
                     return Protocol.DiscoverHandler.Handle(envelope);
 
                 case "initialize":
+                    Volatile.Write(ref _clientName,
+                        Protocol.ParseErrorDiagnosis.SafeClientName(prms?["clientInfo"]?["name"]));
                     string negotiatedProtocol = ProtocolNegotiation.Answer(prms?.Value<string>("protocolVersion"));
                     _negotiatedProtocol = negotiatedProtocol;
+                    Log.Info("initialize from client '" + (Volatile.Read(ref _clientName) ?? "(unnamed)") +
+                             "', protocol " + negotiatedProtocol);
                     // The peer speaks the handshake dialect. See _legacyHandshake.
                     _legacyHandshake = true;
+                    // What the client may be asked, from what IT declared and the
+                    // revision agreed - never from what a client "usually" supports.
+                    _elicitation = ClientElicitationSupport.FromInitialize(
+                        negotiatedProtocol, prms?["capabilities"] as JObject);
                     var capabilities = new JObject
                     {
                         // FROM THE SAME SET AS THE MODERN BLOCK. A legacy client reads
@@ -1085,7 +1185,8 @@ namespace Horizun.Server
                         // whichever document is active, and that this bridge is
                         // deliberately organisation-neutral, so the standards a delivery
                         // actually needs are not in here and should not be invented.
-                        ["instructions"] = ServerInstructions.Text
+                        // Only the head: clients truncate long instructions (see ServerInstructions).
+                        ["instructions"] = ServerInstructions.Head
                     };
 
                 case "notifications/initialized":
@@ -1128,11 +1229,9 @@ namespace Horizun.Server
                     return McpCompletions.Complete(prms);
 
                 case "resources/templates/list":
-                    // No templated resources: every horizun:// URI this server serves is
-                    // a fixed one. An empty list is the answer, and it still has to be an
-                    // ANSWER - a client that gets "method not found" for a list method the
-                    // spec requires cannot tell that apart from a broken server.
-                    return new JObject { ["resourceTemplates"] = new JArray() };
+                    // One tool's contract row and one variant of a discriminated tool:
+                    // where a model reads the exact schema tools/list abridges.
+                    return new JObject { ["resourceTemplates"] = McpResources.Templates() };
 
                 case "logging/setLevel":
                     // Removed in 2026-07-28: the level is a per-request _meta field now, and
@@ -1231,8 +1330,30 @@ namespace Horizun.Server
         private static JToken CallTool(JObject prms, CancellationToken ct, Action<JObject> observe)
             => CallTool(prms, ct, observe, null);
 
+        /// <summary>
+        /// Every tools/call result leaves through here. For a tool whose replies carry
+        /// text authored outside this bridge (CommandContract.ExternalContent) the payload
+        /// has already been neutralised and marked inside CallToolCore; this adds the same
+        /// verdict to the result's _meta and neutralises any text block that was built from
+        /// a message rather than a payload. See ContentSafety.cs.
+        /// </summary>
         private static JToken CallTool(JObject prms, CancellationToken ct, Action<JObject> observe,
                                        Protocol.RequestEnvelope envelope)
+        {
+            ContentSafety.Report safety = null;
+            JToken result = CallToolCore(prms, ct, observe, envelope, ref safety);
+            // A failed call whose arguments violate the FULL contract carries the exact
+            // schema it violated (advice only; see SchemaHelp). Before Finish, so the
+            // safety verdict covers the reply as it leaves.
+            JToken toolName = prms?["name"];
+            result = SchemaHelp.Attach(result,
+                toolName != null && toolName.Type == JTokenType.String ? (string)toolName : null,
+                prms?["arguments"]);
+            return safety == null ? result : ContentSafety.Finish(result, safety);
+        }
+
+        private static JToken CallToolCore(JObject prms, CancellationToken ct, Action<JObject> observe,
+                                           Protocol.RequestEnvelope envelope, ref ContentSafety.Report safety)
         {
             // -32602 is INVALID PARAMS, and each of these is a different way of being
             // invalid. They used to collapse: a missing name became "Unknown tool: ''",
@@ -1281,6 +1402,14 @@ namespace Horizun.Server
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
+            // From here on every answer - success, refusal or failure - belongs to this tool,
+            // so a tool whose replies carry model or file text gets the content verdict.
+            if (def.ExternalContent)
+                safety = new ContentSafety.Report
+                {
+                    Origin = def.Host != null ? ContentSafety.OriginExternal : ContentSafety.OriginModel
+                };
+
             // Host-resident tool: answer in this process, never touch Revit. Same result shape
             // as the pipe path — the handler returns the data payload, we wrap it in TextResult.
             if (def.Host != null)
@@ -1289,7 +1418,18 @@ namespace Horizun.Server
                 {
                     JObject data = HostCallRunner.Run(name, token => def.Host(args, token), ct, CommandTimeoutMs);
                     Log.Info(name + " (host) ok in " + clock.ElapsedMilliseconds + " ms");
+                    if (safety != null)
+                    {
+                        ContentSafety.Scrub(data, safety);
+                        ContentSafety.Attach(data, safety);
+                    }
                     return StructuredResult(data);
+                }
+                catch (InputRequiredException)
+                {
+                    // Not a result of this tool call: the dispatcher answers it as an
+                    // InputRequiredResult. Only a 2026-07-28 call can raise it.
+                    throw;
                 }
                 catch (ToolRefusal refusal)
                 {
@@ -1298,7 +1438,9 @@ namespace Horizun.Server
                     // faults that are: a log full of expected refusals is a log nobody reads
                     // on the day something actually breaks.
                     Log.Warn(name + " (host) refused: " + refusal.Message);
-                    return TextResult("Error: " + refusal.Message, true);
+                    return refusal.Detail == null
+                        ? TextResult("Error: " + refusal.Message, true)
+                        : ErrorResult("Error: " + refusal.Message, null, null, refusal.Detail);
                 }
                 catch (Exception ex)
                 {
@@ -1433,8 +1575,24 @@ namespace Horizun.Server
             }
             catch (Exception ex)
             {
-                Log.Error(name + " -> Revit " + d.Year + " (pid " + d.Pid + ") FAILED in " +
-                          clock.ElapsedMilliseconds + " ms", ex);
+                // A CLIENT'S CANCELLATION PROVEN TO HAVE REMOVED THE WORK BEFORE IT STARTED
+                // is the bridge doing what it was asked, not a failure. It used to be
+                // logged as ERROR with a stack trace, and the ten such entries of
+                // 2026-09-24 - every one the deliberate W13 case-11 probe of verify-live -
+                // read like ten lost batches until each was traced by hand.
+                JObject transport = ex.Data["horizun_transport_detail"] as JObject;
+                if (ex is OperationCanceledException && (bool?)transport?["cancelled_before_start"] == true)
+                    Log.Warn(name + " -> Revit " + d.Year + " (pid " + d.Pid + ") cancelled by client '" +
+                             (Volatile.Read(ref _clientName) ?? "(unnamed)") + "' after " +
+                             clock.ElapsedMilliseconds + " ms, removed from the queue before it started " +
+                             "(nothing ran, key unclaimed)");
+                else
+                    Log.Error(name + " -> Revit " + d.Year + " (pid " + d.Pid + ") FAILED in " +
+                              clock.ElapsedMilliseconds + " ms" +
+                              (ex is OperationCanceledException
+                                  ? " (cancelled by client '" + (Volatile.Read(ref _clientName) ?? "(unnamed)") +
+                                    "'; retry " + (string)transport?["retry"]?["verdict"] + ")"
+                                  : ""), ex);
                 return ErrorResult("Error talking to Revit: " + ex.Message, null, null,
                     ex.Data["horizun_transport_detail"] as JObject ?? new JObject
                     {
@@ -1449,6 +1607,20 @@ namespace Horizun.Server
                      " in " + clock.ElapsedMilliseconds + " ms" +
                      (supported == null ? " [plugin did not publish its command list]" : ""));
 
+            // MODEL TEXT IS DATA. Neutralise invisible/bidi controls and flag agent-directed
+            // phrasing in everything the add-in said, before any of it is rendered.
+            if (safety != null)
+            {
+                safety = ContentSafety.ScrubReply(reply, safety.Origin);
+                if (ok) ContentSafety.Attach(reply["data"], safety);
+                else if (safety.HasFindings)
+                {
+                    JObject detail = reply["detail"] as JObject ?? new JObject();
+                    detail[ContentSafety.PayloadKey] = safety.ToJson();
+                    reply["detail"] = detail;
+                }
+            }
+
             if (ok)
             {
                 JToken data = reply["data"];
@@ -1461,7 +1633,19 @@ namespace Horizun.Server
                 // changes are the same version and different software; this is where a
                 // support conversation, or a benchmark run, gets to tell them apart.
                 if (def.Command == "horizun_health" && data is JObject health)
+                {
                     health["server_provenance"] = Protocol.ProvenanceStamp.Current();
+                    // The toolset selection lives in THIS process's environment, which the
+                    // add-in cannot see, so the server reports it: which toolsets are active
+                    // and how many characters/estimated tokens the tool list costs.
+                    health["toolsets"] = ToolsetReport.HealthBlock();
+                }
+
+                // model_diff explain: the ISO 19650 gaps come from the SAME validator
+                // horizun_project_context runs, which lives in this process, not the add-in.
+                if (def.Command == "horizun_model_diff" && data is JObject explained &&
+                    (string)explained["operation"] == "explain")
+                    explained["iso19650"] = ModelExplainIso.Evaluate(args?.Value<string>("project_context_path"));
 
                 return WithImageIfAny(data, reply["revit_said"],
                                       reply["fallback"] as JObject,

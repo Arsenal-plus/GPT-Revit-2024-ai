@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP - original Horizun code.
 //
 // The few things that must be switched on deliberately.
@@ -135,12 +135,7 @@ namespace Horizun.Revit.Core
             {
                 FileState state;
                 JObject o = Read(out state);
-                if (state == FileState.Malformed) return "read_only"; // an unreadable choice never elevates
-                string p = o?.Value<string>("permission_profile");
-                if (string.IsNullOrWhiteSpace(p)) return "safe_write";
-                p = p.ToLowerInvariant();
-                return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
-                    ? p : "read_only"; // malformed privilege never elevates
+                return ProfileFrom(o, state);
             }
         }
 
@@ -193,6 +188,35 @@ namespace Horizun.Revit.Core
             {
                 o["force_read_only_on_workshared"] = enabled;
                 o["force_read_only_on_workshared_changed_from_revit_at_utc"] = DateTimeOffset.UtcNow.ToString("O");
+                return true;
+            }, out error);
+        }
+
+        /// <summary>
+        /// May horizun_document_session synchronize a workshared model with its central?
+        /// OFF unless the machine owner said yes from Revit's Advanced options, gated like
+        /// execute_python: a sync publishes into a file other people work from and has no
+        /// rollback. Only an explicit boolean true counts; a malformed file falls closed.
+        /// No MCP call writes this key.
+        /// </summary>
+        public static bool SyncWithCentralOwnerEnabled
+        {
+            get
+            {
+                FileState state;
+                JObject o = Read(out state);
+                return state != FileState.Malformed && o?["sync_with_central_owner_granted"]?.Type == JTokenType.Boolean &&
+                       (bool)o["sync_with_central_owner_granted"];
+            }
+        }
+
+        /// <summary>Written only by the ribbon's owner dialog (SyncCentralPermissionCommand).</summary>
+        public static bool TrySetSyncWithCentralOwnerGrant(bool enabled, out string error)
+        {
+            return TryUpdate(o =>
+            {
+                o["sync_with_central_owner_granted"] = enabled;
+                o["sync_with_central_owner_changed_from_revit_at_utc"] = DateTimeOffset.UtcNow.ToString("O");
                 return true;
             }, out error);
         }
@@ -272,7 +296,13 @@ namespace Horizun.Revit.Core
                          "Only horizun_health remains available to report that state; resume from the Revit ribbon.";
                 return false;
             }
-            JObject settings = Read();
+            // ONE read decides the whole admission, so the profile and the reason given for
+            // it come from the same bytes (a second read could disagree with the first).
+            JObject settings = Read(out FileState settingsState, out string settingsFailure);
+            string fellClosed = settingsState == FileState.Malformed
+                ? " (" + Path() + " did not decide this: " + settingsFailure + ". An unreadable or malformed " +
+                  "choice never elevates, so read_only applies whatever the file says; retry once the file reads.)"
+                : "";
             HashSet<string> denied = Strings(settings?["denied_tools"] as JArray);
             HashSet<string> allowed = Strings(settings?["allowed_tools"] as JArray);
             if (denied.Contains(contract.Name))
@@ -292,7 +322,7 @@ namespace Horizun.Revit.Core
                 { reason = ToolPacks.HiddenReason(contract.Name, packs); return false; }
             }
 
-            string profile = PermissionProfile;
+            string profile = ProfileFrom(settings, settingsState);
             JToken persistentUiToken = settings?["execute_python_ui_granted"];
             bool persistentUiGrant = persistentUiToken != null &&
                                      persistentUiToken.Type == JTokenType.Boolean &&
@@ -308,13 +338,18 @@ namespace Horizun.Revit.Core
             // is one: a machine set to read_only refused to move a wall and then rewrote
             // a workbook on disk. Deciding on the ENUM rather than on a list of names is
             // what keeps the next externally-effecting tool from repeating it.
-            if (!humanPythonGrant && profile == "read_only" &&
+            // horizun_code_check is classified MutatingUnlessDryRun for its ONE write
+            // (operation=travel_distance with travel.create_paths), but its check and its
+            // measurement write nothing. Hiding it from read_only took a pure read away, so it
+            // stays listed and the command itself refuses create_paths under read_only.
+            bool writesOnlyOnRequest = contract.Name == "horizun_code_check";
+            if (!humanPythonGrant && profile == "read_only" && !writesOnlyOnRequest &&
                 (contract.Effect == ToolEffect.Mutating || contract.Effect == ToolEffect.MutatingUnlessDryRun ||
                  contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect))
             {
                 reason = contract.Name + " is hidden/refused by permission_profile=read_only in " + Path() +
                          ": read_only changes nothing - not the model, not the document session, and nothing " +
-                         "written outside it.";
+                         "written outside it." + fellClosed;
                 return false;
             }
             if (!humanPythonGrant && profile == "safe_write" &&
@@ -323,6 +358,7 @@ namespace Horizun.Revit.Core
                  // classified MutatingUnlessDryRun, so the effect alone does not catch them.
                  contract.Name == "horizun_open_document" || contract.Name == "horizun_save_document" ||
                  contract.Name == "horizun_relinquish_all" || contract.Name == "horizun_export" ||
+                 contract.Name == "horizun_deliver_ifc" ||
                  contract.Name == "horizun_power_bi_push" || contract.Name == "horizun_create_family"))
             {
                 reason = contract.Name + " changes the Revit document session or writes external files and is " +
@@ -338,7 +374,7 @@ namespace Horizun.Revit.Core
                 reason = "horizun_execute_python requires explicit permission_profile=unsafe_code and " +
                          "enable_execute_python=true in " + Path() + ", OR a persistent owner grant made from " +
                          "Revit's Python ON/OFF button. It is OFF on a fresh install. Only the machine's owner " +
-                         "may grant that privilege, and it remains OFF until that owner does so.";
+                         "may grant that privilege, and it remains OFF until that owner does so." + fellClosed;
                 return false;
             }
             return true;
@@ -350,19 +386,49 @@ namespace Horizun.Revit.Core
         /// actually running and the UI can show it; the OPTIONAL settings argument
         /// spares a second file read on the IsToolAllowed hot path.
         /// </summary>
+        /// <remarks>
+        /// TWO SPELLINGS, ONE SELECTION. HORIZUN_TOOLSETS and the "toolsets" key are the
+        /// names MCP clients use for the same thing; each is read only when its pack
+        /// spelling is absent, so a machine that already configured tool_packs keeps
+        /// exactly the behaviour it had, and the resolution says which spelling decided.
+        /// </remarks>
         public static ToolPacks.Resolution ActivePackResolution(JObject settings = null)
         {
+            string envName = ToolPacks.EnvironmentOverride;
             string env = null;
-            try { env = Environment.GetEnvironmentVariable(ToolPacks.EnvironmentOverride); } catch { env = null; }
+            try
+            {
+                env = Environment.GetEnvironmentVariable(ToolPacks.EnvironmentOverride);
+                if (string.IsNullOrWhiteSpace(env))
+                {
+                    env = Environment.GetEnvironmentVariable(ToolPacks.ToolsetsEnvironmentVariable);
+                    envName = ToolPacks.ToolsetsEnvironmentVariable;
+                }
+            }
+            catch { env = null; }
 
             FileState state;
             JObject o = settings ?? Read(out state);
+            string key = ToolPacks.SettingsKey;
             JToken raw = o?[ToolPacks.SettingsKey];
-            if (raw == null) return ToolPacks.Resolve(env, null, settingsValueMalformed: false);
-            var array = raw as JArray;
-            if (array == null || array.Any(t => t.Type != JTokenType.String))
-                return ToolPacks.Resolve(env, null, settingsValueMalformed: true);
-            return ToolPacks.Resolve(env, array.Select(t => (string)t), settingsValueMalformed: false);
+            if (raw == null)
+            {
+                raw = o?[ToolPacks.ToolsetsSettingsKey];
+                key = ToolPacks.ToolsetsSettingsKey;
+            }
+
+            ToolPacks.Resolution r;
+            if (raw == null) r = ToolPacks.Resolve(env, null, settingsValueMalformed: false);
+            else
+            {
+                var array = raw as JArray;
+                r = array == null || array.Any(t => t.Type != JTokenType.String)
+                    ? ToolPacks.Resolve(env, null, settingsValueMalformed: true)
+                    : ToolPacks.Resolve(env, array.Select(t => (string)t), settingsValueMalformed: false);
+            }
+            if (!string.IsNullOrWhiteSpace(env)) r.SourceName = envName;
+            else if (raw != null) r.SourceName = key;
+            return r;
         }
 
         /// <summary>
@@ -481,17 +547,57 @@ namespace Horizun.Revit.Core
         /// </summary>
         private enum FileState { Absent, Readable, Malformed }
 
-        private static JObject Read(out FileState state)
+        private static JObject Read(out FileState state) => Read(out state, out string ignored);
+
+        // A SHARING VIOLATION IS NOT A CHOICE. MEASURED 2026-09-26: a call refused as
+        // "permission_profile=read_only in settings.json" while the file said unsafe_code
+        // before and after - the read had failed for an instant, fell closed (right), and
+        // the refusal then claimed the file SAID read_only (wrong). An I/O failure is
+        // retried briefly; one that persists still falls closed, and 'failure' names it so
+        // no refusal attributes to the owner a setting the owner never wrote.
+        private static JObject Read(out FileState state, out string failure)
         {
-            try
+            failure = null;
+            string p = Path();
+            for (int attempt = 1; ; attempt++)
             {
-                string p = Path();
-                if (!File.Exists(p)) { state = FileState.Absent; return new JObject(); }
-                JObject o = JObject.Parse(File.ReadAllText(p));
-                state = FileState.Readable;
-                return o;
+                try
+                {
+                    if (!File.Exists(p)) { state = FileState.Absent; return new JObject(); }
+                    string text = File.ReadAllText(p);
+                    try { JObject o = JObject.Parse(text); state = FileState.Readable; return o; }
+                    catch (Exception parse)
+                    {
+                        state = FileState.Malformed;
+                        failure = "it is not valid JSON (" + parse.Message + ")";
+                        return new JObject();
+                    }
+                }
+                catch (Exception io) when (io is IOException || io is UnauthorizedAccessException)
+                {
+                    if (attempt < 5) { System.Threading.Thread.Sleep(40); continue; }
+                    state = FileState.Malformed;
+                    failure = "it could not be read after " + attempt + " attempts (" + io.GetType().Name + ": " + io.Message + ")";
+                    return new JObject();
+                }
+                catch (Exception other)
+                {
+                    state = FileState.Malformed;
+                    failure = "it could not be read (" + other.GetType().Name + ": " + other.Message + ")";
+                    return new JObject();
+                }
             }
-            catch { state = FileState.Malformed; return new JObject(); }
+        }
+
+        /// <summary>The profile one read of the file decides, and why when it fell closed.</summary>
+        private static string ProfileFrom(JObject o, FileState state)
+        {
+            if (state == FileState.Malformed) return "read_only"; // an unreadable choice never elevates
+            string p = o?.Value<string>("permission_profile");
+            if (string.IsNullOrWhiteSpace(p)) return "safe_write";
+            p = p.ToLowerInvariant();
+            return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
+                ? p : "read_only"; // malformed privilege never elevates
         }
 
         private static JObject Read()

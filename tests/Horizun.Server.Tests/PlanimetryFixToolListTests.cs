@@ -112,10 +112,11 @@ namespace Horizun.Server.Tests
 
                 string[] operations = schema["properties"]["actions"]["items"]["properties"]["operation"]["enum"]
                     .Select(t => (string)t).ToArray();
-                Assert.Equal(9, operations.Length);
+                Assert.Equal(10, operations.Length);
                 Assert.Contains("set_view_template", operations);
                 Assert.Contains("place_title_block", operations);
                 Assert.Contains("set_crop", operations);
+                Assert.Contains("set_view_display", operations);
                 // The later phases must not appear as callable operations.
                 Assert.DoesNotContain("pack_sheet", operations);
                 Assert.DoesNotContain("auto_tag", operations);

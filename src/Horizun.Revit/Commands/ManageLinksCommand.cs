@@ -42,7 +42,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class ManageLinksCommand : ICommand
+    public sealed partial class ManageLinksCommand : ICommand
     {
         public string Name => "horizun_manage_links";
         public string Description =>
@@ -63,12 +63,21 @@ namespace Horizun.Revit.Commands
                 if (readDoc == null) return CommandResult.Fail("No document is open.");
                 return List(readDoc);
             }
-            if (operation == "add") return Add(app, doc0 => doc0, request);
+            if (operation == "add")
+            {
+                string kind = LinkSurveyRules.AddKind(request.Value<string>("kind"), request.Value<string>("path"), out string kindError);
+                if (kindError != null) return CommandResult.Fail(kindError);
+                if (kind == "point_cloud") return AddPointCloud(app, request);
+                if (kind == "ifc") return AddIfc(app, request);
+                return Add(app, doc0 => doc0, request);
+            }
+            if (operation == "acquire_coordinates") return AcquireCoordinates(app, request);
+            if (operation == "scan_deviation") return ScanDeviation(app, request);
             if (operation == "add_instance") return AddInstance(app, request);
             if (operation == "change_path") return ChangePath(app, request);
             if (operation != "unload" && operation != "reload" && operation != "pin" && operation != "unpin")
                 return CommandResult.Fail("operation '" + operation + "' is not one this command understands. " +
-                    "Known: list, unload, reload, pin, unpin, add, add_instance, change_path.");
+                    "Known: list, unload, reload, pin, unpin, add, add_instance, change_path, acquire_coordinates, scan_deviation.");
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -285,20 +294,26 @@ namespace Horizun.Revit.Commands
                     return CommandResult.Fail("Pin change failed and was rolled back: " + ex.Message);
                 }
             }
-            bool pinnedAfter = Safe<bool>(() => (doc.GetElement(instance.Id) as RevitLinkInstance)?.Pinned) == true;
+            // An UNREADABLE pinned state is unmeasured, never false: `== true` used to turn a
+            // read that threw into "not pinned", which is exactly what an unpin asks for.
+            bool? pinnedRead = Safe<bool>(() => (doc.GetElement(instance.Id) as RevitLinkInstance)?.Pinned);
+            bool matches = pinnedRead.HasValue && pinnedRead.Value == pin;
             var applied = new JObject
             {
                 ["dry_run"] = false,
                 ["instance_id"] = instanceId,
                 ["pinned_before"] = pinnedBefore,
-                ["pinned_after_reread"] = pinnedAfter,
-                ["verified"] = pinnedAfter == pin
+                ["pinned_after_reread"] = pinnedRead.HasValue ? (JToken)pinnedRead.Value : JValue.CreateNull(),
+                ["pinned_after_measured"] = pinnedRead.HasValue,
+                ["verified"] = matches
             };
             ApplicationOutcome.StampApplied(applied, ApplicationOutcome.Committed, 1,
-                                            pinnedAfter == pin ? 1 : 0, pinnedAfter == pin ? 1 : 0, 0,
-                                            pinnedAfter == pin ? 0 : 1, 0);
-            if (pinnedAfter != pin)
-                return CommandResult.FailWithDetail("The transaction committed but the pinned state re-read wrong.", applied);
+                                            matches ? 1 : 0, matches ? 1 : 0, 0,
+                                            matches || !pinnedRead.HasValue ? 0 : 1, pinnedRead.HasValue ? 0 : 1);
+            if (!matches)
+                return CommandResult.FailWithDetail(pinnedRead.HasValue
+                    ? "The transaction committed but the pinned state re-read wrong."
+                    : "The transaction committed but the pinned state could not be re-read, so the change is unverified.", applied);
             return CommandResult.Ok(applied);
         }
 
@@ -351,7 +366,7 @@ namespace Horizun.Revit.Commands
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, "horizun_manage_links", hash);
             if (refusal != null) return refusal;
 
-            ModelPath modelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(path);
+            ModelPath modelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(LinkPathRules.ForRevit(path));
             LinkLoadResult loadResult;
             RevitLinkInstance instance;
             using (var tx = new Transaction(doc, "Horizun: add link"))
@@ -559,7 +574,7 @@ namespace Horizun.Revit.Commands
             if (refusal != null) return refusal;
 
             LinkLoadResult loadResult = type.LoadFrom(
-                ModelPathUtils.ConvertUserVisiblePathToModelPath(path), new WorksetConfiguration());
+                ModelPathUtils.ConvertUserVisiblePathToModelPath(LinkPathRules.ForRevit(path)), new WorksetConfiguration());
             string status = SafeStatus(doc.GetElement(type.Id) as RevitLinkType);
             string pathAfter = LinkPath(doc.GetElement(type.Id) as RevitLinkType);
             bool ok = loadResult != null && LinkLoadResult.IsCodeSuccess(loadResult.LoadResult) &&

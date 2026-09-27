@@ -16,9 +16,11 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Horizun.Revit.Core;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Commands
 {
@@ -30,10 +32,26 @@ namespace Horizun.Revit.Commands
             "Is this bridge alive, and which Revit is on the other end. Reports the Revit year and build, " +
             "the process id, every open document, and the one that is ACTIVE right now (null when none is). " +
             "Call it before anything that reads or writes a model: with two Revit versions open, the " +
-            "expensive failure is a healthy bridge attached to the wrong instance.";
+            "expensive failure is a healthy bridge attached to the wrong instance. Also reports " +
+            "workshare_status (worksets you own, a time-bounded scan of elements checked out to you) and " +
+            "recent_horizun_writes (the last few batches THIS bridge's own typed writes recorded, from the " +
+            "journal horizun_undo reverses) for the active document - neither is Revit's own Undo stack, which " +
+            "the API does not expose to an add-in at all. include_verification_catalog=true adds a compact, " +
+            "per-tool summary of WriteVerificationCatalog (mechanism + residual_gap_count).";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
+            // Malformed or absent params never fail health - the diagnostic call's job
+            // is to answer, and a bad JSON blob here just keeps the reply at its small
+            // default shape instead of adding the optional catalog block.
+            bool includeVerificationCatalog = false;
+            try
+            {
+                JObject request = string.IsNullOrWhiteSpace(paramsJson) ? null : JObject.Parse(paramsJson);
+                includeVerificationCatalog = request?.Value<bool?>("include_verification_catalog") ?? false;
+            }
+            catch { /* keep the default */ }
+
             Autodesk.Revit.ApplicationServices.Application rvt = app.Application;
 
             UIDocument uidoc = app.ActiveUIDocument;
@@ -78,6 +96,10 @@ namespace Horizun.Revit.Commands
                     path = string.IsNullOrEmpty(d.PathName) ? null : d.PathName,
                     is_family_document = d.IsFamilyDocument,
                     is_workshared = d.IsWorkshared,
+                    // A LINKED model is listed among the open documents but cannot be closed
+                    // on its own - it unloads with its host. Callers that close what they
+                    // opened need to tell the two apart (measured 2026-09-24).
+                    is_linked = SafeIsLinked(d),
                     // true / false / null. null means two or more open documents share this
                     // identity and which is active cannot be determined - never a bare false.
                     is_active = isActive
@@ -163,9 +185,12 @@ namespace Horizun.Revit.Commands
                     permission_profile = Horizun.Revit.Core.Settings.PermissionProfile,
                     mcp_paused = Horizun.Revit.Core.Settings.McpPaused,
                     force_read_only_on_workshared = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared,
+                    sync_with_central_owner_granted = Horizun.Revit.Core.Settings.SyncWithCentralOwnerEnabled,
                     note = "These are local machine controls shared by the ribbon and MCP server. " +
                            "When MCP is paused only horizun_health remains callable; central protection " +
-                           "refuses potential writes to a workshared active document."
+                           "refuses potential writes to a workshared active document. " +
+                           "sync_with_central_owner_granted is the owner's grant for operation=sync_with_central; " +
+                           "that operation also needs permission_profile=full_write, and central protection wins over it."
                 },
                 current_action = Dispatcher.CurrentActivityDescription(),
                 // The startup comparison between Contract.PluginCommands and what
@@ -203,8 +228,47 @@ namespace Horizun.Revit.Commands
                 // is_active above is explained rather than left to be interpreted.
                 active_document_identified_by = active == null ? null : match.Basis,
                 active_document_match = active == null ? null : match.Outcome.ToString(),
+                // Field 2026-09-25: a deleted floor was recovered only by the USER'S OWN
+                // Ctrl+Z, and nobody watching the session knew that history existed. These
+                // two blocks answer "what do I currently own here" and "what has Horizun
+                // itself done here lately" - NOT "what could Ctrl+Z undo", which the Revit
+                // API does not expose to an add-in at all (see recent_horizun_writes.note).
+                workshare_status = active == null ? null : WorkshareBlock(active, rvt),
+                recent_horizun_writes = active == null ? null : RecentWritesBlock(active),
+                // Compact on purpose (default false keeps health small): every writing
+                // tool's verification mechanism and how many residual gaps the catalog
+                // still names for it. The full text - evidence fields, source files, and
+                // each gap's own sentence - lives at the source path this points to.
+                verification_catalog = includeVerificationCatalog ? VerificationCatalogBlock() : null,
                 note = Note(active, match, listError)
             });
+        }
+
+        private static object VerificationCatalogBlock()
+        {
+            var tools = WriteVerificationCatalog.Rows
+                .OrderBy(r => r.Tool, StringComparer.Ordinal)
+                .Select(r => new
+                {
+                    tool = r.Tool,
+                    mechanism = r.Mechanism.ToString(),
+                    residual_gap_count = r.KnownGaps?.Length ?? 0
+                })
+                .ToList();
+            return new
+            {
+                tool_count = tools.Count,
+                tools,
+                full_text_source = "src/Horizun.Revit/Core/WriteVerificationCatalog.cs",
+                means = "mechanism is HOW that tool's reply proves what it wrote (PostconditionChecklist, " +
+                        "PerRowReread, CountReconciliation, FileArtifactReread, DelegatedChildDeclaration, " +
+                        "RemoteAcknowledgement, RemoteReread, QueuedNotExecuted or SelfReported - see the enum's own doc " +
+                        "comments at full_text_source). residual_gap_count is how many known, unfixed gaps the " +
+                        "catalog names for that tool; 0 does not mean flawless, it means none are DECLARED. The " +
+                        "full text of every gap, plus each row's evidence fields and source files, is only in " +
+                        "the source file named above - this summary exists so a caller can ask 'which tools carry " +
+                        "declared risk' without loading it."
+            };
         }
 
         /// <summary>
@@ -213,6 +277,183 @@ namespace Horizun.Revit.Commands
         /// the process behind it still runs - and a name read can throw on
         /// permissions, which is a null name, never a dropped row.
         /// </summary>
+        /// <summary>
+        /// What the CURRENT USER owns in a workshared document: which worksets are
+        /// theirs by name (a cheap collection read, never a per-element scan) and how
+        /// many elements are checked out to them. The Revit API has NO bulk query for
+        /// the second one - only WorksharingUtils.GetCheckoutStatus(doc, id), one call
+        /// PER ELEMENT - so it is bounded by a small time budget rather than either
+        /// skipped outright or run unbounded against a model with hundreds of thousands
+        /// of elements. A budget that runs out reports a LOWER BOUND and says so; it
+        /// never reports zero as if the scan had finished.
+        /// </summary>
+        private static object WorkshareBlock(Document active, Autodesk.Revit.ApplicationServices.Application rvt)
+        {
+            try
+            {
+                bool workshared;
+                try { workshared = active.IsWorkshared; }
+                catch (Exception ex) { return new { measured = false, error = "IsWorkshared could not be read: " + ex.Message }; }
+
+                if (!workshared)
+                    return new
+                    {
+                        workshared = false,
+                        note = "This document is not workshared: there is no borrow/ownership concept to report."
+                    };
+
+                string me = SafeStr(() => rvt.Username);
+
+                var ownedWorksets = new List<string>();
+                string worksetError = null;
+                try
+                {
+                    foreach (Workset w in new FilteredWorksetCollector(active).OfKind(WorksetKind.UserWorkset))
+                        if (!string.IsNullOrEmpty(w.Owner) && string.Equals(w.Owner, me, StringComparison.OrdinalIgnoreCase))
+                            ownedWorksets.Add(w.Name);
+                }
+                catch (Exception ex) { worksetError = "user worksets could not be enumerated: " + ex.Message; }
+
+                const int BudgetMs = 500;
+                int scanned = 0, borrowedByMe = 0;
+                bool complete = false;
+                string scanNote;
+                var sw = Stopwatch.StartNew();
+                try
+                {
+                    // NO FilteredElementCollector.GetElementCount() up front: that call is itself
+                    // an unbounded pass over the whole collection - on a large model it could take
+                    // far longer than BudgetMs all by itself, defeating the very budget it was
+                    // meant to inform. The only bounded work here is the foreach below; elements_checked
+                    // is reported as "at least this many", never alongside a total the code never
+                    // actually counted.
+                    var collector = new FilteredElementCollector(active).WhereElementIsNotElementType();
+                    string stopReason = null;
+                    foreach (Element e in collector)
+                    {
+                        if (sw.ElapsedMilliseconds > BudgetMs)
+                        {
+                            stopReason = "time budget of " + BudgetMs + "ms reached after checking at least " +
+                                         scanned + " candidate element(s)";
+                            break;
+                        }
+                        scanned++;
+                        CheckoutStatus status;
+                        try { status = WorksharingUtils.GetCheckoutStatus(active, e.Id); }
+                        catch { continue; }
+                        if (status == CheckoutStatus.OwnedByCurrentUser) borrowedByMe++;
+                    }
+                    complete = stopReason == null;
+                    scanNote = complete
+                        ? "Every non-type element candidate was checked with WorksharingUtils.GetCheckoutStatus."
+                        : stopReason + "; owned_by_current_user_count below is a LOWER BOUND, not the total. " +
+                          "elements_checked is 'at least N scanned', not the model's total candidate count - " +
+                          "counting that upfront would itself be another unbounded pass over the model.";
+                }
+                catch (Exception ex)
+                {
+                    scanNote = "the per-element scan failed: " + ex.Message;
+                }
+
+                return new
+                {
+                    workshared = true,
+                    // username is deliberately NOT published: this block already answers "which
+                    // worksets/elements are mine" without naming the account, and there is no
+                    // horizun_health argument to opt back in - adding one would grow this
+                    // command's contract (it currently takes no arguments at all) for a field
+                    // nothing else in this codebase reads.
+                    owned_worksets = ownedWorksets,
+                    owned_worksets_note = worksetError,
+                    borrowed_by_me = new
+                    {
+                        complete,
+                        elements_checked = scanned,
+                        owned_by_current_user_count = borrowedByMe,
+                        elapsed_ms = sw.ElapsedMilliseconds,
+                        note = scanNote
+                    },
+                    note = "The Revit API exposes no bulk 'elements checked out to me' query; this is a per-" +
+                           "element WorksharingUtils.GetCheckoutStatus scan bounded to " + BudgetMs + "ms so a " +
+                           "large model reports an honestly-partial count rather than slowing down every health call."
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { measured = false, error = ex.Message };
+            }
+        }
+
+        /// <summary>
+        /// The last few things HORIZUN itself wrote to this document, read from its own
+        /// write journal (Core/UndoJournal.cs - the same one horizun_undo reverses). This
+        /// is NOT Revit's Undo stack: the Revit API exposes no way for an add-in to read
+        /// or enumerate what Ctrl+Z would undo, and this journal only ever records what a
+        /// Horizun typed write itself committed - never a human edit in Revit's UI,
+        /// another add-in's write, or an execute_python script (which records nothing
+        /// here; its own testimony is its __output__, see ScriptEvidence). Said explicitly
+        /// because the incident this answers was a deleted floor recovered ONLY by the
+        /// user's own Ctrl+Z, with nobody watching the session aware that history existed
+        /// at all - and this block still cannot see that kind of edit.
+        /// </summary>
+        private static object RecentWritesBlock(Document active)
+        {
+            try
+            {
+                string path = UndoJournalStore.PathFor(SafeTitle(active), SafeStr(() => active.PathName));
+                List<UndoBatch> batches;
+                try { batches = UndoJournalStore.Load(path); }
+                catch (Exception ex) { return new { measured = false, error = "the write journal could not be read: " + ex.Message, journal_path = path }; }
+
+                var recent = batches
+                    .OrderByDescending(b => b.CreatedUtc, StringComparer.Ordinal)
+                    .Take(5)
+                    .Select(b =>
+                    {
+                        var ids = b.Entries.SelectMany(e => e.ElementIds).Distinct().ToList();
+                        return (object)new
+                        {
+                            batch_id = b.Id,
+                            tool = b.Tool,
+                            created_utc = b.CreatedUtc,
+                            entries = b.Entries.Count,
+                            ops = b.Entries.Select(e => e.Op).Distinct().ToArray(),
+                            element_ids = ids.Take(50).ToArray(),
+                            element_ids_truncated = ids.Count > 50,
+                            state = b.UndoneUtc != null ? "undone" : (b.Undoable ? "recorded_undoable" : "recorded_not_undoable")
+                        };
+                    })
+                    .ToList();
+
+                return new
+                {
+                    source = "Horizun's own write journal (the one horizun_undo reverses), NOT Revit's Undo stack",
+                    journal_path = path,
+                    batches_recorded_total = batches.Count,
+                    batches_kept_cap = UndoRules.MaxBatches,
+                    most_recent = recent,
+                    note = "'tool' is the Horizun command name; this journal has no separate 'transaction display " +
+                           "name' field. Shows up to 5 of the newest " + UndoRules.MaxBatches + " kept batches for " +
+                           "THIS document. " + RevitUndoDisclaimer
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { measured = false, error = ex.Message };
+            }
+        }
+
+        /// <summary>
+        /// Stated once, referenced everywhere this block talks about "recent writes", so
+        /// nobody downstream reads recent_horizun_writes as a replacement for asking the
+        /// user whether they undid something in Revit's own UI.
+        /// </summary>
+        private const string RevitUndoDisclaimer =
+            "The Revit API does NOT expose its Undo/Redo stack to an add-in - there is no method that lists what " +
+            "Ctrl+Z would undo, by anyone, at any point. This journal is Horizun's OWN record of what ITS typed " +
+            "writes committed; it says nothing about edits a human made in Revit's UI, another add-in's writes, " +
+            "or an execute_python script (whose own testimony is its __output__, never recorded here).";
+
         /// <summary>
         /// Health must never die measuring an ornament: unreadable answers "unknown",
         /// which is itself a fact worth seeing, rather than taking the whole call down.
@@ -401,6 +642,11 @@ namespace Horizun.Revit.Commands
                     return p == null ? null : p.GetModelGUID().ToString();
                 })
             };
+        }
+
+        private static bool? SafeIsLinked(Document d)
+        {
+            try { return d.IsLinked; } catch { return null; }
         }
 
         private static string SafeTitle(Document d)

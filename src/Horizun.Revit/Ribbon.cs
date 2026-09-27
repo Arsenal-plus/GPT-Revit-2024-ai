@@ -166,6 +166,7 @@ namespace Horizun.Revit
                     case AdvancedOptionsWindow.OptionHistory: return new AuditHistoryCommand().Execute(data, ref message, elements);
                     case AdvancedOptionsWindow.OptionPause: return new PauseMcpCommand().Execute(data, ref message, elements);
                     case AdvancedOptionsWindow.OptionCentral: return new CentralProtectionCommand().Execute(data, ref message, elements);
+                    case AdvancedOptionsWindow.OptionSync: return new SyncCentralPermissionCommand().Execute(data, ref message, elements);
                     default: return Result.Cancelled;
                 }
             }

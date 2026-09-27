@@ -147,6 +147,19 @@ namespace Horizun.Revit.Commands
             bool includeMep = request.Value<bool?>("include_mep") == true;
 
             int maxRows = Math.Max(1, Math.Min(500, request.Value<int?>("max_rows") ?? 100));
+            // include_room (needs phase): each row's room/space, read by RoomMembershipReader.
+            RoomMembershipReader rooms = null;
+            if (request.Value<bool?>("include_room") == true)
+            {
+                if (groupBy.Count > 0 || responseMode == "summary")
+                    return CommandResult.Fail("include_room reports per row; with group_by or response_mode 'summary' there are " +
+                                              "no rows, and the rooms would be silently dropped.");
+                string roomProblem;
+                rooms = RoomMembershipReader.Create(host, request.Value<string>("phase"), out roomProblem);
+                if (rooms == null) return CommandResult.Fail("include_room: " + roomProblem);
+            }
+            else if (request["phase"] != null)
+                return CommandResult.Fail("phase is read only with include_room=true; alone it would be silently ignored.");
             var matched = new List<Row>();
             var summary = responseMode == "summary" && !includeMep ? new QuerySummaryAccumulator() : null;
             var unreadable = new JArray();
@@ -167,7 +180,7 @@ namespace Horizun.Revit.Commands
             Collect(host, "host", host.Title, null, Transform.Identity, viewId, categories, request,
                     predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
                     fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
-                    coopScope, cooperative);
+                    coopScope, cooperative, rooms);
 
             if (includeLinks)
             {
@@ -201,7 +214,7 @@ namespace Horizun.Revit.Commands
                     Collect(linked, "link", linked.Title, Rid.Value(link.Id), transform, null, categories, request,
                             predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
                             fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
-                            coopScope, cooperative);
+                            coopScope, cooperative, rooms);
                 }
             }
 
@@ -298,6 +311,7 @@ namespace Horizun.Revit.Commands
                 ["summary"] = Summary(matched),
                 ["rows"] = new JArray(page.Select(r => r.Json))
             };
+            if (rooms != null) queryResult["room_membership"] = rooms.Summary();
             // Present ONLY when the caller asked. Null is dropped rather than written, so a
             // reply to an ordinary request is byte-identical to what it was.
             JObject coopReport = cooperative.Report(
@@ -359,7 +373,8 @@ namespace Horizun.Revit.Commands
                                     bool compactParameters, List<Row> rows, JArray unreadable,
                                     ref int unreadableTotal, QuerySummaryAccumulator summary = null,
                                     CooperativeRead.Scope coopScope = null,
-                                    CooperativeOptions cooperative = null)
+                                    CooperativeOptions cooperative = null,
+                                    RoomMembershipReader rooms = null)
         {
             HashSet<long> categoryIds = ResolveCategories(source, categories, unreadable, ref unreadableTotal, sourceName);
             FilteredElementCollector collector = viewId == null
@@ -553,6 +568,7 @@ namespace Horizun.Revit.Commands
                         JObject placement = Placement(element, transform, coordinateScale);
                         if (placement != null) json["placement"] = placement;
                     }
+                    if (rooms != null) json["room"] = rooms.ToJson(rooms.Locate(element, transform), coordinateScale);
                     if (includeMep)
                     {
                         // Connector facts, opt-in: domain, shape/size, open or connected,

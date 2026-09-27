@@ -31,6 +31,18 @@
 // destination does not have, a view-specific element copied without its view, a
 // hosted element whose host is not coming along - each is measured and named
 // first, because all three produce something that looks copied and is not.
+//
+// source_path (2026-09-25 field session): a library .rvt/.rte is USUALLY not
+// open anywhere - it lives on a share, not in anyone's session - so requiring
+// an open source shut out the exact files this exists for. source_path opens
+// one in the BACKGROUND, shares the SAME version guard horizun_open_document
+// uses (a file from another Revit year is refused, never silently upgraded),
+// ALWAYS detaches (this is a read, never a worksharing session), and is closed
+// WITHOUT SAVING before this command returns on every exit path - success,
+// refusal or exception alike. Because ids from a document that was never open
+// cannot be known ahead of time, type_names resolves by NAME instead: each name
+// must match exactly one ElementType in the source (category narrows a
+// collision), so what gets copied is what was named, not a guess among several.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -69,43 +81,169 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("units must be mm, m or feet.");
 
             string sourceTitle = request.Value<string>("source_document");
-            if (string.IsNullOrWhiteSpace(sourceTitle))
+            string sourcePath = request.Value<string>("source_path");
+            bool wantsOpenTitle = !string.IsNullOrWhiteSpace(sourceTitle);
+            bool wantsPath = !string.IsNullOrWhiteSpace(sourcePath);
+            if (wantsOpenTitle == wantsPath)
                 return CommandResult.Fail(
-                    "source_document is required: the title of the OTHER open document to copy from. This " +
-                    "command never opens a document - horizun_open_document does that, deliberately, because " +
-                    "opening one is a decision with its own consequences.");
+                    "give exactly one of source_document (the title of an OTHER document already open in this " +
+                    "session) or source_path (a .rvt/.rte to open in the background, copy from and close without " +
+                    "saving), not both, not neither.");
 
-            Document source = FindOpen(app, sourceTitle, destination, out string sourceError);
-            if (source == null) return CommandResult.Fail(sourceError);
+            Document source;
+            bool sourceOpenedHere = false;
+            JObject sourceOpenInfo = null;
+            if (wantsOpenTitle)
+            {
+                source = FindOpen(app, sourceTitle, destination, out string sourceError);
+                if (source == null) return CommandResult.Fail(sourceError);
+            }
+            else
+            {
+                // ONE guard for "should this file be opened", shared with
+                // horizun_open_document: version mismatch refuses (never silently
+                // upgrades - a library is somebody's shared reference, not this
+                // caller's to upgrade in passing) and a central is ALWAYS detached,
+                // because this is a read that closes unsaved, never a worksharing
+                // session.
+                var openReq = new OpenRequest
+                {
+                    CommandName = Name,
+                    Path = sourcePath,
+                    AllowUpgrade = false,
+                    Detach = true,
+                    Audit = false,
+                    OpenAllWorksets = false,
+                    OnOpenDialog = DialogAnswer.Cancel
+                };
+                OpenPlan plan = OpenGuard.Check(app, openReq);
+                if (!plan.Ok) return plan.Refusal;
+                try { source = app.Application.OpenDocumentFile(plan.ModelPath, plan.Options()); }
+                catch (Exception ex)
+                {
+                    return CommandResult.Fail("Revit refused to open '" + sourcePath + "' in the background: " + ex.Message +
+                        " (file is Revit " + (plan.FileVersion ?? "unknown") + ", host is Revit " + plan.HostVersion + "). Nothing was opened.");
+                }
+                if (source == null)
+                    return CommandResult.Fail("Revit returned no document for '" + sourcePath + "'. Nothing is open, nothing was copied.");
+                sourceOpenedHere = true;
+                sourceOpenInfo = new JObject
+                {
+                    ["source_path"] = sourcePath,
+                    ["opened_in_background"] = true,
+                    ["detached"] = true,
+                    ["file_saved_in_version"] = plan.FileVersion,
+                    ["running_revit_version"] = plan.HostVersion,
+                    ["was_central"] = plan.FileIsCentral,
+                    ["will_be_closed_without_saving"] = true
+                };
+            }
 
+            try
+            {
+                return CopyInto(app, request, destination, source, scale, gate, sourceOpenInfo);
+            }
+            finally
+            {
+                // CLOSED WITHOUT SAVING on every exit path - success, refusal or
+                // exception alike. A background source is never this command's to keep
+                // open, and never this command's to save.
+                if (sourceOpenedHere)
+                {
+                    try { source.Close(false); } catch { }
+                }
+            }
+        }
+
+        private CommandResult CopyInto(UIApplication app, JObject request, Document destination, Document source,
+            double scale, GateResult gate, JObject sourceOpenInfo)
+        {
             JArray rawIds = request["element_ids"] as JArray;
-            if (rawIds == null || rawIds.Count == 0 || rawIds.Count > 2000)
-                return CommandResult.Fail("element_ids must hold 1..2000 element ids from the source document.");
+            JArray typeNames = request["type_names"] as JArray;
+            bool hasIds = rawIds != null && rawIds.Count > 0;
+            bool hasNames = typeNames != null && typeNames.Count > 0;
+            if (hasIds == hasNames)
+                return CommandResult.Fail(
+                    "give exactly one of element_ids (1..2000 ids from the source document) or type_names " +
+                    "(1..500 type names to resolve BY NAME in the source document - the way to name what to copy " +
+                    "from a file that was never open before this call, so no id could be known ahead of it), not both, not neither.");
 
             var ids = new List<ElementId>();
             var elements = new List<Element>();
             var problems = new JArray();
-            foreach (JToken token in rawIds)
+
+            if (hasIds)
             {
-                long raw = token.Value<long?>() ?? -1;
-                if (!Rid.CanRepresent(raw))
-                    return CommandResult.Fail("element_ids holds a value that is not an element id.");
-                Element element = source.GetElement(Rid.Make(raw));
-                if (element == null)
-                    return CommandResult.Fail(
-                        "element " + raw + " does not exist in '" + source.Title + "'. Ids are per document: an " +
-                        "id from the destination means nothing in the source, and copying whatever happens to " +
-                        "carry that number would be a different element entirely.");
+                if (rawIds.Count > 2000) return CommandResult.Fail("element_ids must hold 1..2000 element ids from the source document.");
+                foreach (JToken token in rawIds)
+                {
+                    long raw = token.Value<long?>() ?? -1;
+                    if (!Rid.CanRepresent(raw))
+                        return CommandResult.Fail("element_ids holds a value that is not an element id.");
+                    Element element = source.GetElement(Rid.Make(raw));
+                    if (element == null)
+                        return CommandResult.Fail(
+                            "element " + raw + " does not exist in '" + source.Title + "'. Ids are per document: an " +
+                            "id from the destination means nothing in the source, and copying whatever happens to " +
+                            "carry that number would be a different element entirely.");
+                    ids.Add(element.Id);
+                    elements.Add(element);
+                }
+            }
+            else
+            {
+                if (typeNames.Count > 500) return CommandResult.Fail("type_names must hold 1..500 names.");
+                string category = request.Value<string>("category");
+                BuiltInCategory? bic = null;
+                if (!string.IsNullOrWhiteSpace(category))
+                {
+                    if (!Enum.TryParse(category.Trim(), true, out BuiltInCategory parsed))
+                        return CommandResult.Fail("category must be a BuiltInCategory token such as OST_Walls.");
+                    bic = parsed;
+                }
+                var seenNames = new HashSet<string>(StringComparer.Ordinal);
+                foreach (JToken token in typeNames)
+                {
+                    string name = token.Value<string>();
+                    if (string.IsNullOrWhiteSpace(name)) return CommandResult.Fail("type_names holds a blank entry.");
+                    if (!seenNames.Add(name)) return CommandResult.Fail("type_names repeats '" + name + "'.");
+                    var collector = new FilteredElementCollector(source).WhereElementIsElementType();
+                    if (bic.HasValue) collector = collector.OfCategory(bic.Value);
+                    List<Element> candidates = collector.ToList();
+                    // "Family: Type" as Revit shows it, or the bare type name. Type names repeat
+                    // across families (every door family has its own "0915 x 2134mm"), so the
+                    // qualified form is how a caller names ONE of them.
+                    List<Element> matches = candidates.Where(e => string.Equals(SafeName(e), name, StringComparison.Ordinal) ||
+                                                                   string.Equals(QualifiedName(e), name, StringComparison.Ordinal)).ToList();
+                    if (matches.Count == 0)
+                    {
+                        // Say what IS there, so the next call can name it - a refusal that only
+                        // says "no" sends the caller guessing.
+                        List<string> there = candidates.Select(QualifiedName).Where(n => !string.IsNullOrEmpty(n)).Distinct().OrderBy(n => n, StringComparer.Ordinal).Take(25).ToList();
+                        return CommandResult.FailWithDetail("no type named '" + name + "' in '" + source.Title + "'" +
+                            (bic.HasValue ? " under category " + category : "") + ". type_names matches EXACTLY (bare type name or 'Family: Type'), so a " +
+                            "typo or a wrong category produces this refusal rather than a guess." +
+                            (there.Count > 0 ? " Types there" + (bic.HasValue ? "" : " (name a category to narrow)") + ": " + string.Join(" | ", there) + (candidates.Count > there.Count ? " ..." : "") + "." : ""),
+                            new JObject { ["code"] = "type_not_found", ["available_types"] = new JArray(there), ["write_started"] = false });
+                    }
+                    if (matches.Count > 1)
+                        return CommandResult.Fail("'" + name + "' names " + matches.Count + " types in '" + source.Title +
+                            "' (" + string.Join(", ", matches.Select(m => QualifiedName(m) + " #" + Rid.Value(m.Id))) + "); name one as 'Family: Type' or narrow with category.");
+                    ids.Add(matches[0].Id);
+                    elements.Add(matches[0]);
+                }
+            }
+
+            foreach (Element element in elements)
+            {
                 string problem = NotCopyable(source, destination, element);
                 if (problem != null)
                     problems.Add(new JObject
                     {
-                        ["element_id"] = raw,
+                        ["element_id"] = Rid.Value(element.Id),
                         ["category"] = SafeCategory(element),
                         ["problem"] = problem
                     });
-                ids.Add(element.Id);
-                elements.Add(element);
             }
 
             if (problems.Count > 0)
@@ -141,8 +279,8 @@ namespace Horizun.Revit.Commands
             HashSet<long> typesBefore = TypeIds(destination);
 
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
-            string hash = DocumentGate.PlanHash(request, "units", "source_document", "element_ids",
-                                                "offset", "duplicate_types");
+            string hash = DocumentGate.PlanHash(request, "units", "source_document", "source_path", "element_ids",
+                                                "type_names", "category", "offset", "duplicate_types");
             ResolvedPlan resolved = Resolved(gate, app, source, elements, duplicates);
 
             if (dry)
@@ -165,10 +303,47 @@ namespace Horizun.Revit.Commands
                         "option: it cannot rename a type on the way in. The applied reply names every type that " +
                         "arrived and every collision that occurred."
                 };
+                if (sourceOpenInfo != null) preview["source_open"] = sourceOpenInfo;
+
+                // REHEARSE THE COPY ITSELF. MEASURED 2026-09-26: a column type from the
+                // Autodesk template got a clean dry run and a token, and the apply then
+                // refused with 3 type-name collisions - the rehearsal had resolved the
+                // elements but never asked Revit what they would bring. The copy now runs
+                // inside a transaction that is always rolled back, so the collisions the
+                // apply would meet are named here.
+                string rehearsalError = null;
+                using (var rehearsal = new Transaction(destination, "Horizun: copy rehearsal"))
+                {
+                    if (rehearsal.Start() == TransactionStatus.Started)
+                    {
+                        try { ElementTransformUtils.CopyElements(source, ids, destination, transform, options); }
+                        catch (Exception ex) { rehearsalError = ex.Message; }
+                        finally { try { if (rehearsal.GetStatus() == TransactionStatus.Started) Guard.RollBack(rehearsal); } catch { } }
+                    }
+                    else rehearsalError = "the rehearsal transaction could not start";
+                }
+                preview["type_name_collisions"] = new JArray(typeCollisions.Collisions);
+                if (typeCollisions.Collisions.Count > 0 && duplicates == "abort_on_collision")
+                    return CommandResult.FailWithDetail(
+                        "the copy would be refused: " + typeCollisions.Collisions.Count + " type name(s) it brings already exist in '" +
+                        destination.Title + "' (see type_name_collisions) and duplicate_types=abort_on_collision. Pass " +
+                        "duplicate_types=use_destination to keep the destination's own types for those names. Rehearsed and rolled back; nothing was written.",
+                        new JObject
+                        {
+                            ["state"] = "rehearsed", ["code"] = "type_name_collision",
+                            ["type_name_collisions"] = new JArray(typeCollisions.Collisions)
+                        });
+                if (rehearsalError != null)
+                    return CommandResult.FailWithDetail("the rehearsed copy failed and was rolled back: " + rehearsalError,
+                        new JObject { ["state"] = "rehearsed", ["code"] = "copy_failed", ["revit_said"] = rehearsalError });
+                typeCollisions.Collisions.Clear();
+
                 ApplicationOutcome.StampRehearsal(preview, ids.Count, 0, 0, 0);
                 DocumentGate.StampConfirmation(preview, gate, Name, hash, true,
                     "the token binds the source document, every source element's unique id and type name, and " +
-                    "the duplicate-name policy; a source edited between the rehearsal and the apply refuses.");
+                    "the duplicate-name policy; a source edited between the rehearsal and the apply refuses. A " +
+                    "background source is reopened fresh for the apply, so the binding is by UniqueId, not by " +
+                    "the ElementId this rehearsal happened to see.");
                 return CommandResult.Ok(preview);
             }
 
@@ -198,12 +373,25 @@ namespace Horizun.Revit.Commands
                 {
                     Guard.RollbackResult? rollback = null;
                     try { if (tx.GetStatus() == TransactionStatus.Started) rollback = Guard.RollBack(tx); } catch { }
+                    // MEASURED 2026-09-25 (door type from the Autodesk template into a model
+                    // that already had its materials): abort_on_collision makes Revit throw
+                    // "User cancelled the operation", which names nobody. The recorder knows
+                    // what collided; say it and say the way through.
+                    bool collided = typeCollisions.Collisions.Count > 0 && duplicates == "abort_on_collision";
+                    string why = collided
+                        ? "the copy was refused because " + typeCollisions.Collisions.Count + " type name(s) it brings already exist in '" +
+                          destination.Title + "' (see type_name_collisions) and duplicate_types=abort_on_collision. Pass " +
+                          "duplicate_types=use_destination to keep the destination's own types for those names and copy the rest. Nothing was written."
+                        : "The copy failed and was rolled back: " + ex.Message;
                     return CommandResult.FailWithDetail(
-                        "The copy failed and was rolled back: " + ex.Message,
+                        why,
                         new JObject
                         {
                             ["state"] = rollback.HasValue && rollback.Value.Confirmed ? "rolled_back" : "uncertain",
-                            ["transaction_status"] = rollback.HasValue ? rollback.Value.StatusName : "Error"
+                            ["transaction_status"] = rollback.HasValue ? rollback.Value.StatusName : "Error",
+                            ["code"] = collided ? "type_name_collision" : "copy_failed",
+                            ["type_name_collisions"] = new JArray(typeCollisions.Collisions),
+                            ["revit_said"] = ex.Message
                         });
                 }
             }
@@ -243,25 +431,63 @@ namespace Horizun.Revit.Commands
                 });
             }
 
+            // THE VERDICT IS DERIVED, NOT WRITTEN. state/host_verified used to be the literals
+            // "committed_verified"/true while the application block below was computed from
+            // ids against created - so a copy that produced fewer elements than it was asked
+            // for said verified in one field and partial in the other. Revit copies dependents
+            // along (a hosted door with its wall), so MORE created than requested is normal:
+            // what was requested is the larger of the two, and every created element must
+            // re-read present.
+            int requestedCount = Math.Max(ids.Count, created.Count);
+            ApplicationState copyState = ApplicationOutcome.Applied(ApplicationOutcome.Committed,
+                                                                    requestedCount, present, present, 0, 0, 0);
+            // EVERY REQUESTED ELEMENT MUST BE REPRESENTED, not just every created one present:
+            // Revit can skip a requested element and bring two dependents, and a count of
+            // created-and-present would then read verified (review 2026-09-26). A requested
+            // TYPE is represented by an arrived type of the same category and name, or - under
+            // use_destination - by the destination's own type of that name; an instance by a
+            // created element of the same category and type name.
+            var createdElements = created.Select(destination.GetElement).Where(e => e != null).ToList();
+            var missing = new JArray();
+            foreach (Element req in elements)
+            {
+                string cat = SafeCategory(req), name = SafeName(req);
+                bool isType = req is ElementType;
+                bool represented = isType
+                    ? createdElements.Any(c => c is ElementType && SafeCategory(c) == cat && SafeName(c) == name) ||
+                      (duplicates == "use_destination" && new FilteredElementCollector(destination).WhereElementIsElementType()
+                          .Any(t => SafeCategory(t) == cat && SafeName(t) == name))
+                    : createdElements.Any(c => !(c is ElementType) && SafeCategory(c) == cat &&
+                                               TypeNameOf(destination, c) == TypeNameOf(source, req));
+                if (!represented)
+                    missing.Add(new JObject { ["source_id"] = Rid.Value(req.Id), ["category"] = cat, ["name"] = name });
+            }
+            if (missing.Count > 0 && copyState == ApplicationState.VerifiedApplied) copyState = ApplicationState.Partial;
+            bool copyVerified = copyState == ApplicationState.VerifiedApplied;
             var done = new JObject
             {
-                ["state"] = "committed_verified",
-                ["host_verified"] = true,
+                ["state"] = copyVerified ? "committed_verified" : ApplicationOutcome.Name(copyState),
+                ["host_verified"] = copyVerified,
                 ["source_document"] = source.Title,
                 ["destination_document"] = destination.Title,
                 ["requested"] = ids.Count,
                 ["created"] = created.Count,
                 ["rows"] = rows,
                 ["types_that_arrived"] = arrived,
+                ["requested_not_represented"] = missing,
                 ["duplicate_types"] = duplicates,
                 ["type_name_collisions"] = new JArray(typeCollisions.Collisions),
+                ["source_open"] = sourceOpenInfo,
                 ["means"] =
                     "types_that_arrived is the DIFFERENCE between the destination's types before and after, " +
                     "not a report from the copy. A copy that silently duplicated a type catalogue is how a " +
                     "project acquires a second 'Basic Wall - 200' and nobody knows when."
             };
+            if (created.Count < ids.Count)
+                done["created_fewer_than_requested"] = "Revit produced " + created.Count + " element(s) for " +
+                    ids.Count + " requested; the difference was not copied.";
             ApplicationOutcome.StampApplied(done, ApplicationOutcome.Committed,
-                                            ids.Count, created.Count, present, 0, 0, 0);
+                                            requestedCount, present, present, 0, 0, 0);
             return CommandResult.Ok(done);
         }
 
@@ -442,6 +668,14 @@ namespace Horizun.Revit.Commands
                 return type == null ? "<none>" : SafeName(type);
             }
             catch { return "<unreadable>"; }
+        }
+
+        private static string QualifiedName(Element e)
+        {
+            string type = SafeName(e);
+            string family = null;
+            try { family = (e as ElementType)?.FamilyName; } catch { }
+            return string.IsNullOrEmpty(family) ? type : family + ": " + type;
         }
 
         private static string SafeName(Element element)

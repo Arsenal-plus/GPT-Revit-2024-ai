@@ -110,6 +110,13 @@ namespace Horizun.Server
                         Arg("symbol_layers", "The symbol layers, as globs; required because grouping over the whole drawing buries the symbols in the wiring.", true),
                         Arg("max_footprint_mm", "How large connected line work may be and still be one symbol; required because a receptacle is 40 mm on one drawing and 400 mm on another.", true),
                         Arg("family_types", "The family type for each symbol type, as decided by a person; required because this route never names a symbol type itself.", true)),
+                    Prompt("project-intake", "Start a BIM project the ISO 19650 way",
+                        "Arrancar un proyecto BIM según ISO 19650: ask only what the project context is missing, with options, and write project-context.json from the answers.",
+                        Arg("path", "Absolute path of the project's project-context.json. Optional: without it the intake starts from nothing and the draft is only rehearsed until a path is agreed.", false)),
+                    Prompt("framing-from-detail", "Read a wall or ceiling detail into a framing spec",
+                        "Turn a wall-type or ceiling detail (an image or a 2-D detail) into a horizun_framing spec, confirm it with the person, then build and verify it.",
+                        Arg("kind", "wall or ceiling: which spec the detail fills.", true),
+                        Arg("element_ids", "The walls or ceilings the detail applies to, comma-separated. Optional: without them the person is asked.", false)),
                     Prompt("material-standardisation", "Bring materials to a declared standard",
                         "Create, duplicate and edit materials to match an approved standard, re-reading every value and touching nothing else.",
                         Arg("material_standard", "The approved standard - names, classes, colours, patterns. Required because Horizun carries no organisation's catalogue.", true))
@@ -432,6 +439,93 @@ namespace Horizun.Server
                         "is UNKNOWN, never clean. Return findings by sheet with severity, evidence and element/view " +
                         "ids. Use the narrowest typed correction only after approval and its dry run.";
                     break;
+                case "framing-from-detail":
+                {
+                    string kind = (Argument(args, "kind", true) ?? "").Trim().ToLowerInvariant();
+                    if (kind != "wall" && kind != "ceiling")
+                        throw new McpError(-32602, "Invalid params: framing-from-detail 'kind' must be wall or ceiling.");
+                    string sources = Argument(args, "element_ids", false);
+                    bool wall = kind == "wall";
+                    description = "Read a " + kind + " detail into a horizun_framing spec, confirm it, build it verified.";
+                    body =
+                        "Build the " + (wall ? "light-gauge/drywall wall framing" : "suspended drywall ceiling framing") + " a detail shows. " +
+                        "YOU read the detail (an attached image or 2-D detail); horizun_framing never reads an image, it builds exactly the spec " +
+                        "you give it. 1) Call horizun_health. " +
+                        (string.IsNullOrWhiteSpace(sources)
+                            ? "Ask the person which " + kind + "s the detail applies to and resolve their ids with horizun_query_model. "
+                            : "The detail applies to " + kind + "s " + sources + ": confirm each is a " + (wall ? "straight Basic wall" : "Ceiling") + " with horizun_query_model. ") +
+                        "2) Read the detail into spec." + kind + ", every length in MILLIMETRES (convert inches: 3-5/8\" = 92.1 mm, 16\" o.c. = 406.4 mm; " +
+                        "a scale bar or a dimension string wins over proportions; never measure pixels). " +
+                        (wall
+                            ? "Fields: layer ('core' or the compound layer index the studs sit in), stud {type_id, spacing_mm, start wall_start|wall_end|centred, " +
+                              "max_first_bay_mm, double_at_ends, width_mm}, track {bottom_type_id, top_type_id or top_same_as_bottom, thickness_mm}, openings " +
+                              "{king_studs 1|2, jack_studs, header_type_id, sill_type_id, cripple_spacing_mm, header_depth_mm, sill_depth_mm}, blocking [{height_mm, type_id}]. "
+                            : "Fields: main {type_id, spacing_mm, direction short|long|<angle_deg>, depth_mm}, cross {type_id, spacing_mm, depth_mm}, perimeter {type_id, depth_mm}, " +
+                              "hanger {type_id, spacing_mm along each main, max_length_mm (default 3000), attach structure_above}, drop_mm (ceiling top face " +
+                              "up to the mains' underside, default 0). ") +
+                        "If the model already frames with CURTAIN types (a Curtain Wall type whose grid and mullions are the studs and tracks" +
+                        (wall ? "" : ", Sloped Glazing roof types as the ceiling layers") +
+                        "), propose method 'curtain' instead and ASK which of its types maps to which part of the detail: " +
+                        (wall
+                            ? "spec.wall {method:'curtain', curtain_type_id, header_type_id, sill_type_id, placeholder_type_id (a thin Basic wall type that keeps " +
+                              "the door or window), multi_opening keep_carrier (default; the pieces overlap the kept wall)|refuse, min_segment_mm}. "
+                            : "spec.ceiling {method:'curtain', layers [{type_id, offset_mm above the ceiling top, angle_deg -89..89 (a layer across another is a type " +
+                              "whose members sit on grid 2, never 90)}], hanger {type_id (a Curtain Wall " +
+                              "type), spacing_mm, max_length_mm}}. ") +
+                        "3) Types are the person's: list candidate family types with horizun_query_model and let the person choose; a vertical member needs " +
+                        "a Structural Columns or line-based Generic Model type, a horizontal one Structural Framing or line-based Generic Model. " +
+                        "4) A value the detail does not show or you cannot read is ASKED, with the options the detail allows and what each changes - " +
+                        "never filled from a guess or a typical value. 5) Show the complete spec as JSON with, for each value, where in the detail it came from, " +
+                        "and get it confirmed. 6) Call horizun_framing operation=" + kind + " with dry_run=true; show counts per role, warnings and the openings it read. " +
+                        "7) Only after the person agrees, call again with dry_run=false, the confirmation_token and an idempotency_key; report the postconditions as re-read. " +
+                        "A refusal names the field to fix; framing from another spec must be removed (operation=remove) before a new one.";
+                    break;
+                }
+                case "project-intake":
+                    string contextPath = Argument(args, "path", false);
+                    bool hasPath = !string.IsNullOrWhiteSpace(contextPath);
+                    description = "Start a BIM project the ISO 19650 way / Arrancar un proyecto BIM según ISO 19650.";
+                    body =
+                        "Set up this project's ISO 19650 information-management context. " +
+                        (hasPath
+                            ? "The project context file is: " + contextPath + ". "
+                            : "No project-context.json path was given: agree one with the person before anything is written. ") +
+                        "This needs no Revit. 1) Call horizun_project_context operation=questions" +
+                        (hasPath ? " with that path" : "") +
+                        " and read the ORDERED list of what is still missing: role in the appointment, stage, EIR, BEP " +
+                        "(pre- or post-appointment), MIDP/TIDP, responsibility matrix, CDE (platform, root, the WIP/Shared/" +
+                        "Published/Archived folders, where work happens today, who approves each transition), naming, " +
+                        "classification, LOIN/IDS, georeference/CRS, IFC delivery (version, MVD, Pset mapping) and the Revit " +
+                        "version. 2) Ask the person in short blocks, one topic at a time, in their language (every question " +
+                        "carries text.es and text.en), offering the question's options and saying why it matters. NEVER answer " +
+                        "a question yourself or fill a value from a guess: an unknown stays out of the file and is listed in " +
+                        "intake.missing. If a document does not exist, record status=missing - that is an answer, and a finding. " +
+                        "IF YOUR CLIENT SUPPORTS MCP ELICITATION, let the server ask instead: call horizun_project_context " +
+                        "operation=elicit" + (hasPath ? " with that path" : "") + ", language es or en, dry_run=true - it opens " +
+                        "one short form per topic and returns 'answers' plus every question still 'unanswered' with its reason " +
+                        "(declined, cancelled, left_blank, not_elicitable...). Ask only those in the chat. If it answers " +
+                        "code elicitation_unsupported, the client cannot show forms: ask everything in the chat as above. " +
+                        "3) Send the answers to horizun_project_context operation=draft as {pointer: value} with dry_run=true, " +
+                        "show the person the state (invalid / inconsistent / incomplete / complete) and every coherence " +
+                        "finding, and get it confirmed. 4) Only then call draft with dry_run=false" +
+                        (hasPath ? "" : " and the agreed path") +
+                        "; it re-reads the file before reporting it written and refuses to replace an existing file " +
+                        "without overwrite=true. Writing needs the full_write profile; under a stricter profile, hand the " +
+                        "drafted document to the person instead of editing settings. 5) Finish with operation=validate " +
+                        "and report what is still missing as missing, never as done.";
+                    // Not a model workflow: the model-query efficiency note appended below does not apply.
+                    return new JObject
+                    {
+                        ["description"] = description,
+                        ["messages"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["role"] = "user",
+                                ["content"] = new JObject { ["type"] = "text", ["text"] = body }
+                            }
+                        }
+                    };
                 default: throw new McpError(-32602, "Unknown Horizun prompt: '" + name + "'.");
             }
 

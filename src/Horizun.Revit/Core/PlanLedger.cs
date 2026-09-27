@@ -23,6 +23,7 @@
 // row existing in the trace.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
@@ -250,7 +251,7 @@ namespace Horizun.Revit.Core
 
         public JObject SuccessPayload(string groupName, JObject results)
         {
-            return new JObject
+            var payload = new JObject
             {
                 ["transaction_status"] = ApplicationOutcome.Committed,
                 ["transaction_name"] = groupName,
@@ -265,6 +266,27 @@ namespace Horizun.Revit.Core
                 ["actions"] = Executed,
                 ["results"] = results ?? new JObject()
             };
+
+            // THE PLAN'S OWN application BLOCK, so a caller (or an outer composite) can
+            // read this reply exactly like any typed tool's, without re-deriving it from
+            // actions_verified/actions_executed. This is NOT a second opinion: the loop
+            // in ExecutePlanCommand already refuses to reach this payload with a row in
+            // Executed that was not fully applied (RecordExecuted throws first), so
+            // re-classifying those same rows here through CompositeVerdict always agrees
+            // with VerifiedActions/NoOpActions above - it exists so the SHAPE is the
+            // standard one, not so the arithmetic can differ.
+            ApplicationOutcome.Stamp(payload, CompositeVerdict.Aggregate(ApplicationOutcome.Committed, ExecutedChildren()));
+            return payload;
+        }
+
+        private IEnumerable<CompositeChild> ExecutedChildren()
+        {
+            foreach (JToken token in Executed)
+            {
+                var row = token as JObject;
+                if (row == null) continue;
+                yield return CompositeChild.Of(row.Value<bool?>("success") == true, row["data"]);
+            }
         }
 
         private static JToken ToToken(object data)

@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Horizun.Revit.Core;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -18,9 +19,11 @@ namespace Horizun.Server.Tests
         {
             JObject listed = McpResources.List(null);
             JArray resources = Assert.IsType<JArray>(listed["resources"]);
-            // Five documents and one MCP App. The app lives under ui:// because that is
-            // the scheme the Apps extension names; it is as virtual as the rest.
-            Assert.Equal(6, resources.Count);
+            // Seven documents (the ISO 19650 project-context schema and horizun://session/toolsets joined the five) and one
+            // MCP App. The app lives under ui:// because that is the scheme the Apps
+            // extension names; it is as virtual as the rest. The impact preview is the
+            // second app.
+            Assert.Equal(9, resources.Count);
             foreach (JObject resource in resources)
             {
                 string uri = (string)resource["uri"];
@@ -142,12 +145,68 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Advertised_argument_descriptions_are_budgeted_but_the_contract_keeps_every_word()
+        {
+            JArray tools = Tools.List(true);
+            foreach (JObject tool in tools)
+                foreach (JToken d in tool["inputSchema"].SelectTokens("$..description"))
+                    if (d.Type == JTokenType.String)
+                        Assert.True(((string)d).Length <= Tools.SchemaDescriptionMax, (string)tool["name"] + ": " + ((string)d).Length);
+
+            // The compacted copy never changes what a call is validated against, never renames
+            // an argument, and the full text is still served by the contract resource.
+            foreach (var c in Horizun.Contracts.Contract.All)
+            {
+                JObject advertised = Tools.CompactSchema(c.Name, c.InputSchema);
+                if (c.InputSchema == null) continue;
+                var fullArgs = ((JObject)c.InputSchema["properties"])?.Properties().Select(p => p.Name).ToArray() ?? new string[0];
+                var advArgs = ((JObject)advertised["properties"])?.Properties().Select(p => p.Name).ToArray() ?? new string[0];
+                Assert.Equal(fullArgs, advArgs);
+            }
+            string contract = (string)McpResources.Read(new JObject { ["uri"] = "horizun://contract/tools" })["contents"][0]["text"];
+            var longest = Horizun.Contracts.Contract.All.Where(c => c.InputSchema != null)
+                .SelectMany(c => c.InputSchema.SelectTokens("$..description")).Where(t => t.Type == JTokenType.String)
+                .Select(t => (string)t).OrderByDescending(t => t.Length).First();
+            Assert.True(longest.Length > Tools.SchemaDescriptionMax);
+            Assert.Contains(JsonConvert.SerializeObject(longest).Trim('"').Substring(0, 60), contract);
+        }
+
+        [Fact]
+        public void Framing_from_detail_needs_a_kind_and_asks_before_it_applies()
+        {
+            Assert.Throws<McpError>(() => McpPrompts.Get(new JObject { ["name"] = "framing-from-detail" }));
+            Assert.Throws<McpError>(() => McpPrompts.Get(new JObject { ["name"] = "framing-from-detail", ["arguments"] = new JObject { ["kind"] = "floor" } }));
+            foreach (string kind in new[] { "wall", "ceiling" })
+            {
+                string text = (string)McpPrompts.Get(new JObject { ["name"] = "framing-from-detail", ["arguments"] = new JObject { ["kind"] = kind, ["element_ids"] = "101,102" } })
+                    ["messages"][0]["content"]["text"];
+                Assert.Contains("horizun_framing operation=" + kind, text);
+                Assert.Contains("dry_run=true", text);
+                Assert.Contains("confirmation_token", text);
+                Assert.Contains("dry_run=false", text);
+                Assert.Contains("101,102", text);
+                Assert.Contains("MILLIMETRES", text);
+                Assert.Contains(kind == "wall" ? "cripple_spacing_mm" : "max_length_mm", text);
+            }
+        }
+
+        [Fact]
+        public void Framing_entry_stays_within_its_tools_list_share()
+        {
+            // The assignment gave horizun_framing at most 2,000 bytes of tools/list (description
+            // plus schema); the spec itself lives in docs/TOOLS-EXTENDED.md.
+            JObject framing = Tools.List(true).OfType<JObject>().Single(t => (string)t["name"] == "horizun_framing");
+            int bytes = System.Text.Encoding.UTF8.GetByteCount(framing.ToString(Newtonsoft.Json.Formatting.None));
+            Assert.True(bytes <= 2000, "horizun_framing costs " + bytes + " bytes of tools/list");
+        }
+
+        [Fact]
         public void Prompts_require_the_declared_arguments_and_return_standard_messages()
         {
             JArray prompts = (JArray)McpPrompts.List(null)["prompts"];
-            // Twenty, three procedures added with the 2026-09-15 catalogue, and the two
-            // DWG procedures that had no prompt behind them.
-            Assert.Equal(27, prompts.Count);
+            // Twenty, three procedures added with the 2026-09-15 catalogue, the two
+            // DWG procedures that had no prompt behind them, project-intake and framing-from-detail.
+            Assert.Equal(29, prompts.Count);
             foreach (var item in new[] { ("room-documentation", "specification"), ("family-recipe", "specification"), ("review-correct-verify", "selection") })
             {
                 Assert.Throws<McpError>(() => McpPrompts.Get(new JObject { ["name"] = item.Item1 }));
