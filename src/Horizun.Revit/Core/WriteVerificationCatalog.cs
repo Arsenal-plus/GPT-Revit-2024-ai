@@ -242,7 +242,7 @@ namespace Horizun.Revit.Core
             Row("horizun_create_family", VerificationMechanism.FileArtifactReread, E("output_verified", "reopened_verification"), F(C + "CreateFamilyCommand.cs"),
                 "CreateFamilyCommand.cs: forms (solid geometry) are verified in memory before saving; the saved file is re-read for dimensions, parameters and types, not forms."),
             Row("horizun_export", VerificationMechanism.FileArtifactReread, E("files_verified"),
-                F(C + "ExportCommand.cs", C + "ExportDwgSetup.cs", "Horizun.Revit/Core/ExportFileDiff.cs"),
+                F(C + "ExportCommand.cs", C + "ExportDwgSetup.cs", C + "ExportSets.cs", "Horizun.Revit/Core/ExportFileDiff.cs"),
                 "ExportCommand.cs dwg with dwg_setup: the named setup's layer mapping is not proved from the DWG binary; dwg_layers proves the table itself."),
             Row("horizun_deliver_ifc", VerificationMechanism.FileArtifactReread, E("deliverable_ready"), F(C + "DeliverIfcCommand.cs")),
             Row("horizun_capture_view", VerificationMechanism.FileArtifactReread, E("sha256", "bytes"), F(C + "CaptureViewCommand.cs")),

@@ -17,7 +17,7 @@ namespace Horizun.Revit.Commands
     public sealed partial class ExportCommand : ICommand
     {
         public string Name => "horizun_export";
-        public string Description => "Export PDF, DWG, IFC, Navisworks NWC, FBX, image or schedule CSV and verify actual files.";
+        public string Description => "Export PDF, DWG/DGN/DWFX view sets, IFC, NWC, FBX, image, schedule CSV, gbXML or family .rfa and verify actual files.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -29,18 +29,28 @@ namespace Horizun.Revit.Commands
             Document doc = gate.Document;
 
             string format = (request.Value<string>("format") ?? "").ToLowerInvariant();
-            if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv" && format != "dwg_layers")
-                return CommandResult.Fail("format must be pdf, dwg, ifc, nwc, fbx, image, schedule_csv or dwg_layers.");
+            if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv" && format != "dwg_layers"
+                && format != "dgn" && format != "dwfx" && format != "gbxml" && format != "rfa")
+                return CommandResult.Fail("format must be pdf, dwg, dgn, dwfx, ifc, nwc, fbx, image, schedule_csv, dwg_layers, gbxml or rfa.");
             string output = request.Value<string>("output_path");
             if (string.IsNullOrWhiteSpace(output) || !System.IO.Path.IsPathRooted(output))
                 return CommandResult.Fail("output_path must be absolute.");
             try { output = System.IO.Path.GetFullPath(output); }
             catch (Exception ex) { return CommandResult.Fail("output_path is invalid: " + ex.Message); }
+            // rfa writes one file per family into a FOLDER; see ExportSets.cs.
+            if (format == "rfa") return ExecuteRfa(app, gate, doc, request, output);
             if (!ExpectedExtension(format, output))
                 return CommandResult.Fail("output_path extension does not match format=" + format + ". Use " + ExpectedExtensionDescription(format) + ".");
             // The DWG layer table: a named export setup read, created and written in the
             // document, with its re-read table written to output_path. See ExportDwgSetup.cs.
             if (format == "dwg_layers") return ExecuteDwgLayers(app, gate, doc, request, output);
+            // gbXML and the DWG/DGN/DWFX view sets (one file per view or sheet). See ExportSets.cs.
+            if (format == "gbxml") return ExecuteGbXml(app, gate, doc, request, output);
+            if (format == "dgn" || format == "dwfx" || (format == "dwg" && IsDwgSet(request)))
+                return ExecuteViewSet(app, gate, doc, request, format, output);
+            foreach (string setField in new[] { "file_naming", "dwg_xrefs", "family_ids", "category" })
+                if (request[setField] != null)
+                    return CommandResult.Fail(setField + " applies to the dwg/dgn/dwfx view sets and rfa only. Nothing was exported.");
             if (request["dwg_setup"] != null && format != "dwg")
                 return CommandResult.Fail("dwg_setup applies to format dwg (export with it) and dwg_layers (read/write it).");
             DWGExportOptions dwgOptions = null;
@@ -894,6 +904,9 @@ namespace Horizun.Revit.Commands
                 case "ifc": return ext == ".ifc";
                 case "nwc": return ext == ".nwc";
                 case "fbx": return ext == ".fbx";
+                case "dgn": return ext == ".dgn";
+                case "dwfx": return ext == ".dwfx";
+                case "gbxml": return ext == ".xml";
                 case "image": return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff";
                 case "schedule_csv": return ext == ".csv" || ext == ".txt";
                 default: return false;
@@ -909,6 +922,9 @@ namespace Horizun.Revit.Commands
                 case "ifc": return ext == ".ifc";
                 case "nwc": return ext == ".nwc";
                 case "fbx": return ext == ".fbx";
+                case "dgn": return ext == ".dgn";
+                case "dwfx": return ext == ".dwfx";
+                case "gbxml": return ext == ".xml";
                 case "image": return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff";
                 case "schedule_csv": return ext == ".csv" || ext == ".txt";
                 case "dwg_layers": return ext == ".json";
@@ -920,6 +936,7 @@ namespace Horizun.Revit.Commands
             if (format == "image") return ".png, .jpg, .jpeg, .bmp, .tif or .tiff";
             if (format == "schedule_csv") return ".csv or .txt";
             if (format == "dwg_layers") return ".json";
+            if (format == "gbxml") return ".xml";
             return "." + format;
         }
         /// <summary>
