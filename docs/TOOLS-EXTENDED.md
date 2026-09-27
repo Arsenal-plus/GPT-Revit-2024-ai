@@ -2090,3 +2090,39 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+## horizun_document_session — operation `sync_with_central`
+
+Synchronizes a workshared **local** with its central: `target_document` (required),
+`comment`, `relinquish` (`all` default | `keep_borrowed` | `none`), `compact`.
+
+**Off by default, owner-gated like `horizun_execute_python`.** Only the machine owner
+turns it on, inside Revit: *Horizun Hub tab > Advanced options > Synchronize with
+central*. The choice is stored as `sync_with_central_owner_granted` in
+`%USERPROFILE%\.horizun\settings.json`; no MCP call writes it and a malformed file reads
+as OFF. `force_read_only_on_workshared` wins over the grant. The operation also needs
+`permission_profile` `full_write` (every document-session operation does). Refusals carry
+`detail.code`: `not_workshared`, `workshared_state_unreadable`, `detached_copy`,
+`detached_state_unreadable`, `force_read_only_on_workshared`, `sync_not_authorised`,
+`ownership_census_incomplete`, `confirmation_rejected`.
+
+**The preview is an ESTIMATE, not a rehearsal** (`preview_kind: "estimate"`). A sync can
+be neither rehearsed nor rolled back. An omitted `dry_run` is a preview. It reports owned
+worksets, owned and borrowed elements (WorksharingUtils.GetCheckoutStatus over every
+collectable element; borrowed = owned while its workset is not), `Document.IsModified`,
+and a deterministic SAMPLE of `GetModelUpdatesStatus` (an even spread of 150 ids plus the
+first 50 owned) - the API answers per element; there is no document-level "current with
+central". What others pushed since the last reload is not visible until the sync runs.
+
+**The token binds the estimate.** Apply with `dry_run=false`, the `confirmation_token` and
+an `idempotency_key`. If ownership counts, IsModified or the sampled statuses moved, the
+apply is refused (`confirmation_rejected`): preview again.
+
+**After the sync** ownership is re-counted and held against the choice (`all`: nothing
+owned; `keep_borrowed`: no workset owned and exactly the previously borrowed, still
+existing elements owned; `none`: worksets and owned elements unchanged) and the same
+sample is re-read (every present element must read `CurrentWithCentral`). `sync_verified`
+is true only when both hold; a sync whose postcondition failed or could not be measured is
+reported as a failure with `changes_applied: true` - it happened, and it did not verify.
+Revit's own Synchronize with Central and other add-ins are not intercepted (see the
+prevention gate's `not_interceptable` list).
