@@ -64,6 +64,9 @@ namespace Horizun.Revit.Commands
         public int KeyRef;
         public List<WallOpeningSpan> Openings = new List<WallOpeningSpan>();
         public List<long> CarrierDeleteCascade = new List<long>();
+        /// <summary>The delete's cascade as the plan measured it (the token binds it), and what the delete took that this apply had created.</summary>
+        public readonly List<long> CarrierDeleteMeasured = new List<long>(), CarrierDeleteCreated = new List<long>();
+        public bool Structural;
 
         /// <summary>A point of the frame on the core centreline, at the base level's elevation.</summary>
         public XYZ At(double xMm, double levelZ) => new XYZ(Origin.X, Origin.Y, levelZ) + Dir * (xMm / 304.8) + Normal * CoreOffsetFt;
@@ -75,7 +78,7 @@ namespace Horizun.Revit.Commands
             ["base_offset_ft"] = BaseOffsetFt, ["length_mm"] = LengthMm, ["height_mm"] = HeightMm, ["level_id"] = LevelId,
             ["top_level_id"] = TopLevelId, ["top_offset_ft"] = TopOffsetFt, ["unconnected_ft"] = UnconnectedFt,
             ["original_type_id"] = OriginalTypeId, ["original_curve"] = new JArray(P(OriginalStart), P(OriginalEnd)),
-            ["new_curve"] = NewStart == null ? null : new JArray(P(NewStart), P(NewEnd)), ["flipped"] = Flipped, ["key_ref"] = KeyRef,
+            ["new_curve"] = NewStart == null ? null : new JArray(P(NewStart), P(NewEnd)), ["flipped"] = Flipped, ["key_ref"] = KeyRef, ["structural"] = Structural,
             ["pieces"] = new JArray(Plan.Pieces.Select(m => new JObject { ["role"] = m.Role, ["type"] = m.TypeKey, ["x0"] = m.X0, ["x1"] = m.X1, ["z0"] = m.Z0, ["z1"] = m.Z1, ["src"] = m.Source })),
             ["carrier"] = new JObject { ["action"] = Plan.Carrier.Action, ["x0"] = Plan.Carrier.X0, ["x1"] = Plan.Carrier.X1, ["type"] = Plan.Carrier.TypeKey, ["opening"] = Plan.Carrier.OpeningId },
             ["inserts"] = new JObject(inserts.Select(kv => new JProperty(kv.Key.ToString(CultureInfo.InvariantCulture), kv.Value))),
@@ -96,7 +99,7 @@ namespace Horizun.Revit.Commands
                 BaseOffsetFt = (double)r["base_offset_ft"], LengthMm = (double)r["length_mm"], HeightMm = (double)r["height_mm"], LevelId = (long)r["level_id"],
                 TopLevelId = (long)r["top_level_id"], TopOffsetFt = (double)r["top_offset_ft"], UnconnectedFt = (double)r["unconnected_ft"],
                 OriginalTypeId = (long)r["original_type_id"], OriginalStart = X(r["original_curve"][0]), OriginalEnd = X(r["original_curve"][1]),
-                NewStart = nc == null ? null : X(nc[0]), NewEnd = nc == null ? null : X(nc[1]), Flipped = (bool)r["flipped"], KeyRef = (int)r["key_ref"],
+                NewStart = nc == null ? null : X(nc[0]), NewEnd = nc == null ? null : X(nc[1]), Flipped = (bool)r["flipped"], KeyRef = (int)r["key_ref"], Structural = (bool?)r["structural"] ?? false,
             };
         }
 
@@ -204,6 +207,7 @@ namespace Horizun.Revit.Commands
                     BaseOffsetFt = wall.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET)?.AsDouble() ?? 0,
                     OriginalTypeId = Rid.Value(wall.GetTypeId()), Flipped = wall.Flipped,
                     KeyRef = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)?.AsInteger() ?? 0,
+                    Structural = (wall.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT)?.AsInteger() ?? 0) == 1,
                     UnconnectedFt = wall.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM)?.AsDouble() ?? 0,
                     Openings = fw.OpeningsMm.ToList(),
                 };
@@ -241,6 +245,15 @@ namespace Horizun.Revit.Commands
                 total += p.Members.Count;
                 if (total > MaxCurtainPiecesTotal) throw new ArgumentException("the plan exceeds " + MaxCurtainPiecesTotal + " curtain walls; frame fewer walls per call.");
                 foreach (long insert in fw.InsertIds) p.InsertsBefore[insert] = InsertState(doc, insert);
+                if (plan.Carrier.Action == CurtainFramingRoles.CarrierDelete)
+                {
+                    // Measured last (FramingCurtainRemove.cs): the rolled-back delete may leave this
+                    // wall's wrapper stale, so the source is read again afterwards.
+                    s.CarrierDeleteMeasured.AddRange(MeasureCarrierCascade(doc, wall));
+                    p.Source = doc.GetElement(Rid.Make(sid)) ?? p.Source;
+                    if (s.CarrierDeleteMeasured.Count > 0)
+                        p.Warnings.Add("deleting the carrier also deletes " + s.CarrierDeleteMeasured.Count + " element(s) Revit hosts on or ties to it (carrier.deleted_with_it); the token binds them");
+                }
                 plans.Add(p);
             }
             foreach (FramingSourcePlan p in plans)
@@ -324,8 +337,15 @@ namespace Horizun.Revit.Commands
             string action = s.Plan.Carrier.Action;
             if (action == CurtainFramingRoles.CarrierDelete)
             {
+                // What the delete took, split: elements that existed before this apply (compared with
+                // the cascade the plan measured and the token bound) and elements this apply created
+                // (ids from the first piece on - Revit hands out ids in increasing order), which the
+                // piece checks judge.
+                long firstCreated = p.MemberIds.Count > 0 ? p.MemberIds.Values.Min() : long.MaxValue;
                 s.CarrierDeleteCascade.Clear();
-                s.CarrierDeleteCascade.AddRange(doc.Delete(carrier.Id).Select(Rid.Value).Where(id => id != s.CarrierId).OrderBy(id => id));
+                s.CarrierDeleteCreated.Clear();
+                foreach (long id in doc.Delete(carrier.Id).Select(Rid.Value).Where(id => id != s.CarrierId && doc.GetElement(Rid.Make(id)) == null).OrderBy(id => id))
+                    (id >= firstCreated ? s.CarrierDeleteCreated : s.CarrierDeleteCascade).Add(id);
                 return;
             }
             carrier.ChangeTypeId(Rid.Make(long.Parse(s.Plan.Carrier.TypeKey, CultureInfo.InvariantCulture)));
@@ -337,8 +357,8 @@ namespace Horizun.Revit.Commands
 
         private static PostconditionCheck VerifyCurtainWalls(Document doc, List<FramingSourcePlan> plans, JObject evidence)
         {
-            var check = new PostconditionCheck("curtain_wall_count", "curtain_types", "curtain_location", "curtain_base_top", "grid_spacing", "mullion_types", "carrier", "inserts_untouched");
-            int planned = 0, found = 0, wrongType = 0, gridProblems = 0, mullionProblems = 0, carrierProblems = 0, insertsChanged = 0;
+            var check = new PostconditionCheck("curtain_wall_count", "curtain_types", "curtain_location", "curtain_base_top", "grid_spacing", "mullion_types", "carrier", "inserts_untouched", "carrier_cascade_as_measured");
+            int planned = 0, found = 0, wrongType = 0, gridProblems = 0, mullionProblems = 0, carrierProblems = 0, insertsChanged = 0, cascadeDiffers = 0;
             double maxLoc = 0, maxBaseTop = 0;
             var rows = new JArray();
             foreach (FramingSourcePlan p in plans)
@@ -384,7 +404,16 @@ namespace Horizun.Revit.Commands
                 {
                     carrierRow["deleted"] = carrierElement == null;
                     if (carrierElement != null) carrierProblems++;
-                    if (s.CarrierDeleteCascade.Count > 0) carrierRow["deleted_with_it"] = new JArray(s.CarrierDeleteCascade);
+                    if (!p.AlreadyApplied)
+                    {
+                        // Revit must have taken exactly the pre-existing elements the token bound.
+                        var measured = new HashSet<long>(s.CarrierDeleteMeasured);
+                        var took = new HashSet<long>(s.CarrierDeleteCascade);
+                        cascadeDiffers += took.Count(id => !measured.Contains(id)) + measured.Count(id => !took.Contains(id));
+                        carrierRow["deleted_with_it"] = new JArray(s.CarrierDeleteCascade);
+                        carrierRow["deleted_with_it_measured"] = new JArray(s.CarrierDeleteMeasured);
+                        if (s.CarrierDeleteCreated.Count > 0) carrierRow["deleted_with_it_created_by_this_apply"] = new JArray(s.CarrierDeleteCreated);
+                    }
                 }
                 else if (!(carrierElement is Wall carrier) || !(carrier.Location is LocationCurve clc) || !(clc.Curve is Line cl)) { carrierProblems++; carrierRow["found"] = false; }
                 else
@@ -419,6 +448,7 @@ namespace Horizun.Revit.Commands
             check.Compare("mullion_types", 0, mullionProblems);
             check.Compare("carrier", 0, carrierProblems);
             check.Compare("inserts_untouched", 0, insertsChanged);
+            check.Compare("carrier_cascade_as_measured", 0, cascadeDiffers);
             evidence["sources"] = rows;
             return check;
         }
@@ -528,7 +558,7 @@ namespace Horizun.Revit.Commands
             return result;
         }
 
-        private static JObject CurtainWallSummary(List<FramingSourcePlan> plans)
+        private static JObject CurtainWallSummary(Document doc, List<FramingSourcePlan> plans)
         {
             var rows = new JArray();
             foreach (FramingSourcePlan p in plans)
@@ -556,6 +586,12 @@ namespace Horizun.Revit.Commands
                         ["span"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? null : new JArray(Math.Round(s.Plan.Carrier.X0, 1), Math.Round(s.Plan.Carrier.X1, 1)),
                         ["opening_id"] = s.Plan.Carrier.OpeningId,
                         ["replaced_by"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? "every curtain_segment piece" : null,
+                        ["deleted_with_it"] = s.Plan.Carrier.Action != CurtainFramingRoles.CarrierDelete || p.AlreadyApplied ? null : new JObject
+                        {
+                            ["count"] = s.CarrierDeleteMeasured.Count,
+                            ["by_category"] = JObject.FromObject(s.CarrierDeleteMeasured.GroupBy(id => CategoryLabel(doc, id)).ToDictionary(g => g.Key, g => g.Count())),
+                            ["ids"] = new JArray(s.CarrierDeleteMeasured.Take(SummaryMemberCap)),
+                        },
                     },
                     ["count_by_role"] = JObject.FromObject(FramingPlanSignature.CountByRole(p.Members)),
                     ["plan_signature"] = p.Signature, ["spec_hash"] = p.SpecHash,
