@@ -80,8 +80,12 @@ namespace Horizun.Revit.Commands
                 if (plan == null)
                 {
                     string message = item == null ? "entry is not an object" : error;
-                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
-                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
+                    // An all_enclosed row names the caller's own entry too, not only a position the caller never wrote.
+                    int? entry = item?.Value<int?>("enclosed_from");
+                    var rowError = new JObject { ["index"] = i, ["error"] = message };
+                    if (entry != null) rowError["elements_index"] = entry.Value;
+                    errors.Add(rowError);
+                    outcomes.Add(new ActionOutcome { Index = entry ?? i, Error = message, UnsupportedReason = reason });
                 }
                 else plans.Add(plan);
             }
@@ -1171,6 +1175,7 @@ namespace Horizun.Revit.Commands
                 NormalizePlan(doc, p);
                 p.Summary = new JObject { ["index"] = index, ["kind"] = kind, ["references_resolved"] = true };
                 if (p.TopoSource != null) p.Summary["landxml"] = p.TopoSource;
+                if (p.Enclosed) p.Summary["elements_index"] = item["enclosed_from"].DeepClone();
                 if (p.FittingMembers != null)
                 {
                     // Deferred members (batch_index refs, and a takeoff's branch) have no
