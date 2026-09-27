@@ -315,10 +315,13 @@ namespace Horizun.Revit.Commands
                 double off = Math.Abs((p - plane.Origin).DotProduct(plane.Normal)) * 304.8;
                 if (off > SketchEditRules.OffPlaneToleranceMm)
                 {
-                    error = what + ": a point lies " + Math.Round(off, 1) + " mm off the sketch plane. Points are refused rather than " +
+                    // Invariant numbers: a caller re-sends on the plane this names (the live probe
+                    // does), and a comma decimal would read as one more coordinate separator.
+                    CultureInfo inv = CultureInfo.InvariantCulture;
+                    error = what + ": a point lies " + Math.Round(off, 1).ToString(inv) + " mm off the sketch plane. Points are refused rather than " +
                             "projected, so a wrong elevation is never silently flattened; the plane passes through (" +
-                            Math.Round(plane.Origin.X * 304.8, 1) + ", " + Math.Round(plane.Origin.Y * 304.8, 1) + ", " +
-                            Math.Round(plane.Origin.Z * 304.8, 1) + ") mm.";
+                            Math.Round(plane.Origin.X * 304.8, 1).ToString(inv) + ", " + Math.Round(plane.Origin.Y * 304.8, 1).ToString(inv) + ", " +
+                            Math.Round(plane.Origin.Z * 304.8, 1).ToString(inv) + ") mm.";
                     return null;
                 }
                 list.Add(ToPlane(plane, p));
