@@ -63,7 +63,7 @@ namespace Horizun.Revit.Commands
             ids = tin.PointIds;
             p.TopoSource = new JObject
             {
-                ["path"] = path, ["surface"] = tin.Surface, ["sha256"] = sha, ["linear_unit"] = tin.LinearUnit,
+                ["path"] = path, ["surface"] = tin.Surface, ["sha256"] = sha, ["linear_unit"] = tin.LinearUnit, ["elevation_unit"] = tin.ElevationUnit,
                 ["points_in_file"] = tin.PointsInFile, ["points_used"] = tin.PointsMetres.Count, ["points_unused"] = tin.PointsUnused,
                 ["faces_visible"] = tin.FacesVisible, ["faces_invisible"] = tin.FacesInvisible,
                 ["coordinates"] = "each P is 'northing easting elevation' in shared coordinates, placed through the active project position below",

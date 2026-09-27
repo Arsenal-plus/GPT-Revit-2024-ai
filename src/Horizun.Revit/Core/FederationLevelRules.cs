@@ -51,6 +51,9 @@ namespace Horizun.Revit.Core
             return null;
         }
 
+        /// <summary>A rule key that is absent, null or false asks for nothing.</summary>
+        public static bool Off(JToken t) => t == null || t.Type == JTokenType.Null || (t.Type == JTokenType.Boolean && !(bool)t);
+
         public static bool LevelsRequested(JObject rules)
         {
             JToken t = rules?["levels_match"];

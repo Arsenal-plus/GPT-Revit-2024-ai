@@ -38,6 +38,23 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Levels_match_false_asks_for_nothing_and_alone_is_refused()
+        {
+            Assert.Contains("declares nothing", FederationCheckRules.Validate(Rules("{ 'levels_match': false }")));
+            Assert.Contains("declares nothing", FederationCheckRules.Validate(Rules("{ 'levels_match': false, 'same_site': false }")));
+        }
+
+        [Fact]
+        public void Levels_match_with_no_link_instance_compared_nothing_and_does_not_pass()
+        {
+            JObject r = FederationCheckRules.Evaluate(Rules("{ 'levels_match': true, 'same_site': false }"),
+                new List<FederationModelFact>(), Links(), 10, 50, Input());
+            Assert.Equal("not_decidable", (string)r["verdict"]);
+            Assert.Equal(0, (int)r["summary"]["links_compared"]);
+            Assert.Empty(r["levels"]);
+        }
+
+        [Fact]
         public void A_link_whose_levels_agree_matches_and_the_host_levels_it_lacks_are_listed_not_judged()
         {
             JObject r = FederationCheckRules.Evaluate(Rules("{ 'levels_match': true, 'same_site': false }"),

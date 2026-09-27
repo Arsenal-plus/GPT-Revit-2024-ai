@@ -56,6 +56,17 @@ namespace Horizun.Core.Tests
 
         [Fact] public void A_file_without_a_linear_unit_is_refused() => Assert.Contains("no linear unit", Read(Doc("", Surface("EG", Pnts, Faces))));
         [Fact] public void An_unknown_unit_is_refused_by_name() => Assert.Contains("'mile'", Read(Doc(Units("Imperial", "mile"), Surface("EG", Pnts, Faces))));
+        [Fact]
+        public void A_declared_elevation_unit_scales_the_heights_and_only_the_heights()
+        {
+            string units = "<Units><Metric linearUnit=\"meter\" elevationUnit=\"millimeter\" areaUnit=\"squareMeter\"/></Units>";
+            Assert.Null(Read(Doc(units, Surface("EG", Pnts, Faces)), null, out LandXmlTin tin));
+            Assert.Equal(200.0, tin.PointsMetres[0][0], 9);
+            Assert.Equal(0.010, tin.PointsMetres[0][2], 9);
+            Assert.Equal("millimeter", tin.ElevationUnit);
+        }
+        [Fact] public void An_unknown_elevation_unit_is_refused_by_name()
+            => Assert.Contains("elevationUnit 'furlong'", Read(Doc("<Units><Metric linearUnit=\"meter\" elevationUnit=\"furlong\"/></Units>", Surface("EG", Pnts, Faces))));
         [Fact] public void A_grid_surface_is_refused() => Assert.Contains("grid", Read(Doc(Units("Metric", "meter"), Surface("EG", Pnts, "", "grid"))));
         [Fact] public void A_point_without_elevation_is_refused_by_id() => Assert.Contains("point '7'", Read(Doc(Units("Metric", "meter"), Surface("EG", Pnts + "<P id=\"7\">1 2</P>"))));
         [Fact] public void A_face_naming_an_undefined_point_is_refused() => Assert.Contains("'99'", Read(Doc(Units("Metric", "meter"), Surface("EG", Pnts, "<F>1 2 99</F>"))));

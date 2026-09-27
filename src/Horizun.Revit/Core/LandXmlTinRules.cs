@@ -29,6 +29,8 @@ namespace Horizun.Revit.Core
     {
         public string Surface;
         public string LinearUnit;
+        /// <summary>The unit the heights were read in: elevationUnit when the file declares one, else linearUnit.</summary>
+        public string ElevationUnit;
         /// <summary>[east, north, elevation] in metres, in file order: the points a visible face uses (every point when the surface has no faces).</summary>
         public List<double[]> PointsMetres = new List<double[]>();
         /// <summary>The file's own id of each entry of PointsMetres.</summary>
@@ -65,7 +67,7 @@ namespace Horizun.Revit.Core
         {
             tin = null;
             var surfaces = new List<Surf>();
-            string linearUnit = null;
+            string linearUnit = null, elevationUnit = null;
             var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, IgnoreComments = true, IgnoreWhitespace = true };
             try
             {
@@ -97,7 +99,7 @@ namespace Horizun.Revit.Core
                         switch (name)
                         {
                             case "Units": inUnits = !empty; break;
-                            case "Metric": case "Imperial": if (inUnits && linearUnit == null) linearUnit = r.GetAttribute("linearUnit") ?? ""; break;
+                            case "Metric": case "Imperial": if (inUnits && linearUnit == null) { linearUnit = r.GetAttribute("linearUnit") ?? ""; elevationUnit = r.GetAttribute("elevationUnit"); } break;
                             case "Surface":
                                 cur = new Surf { Name = r.GetAttribute("name") ?? "" };
                                 surfaces.Add(cur);
@@ -141,6 +143,10 @@ namespace Horizun.Revit.Core
             double metresPerUnit;
             if (!MetresPer.TryGetValue(linearUnit, out metresPerUnit))
                 return "linearUnit '" + linearUnit + "' is not one this reader converts (" + string.Join(", ", MetresPer.Keys) + ").";
+            // LandXML 1.2 lets heights carry their own unit (elevationUnit): Z is scaled by it, never by the linear unit on trust.
+            double metresPerElevationUnit = metresPerUnit;
+            if (!string.IsNullOrEmpty(elevationUnit) && !MetresPer.TryGetValue(elevationUnit, out metresPerElevationUnit))
+                return "elevationUnit '" + elevationUnit + "' is not one this reader converts (" + string.Join(", ", MetresPer.Keys) + ").";
             if (pick.Ids.Count == 0) return "surface '" + pick.Name + "' holds no points.";
 
             var index = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -167,14 +173,14 @@ namespace Horizun.Revit.Core
 
             tin = new LandXmlTin
             {
-                Surface = pick.Name, LinearUnit = linearUnit, PointsInFile = pick.Ids.Count,
+                Surface = pick.Name, LinearUnit = linearUnit, ElevationUnit = string.IsNullOrEmpty(elevationUnit) ? linearUnit : elevationUnit, PointsInFile = pick.Ids.Count,
                 FacesVisible = pick.Visible.Count, FacesInvisible = pick.Invisible
             };
             for (int k = 0; k < used.Length; k++)
             {
                 if (!used[k]) continue;
                 double[] nez = pick.Nez[k];
-                tin.PointsMetres.Add(new[] { nez[1] * metresPerUnit, nez[0] * metresPerUnit, nez[2] * metresPerUnit });
+                tin.PointsMetres.Add(new[] { nez[1] * metresPerUnit, nez[0] * metresPerUnit, nez[2] * metresPerElevationUnit });
                 tin.PointIds.Add(pick.Ids[k]);
             }
             return null;

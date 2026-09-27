@@ -831,8 +831,8 @@ namespace Horizun.Contracts
         ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""ceiling"", ""roof"", ""room"", ""family_instance"", ""sprinkler"", ""structural_framing"", ""structural_column"", ""duct"", ""pipe"", ""conduit"", ""cable_tray"", ""flex_pipe"", ""flex_duct"", ""fitting"", ""wall_opening"", ""slab_opening"", ""beam_system"", ""wall_foundation"", ""accessory_inline"", ""mep_system"", ""shaft"", ""room_separator"", ""space"", ""area"", ""area_boundary""] },
         ""name"": { ""type"": ""string"", ""description"": ""Level/grid name where supported. REQUIRED for kind=mep_system: an unnamed system is indistinguishable from the ones Revit invents from connectivity."" },
         ""elevation"": { ""type"": ""number"" },
-        ""placement"": { ""type"": ""string"", ""enum"": [""all_enclosed""], ""description"": ""room/space: one per closed circuit of level_id+phase_id without one; no point"" },
-        ""phase_id"": { ""type"": ""integer"" }, ""min_area_m2"": { ""type"": ""number"", ""description"": ""all_enclosed: skip smaller circuits"" },
+        ""placement"": { ""type"": ""string"", ""enum"": [""all_enclosed""], ""description"": ""room/space: one per empty region of level_id+phase_id; no point"" },
+        ""phase_id"": { ""type"": ""integer"" }, ""min_area_m2"": { ""type"": ""number"", ""description"": ""all_enclosed: skip smaller regions"" },
         ""number"": { ""type"": ""string"", ""description"": ""kind='room': the room NUMBER, which is separate from its name and is the identity Revit requires to be unique. Set inside the creating transaction and re-read from the model afterwards."" },
         ""base_level_id"": { ""type"": ""integer"", ""description"": ""kind='shaft': the storey the shaft starts at. A shaft cuts every floor, roof and ceiling between its two levels - that is what separates it from a hole in one slab - and a drawing carries neither, so both are required and neither is defaulted."" },
         ""top_level_id"": { ""type"": ""integer"", ""description"": ""kind='shaft': the storey it stops at. Must sit above base_level_id. Columns (structural_column, or a two-level family_instance such as an architectural column): the top level, with top_offset; or give height instead. Set and read back."" },
@@ -4973,14 +4973,14 @@ namespace Horizun.Contracts
                 Name = "horizun_federation_check",
                 Command = "horizun_federation_check",
                 Description =
-                    "Federation QA against declared rules, read-only: out-of-place categories per model (host and loaded links), " +
+                    "Federation QA against declared rules, read-only: out-of-place categories per model (host and loaded links), link levels, " +
                     "expected/missing/duplicate links, link workset and phase, and whether each link's shared coordinates match " +
                     "the host's (same site).",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""rules""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""rules"": { ""type"": ""object"", ""description"": ""{models:[{match (title regex or $host), allowed_categories?, forbidden_categories?}], expected_links:[{name_matches, count?, workset_matches?}], same_site?, levels_match?}"" },
+    ""rules"": { ""type"": ""object"", ""description"": ""{models:[{match (title regex or $host), allowed_categories?, forbidden_categories?}], expected_links:[{name_matches, count?, workset_matches?}], same_site?, levels_match?: true|{tolerance_mm}}"" },
     ""tolerance_mm"": { ""type"": ""number"" },
     ""max_items"": { ""type"": ""integer"" }
   },
@@ -7170,7 +7170,7 @@ namespace Horizun.Contracts
             {
                 ["type"] = "array", ["minItems"] = 2, ["maxItems"] = 100,
                 ["items"] = new JObject { ["type"] = "array", ["minItems"] = 3, ["maxItems"] = 3, ["items"] = new JObject { ["type"] = "number" } },
-                ["description"] = "Flex path, ends included. toposolid (Revit 2024+): the top surface, absolute internal coords."
+                ["description"] = "The flex path; ends included."
             };
             props["landxml_path"] = new JObject { ["type"] = "string" };
             props["desired_risers"]=new JObject { ["type"]="integer",["minimum"]=1,["maximum"]=1000 };
@@ -7204,7 +7204,8 @@ namespace Horizun.Contracts
                 if (pair.Key == "room_separator" || pair.Key == "area_boundary") specific["profile"]["items"]["minItems"] = 2;
                 if(pair.Key=="wall_profile") specific["profile"]["description"]="One simple contour in a vertical plane, absolute internal XYZ. No holes. Revit base normalization is checked against the resulting world-space side-face silhouette.";
                 if (pair.Key == "area_boundary") specific["profile"]["description"] = "One open chain; one line per curve.";
-                if (pair.Key == "toposolid") specific["landxml_path"]["description"] = "Instead of points: LandXML TIN file, shared coords; path#name picks a surface";
+                if (pair.Key == "toposolid") specific["landxml_path"]["description"] = "Instead of points: LandXML TIN, shared coords; path#name = surface";
+                if (pair.Key == "toposolid") specific["points"]["description"] = "Top surface; absolute internal coords.";
                 if (pair.Key == "sprinkler")
                 {
                     specific["host_id"]["description"] = "Host for a hosted/face sprinkler.";

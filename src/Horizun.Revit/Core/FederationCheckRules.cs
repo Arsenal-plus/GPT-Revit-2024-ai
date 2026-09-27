@@ -72,7 +72,8 @@ namespace Horizun.Revit.Core
             }
             string levels = ValidateLevelsMatch(rules["levels_match"]);
             if (levels != null) return levels;
-            if (rules["models"] == null && rules["expected_links"] == null && rules["same_site"] == null && rules["levels_match"] == null)
+            // A rule set to false asks for nothing: {levels_match: false} alone would otherwise pass having checked nothing.
+            if (rules["models"] == null && rules["expected_links"] == null && Off(rules["same_site"]) && Off(rules["levels_match"]))
                 return "rules declares nothing to check.";
             return null;
         }
@@ -182,7 +183,9 @@ namespace Horizun.Revit.Core
                 ? EvaluateLevels(rules, links, levelInput, toleranceMm, maxItems, out levelsDiffer, out levelsNotRead) : null;
 
             bool fails = outOfPlace > 0 || missing > 0 || duplicated > 0 || wrongWorkset > 0 || incoherent > 0 || levelsDiffer > 0;
-            bool open = unclassified > 0 || undecided > 0 || levelsNotRead > 0;
+            // Zero links compared is not a pass: with no link instance, or none readable, the rule looked at nothing.
+            int levelsCompared = levelRows == null ? 0 : levelRows.Count - levelsNotRead;
+            bool open = unclassified > 0 || undecided > 0 || levelsNotRead > 0 || (levelRows != null && levelsCompared == 0);
             var result = new JObject
             {
                 ["verdict"] = fails ? "fails" : open ? "not_decidable" : "passes",
@@ -207,6 +210,8 @@ namespace Horizun.Revit.Core
                 result["levels"] = levelRows;
                 result["summary"]["links_levels_differ"] = levelsDiffer;
                 result["summary"]["links_levels_not_read"] = levelsNotRead;
+                result["summary"]["links_compared"] = levelsCompared;
+                if (levelRows.Count == 0) result["levels_note"] = "the host has no link instance: levels_match compared nothing, which is not a pass.";
             }
             return result;
         }
