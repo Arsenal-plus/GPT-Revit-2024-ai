@@ -75,7 +75,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $fx = & $Ctx.Apply $F @{ target_document = $doc; units = 'mm'; requirement_set = $set
                                      source_audit = @{ finding_set_fingerprint = $au.data.finding_set_fingerprint; units = 'mm' }
                                      actions = @(@{ operation = 'set_view_display'; finding = $cite; view_id = $viewId; detail_level = $want }) } 'vd-fix'
-            $rows = if (Applied $fx) { @($fx.answer.data.rows) } else { @() }
+            $rows = @(if (Applied $fx) { $fx.answer.data.rows })
             $okRows = $rows.Count -gt 0 -and @($rows | Where-Object { $_.verified -ne $true }).Count -eq 0
             if ((Applied $fx) -and $fx.answer.data.state -eq 'verified_applied' -and $okRows) {
                 Case $names[1] $F 'pass' ("state=verified_applied rows=" + ($rows | ConvertTo-Json -Compress -Depth 6))
