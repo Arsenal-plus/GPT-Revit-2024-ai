@@ -308,6 +308,43 @@ ella; la persistencia se mide releyendo antes y después del commit, por año.
 
 
 
+### `horizun_export` — view sets, gbXML and family files
+
+- **DWG/DGN/DWFX view sets.** `format=dwg` with more than one `view_ids` (or with
+  `file_naming`/`dwg_xrefs`), `format=dgn` and `format=dwfx` write **one file per
+  view or sheet**, one exporter call each. `file_naming`: `ordinal`
+  (`<stem>-001-<id>`, the PDF shape, default), `view_name` (`<stem>-<view name>`)
+  or `sheet_number` (`<stem>-<number>-<name>`, sheets only). Names are sanitized
+  (dots too — exporters read what follows the last dot as an extension) and a
+  rule that gives two views one file refuses before anything is written.
+  `dwg_xrefs`: `linked` (default, `MergedViews=false`: a sheet's views and links
+  are xref files beside it) or `bound` (merged into the sheet's file). Each call
+  is snapshotted on its own, so the files that changed during call *i* belong to
+  view *i*; a view is verified when its planned file was written, is non-empty
+  and starts with the format's signature (`AC10xx`; an OLE container or a V7
+  header for DGN; a zip package for DWFX). Xrefs are checked the same way; any
+  other extra file fails the view. With more than 20 views the dry run says
+  `long_set: true`: send the apply through `horizun_submit_job`. DWFX runs in a
+  transaction that is rolled back (RevitAPI.xml documents the overload as
+  throwing on a non-modifiable document).
+- **gbXML** (`.xml`). Refused as **`no spaces`** when the document has no placed,
+  bounded room or MEP space — no empty campus is written. The export needs a main
+  energy analysis model: one is built from rooms/spaces (SpatialElement,
+  second-level boundaries; on 2027 via the energy settings' `RoomsOrSpaces` mode)
+  inside a transaction that is **rolled back** after the file is on disk, so the
+  model, its energy settings and any energy model it had are left as they were.
+  The written XML is re-read and its `Campus`/`Space`/`Zone`/`Surface`/`Opening`
+  counts reported in `read_back`; a file without a Space fails.
+- **Family `.rfa`.** `output_path` is an existing **folder**; exactly one of
+  `family_ids` (Family element ids) or `category` (`OST_` token or the name Revit
+  shows). Each loadable family is opened with `Document.EditFamily` (outside any
+  transaction — an in-memory copy), saved with
+  `SaveAsOptions{OverwriteExistingFile=false}` and closed without saving. In-place
+  families, non-editable families and system family types are refused **by
+  name**: with `family_ids` the whole call refuses, a `category` sweep lists them
+  in `refused`. `overwrite=true` and existing target files refuse. Each file is
+  verified by size and by `BasicFileInfo.Extract` reading its saved-in format.
+
 ## Groups and worksets
 
 ### `horizun_manage_groups`
