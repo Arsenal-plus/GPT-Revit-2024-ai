@@ -77,6 +77,9 @@ namespace Horizun.Revit.Commands
         public double CentreOffsetFt;
         /// <summary>What deleting the carrier takes along (ids, by category) as the plan measured it: remove names them as not restored.</summary>
         public JObject DeletedWithCarrier;
+        /// <summary>A kept or trimmed carrier's dependents before its change (id -> host id), and what the rehearsed change deleted or un-hosted (id -> deleted | unhosted).</summary>
+        public Dictionary<long, long> DependentsBefore;
+        public readonly Dictionary<long, string> ChangeLostMeasured = new Dictionary<long, string>();
 
         /// <summary>A point of the frame on the core centreline, at the base level's elevation.</summary>
         public XYZ At(double xMm, double levelZ) => new XYZ(Origin.X, Origin.Y, levelZ) + Dir * (xMm / 304.8) + Normal * CoreOffsetFt;
@@ -288,6 +291,17 @@ namespace Horizun.Revit.Commands
                 total += p.Members.Count;
                 if (total > MaxCurtainPiecesTotal) throw new ArgumentException("the plan exceeds " + MaxCurtainPiecesTotal + " curtain walls; frame fewer walls per call.");
                 foreach (long insert in fw.InsertIds) p.InsertsBefore[insert] = CurtainInsertState(doc, insert);
+                if (plan.Carrier.Action != CurtainFramingRoles.CarrierDelete)
+                {
+                    // What the change (location line, placeholder type, trimmed line) deletes or un-hosts among
+                    // the carrier's dependents, rehearsed and rolled back; measured last like the delete's
+                    // cascade, and the source read again afterwards.
+                    s.DependentsBefore = CarrierDependents(doc, wall, p.InsertsBefore.Keys);
+                    foreach (KeyValuePair<long, string> kv in MeasureCarrierChange(doc, wall, s)) s.ChangeLostMeasured[kv.Key] = kv.Value;
+                    p.Source = doc.GetElement(Rid.Make(sid)) ?? p.Source;
+                    if (s.ChangeLostMeasured.Count > 0)
+                        p.Warnings.Add("changing the carrier (" + plan.Carrier.Action + ") deletes or un-hosts " + s.ChangeLostMeasured.Count + " element(s) that depend on it (carrier.change_takes); the token binds them");
+                }
                 if (plan.Carrier.Action == CurtainFramingRoles.CarrierDelete)
                 {
                     // Measured last (FramingCurtainRemove.cs): the rolled-back delete may leave this
@@ -424,18 +438,80 @@ namespace Horizun.Revit.Commands
             // placeholder then narrows about the carrier's centre plane, where its doors and windows sit.
             // Then the planned line (on that plane) is asserted: whether setting the reference moved the
             // curve or the wall, the pair ends as planned (WallSplitExecutor's rule).
+            ChangeCarrier(carrier, s);
+        }
+
+        /// <summary>The kept or trimmed carrier's change: the same in the apply and in its rolled-back rehearsal (MeasureCarrierChange).</summary>
+        private static void ChangeCarrier(Wall carrier, CurtainSourceState s)
+        {
             Parameter keyRef = carrier.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM);
             if (keyRef != null && keyRef.AsInteger() != (int)WallLocationLine.WallCenterline) keyRef.Set((int)WallLocationLine.WallCenterline);
             carrier.ChangeTypeId(Rid.Make(long.Parse(s.Plan.Carrier.TypeKey, CultureInfo.InvariantCulture)));
             ((LocationCurve)carrier.Location).Curve = Line.CreateBound(s.NewStart, s.NewEnd);
         }
 
+        /// <summary>
+        /// What the carrier's planned change deletes or un-hosts among its dependents
+        /// (Element.GetDependentElements, its inserts apart): hosted or face-based families on the length
+        /// a trim removes or on faces a thinner type moves, sweeps, reveals. A rolled-back transaction.
+        /// </summary>
+        private static Dictionary<long, string> MeasureCarrierChange(Document doc, Wall carrier, CurtainSourceState s)
+        {
+            long cid = Rid.Value(carrier.Id);
+            using (var tx = new Transaction(doc, "Horizun: measure carrier change (rolled back)"))
+            {
+                if (tx.Start() != TransactionStatus.Started) throw new ArgumentException("wall " + cid + ": the carrier's change could not be measured (no transaction could start).");
+                try
+                {
+                    ChangeCarrier(carrier, s);
+                    doc.Regenerate();
+                    return LostDependents(doc, cid, s.DependentsBefore);
+                }
+                catch (Autodesk.Revit.Exceptions.ApplicationException ex)
+                {
+                    throw new ArgumentException("wall " + cid + ": the carrier's change could not be rehearsed (" + ex.Message + "); it is not changed unmeasured.", ex);
+                }
+                finally
+                {
+                    if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
+                }
+            }
+        }
+
+        /// <summary>The carrier's dependents other than itself and its inserts: id -> the id hosting it (-1: none).</summary>
+        private static Dictionary<long, long> CarrierDependents(Document doc, Wall carrier, ICollection<long> inserts)
+        {
+            long cid = Rid.Value(carrier.Id);
+            var map = new Dictionary<long, long>();
+            foreach (ElementId id in carrier.GetDependentElements(null))
+            {
+                long v = Rid.Value(id);
+                if (v != cid && !inserts.Contains(v)) map[v] = DependentHost(doc.GetElement(id));
+            }
+            return map;
+        }
+
+        private static long DependentHost(Element e) => e is FamilyInstance fi && fi.Host != null ? Rid.Value(fi.Host.Id) : -1;
+
+        /// <summary>Dependents gone (deleted), or no longer hosted by the carrier that hosted them (unhosted).</summary>
+        private static Dictionary<long, string> LostDependents(Document doc, long carrierId, Dictionary<long, long> before)
+        {
+            var lost = new Dictionary<long, string>();
+            foreach (KeyValuePair<long, long> kv in before ?? new Dictionary<long, long>())
+            {
+                Element e = doc.GetElement(Rid.Make(kv.Key));
+                if (e == null) lost[kv.Key] = "deleted";
+                else if (kv.Value == carrierId && DependentHost(e) != carrierId) lost[kv.Key] = "unhosted";
+            }
+            return lost;
+        }
+
         // ---- verifying ------------------------------------------------------------------
 
         private static PostconditionCheck VerifyCurtainWalls(Document doc, List<FramingSourcePlan> plans, JObject evidence)
         {
-            var check = new PostconditionCheck("curtain_wall_count", "curtain_types", "curtain_location", "curtain_base_top", "grid_spacing", "mullion_types", "carrier", "inserts_untouched", "carrier_cascade_as_measured", "pieces_not_embedded");
-            int planned = 0, found = 0, wrongType = 0, gridProblems = 0, mullionProblems = 0, carrierProblems = 0, insertsChanged = 0, cascadeDiffers = 0, embeddedWalls = 0;
+            var check = new PostconditionCheck("curtain_wall_count", "curtain_types", "curtain_location", "curtain_base_top", "grid_spacing", "mullion_types", "carrier", "inserts_untouched", "carrier_cascade_as_measured", "pieces_not_embedded", "carrier_change_as_measured");
+            int planned = 0, found = 0, wrongType = 0, gridProblems = 0, mullionProblems = 0, carrierProblems = 0, insertsChanged = 0, cascadeDiffers = 0, embeddedWalls = 0, changeDiffers = 0;
             double maxLoc = 0, maxBaseTop = 0;
             var rows = new JArray();
             foreach (FramingSourcePlan p in plans)
@@ -519,6 +595,14 @@ namespace Horizun.Revit.Commands
                     List<long> embedded = carrier.FindInserts(false, false, true, false).Where(id => doc.GetElement(id) is Wall).Select(Rid.Value).OrderBy(id => id).ToList();
                     carrierRow["embedded_walls"] = new JArray(embedded);
                     embeddedWalls += embedded.Count;
+                    if (!p.AlreadyApplied && s.DependentsBefore != null)
+                    {
+                        // The change must have taken exactly what its rehearsal measured and the token bound.
+                        Dictionary<long, string> took = LostDependents(doc, s.CarrierId, s.DependentsBefore);
+                        changeDiffers += took.Count(kv => !s.ChangeLostMeasured.TryGetValue(kv.Key, out string was) || was != kv.Value) + s.ChangeLostMeasured.Keys.Count(id => !took.ContainsKey(id));
+                        carrierRow["change_took"] = JObject.FromObject(took);
+                        carrierRow["change_took_measured"] = JObject.FromObject(s.ChangeLostMeasured);
+                    }
                 }
                 insertsChanged += changed;
                 carrierRow["inserts_checked"] = p.InsertsBefore.Count;
@@ -539,6 +623,7 @@ namespace Horizun.Revit.Commands
             check.Compare("inserts_untouched", 0, insertsChanged);
             check.Compare("carrier_cascade_as_measured", 0, cascadeDiffers);
             check.Compare("pieces_not_embedded", 0, embeddedWalls);
+            check.Compare("carrier_change_as_measured", 0, changeDiffers);
             evidence["sources"] = rows;
             return check;
         }
@@ -677,6 +762,13 @@ namespace Horizun.Revit.Commands
                         ["opening_id"] = s.Plan.Carrier.OpeningId,
                         ["location_line"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? null : "wall_centreline: set before the type change, so the placeholder stays centred where the carrier was",
                         ["placeholder_offset_from_pieces_mm"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? null : (JToken)Math.Round((s.CoreOffsetFt - s.CentreOffsetFt) * 304.8, 1),
+                        ["change_takes"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete || p.AlreadyApplied ? null : new JObject
+                        {
+                            ["count"] = s.ChangeLostMeasured.Count,
+                            ["by_kind"] = JObject.FromObject(s.ChangeLostMeasured.GroupBy(kv => kv.Value).ToDictionary(g => g.Key, g => g.Count())),
+                            ["by_category"] = JObject.FromObject(s.ChangeLostMeasured.Keys.GroupBy(id => CategoryLabel(doc, id)).ToDictionary(g => g.Key, g => g.Count())),
+                            ["ids"] = new JArray(s.ChangeLostMeasured.Keys.OrderBy(id => id).Take(SummaryMemberCap)),
+                        },
                         ["replaced_by"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? "every curtain_segment piece" : null,
                         ["overlap"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierKeep ? CurtainFramingRules.OverlapNote() : null,
                         ["deleted_with_it"] = s.Plan.Carrier.Action != CurtainFramingRoles.CarrierDelete || p.AlreadyApplied ? null : new JObject

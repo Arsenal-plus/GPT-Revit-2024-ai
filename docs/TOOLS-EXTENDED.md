@@ -1982,7 +1982,11 @@ profile as the border mullions; 1002 is the type for the pieces above and below 
   `carrier.placeholder_offset_from_pieces_mm` says how far that plane is from the pieces' core
   centreline. Refused by name: a carrier with an embedded wall (a storefront), and a wall whose
   every piece would be empty or below `min_segment_mm`. `header_type_id` and `sill_type_id` are
-  Curtain Wall types other than the placeholder.
+  Curtain Wall types other than the placeholder. What changing a kept or trimmed carrier deletes or
+  un-hosts among the elements that depend on it (`Element.GetDependentElements`: hosted and
+  face-based families on the length a trim removes or on faces a thinner type moves, sweeps,
+  reveals) is rehearsed in a rolled-back transaction, listed in `carrier.change_takes`, bound by
+  the token and re-read after the commit (`carrier_change_as_measured`).
 - **Verification:** every piece by marker - type, line within 1 mm of the plan, base and top; its
   vertical grid (Fixed Distance: every interior spacing within 1 mm and no edge bay wider than one
   spacing; other layouts: count and first/last line); mullion types per role against the type's

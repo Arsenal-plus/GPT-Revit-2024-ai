@@ -299,8 +299,11 @@ namespace Horizun.Revit.Commands
         /// <summary>What the apply's token binds for the carriers it deletes ("" when none).</summary>
         private static string CurtainCascadeKey(List<FramingSourcePlan> plans)
         {
-            List<string> parts = plans.Where(p => p.Curtain != null && !p.AlreadyApplied && p.Curtain.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete)
-                .Select(p => p.Curtain.CarrierId.ToString(CultureInfo.InvariantCulture) + ">" + string.Join(",", p.Curtain.CarrierDeleteMeasured.Select(id => id.ToString(CultureInfo.InvariantCulture))))
+            // A deleted carrier binds its delete's cascade (">"); a kept or trimmed one what its change takes ("~").
+            List<string> parts = plans.Where(p => p.Curtain != null && !p.AlreadyApplied)
+                .Select(p => p.Curtain.CarrierId.ToString(CultureInfo.InvariantCulture) + (p.Curtain.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete
+                    ? ">" + string.Join(",", p.Curtain.CarrierDeleteMeasured.Select(id => id.ToString(CultureInfo.InvariantCulture)))
+                    : "~" + string.Join(",", p.Curtain.ChangeLostMeasured.OrderBy(kv => kv.Key).Select(kv => kv.Key.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value))))
                 .ToList();
             return parts.Count == 0 ? "" : "|carrier_cascade:" + string.Join(";", parts);
         }
@@ -313,9 +316,16 @@ namespace Horizun.Revit.Commands
         /// <summary>Delete rows for what the carrier's delete takes along (as measured and bound), so plan_resolved counts them.</summary>
         private static IEnumerable<PlannedElement> CurtainCascadeRows(Document doc, FramingSourcePlan p, JObject request)
         {
-            if (!DeletesCarrier(p)) yield break;
-            foreach (long id in p.Curtain.CarrierDeleteMeasured)
-                if (RestoreLookup(doc, id) is Element e) yield return ModelEditRunner.Planned(e, PlannedAction.Delete, request);
+            if (p.Curtain == null || p.AlreadyApplied) yield break;
+            if (DeletesCarrier(p))
+            {
+                foreach (long id in p.Curtain.CarrierDeleteMeasured)
+                    if (RestoreLookup(doc, id) is Element gone) yield return ModelEditRunner.Planned(gone, PlannedAction.Delete, request);
+                yield break;
+            }
+            // A kept or trimmed carrier: what its change deletes, and what it un-hosts (modified).
+            foreach (KeyValuePair<long, string> kv in p.Curtain.ChangeLostMeasured)
+                if (RestoreLookup(doc, kv.Key) is Element lost) yield return ModelEditRunner.Planned(lost, kv.Value == "deleted" ? PlannedAction.Delete : PlannedAction.Modify, request);
         }
 
         /// <summary>The restores' resolved-plan rows: a kept or trimmed carrier is modified, a deleted one is created again.</summary>
