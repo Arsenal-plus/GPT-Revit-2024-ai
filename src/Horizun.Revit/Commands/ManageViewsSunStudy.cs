@@ -6,6 +6,9 @@
 // optionally the site's latitude/longitude - ONE action of the batch's single
 // transaction.
 //
+//   * The instants are read by JSON token (SunStudyRules.FromJson) and the request is
+//     parsed verbatim (ParseVerbatim): an ISO string turned into a Date token and
+//     printed back loses its offset, which refused every valid instant.
 //   * The request is decided by the pure SunStudyRules: an instant without an
 //     offset, an end on a still sun, a study without an end and a lone lat or lon
 //     are refused by name in the rehearsal, never completed with a guess.
@@ -23,14 +26,16 @@
 //   * The resolved plan binds the settings' current type, instants and the site
 //     coordinates, so a change made between rehearsal and apply refuses the token.
 //   * After the commit the view's settings are re-read: type, start and end within
-//     SunStudyRules.InstantTolerance, and the site's lat/lon in radians. The
+//     SunStudyRules.InstantTolerance, sunrise-to-sunset OFF for a study, and the site's lat/lon in radians. The
 //     settings' own Latitude/Longitude are reported raw and NOT judged: their unit
 //     is not documented.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using Autodesk.Revit.DB;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
 
@@ -40,22 +45,23 @@ namespace Horizun.Revit.Commands
     {
         internal static bool IsSunStudyOperation(string op) => string.Equals(op, "set_sun_study", StringComparison.OrdinalIgnoreCase);
 
-        private static double? SunDegrees(JObject sun, string field)
+        /// <summary>
+        /// The request with every string kept a string. JObject.Parse turns ISO-looking text
+        /// into Date tokens that print back without their offset - a sun instant, or a view
+        /// named like a timestamp, would not be what was sent. Trailing content still refuses.
+        /// </summary>
+        internal static JObject ParseVerbatim(string json)
         {
-            JToken t = sun[field];
-            if (t == null || t.Type == JTokenType.Null) return null;
-            if (t.Type != JTokenType.Integer && t.Type != JTokenType.Float)
-                throw new ArgumentException("sun." + field + " must be a number of degrees.");
-            return t.Value<double>();
+            using (var reader = new JsonTextReader(new StringReader(json)) { DateParseHandling = DateParseHandling.None })
+            {
+                JObject request = JObject.Load(reader);
+                while (reader.Read()) { }
+                return request;
+            }
         }
 
-        private static SunStudyRequest ReadSunStudy(JObject a)
-        {
-            if (!(a["sun"] is JObject sun))
-                throw new ArgumentException("set_sun_study needs sun: {type: still|single_day|multi_day, start, end, lat, lon}.");
-            return SunStudyRules.Parse(sun.Value<string>("type"), sun.Value<string>("start"), sun.Value<string>("end"),
-                                       SunDegrees(sun, "lat"), SunDegrees(sun, "lon"));
-        }
+        // By token, not by Value<string>: a Date token printed as text has lost its offset.
+        private static SunStudyRequest ReadSunStudy(JObject a) => SunStudyRules.FromJson(a["sun"] as JObject);
 
         private static SunAndShadowType RevitSunType(SunStudyKind kind) =>
             kind == SunStudyKind.Still ? SunAndShadowType.StillImage :
@@ -201,9 +207,12 @@ namespace Horizun.Revit.Commands
                 }
                 catch { siteOk = false; }
             }
+            // A study left on sunrise-to-sunset ignores the start and end just written.
+            bool sunriseOk = r.Kind == SunStudyKind.Still || !s.SunriseToSunset;
             detail["reread"] = now;
-            detail["checks"] = new JObject { ["type"] = typeOk, ["start"] = startOk, ["end"] = endOk, ["site"] = siteOk };
-            bool ok = typeOk && startOk && endOk && siteOk;
+            detail["checks"] = new JObject { ["type"] = typeOk, ["start"] = startOk, ["end"] = endOk, ["site"] = siteOk,
+                                             ["sunrise_to_sunset_off"] = sunriseOk };
+            bool ok = typeOk && startOk && endOk && siteOk && sunriseOk;
             detail["verified"] = ok;
             return ok;
         }

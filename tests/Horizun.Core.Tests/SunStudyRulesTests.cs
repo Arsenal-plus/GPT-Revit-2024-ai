@@ -1,5 +1,7 @@
 using System;
 using Horizun.Revit.Core;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Horizun.Core.Tests
@@ -102,6 +104,40 @@ namespace Horizun.Core.Tests
             Assert.Equal(-74.1, SunStudyRules.ToDegrees(rad), 12);
             Assert.True(SunStudyRules.SameAngle(rad, rad + 5e-8));
             Assert.False(SunStudyRules.SameAngle(rad, rad + 1e-5));
+        }
+
+        [Fact]
+        public void An_offset_instant_survives_the_json_layer_that_turns_it_into_a_date()
+        {
+            // JObject.Parse's default DateParseHandling makes these Date tokens; read as
+            // Value<string> they printed as '06/21/2026 08:00:00' and every one was refused.
+            JObject request = JObject.Parse("{\"actions\":[{\"operation\":\"set_sun_study\",\"view_id\":1,\"sun\":" +
+                "{\"type\":\"single_day\",\"start\":\"2026-06-21T08:00:00-05:00\",\"end\":\"2026-06-21T18:00:00Z\",\"lat\":4.6,\"lon\":-74.1}}]}");
+            var sun = (JObject)request["actions"][0]["sun"];
+            Assert.Equal(JTokenType.Date, sun["start"].Type);
+            SunStudyRequest r = SunStudyRules.FromJson(sun);
+            Assert.Equal(new DateTime(2026, 6, 21, 13, 0, 0, DateTimeKind.Utc), r.StartUtc);
+            Assert.Equal(new DateTime(2026, 6, 21, 18, 0, 0, DateTimeKind.Utc), r.EndUtc.Value);
+            Assert.Equal(4.6, r.LatitudeDegrees.Value, 9);
+        }
+
+        [Fact]
+        public void A_date_token_without_an_offset_is_still_refused()
+        {
+            JObject sun = JObject.Parse("{\"type\":\"still\",\"start\":\"2026-06-21T08:00:00\"}");
+            Assert.Equal(JTokenType.Date, sun["start"].Type);
+            var ex = Assert.Throws<ArgumentException>(() => SunStudyRules.FromJson(sun));
+            Assert.Contains("offset", ex.Message);
+        }
+
+        [Fact]
+        public void A_verbatim_request_parses_the_same_instant()
+        {
+            var settings = new JsonSerializerSettings { DateParseHandling = DateParseHandling.None };
+            JObject sun = JsonConvert.DeserializeObject<JObject>("{\"type\":\"still\",\"start\":\"2026-06-21T08:00:00-05:00\"}", settings);
+            Assert.Equal(JTokenType.String, sun["start"].Type);
+            Assert.Equal(new DateTime(2026, 6, 21, 13, 0, 0, DateTimeKind.Utc), SunStudyRules.FromJson(sun).StartUtc);
+            Assert.Throws<ArgumentException>(() => SunStudyRules.FromJson(null));
         }
     }
 }

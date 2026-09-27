@@ -49,7 +49,11 @@ namespace Horizun.Revit.Core
             return Orient(eye, f, up);
         }
 
-        /// <summary>N cameras from one eye, turned about world Z in steps of 360/N, keeping the pitch of eye->target.</summary>
+        /// <summary>
+        /// N cameras from one eye, turned about world Z in steps of 360/N, keeping the pitch of
+        /// eye->target. The WHOLE camera turns, a given up included: held fixed in world space it
+        /// would roll each view differently and, at some azimuth, lie along the line of sight.
+        /// </summary>
         public static IList<CameraTriple> Fan(double[] eye, double[] target, int count, double[] up = null)
         {
             if (count < 1 || count > MaxFan)
@@ -62,9 +66,10 @@ namespace Horizun.Revit.Core
             double az0 = Math.Atan2(first.Forward[1], first.Forward[0]);
             for (int k = 1; k < count; k++)
             {
-                double az = az0 + 2 * Math.PI * k / count;
+                double turn = 2 * Math.PI * k / count;
+                double az = az0 + turn;
                 var f = new[] { horizontal * Math.Cos(az), horizontal * Math.Sin(az), first.Forward[2] };
-                cameras.Add(Orient(eye, f, up));
+                cameras.Add(Orient(eye, f, up == null ? null : TurnZ(up, turn)));
             }
             return cameras;
         }
@@ -89,6 +94,12 @@ namespace Horizun.Revit.Core
             if (Norm(Sub(a.Eye, b.Eye)) > lengthTolerance) return false;
             double cosTol = Math.Cos(angleDegrees * Math.PI / 180.0);
             return Dot(Unit(a.Forward), Unit(b.Forward)) >= cosTol && Dot(Unit(a.Up), Unit(b.Up)) >= cosTol;
+        }
+
+        private static double[] TurnZ(double[] v, double angle)
+        {
+            double c = Math.Cos(angle), s = Math.Sin(angle);
+            return new[] { v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2] };
         }
 
         private static CameraTriple Orient(double[] eye, double[] forward, double[] up)

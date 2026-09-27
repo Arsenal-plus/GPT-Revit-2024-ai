@@ -90,5 +90,22 @@ namespace Horizun.Core.Tests
             Assert.Equal("Cam", PerspectiveRules.ViewName("Cam", cams[0], 1));
             Assert.Null(PerspectiveRules.ViewName("  ", cams[0], 4));
         }
+
+        [Fact]
+        public void A_fan_turns_a_given_up_with_each_camera()
+        {
+            // Along +Y with up +X: held fixed in world space, the 180-degree member would look
+            // along -X, parallel to that up, and the whole fan would be refused.
+            var fan = PerspectiveRules.Fan(new[] { 0.0, 0.0, 0.0 }, new[] { 0.0, 10.0, 0.0 }, 4, new[] { 1.0, 0.0, 0.0 });
+            Assert.Equal(4, fan.Count);
+            Assert.Equal(-1.0, fan[2].Forward[1], 9);
+            Assert.Equal(-1.0, fan[2].Up[0], 9);
+            foreach (var c in fan)
+            {
+                // Same roll for every member: up stays horizontal and square to forward.
+                Assert.Equal(0.0, c.Up[2], 9);
+                Assert.Equal(0.0, c.Forward[0] * c.Up[0] + c.Forward[1] * c.Up[1] + c.Forward[2] * c.Up[2], 9);
+            }
+        }
     }
 }

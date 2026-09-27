@@ -71,7 +71,7 @@ namespace Horizun.Revit.Commands
         /// </summary>
         private static string PerspectiveName(string name, CameraTriple c, int count) => PerspectiveRules.ViewName(name, c, count);
 
-        internal static void ValidatePerspective(Document doc, JObject a)
+        internal static void ValidatePerspective(Document doc, JObject a, Dictionary<string, Type> known)
         {
             IList<CameraTriple> cams = PerspectiveCameras(a, UnitsOf(a));
             OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional);
@@ -86,7 +86,23 @@ namespace Horizun.Revit.Commands
                 string wanted = PerspectiveName(name, c, cams.Count);
                 if (taken.Contains(wanted))
                     throw new ArgumentException("a 3D view is already named '" + wanted + "'; give create_perspective another name. Nothing was written.");
+                Reserve3DViewName(wanted, known);
             }
+        }
+
+        /// <summary>
+        /// A 3D view name this batch will write, reserved in `known` like the batch's sheet
+        /// numbers: two creates of one name (a perspective, a fan member, a create_3d) each
+        /// pass the check against the document and then roll the whole batch back at apply.
+        /// </summary>
+        internal static void Reserve3DViewName(string wanted, Dictionary<string, Type> known)
+        {
+            if (string.IsNullOrWhiteSpace(wanted)) return;
+            string reserved = "view3d-name:" + wanted;
+            if (known.ContainsKey(reserved))
+                throw new ArgumentException("the 3D view name '" + wanted + "' appears twice in this batch; each view " +
+                                            "needs its own. Nothing was written.");
+            known.Add(reserved, typeof(View3D));
         }
 
         private static JArray Arr3(double[] v) => new JArray(v[0], v[1], v[2]);

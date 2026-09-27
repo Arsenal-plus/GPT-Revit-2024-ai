@@ -25,7 +25,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : ParseVerbatim(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -349,7 +349,7 @@ namespace Horizun.Revit.Commands
                     case "create_floor_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.FloorPlan); break;
                     case "create_ceiling_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.CeilingPlan); break;
                     case "create_structural_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.StructuralPlan); break;
-                    case "create_3d": OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); break;
+                    case "create_3d": OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); Reserve3DViewName(a.Value<string>("name"), known); break;
                     case "create_drafting": OptionalViewFamilyType(doc, a, ViewFamily.Drafting); break;
                     case "create_section": OptionalViewFamilyType(doc, a, ViewFamily.Section); SectionBox(a, 1); break;
                     case "create_elevation":
@@ -573,7 +573,7 @@ namespace Horizun.Revit.Commands
                         // Register-wide renumbering by map. See ManageViewsRenumber.cs.
                         if (IsRenumberOperation(op)) { ValidateRenumber(doc, a, known); break; }
                         // A camera from eye/target/up, or a fan of them. See ManageViewsPerspective.cs.
-                        if (IsPerspectiveOperation(op)) { ValidatePerspective(doc, a); break; }
+                        if (IsPerspectiveOperation(op)) { ValidatePerspective(doc, a, known); break; }
                         // A view's sun: still, single-day or multi-day. See ManageViewsSunStudy.cs.
                         if (IsSunStudyOperation(op)) { ValidateSunStudy(doc, a, known); break; }
                         // A capability gap, not a fixable argument: this command implements a

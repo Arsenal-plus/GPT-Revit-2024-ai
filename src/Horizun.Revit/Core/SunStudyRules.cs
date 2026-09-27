@@ -16,12 +16,18 @@
 //     quietly clamping it).
 //   * lat/lon come together or not at all, in degrees within their ranges. They
 //     move the PROJECT site (every view's sun), which the command discloses.
+//   * The instants are read BY TOKEN (FromJson): JObject.Parse turns an ISO string
+//     into a Date token before any rule sees it, and printing that token back drops
+//     the offset - every valid instant would be refused. A Date token keeps its
+//     instant through its Kind (offset -> Local, 'Z' -> Utc); Unspecified means the
+//     text had no offset and is refused like the text form.
 //   * SameInstant is the re-read test: Revit hands the instant back in UTC, and a
 //     minute of tolerance absorbs its rounding without hiding a wrong hour.
 // -----------------------------------------------------------------------------
 using System;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -101,6 +107,58 @@ namespace Horizun.Revit.Core
                 request.LongitudeDegrees = lon;
             }
             return request;
+        }
+
+        /// <summary>
+        /// The request's sun object as the JSON layer hands it over - strings, or Date tokens
+        /// when the request was parsed with JObject.Parse's default DateParseHandling.
+        /// </summary>
+        public static SunStudyRequest FromJson(JObject sun)
+        {
+            if (sun == null)
+                throw new ArgumentException("set_sun_study needs sun: {type: still|single_day|multi_day, start, end, lat, lon}.");
+            return Parse(sun.Value<string>("type"), InstantText(sun["start"], "start"), InstantText(sun["end"], "end"),
+                         Degrees(sun, "lat"), Degrees(sun, "lon"));
+        }
+
+        /// <summary>
+        /// One instant as text the offset test can judge. A string is taken verbatim. A Date
+        /// token was already parsed: an explicit offset arrives as DateTimeKind.Local (the same
+        /// instant in this machine's zone) and 'Z' as Utc, both written back as the UTC they
+        /// name; Unspecified had NO offset and is refused, because the zone would be a guess.
+        /// </summary>
+        public static string InstantText(JToken token, string field)
+        {
+            if (token == null || token.Type == JTokenType.Null) return null;
+            if (token.Type == JTokenType.String) return (string)token;
+            if (token.Type == JTokenType.Date)
+            {
+                object value = ((JValue)token).Value;
+                if (value is DateTimeOffset offset) return offset.UtcDateTime.ToString(UtcText, CultureInfo.InvariantCulture);
+                if (value is DateTime instant)
+                {
+                    if (instant.Kind == DateTimeKind.Unspecified)
+                        throw new ArgumentException("sun." + field + " has no offset (" +
+                            instant.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture) + "): give it as " +
+                            "...-05:00 or ...Z. An instant without one would be a guess about the time zone.");
+                    DateTime utc = instant.Kind == DateTimeKind.Local ? instant.ToUniversalTime() : instant;
+                    return utc.ToString(UtcText, CultureInfo.InvariantCulture);
+                }
+            }
+            throw new ArgumentException("sun." + field + " must be an ISO-8601 date-time string with its offset (got a " + token.Type + ").");
+        }
+
+        // Seven fixed fraction digits: never a bare '.' before the 'Z', whatever the ticks.
+        private const string UtcText = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'";
+
+        /// <summary>An optional number of degrees; anything but a number is refused by name.</summary>
+        public static double? Degrees(JObject sun, string field)
+        {
+            JToken t = sun[field];
+            if (t == null || t.Type == JTokenType.Null) return null;
+            if (t.Type != JTokenType.Integer && t.Type != JTokenType.Float)
+                throw new ArgumentException("sun." + field + " must be a number of degrees.");
+            return t.Value<double>();
         }
 
         public static string Name(SunStudyKind kind) => kind == SunStudyKind.Still ? "still" : kind == SunStudyKind.SingleDay ? "single_day" : "multi_day";
