@@ -2090,3 +2090,69 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+## MEP and structural analysis reads (read-only)
+
+Three reads of numbers Revit already holds. None of them calculates anything,
+and none of them carries a limit, factor or standard of its own: limits and
+tolerances are arguments.
+
+### horizun_plan_mep operation=system_analysis
+
+Reads the critical path of duct (`MechanicalSystem`) and pipe (`PipingSystem`)
+systems as Revit computed it: `MEPSystem.GetCriticalPathSectionNumbers()` in flow
+order, then per `MEPSection` the flow (l/s), velocity (m/s), total pressure loss
+(Pa), friction (Pa/m) and curve length (mm), all through `UnitUtils`.
+
+- **Scope**: `element_ids` are system ids (anything else is refused by name).
+  Without them, `kind` (`pipe`/`duct`, omitted = both) and `classification`
+  (a `MEPSystemClassification` name such as `SupplyAir`, `DomesticColdWater`)
+  select every matching system. More than 100 systems per call is refused.
+- **Limits**: `limits = { max_velocity_m_s, max_pressure_loss_pa,
+  max_friction_pa_per_m }`. An unknown key is refused, not ignored. Sections
+  beyond a limit are listed under `beyond_limits` with up to 50 element ids.
+- **The calculation level decides what may be judged.** `None`, `Performance`
+  and `Volume` are `not_calculated`: the section numbers are NOT read, because
+  they read as zero and would pass any limit. `Flow` claims flow and velocity but
+  not pressure: a pressure or friction limit on such a system is listed in
+  `unmeasured_limits`. Only `All` claims both.
+- **Verdicts per system**: `beyond_limits`, `within_limits` (every limit measured
+  on every critical-path section), `limits_partly_unmeasured` (not a pass),
+  `no_limits_given`, `not_calculated`, `unreadable`, `no_critical_path`
+  (a calculated system with no base equipment or badly connected) and
+  `critical_path_unreadable`. None of them is "ok".
+- `critical_path_pressure_loss_pa` is the sum of the critical-path section losses,
+  published only when every one of them was read.
+
+### horizun_query_structure mode=analytical
+
+Revit 2023+ analytical model: every `AnalyticalMember` and `AnalyticalPanel`
+(paged with `offset`/`max_rows`, narrowed by `element_ids`).
+
+- **Association** with the physical model through
+  `AnalyticalToPhysicalAssociationManager`. Revit 2023 has only the singular
+  `GetAssociatedElementId`; 2024+ reads the one-to-many
+  `GetAssociatedElementIds`. `association` is `associated`, `none` or
+  `unreadable`.
+- **Members**: start/end (mm), length, section type, cross-section rotation,
+  and releases per end: `GetReleaseType(start)` plus the six
+  `ReleaseConditions` flags (`true` = released).
+- **Node gaps**: a member end farther than `tolerance_mm` from every OTHER
+  analytical curve (members and panel outer contours) is listed with its nearest
+  distance and element. It is measured to the nearest point ON each curve, so a
+  beam framing into mid-girder is connected. Default tolerance: Revit's own
+  `VertexTolerance`, reported as `tolerance_source`. Every analytical element of
+  the model is a target, whatever the page shows. Above 50,000,000 end x segment
+  checks the gap check is NOT run and says so (`node_gaps_measured: false`).
+- **Physical without analytical**: structural framing, structural columns,
+  structural foundations and walls/floors flagged structural whose
+  `HasAssociation` is false (up to 200 ids listed, with the full count).
+- Each row carries `unread` and its own `coverage` word.
+
+### horizun_query_structure mode=loads
+
+Point, line and area loads with load case (id, name, number), nature, category,
+reaction flag, host and orientation. Magnitudes through `UnitUtils`: point force
+kN, point moment kN*m, line force kN/m, line moment kN*m/m, area force kN/m2,
+area m2, positions mm. `counts` per kind and `by_load_case` count every load in
+scope, not only the page. Nothing is judged.
