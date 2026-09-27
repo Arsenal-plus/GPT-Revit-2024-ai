@@ -4683,7 +4683,7 @@ namespace Horizun.Contracts
       ""description"": ""carbon (required): kgCO2e per m3 or per kg, keyed by material name or class. None compiled in."" },
     ""factor_source"": { ""type"": ""string"", ""description"": ""carbon (required): where the factors came from (EPD list, EC3 export)."" },
     ""mode"": { ""type"": ""string"", ""enum"": [""volume"", ""takeoff"", ""room_finishes"", ""carbon""], ""default"": ""volume"",
-      ""description"": ""volume: the three-source reconciliation above (default). takeoff: measure the caller-named 'quantities' per element with 'classification_parameter', for horizun_budget_compare. The takeoff-only keys are REFUSED in volume mode rather than ignored."" },
+      ""description"": ""volume: 3-source m3 check (default). takeoff: caller quantities by code. room_finishes: gross room faces, openings apart. carbon: materials x caller factors."" },
     ""quantities"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50,
       ""description"": ""takeoff only. Each: {name, source, parameter?, unit}. source parameter reads a named parameter (instance first, then type; Length/Area/Volume specs come back in m/m2/m3 and 'unit' must say so; other specs raw in your unit; text is invalid, never parsed). geometry_volume (m3) and geometry_area (m2: the total face area of the solids) read the geometry at detail_level; length (m) reads the location curve; count is 1 per element. 'unit' is yours and is written on every reading - nothing is compiled in."",
       ""items"": { ""type"": ""object"", ""required"": [""name"", ""source"", ""unit""], ""additionalProperties"": false,
