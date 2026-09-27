@@ -19,11 +19,13 @@
 //     its model fingerprint: a model that moved is refused naming what moved.
 //   * Revit waits forever for a locked central by default; this call gives up at
 //     once, because nobody is at the keyboard to read an answer that arrives later.
-//   * After the sync, everything measured before is looked up again by UniqueId
-//     (an ElementId may change across a sync), ownership is held against the
-//     relinquish choice, the sample is re-read, HasAllChangesFromCentral() must be
-//     true and a save must be witnessed. A sync that returned but did not verify is
-//     reported as exactly that - it happened, and it did not verify.
+//   * After the sync, HasAllChangesFromCentral() is read at once (it describes the
+//     central NOW: false is someone else's later sync - unmeasured, not a failure),
+//     everything measured before is looked up again by UniqueId (an ElementId may
+//     change across a sync), ownership is held against the relinquish choice, the
+//     sample is re-read and a save must be witnessed. A sync that returned but did not
+//     verify is reported as exactly that - it happened, and it did not verify. A
+//     documented precondition throw is re-read too before it is called "nothing moved".
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -93,6 +95,11 @@ namespace Horizun.Revit.Commands
             if (!SyncWithCentralRules.TryParseRelinquish(request.Value<string>("relinquish"), out SyncRelinquish choice))
                 return SyncRefuse("invalid_relinquish", "relinquish must be all, keep_borrowed or none. Nothing ran.");
             string comment = request.Value<string>("comment") ?? "";
+            // The options' Comment setter throws above this: refused here, so a preview never
+            // issues a token for a request its apply could not run.
+            if (comment.Length > SyncWithCentralRules.MaxCommentChars)
+                return SyncRefuse("invalid_comment", "comment is " + comment.Length + " characters; Revit accepts at most " +
+                    SyncWithCentralRules.MaxCommentChars + " (SynchronizeWithCentralOptions.Comment). Nothing ran.");
             bool compact = request.Value<bool?>("compact") ?? false;
 
             string pickError = PickDocument(app, request, out Document doc, requireExplicitTarget: true);
@@ -122,10 +129,11 @@ namespace Horizun.Revit.Commands
                 if (central != null) centralPath = ModelPathUtils.ConvertModelPathToUserVisiblePath(central);
             }
             catch { }
-            bool? readOnlyNow = null, transactionOpen = null;
+            bool? readOnlyNow = null, transactionOpen = null, readOnlyFile = null;
             try { readOnlyNow = doc.IsReadOnly; } catch { }
             try { transactionOpen = doc.IsModifiable; } catch { }
-            SyncRefusal pre = SyncWithCentralRules.PreconditionRefusal(readOnlyNow, transactionOpen, hasCentral);
+            try { readOnlyFile = doc.IsReadOnlyFile; } catch { }
+            SyncRefusal pre = SyncWithCentralRules.PreconditionRefusal(readOnlyNow, transactionOpen, hasCentral, readOnlyFile);
             if (pre != null) return SyncRefuse(pre.Code, "'" + title + "' " + pre.Message);
 
             var clock = Stopwatch.StartNew();
@@ -220,16 +228,28 @@ namespace Horizun.Revit.Commands
                     "REFUSING TO SYNCHRONIZE '" + title + "': " + check.Message + " Run operation=sync_with_central " +
                     "with dry_run=true again and confirm the new estimate. Nothing was synchronized.");
 
-            var options = new SynchronizeWithCentralOptions
+            SynchronizeWithCentralOptions options;
+            TransactWithCentralOptions transact;
+            try
             {
-                Comment = comment,
-                Compact = compact,
-                SaveLocalBefore = true,
-                SaveLocalAfter = true
-            };
-            options.SetRelinquishOptions(BuildRelinquish(choice));
-            var transact = new TransactWithCentralOptions();
-            transact.SetLockCallback(new GiveUpWhenCentralLocked());
+                options = new SynchronizeWithCentralOptions
+                {
+                    Comment = comment,
+                    Compact = compact,
+                    SaveLocalBefore = true,
+                    SaveLocalAfter = true
+                };
+                options.SetRelinquishOptions(BuildRelinquish(choice));
+                transact = new TransactWithCentralOptions();
+                transact.SetLockCallback(new GiveUpWhenCentralLocked());
+            }
+            catch (Exception ex)
+            {
+                // Building the options touches no document: a throw here is refused before the call.
+                return SyncRefuse("sync_options_rejected",
+                    "Revit rejected the synchronize options for '" + title + "' (" + ex.GetType().Name + ": " + ex.Message +
+                    "). SynchronizeWithCentral was not called; nothing was synchronized. Preview again.");
+            }
 
             DateTime? centralWriteBefore = CentralWriteTime(centralPath);
             string syncError = null;
@@ -240,23 +260,53 @@ namespace Horizun.Revit.Commands
                 syncError = ex.GetType().Name + ": " + ex.Message;
                 failure = SyncWithCentralRules.ClassifyFailure(ex.GetType().FullName);
             }
-            if (syncError != null && failure == SyncFailureKind.NotStarted)
-                return SyncRefuse("sync_precondition_failed",
-                    "SynchronizeWithCentral refused '" + title + "' before doing anything (" + syncError + "): that " +
-                    "exception is one of its documented preconditions (read-only, open transaction or edit mode, no " +
-                    "central, local not owned by this user or read-only). Nothing was synchronized.");
-
-            SyncCensus after = TakeSyncCensus(doc);
-            SyncVerdict ownership = SyncWithCentralRules.VerifyOwnership(choice,
-                before.OwnedWorksets, before.Uids(before.OwnedIds), before.Uids(before.BorrowedIds),
-                after.OwnedWorksets, after.Uids(after.OwnedIds), after.Unreadable, uid => ElementExists(doc, uid));
-            Dictionary<string, string> statusAfter = ReadUpdateStatuses(doc, sample);
-            SyncVerdict updates = SyncWithCentralRules.VerifyUpdates(statusAfter);
-            bool? modifiedAfter = SafeModified(doc);
+            // Read FIRST: it asks the central about itself NOW, and every second the census below
+            // takes is a second in which another user's sync can make it false.
             bool? hasAllAfter = HasAllChanges(doc, out string hasAllAfterError);
+            SyncCensus after = TakeSyncCensus(doc);
+            bool? modifiedAfter = SafeModified(doc);
             DateTime? centralWriteAfter = CentralWriteTime(centralPath);
             bool? centralAdvanced = centralWriteBefore == null || centralWriteAfter == null
                 ? (bool?)null : centralWriteAfter.Value > centralWriteBefore.Value;
+
+            if (syncError != null && failure == SyncFailureKind.NotStarted)
+            {
+                // A documented precondition - but not every one is placed before the central
+                // write, so "nothing moved" is said only when the re-read proves it.
+                bool? started = SyncWithCentralRules.WriteStartedAfterPreconditionThrow(
+                    SyncWithCentralRules.OwnershipUnchanged(before.OwnedWorksets, before.Uids(before.OwnedIds),
+                        after.OwnedWorksets, after.Uids(after.OwnedIds), after.Unreadable),
+                    modified, modifiedAfter, centralAdvanced);
+                return CommandResult.FailWithDetail(started == false
+                    ? "SynchronizeWithCentral refused '" + title + "' with one of its documented preconditions (" + syncError +
+                      "), and the re-read confirms nothing moved: ownership, IsModified and the central file's write time " +
+                      "are unchanged. Nothing was synchronized."
+                    : "SynchronizeWithCentral threw one of its documented precondition exceptions for '" + title + "' (" +
+                      syncError + "), but the API does not place every one before the central write, and the re-read " +
+                      (started == true ? "shows something MOVED" : "cannot prove that nothing moved") + " (the detail " +
+                      "lists what was measured). Do not retry blindly: preview again first.",
+                    new JObject
+                    {
+                        ["code"] = "sync_precondition_failed", ["operation"] = "sync_with_central",
+                        ["api_error"] = syncError,
+                        ["write_started"] = started,
+                        ["changes_applied"] = started == false ? (bool?)false : null,
+                        ["transaction_status"] = started == false ? "not_started" : "unknown",
+                        ["owned_worksets_before"] = before.OwnedWorksets, ["owned_worksets_after"] = after.OwnedWorksets,
+                        ["owned_elements_before"] = before.OwnedIds.Count, ["owned_elements_after"] = after.OwnedIds.Count,
+                        ["unreadable_after"] = after.Unreadable,
+                        ["is_modified_before"] = modified, ["is_modified_after"] = modifiedAfter,
+                        ["central_file_written"] = centralAdvanced,
+                        ["has_all_changes_from_central_after"] = hasAllAfter
+                    });
+            }
+
+            SyncVerdict ownership = SyncWithCentralRules.VerifyOwnership(choice,
+                before.OwnedWorksets, before.Uids(before.OwnedIds), before.Uids(before.BorrowedIds),
+                after.OwnedWorksets, after.Uids(after.OwnedIds), after.Unreadable, uid => ElementExists(doc, uid),
+                knownBefore: before.UidById.Values, borrowedAfter: after.Uids(after.BorrowedIds));
+            Dictionary<string, string> statusAfter = ReadUpdateStatuses(doc, sample);
+            SyncVerdict updates = SyncWithCentralRules.VerifyUpdates(statusAfter);
             var overallProblems = new List<string>();
             bool? verified = SyncWithCentralRules.OverallVerdict(syncError != null, ownership.Verified, updates.Verified,
                 hasAllAfter, modifiedAfter, centralAdvanced, overallProblems);
@@ -281,6 +331,7 @@ namespace Horizun.Revit.Commands
                     ["unreadable_after"] = after.Unreadable,
                     ["unexpectedly_owned"] = Display(ownership.UnexpectedlyOwned, after, before),
                     ["unexpectedly_released"] = Display(ownership.UnexpectedlyReleased, after, before),
+                    ["arrived_in_owned_worksets"] = Display(ownership.ArrivedOwned, after, before),
                     ["problems"] = new JArray(ownership.Problems)
                 },
                 ["update_status_sample"] = new JObject
@@ -290,6 +341,7 @@ namespace Horizun.Revit.Commands
                     ["counts_before"] = sampleCounts,
                     ["counts_after"] = JObject.FromObject(SyncWithCentralRules.Counts(statusAfter.Values)),
                     ["not_current"] = Display(updates.UnexpectedlyOwned, after, before),
+                    ["moved_in_central_since"] = Display(updates.MovedInCentral, after, before),
                     ["problems"] = new JArray(updates.Problems)
                 },
                 ["has_all_changes_from_central_after"] = hasAllAfter,
@@ -301,7 +353,7 @@ namespace Horizun.Revit.Commands
                     "Elements tracked by UniqueId (an ElementId may change across a sync; element_id values are for " +
                     "display). Worksets counted by Owner; every collectable element checked with " +
                     "WorksharingUtils.GetCheckoutStatus before and after; the same sample re-read with " +
-                    "GetModelUpdatesStatus; Document.HasAllChangesFromCentral() after; the save witnessed by " +
+                    "GetModelUpdatesStatus; Document.HasAllChangesFromCentral() read first after the call; the save witnessed by " +
                     "IsModified=false after SaveLocalAfter or, for a file-based central, its write time advancing.",
                 ["elapsed_ms"] = clock.ElapsedMilliseconds
             };

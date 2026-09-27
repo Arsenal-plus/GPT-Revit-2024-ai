@@ -102,7 +102,7 @@ namespace Horizun.Revit.Core
                 "RelinquishAllCommand.cs ~l.156: a workset whose owner reads null is skipped rather than counted as unmeasured."),
             Row("horizun_document_session", VerificationMechanism.SessionStateReread, E("active_document_verified", "sync_verified"), F(C + "DocumentSessionCommand.cs", C + "DocumentSessionSync.cs"),
                 "Core/WorksetConfigurationEvidence.cs ~l.59: open_all_worksets counts as applied when zero user worksets are observed, which is right for a non-workshared model and unmeasured for a workshared one whose collector returned nothing. " +
-                "DocumentSessionSync.cs ~l.254: sync_verified re-reads GetModelUpdatesStatus (a local cache) on a deterministic sample (<=150 spread + 50 borrowed/newest owned), not every element; ownership is exhaustive and HasAllChangesFromCentral() is document-level."),
+                "DocumentSessionSync.cs ~l.308: sync_verified re-reads GetModelUpdatesStatus (a local cache) on a deterministic sample (<=150 spread + 50 borrowed/newest owned), not every element; ownership is exhaustive and HasAllChangesFromCentral() is document-level."),
 
             // ---- typed model writes: checklists -------------------------------------------
             Row("horizun_create_schedule", VerificationMechanism.PostconditionChecklist, E("postcondition", "application"), F(C + "CreateScheduleCommand.cs")),

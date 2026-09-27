@@ -49,7 +49,9 @@ namespace Horizun.Revit.Core
             // Worksharing and link loading act on files and servers no rollback reaches
             // (review 2026-09-26): a sync to central or a relinquish is not undone by
             // rolling the group back.
-            (new Regex(@"\bSynchronizeWithCentral\s*\(", RegexOptions.Compiled), "Document.SynchronizeWithCentral()"),
+            // Any mention, not only a call: `s = doc.SynchronizeWithCentral; s(t, o)` is the same
+            // sync, and the postable Synchronize commands reach it without naming the method.
+            (new Regex(@"\bSynchronizeWithCentral\b|\bSynchronize(?:Now|AndModifySettings)\b", RegexOptions.Compiled), "Document.SynchronizeWithCentral()"),
             (new Regex(@"\bRelinquishOwnership\s*\(", RegexOptions.Compiled), "WorksharingUtils.RelinquishOwnership()"),
             (new Regex(@"\.\s*(Unload|Reload|LoadFrom|ReloadFrom)\s*\(", RegexOptions.Compiled), "RevitLinkType/CADLinkType load state"),
         };

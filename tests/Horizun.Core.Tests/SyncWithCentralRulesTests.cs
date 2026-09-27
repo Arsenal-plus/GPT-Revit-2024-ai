@@ -79,14 +79,102 @@ namespace Horizun.Core.Tests
             Assert.Null(SyncWithCentralRules.AuthorisationRefusal(true, false, "s"));
         }
 
+        private static SyncRefusal Py(bool granted, bool protectedShared, params string[] maskedSources) =>
+            SyncWithCentralRules.PythonSyncRefusal(maskedSources, granted, protectedShared);
+
         [Fact]
         public void A_python_sync_is_refused_while_the_owner_switch_is_off()
         {
             string code = "doc.SynchronizeWithCentral(t, o)";
-            Assert.Contains("OFF on this machine", SyncWithCentralRules.PythonSyncRefusal(code, false));
-            Assert.Null(SyncWithCentralRules.PythonSyncRefusal(code, true));
-            Assert.Null(SyncWithCentralRules.PythonSyncRefusal("WorksharingUtils.RelinquishOwnership(doc, r, t)", false));
-            Assert.Null(SyncWithCentralRules.PythonSyncRefusal("x = 1  #                                ", false));
+            SyncRefusal off = Py(false, false, code);
+            Assert.Equal("sync_not_authorised", off.Code);
+            Assert.Contains("OFF on this machine", off.Message);
+            Assert.Null(Py(true, false, code));
+            Assert.Null(Py(false, false, "WorksharingUtils.RelinquishOwnership(doc, r, t)"));
+            Assert.Null(Py(false, false, "x = 1  #                                "));
+            // The options type alone is not a sync.
+            Assert.Null(Py(false, false, "o = SynchronizeWithCentralOptions()"));
+        }
+
+        [Theory]
+        [InlineData("s = doc.SynchronizeWithCentral\ns(t, o)")]
+        [InlineData("uiapp.PostCommand(RevitCommandId.LookupPostableCommandId(PostableCommand.SynchronizeNow))")]
+        [InlineData("cmd = PostableCommand.SynchronizeAndModifySettings")]
+        public void An_aliased_or_posted_sync_is_caught_too(string masked)
+        {
+            Assert.Equal("sync_not_authorised", Py(false, false, masked).Code);
+        }
+
+        [Fact]
+        public void A_sync_inside_an_include_is_refused_like_one_in_the_main_script()
+        {
+            SyncRefusal r = Py(false, false, "go(doc)", "def go(d):\n    d.SynchronizeWithCentral(t, o)");
+            Assert.NotNull(r);
+            Assert.Equal("sync_not_authorised", r.Code);
+        }
+
+        [Fact]
+        public void For_python_the_workshared_protection_wins_over_the_grant()
+        {
+            SyncRefusal r = Py(true, true, "for d in app.Documents: d.SynchronizeWithCentral(t, o)");
+            Assert.Equal("force_read_only_on_workshared", r.Code);
+            Assert.Contains(SyncWithCentralRules.ProtectSharedModelsLabel, r.Message);
+            Assert.Equal("force_read_only_on_workshared", Py(false, true, "doc.SynchronizeWithCentral(t, o)").Code);
+            // No sync in the script: neither switch matters.
+            Assert.Null(Py(false, true, "print(doc.Title)"));
+        }
+
+        [Fact]
+        public void A_local_opened_from_a_read_only_file_is_refused_before_the_call()
+        {
+            Assert.Equal("local_file_read_only", SyncWithCentralRules.PreconditionRefusal(false, false, true, true).Code);
+            Assert.Null(SyncWithCentralRules.PreconditionRefusal(false, false, true, false));
+        }
+
+        [Fact]
+        public void A_precondition_throw_is_nothing_moved_only_when_the_re_read_proves_it()
+        {
+            Assert.False(SyncWithCentralRules.WriteStartedAfterPreconditionThrow(true, true, true, false));
+            // The central file's write time advanced: the central was written.
+            Assert.True(SyncWithCentralRules.WriteStartedAfterPreconditionThrow(true, true, true, true));
+            // IsModified went true -> false: the local was saved.
+            Assert.True(SyncWithCentralRules.WriteStartedAfterPreconditionThrow(true, true, false, false));
+            Assert.True(SyncWithCentralRules.WriteStartedAfterPreconditionThrow(false, false, false, false));
+            // A server central (write time not measurable): unknown, never "nothing moved".
+            Assert.Null(SyncWithCentralRules.WriteStartedAfterPreconditionThrow(true, false, false, null));
+            Assert.Null(SyncWithCentralRules.WriteStartedAfterPreconditionThrow(null, false, false, false));
+            Assert.True(SyncWithCentralRules.OwnershipUnchanged(1, U("a"), 1, U("a"), 0));
+            Assert.False(SyncWithCentralRules.OwnershipUnchanged(1, U("a"), 0, U(), 0));
+            Assert.Null(SyncWithCentralRules.OwnershipUnchanged(1, U("a"), 1, U("a"), 2));
+        }
+
+        [Fact]
+        public void None_does_not_count_elements_the_reload_brought_into_an_owned_workset()
+        {
+            // "n" arrived with the reload (absent from the before census) into a still-owned workset.
+            var v = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.None, 1, U("a"), U(),
+                1, U("a", "n"), 0, _ => true, knownBefore: U("a", "x"), borrowedAfter: U());
+            Assert.True(v.Verified);
+            Assert.Equal(U("n"), v.ArrivedOwned);
+            // An arrival that reads BORROWED is not explained by an owned workset.
+            var b = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.None, 1, U("a"), U(),
+                1, U("a", "n"), 0, _ => true, knownBefore: U("a"), borrowedAfter: U("n"));
+            Assert.False(b.Verified);
+            Assert.Equal(U("n"), b.UnexpectedlyOwned);
+            // relinquish=all releases every workset: an owned arrival stays unexpected.
+            var all = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 1, U("a"), U(),
+                0, U("n"), 0, _ => true, knownBefore: U("a"), borrowedAfter: U());
+            Assert.False(all.Verified);
+        }
+
+        [Fact]
+        public void A_later_sync_by_someone_else_is_unmeasured_not_a_failure()
+        {
+            var moved = SyncWithCentralRules.VerifyUpdates(new Dictionary<string, string>
+            { ["a"] = "CurrentWithCentral", ["b"] = "UpdatedInCentral", ["c"] = "DeletedInCentral" });
+            Assert.Null(moved.Verified);
+            Assert.Equal(U("b", "c"), moved.MovedInCentral);
+            Assert.Empty(moved.UnexpectedlyOwned);
         }
 
         [Fact]
@@ -222,7 +310,9 @@ namespace Horizun.Core.Tests
         {
             Assert.True(SyncWithCentralRules.OverallVerdict(false, true, true, true, false, null, new List<string>()));
             Assert.True(SyncWithCentralRules.OverallVerdict(false, true, true, true, true, true, new List<string>()));
-            Assert.False(SyncWithCentralRules.OverallVerdict(false, true, true, false, false, true, new List<string>()));
+            // HasAllChangesFromCentral()==false describes the central now (a later sync by someone
+            // else makes it false): unmeasured, never a contradiction of this sync.
+            Assert.Null(SyncWithCentralRules.OverallVerdict(false, true, true, false, false, true, new List<string>()));
             Assert.Null(SyncWithCentralRules.OverallVerdict(false, true, true, null, false, true, new List<string>()));
             // Neither witness measurable: unmeasured, never a pass.
             Assert.Null(SyncWithCentralRules.OverallVerdict(false, true, true, true, null, null, new List<string>()));
