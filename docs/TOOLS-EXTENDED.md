@@ -1976,16 +1976,29 @@ profile as the border mullions; 1002 is the type for the pieces above and below 
   piece ids) and the plan's warnings repeat. `multi_opening: "refuse"` refuses such a wall instead
   and names the reason (split it at the openings first). What deleting a carrier takes along (tags,
   dimensions, hosted families) is measured in a rolled-back transaction, listed in
-  `carrier.deleted_with_it` and bound by the token.
+  `carrier.deleted_with_it`, bound by the token and counted as deletes in `plan_resolved`.
+  A kept or trimmed carrier's location line is set to the wall centreline before its type changes,
+  so the thinner placeholder stays centred where the carrier was and its doors do not move;
+  `carrier.placeholder_offset_from_pieces_mm` says how far that plane is from the pieces' core
+  centreline. Refused by name: a carrier with an embedded wall (a storefront), and a wall whose
+  every piece would be empty or below `min_segment_mm`. `header_type_id` and `sill_type_id` are
+  Curtain Wall types other than the placeholder.
 - **Verification:** every piece by marker - type, line within 1 mm of the plan, base and top; its
   vertical grid (Fixed Distance: every interior spacing within 1 mm and no edge bay wider than one
   spacing; other layouts: count and first/last line); mullion types per role against the type's
-  automatic mullions; the carrier's type and line as planned with its inserts still hosted by it,
-  unchanged; the delete cascade exactly as measured.
+  automatic mullions; the carrier's type, line and location line (wall centreline) as planned,
+  its inserts unchanged in type, position and host (against their state before the apply; a
+  re-apply compares with their state at that call); no piece embedded in the carrier
+  (`pieces_not_embedded`: a type with Automatically Embed on can cut a piece into the carrier,
+  which rolls the apply back - the plan warns when a type has it on); the delete cascade exactly
+  as measured.
 - **Remove** restores the carrier from the record every piece carries: a trimmed or kept carrier
-  gets its original type and line back; a deleted one is created again - a NEW id, named - with its
-  type, line, level, base offset, top constraint, location-line reference, flip and structural flag
-  (its mark, comments, phase and workset are not restored, and the plan says so). A carrier changed
+  gets its original type, line and location-line reference back, its inserts left as they were
+  when the remove was planned (an edit made to a door since the apply stays); a deleted one is
+  created again - a NEW id, named - with its type, line, level, base offset, top constraint,
+  location-line reference, flip and structural flag (its mark, comments, phase and workset are not
+  restored, nor are the elements its delete took, listed in `deleted_with_carrier_not_restored`;
+  the plan says so). A carrier changed
   after the apply is not overwritten: its restore is refused by name and only the pieces go.
   `operation=read` shows each curtain source's carrier record.
 
@@ -2004,8 +2017,9 @@ Here 2001 and 2002 are Sloped Glazing roof types (the furring layer on the ceili
 
 - Each layer is a flat footprint roof of its type over the ceiling's own sketch (every edge
   `DefinesSlope = false`), its plane at the ceiling's top face + `offset_mm`, its grid 1 angle set
-  when `angle_deg` is given (`CURTAINGRID_ANGLE_1`; a roof that exposes no settable angle refuses by
-  name). Openings the ceiling hosts, and shafts, are not cut from the layers (named in the plan);
+  when `angle_deg` is given (`CURTAINGRID_ANGLE_1`, probed in a rolled-back transaction while
+  planning: layer 0 with hangers refuses by name when a roof of its type cannot take it; any other
+  layer skips it, named in the warnings and `angle_skipped`). Openings the ceiling hosts, and shafts, are not cut from the layers (named in the plan);
   the hanger lines avoid them. Up to 6 layers.
 - Hangers (optional; they need the first layer's `angle_deg`): vertical curtain walls along lines
   parallel to the first layer's grid at `spacing_mm`, clipped to the boundary, from the top layer's
