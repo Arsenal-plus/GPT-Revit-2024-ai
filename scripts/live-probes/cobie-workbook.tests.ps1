@@ -111,10 +111,14 @@ function New-Ctx([bool]$gate, [bool]$withTemplate = $true) {
             $id = $state.nextId; $state.nextId++
             $e = $arguments.elements[0]
             $kind = [string]$e.kind
+            # CreateElementsEnclosed: phase_id and min_area_m2 go with placement='all_enclosed' only.
+            if ($kind -eq 'room' -and -not $e.placement -and ($e.ContainsKey('phase_id') -or $e.ContainsKey('min_area_m2'))) {
+                return @{ stage = 'dry_run'; answer = @{ isError = $true; data = $null; text = "Error: elements[0]: phase_id and min_area_m2 go with placement='all_enclosed' only. Nothing ran." } }
+            }
             if ($kind -eq 'wall') { $state.walls.Add([long]$id) } else { $state.kinds[$kind] = $id }
             if ($kind -eq 'level') { $state.levelName = [string]$e.name }
             if ($kind -eq 'family_instance') { $state.door = $id }
-            if ($kind -eq 'room') { $state.room = $id; $state.roomNumber = [string]$e.number; $state.roomName = [string]$e.name; $state.roomPhase = $e.phase_id }
+            if ($kind -eq 'room') { $state.room = $id; $state.roomNumber = [string]$e.number; $state.roomName = [string]$e.name; $state.roomPhase = $(if ($e.ContainsKey('phase_id')) { $e.phase_id } else { 'none' }) }
             return (& $ok ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) }))
         }
         if ($tool -eq 'horizun_export') {
@@ -163,7 +167,7 @@ foreach ($n in $catalog) {
 $s = $ctx.State
 Check 'the wall type and the door are brought BY NAME from the template' (($s.copied -contains 'Basic Wall: Generic - 200mm') -and ($s.copied -contains 'M_Single-Flush: 0915 x 2134mm'))
 Check 'it stages its own level, four walls, a door and a numbered, named room' ($s.kinds.level -and $s.walls.Count -eq 4 -and $s.door -and $s.room -and $s.roomNumber -eq 'HZC-r1abcdef' -and $s.roomName -eq 'HZ COBIE ROOM')
-Check 'the room is placed in the LAST phase listed and the export names that phase' (([long]$s.roomPhase -eq 2) -and ($s.exportArgs.cobie.phase -eq 'New Construction') -and ($s.applyArgs.cobie.phase -eq 'New Construction'))
+Check 'the room is placed by point with no phase_id (Revit gives the last phase) and the export names the LAST phase listed' (($s.roomPhase -eq 'none') -and ($s.exportArgs.cobie.phase -eq 'New Construction') -and ($s.applyArgs.cobie.phase -eq 'New Construction'))
 Check 'the export takes doors as components, no category_parameter, the probe''s own e-mail, a file under the scratch root' (
     (@($s.exportArgs.cobie.component_categories) -join ',') -eq 'OST_Doors' -and -not $s.exportArgs.cobie.ContainsKey('category_parameter') -and
     $s.exportArgs.cobie.created_by -eq 'cobie-probe@example.com' -and ([string]$s.exportArgs.output_path).StartsWith($ctx.ScratchRoot) -and $s.exportArgs.dry_run -eq $true)

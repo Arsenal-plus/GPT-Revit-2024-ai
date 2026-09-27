@@ -97,7 +97,9 @@ $script:HzProbeModules += [pscustomobject]@{
                      level_id = $level; host_id = $walls[0] } 'door'
         } else { $null }
         $number = 'HZC-' + $run.Substring(0, [math]::Min(8, $run.Length)); $roomName = 'HZ COBIE ROOM'; $levelName = 'HZ_COBIE_' + $run
-        $room = if ($door) { Stage @{ kind = 'room'; point = @(($X0 + $W / 2), ($Y0 + $D / 2)); level_id = $level; phase_id = [long]$phase.id; number = $number; name = $roomName } 'room' } else { $null }
+        # A point room takes the phase Revit gives it - the last one, which the export names below;
+        # create_elements refuses a phase_id beside a point (MEASURED 2026-09-27, Revit 2026).
+        $room = if ($door) { Stage @{ kind = 'room'; point = @(($X0 + $W / 2), ($Y0 + $D / 2)); level_id = $level; number = $number; name = $roomName } 'room' } else { $null }
         $staging = "phase=$(if ($phase) { $phase.name }) level=$level walls=$(@($walls | Where-Object { $_ }).Count) door=$door room=$room " + ($why -join '; ')
 
         if (-not $room) {
