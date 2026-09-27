@@ -2150,3 +2150,46 @@ azimuth from the wall's outward normal after `TransformModel` applies true north
 or project north when it throws - `energy_model.azimuth_basis` says which; a sector
 with no wall has `wwr: null`). The counts are measurements; nothing is called
 compliant.
+
+### horizun_code_check - operation=headroom
+
+Read-only. Measures the clear height under (`direction: "down"`, the default) or over (`"up"`)
+elements with vertical rays (`ReferenceIntersector`) cast in **your** 3D view, over the host
+document and loaded Revit links - the ray and link handling of the hanger rods.
+
+```json
+{ "operation": "headroom",
+  "headroom": { "view_id": 123456, "categories": ["OST_DuctCurves", "OST_StructuralFraming"],
+                "min_mm": 2100, "direction": "down", "spacing_mm": 1000 } }
+```
+
+- `view_id` (required): a `View3D` that is not a template and has no active section box. Both are
+  refused by name: the intersector never returns what a view hides or what lies outside its section
+  box. What the view hides (elements, categories, worksets, links) is not a surface here.
+- `element_ids` **or** `categories`, exactly one. By category, the elements are the ones the view
+  shows. Views, types, link instances and non-model elements are skipped with the reason, and so are
+  vertical curves (risers, columns).
+- `min_mm` (required): the clear height each measured sample is judged against.
+- `spacing_mm` (default 1000, at least 100): samples sit at the middle of equal pieces of the location
+  curve, else at the cell centres of a grid over the bounding box; at most 400 per element (the
+  spacing grows and `spacing_used_mm` says so). At most 2000 elements and 5000 rays per call, counted
+  before the first ray; above that the call is refused - raise the spacing or name fewer elements.
+- `targets` (optional): the categories a ray may stop at. Defaults - down: floors, stairs, ramps,
+  roofs, structural foundations, topography (and toposolids from 2024); up: floors, ceilings, roofs,
+  stairs, structural framing, ducts, pipes, cable trays and conduits with their fittings and
+  accessories, flex ducts and pipes, mechanical equipment, lighting fixtures, sprinklers.
+
+Each ray starts just beyond the element's bounding box and crosses the element: the clear height runs
+from the element's far face to the first target surface beyond it (a touching surface is 0). A sample
+whose ray never crosses the element is `off_element` and not judged; one that crosses it and finds no
+target beyond, or finds the element inside a target, is **not measured - never a pass**.
+
+Per element, worst first (`max_findings` caps them, `elements_omitted` counts the rest): `outcome` -
+`fails` (a measured sample below `min_mm`, whatever else was not measured), `not_measured` (nothing
+measured, with the reason), `not_decidable` (every measured sample passes but some were not
+measured), `passes` (every sample on the element measured at or above `min_mm`); `min_clear_mm`;
+`coverage` (measured / samples on the element); `governing` (the far-face point in mm and the surface:
+host or linked element id, link instance id, category).
+
+Live probe: `scripts/live-probes/headroom.probes.ps1`. Not measured yet: rays against linked
+surfaces, and a perspective view.
