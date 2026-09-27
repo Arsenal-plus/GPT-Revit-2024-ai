@@ -4,7 +4,8 @@
 # WriteParamsSequence.cs / WriteParamsCommand.cs build their replies (data.sequence.order[]
 # with target_id/value/level/room/room_from and repeats_across_levels on a rehearsal;
 # rows[] with a string target_id, confirmed and value_read_back plus
-# verification.verified on an apply; a refusal as isError text) - shapes from the
+# verification.verified on an apply; a refusal as isError text; a door's room_from
+# 'to_room', as TargetRoom takes it through FamilyInstance.ToRoom) - shapes from the
 # code, to be held against the first live run. Its ordering (elevation, x, y, id)
 # is ParameterSequenceRules' for these keys, so the probe's hand-written expectation
 # is checked against the rule, not against itself.
@@ -24,8 +25,8 @@ function New-Ctx([bool]$gate, [bool]$lies = $false) {
         }
         $items = @(foreach ($id in @($seq.element_ids)) {
             $e = $state.el[[long]$id]
-            $room = if ($ob -contains 'room' -and $e.kind -eq 'room' -and [long]$seq.phase_id -eq 2) { '1' } else { $null }
-            [pscustomobject]@{ id = [long]$id; level = $e.level; elev = $e.elev; x = $e.x; y = $e.y; room = $room }
+            $room = if ($ob -contains 'room' -and @('room', 'door') -contains $e.kind -and [long]$seq.phase_id -eq 2) { '1' } else { $null }
+            [pscustomobject]@{ id = [long]$id; kind = $e.kind; level = $e.level; elev = $e.elev; x = $e.x; y = $e.y; room = $room }
         })
         if ($ob -contains 'room' -and @($items | Where-Object { -not $_.room }).Count -gt 0) {
             return @{ error = 'sequence refused before anything was generated: 1 target(s) are not inside a room at the phase.' }
@@ -39,7 +40,7 @@ function New-Ctx([bool]$gate, [bool]$lies = $false) {
             $v = [string]$seq.prefix + $digits
             if ($seen.ContainsKey($v) -and $seen[$v] -ne $t.level) { $rep = $true }
             $seen[$v] = $t.level
-            [pscustomobject]@{ position = $pos; target_id = $t.id; value = $v; level = $t.level; room = $t.room; room_from = $(if ($t.room) { 'point' } else { $null }) }
+            [pscustomobject]@{ position = $pos; target_id = $t.id; value = $v; level = $t.level; room = $t.room; room_from = $(if (-not $t.room) { $null } elseif ($t.kind -eq 'door') { 'to_room' } else { 'point' }) }
             $n++; $pos++
         })
         return @{ order = $order; rep = $rep }
@@ -47,6 +48,9 @@ function New-Ctx([bool]$gate, [bool]$lies = $false) {
     $call = {
         param($tool, $arguments)
         if ($tool -eq 'horizun_query_model') {
+            if (@($arguments.categories) -contains 'OST_Doors') {
+                return @{ isError = $false; data = [pscustomobject]@{ rows = @([pscustomobject]@{ is_element_type = $true; family = 'M_Single-Flush'; type = '0915 x 2134mm'; element_id = 310 }) } }
+            }
             return @{ isError = $false; data = [pscustomobject]@{ rows = @([pscustomobject]@{ is_element_type = $true; family = 'Basic Wall'; type = 'Generic - 200mm'; element_id = 300 }) } }
         }
         if ($tool -eq 'horizun_manage_phases') {
@@ -72,6 +76,7 @@ function New-Ctx([bool]$gate, [bool]$lies = $false) {
                     $state.el[[long]$id] = @{ kind = 'wall'; level = $lv.level; elev = $lv.elev; x = ($x.start[0] + $x.end[0]) / 2; y = ($x.start[1] + $x.end[1]) / 2 }
                 }
                 'room' { $lv = $state.el[[long]$x.level_id]; $state.el[[long]$id] = @{ kind = 'room'; level = $lv.level; elev = $lv.elev; x = $x.point[0]; y = $x.point[1] } }
+                'family_instance' { $lv = $state.el[[long]$x.level_id]; $state.el[[long]$id] = @{ kind = 'door'; level = $lv.level; elev = $lv.elev; x = $x.point[0]; y = $x.point[1]; host = $x.host_id } }
             }
             return @{ stage = 'apply'; answer = @{ isError = $false; data = [pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) } } }
         }
@@ -95,17 +100,19 @@ function Expect($label, $cond) { if (-not $cond) { Write-Host "FAIL: $label"; $s
 
 $ctx = New-Ctx $false
 $r = @(& $module.Run $ctx)
-Expect 'four cases' ($r.Count -eq 4)
+Expect 'five cases' ($r.Count -eq 5)
 Expect 'all pass against a truthful fake' (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
 $r | Where-Object { $_.Outcome -ne 'pass' } | ForEach-Object { Write-Host ("  " + $_.Outcome + ': ' + $_.Name + ' :: ' + $_.Detail) }
 Expect 'the left wall of the box took 01 and level B restarted' ($ctx.State.written['906'] -eq 'HZSQt1-01' -and $ctx.State.written['907'] -eq 'HZSQt1-01' -and $ctx.State.written['904'] -eq 'HZSQt1-04')
 Expect 'the room was numbered at the phase that holds it' ($ctx.State.written['909'] -eq 'HZSQt1-R1')
-Expect 'every staged element is deleted (2 levels, 6 walls, 1 room; the existing type is kept)' (@($ctx.State.deleted).Count -eq 9 -and @($ctx.State.deleted) -notcontains 300)
+Expect 'the own door took its room through to_room and its Mark re-read' ($ctx.State.written['910'] -eq 'HZSQt1-D1')
+Expect 'every staged element is deleted (2 levels, 6 walls, 1 room, 1 door; the existing types are kept)' (@($ctx.State.deleted).Count -eq 10 -and @($ctx.State.deleted) -notcontains 300 -and @($ctx.State.deleted) -notcontains 310)
 
 $ctx = New-Ctx $false $true
 $r = @(& $module.Run $ctx)
 Expect 'a value that does not re-read fails the apply case' ($r[1].Outcome -eq 'fail')
 Expect 'and the room case' ($r[3].Outcome -eq 'fail')
+Expect 'and the door case' ($r[4].Outcome -eq 'fail')
 
 $ctx = New-Ctx $true
 $r = @(& $module.Run $ctx)

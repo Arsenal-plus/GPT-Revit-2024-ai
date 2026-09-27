@@ -2,12 +2,16 @@
 # declared spatial order: level, x, y, room at a phase; prefix/start/step/pad and
 # restart_per_level). Stages its OWN elements far from the model at X = 1,120,000 mm
 # (this branch's slot): two own levels, a box of four walls on the first and two
-# walls on the second, one room inside the box. The wall type is taken BY NAME
-# ('Generic - 200mm', copied from this Revit's Autodesk metric template when the
-# document lacks it). The written parameter is Comments (ALL_MODEL_INSTANCE_COMMENTS),
-# because restart_per_level repeats values by design and a repeated Mark would add
-# Revit's duplicate-mark warning to what is being measured. Nothing is saved; every
-# staged element is deleted at the end.
+# walls on the second, one room inside the box, and one door in the box's bottom
+# wall. Types are taken BY NAME ('Generic - 200mm', 'M_Single-Flush: 0915 x 2134mm',
+# copied from this Revit's Autodesk metric template when the document lacks them).
+# The walls and the room write Comments (ALL_MODEL_INSTANCE_COMMENTS), because
+# restart_per_level repeats values by design and a repeated Mark would add Revit's
+# duplicate-mark warning to what is being measured; the door writes its MARK with a
+# prefix no other element carries, so the FamilyInstance room path (ToRoom/FromRoom
+# at a phase) is measured on the parameter doors are numbered in. Nothing is saved;
+# every staged element is deleted at the end. Not staged: a family instance WITHOUT
+# its own level (the host-level fallback), which no template door reaches.
 #
 # Reply shapes (data.sequence.order[] with target_id/value/level/room/room_from,
 # repeats_across_levels, confirmation_token on the rehearsal; rows[] with target_id
@@ -21,6 +25,7 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'sequence: the apply writes every generated value and each one re-reads'; Tool = 'horizun_write_params_verified' }
         @{ Name = 'sequence: order_by room without phase_id is refused by name before anything is generated'; Tool = 'horizun_write_params_verified' }
         @{ Name = 'sequence: an own room is numbered in room order at a phase it exists in, and re-reads'; Tool = 'horizun_write_params_verified' }
+        @{ Name = 'sequence: an own door takes its room from to_room/from_room at the phase and its Mark is numbered and re-read'; Tool = 'horizun_write_params_verified' }
     )
     Run     = {
         param($Ctx)
@@ -32,7 +37,8 @@ $script:HzProbeModules += [pscustomobject]@{
         $names = @('sequence: a rehearsal numbers own walls by level, x and y, restarting per level, and binds a token',
                    'sequence: the apply writes every generated value and each one re-reads',
                    'sequence: order_by room without phase_id is refused by name before anything is generated',
-                   'sequence: an own room is numbered in room order at a phase it exists in, and re-reads')
+                   'sequence: an own room is numbered in room order at a phase it exists in, and re-reads',
+                   'sequence: an own door takes its room from to_room/from_room at the phase and its Mark is numbered and re-read')
         function AllNotCovered($why) { foreach ($n in $names) { Case $n $WP 'not_covered' $why } }
         if ($Ctx.WriteGate) { AllNotCovered 'write tier is not open for this run'; return $cases.ToArray() }
 
@@ -65,12 +71,12 @@ $script:HzProbeModules += [pscustomobject]@{
         $levelA = Create @{ kind = 'level'; name = "HZ_SQA_$run"; elevation = $Ea } 'level-a'
         $levelB = Create @{ kind = 'level'; name = "HZ_SQB_$run"; elevation = $Eb } 'level-b'
         $wallName = 'Generic - 200mm'
+        # TemplateRoot exists only for the offline tests; a live run always uses Revit's own.
+        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
+        $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte') | ForEach-Object { Join-Path $tplRoot $_ } |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         $wallType = @(Types 'OST_Walls' | Where-Object { $_.type -eq $wallName }) | Select-Object -First 1
         if (-not $wallType) {
-            # TemplateRoot exists only for the offline tests; a live run always uses Revit's own.
-            $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
-            $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte') | ForEach-Object { Join-Path $tplRoot $_ } |
-                Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
             if ($tpl) {
                 $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Walls'; type_names = @($wallName); duplicate_types = 'use_destination' } ($run + '-sq-walltype')
                 $wallType = @(Types 'OST_Walls' | Where-Object { $_.type -eq $wallName }) | Select-Object -First 1
@@ -150,6 +156,36 @@ $script:HzProbeModules += [pscustomobject]@{
                 if ($row -and $row.confirmed -eq $true -and (ReadsBack $row "${tag}R1") -and $ra.answer.data.verification.verified -eq $true) {
                     Case $names[3] $WP 'pass' ("phase '$($held.phase.name)': room $($held.row.room) via $($held.row.room_from) -> ${tag}R1 re-read")
                 } else { Case $names[3] $WP 'fail' ('room apply: ' + $(if ($row) { $row | ConvertTo-Json -Compress -Depth 6 } else { Why $ra })) }
+            }
+        }
+
+        # ---- 5: an own door in the box's bottom wall, numbered by level, room and x at the
+        # phase that held the room. Its room must come from ToRoom/FromRoom (the door path,
+        # not a point lookup), be the own room, and its MARK must re-read as generated.
+        if (-not $held) { Case $names[4] $WP 'not_covered' 'no phase held the own room (case 4), so the door has no room to take' }
+        else {
+            function DoorType { @(Types 'OST_Doors' | Where-Object { $_.family -eq 'M_Single-Flush' -and $_.type -eq '0915 x 2134mm' }) | Select-Object -First 1 }
+            $doorType = DoorType
+            if (-not $doorType -and $tpl) {
+                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @('M_Single-Flush: 0915 x 2134mm'); duplicate_types = 'use_destination' } ($run + '-sq-doortype')
+                $doorType = DoorType
+                if ($doorType) { $created.Add([long]$doorType.element_id) }
+            }
+            $doorId = if ($doorType) { Create @{ kind = 'family_instance'; type_id = [long]$doorType.element_id; host_id = [long]$wallsA[0]; point = @(($X + 1500), $Y, $Ea); coordinate_mode = 'absolute'; level_id = $levelA } 'door' } else { $null }
+            if (-not $doorId) { Case $names[4] $WP 'not_covered' ('no own door could be placed (door type=' + [string]$doorType.element_id + ', template=' + [string]$tpl + ')') }
+            else {
+                $ds = @{ parameter = 'ALL_MODEL_MARK'; element_ids = @($doorId); order_by = @('level', 'room', 'x'); phase_id = [long]$held.phase.id; prefix = "${tag}D" }
+                $dd = & $Ctx.Call $WP @{ target_document = $doc; dry_run = $true; sequence = $ds }
+                $o = if ($dd.data -and $dd.data.sequence) { @($dd.data.sequence.order) | Select-Object -First 1 } else { $null }
+                if (-not $o -or -not $dd.data.confirmation_token -or @('to_room', 'from_room') -notcontains [string]$o.room_from -or [string]$o.room -ne [string]$held.row.room) {
+                    Case $names[4] $WP 'fail' ('door rehearsal (want the own room ' + [string]$held.row.room + ' via to_room/from_room): ' + $(if ($o) { $o | ConvertTo-Json -Compress -Depth 6 } else { [string]$dd.text }))
+                } else {
+                    $da = & $Ctx.Apply $WP @{ target_document = $doc; sequence = $ds } ($run + '-sq-door')
+                    $row = if (Applied $da) { @($da.answer.data.rows) | Select-Object -First 1 } else { $null }
+                    if ($row -and $row.confirmed -eq $true -and (ReadsBack $row "${tag}D1") -and $da.answer.data.verification.verified -eq $true) {
+                        Case $names[4] $WP 'pass' ("door $doorId in room $($o.room) via $($o.room_from) -> Mark ${tag}D1 re-read")
+                    } else { Case $names[4] $WP 'fail' ('door apply: ' + $(if ($row) { $row | ConvertTo-Json -Compress -Depth 6 } else { Why $da })) }
+                }
             }
         }
 
