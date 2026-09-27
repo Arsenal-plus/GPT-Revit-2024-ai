@@ -55,6 +55,23 @@ $script:HzProbeModules += [pscustomobject]@{
         if ($w.isError -and $wc -eq 'not_workshared') { Case $nNotWs $S 'pass' 'refused before any census' }
         elseif ($w.isError -and -not $wc) { Case $nNotWs $S 'not_covered' ('refused before the operation ran (no detail code; profile, pause or dispatcher): ' + (Short $w)) }
         elseif ($w.isError) { Case $nNotWs $S 'not_covered' "the write document refused as $wc (it may be workshared on this run)" }
+        elseif ($Ctx.PSObject.Properties['LinkSourceFile'] -and $Ctx.LinkSourceFile -and (Test-Path -LiteralPath ([string]$Ctx.LinkSourceFile))) {
+            # The write document is workshared (the release gate's central, MEASURED 2026-09-27):
+            # the refusal is provoked on a scratch copy of the run's link source, a plain model.
+            New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+            $plain = Join-Path $Ctx.ScratchRoot ('HZ_SYNCPLAIN_' + ($Ctx.RunId -replace '[^A-Za-z0-9]', '') + '.rvt')
+            Copy-Item -LiteralPath ([string]$Ctx.LinkSourceFile) -Destination $plain -Force
+            $pf = Enter-HzFixtureFile $Ctx $plain 'sync-plain' $null
+            if (-not $pf.Title) { Case $nNotWs $S 'not_covered' ('the write document is workshared and the plain copy did not open: ' + $pf.Why) }
+            else {
+                try {
+                    $pw = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $pf.Title; dry_run = $true }
+                    $pwc = Code $pw
+                    Case $nNotWs $S $(if ($pw.isError -and $pwc -eq 'not_workshared') { 'pass' } else { 'fail' }) ("on the plain copy '" + $pf.Title + "': code=$pwc " + (Short $pw))
+                }
+                finally { $null = Exit-HzWorksharedFixture $Ctx $pf 'sync-plain' }
+            }
+        }
         else { Case $nNotWs $S 'fail' ('not refused: ' + (Short $w)) }
 
         $fixture = Enter-HzWorksharedFixture $Ctx 'sync'
@@ -64,11 +81,22 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         $local = $null
         $centralClosed = $false
+        $deferDetached = $false
         $dir = Join-Path ([IO.Path]::GetTempPath()) ('hz-sync-probe-' + $run)
         try {
             $d = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $fixture.Title; dry_run = $true }
             $dc = Code $d
-            Case $nDetached $S $(if ($d.isError -and $dc -eq 'detached_copy' -and -not $d.data.confirmation_token) { 'pass' } else { 'fail' }) "code=$dc"
+            # The owner switch answers first on a release runner (MEASURED 2026-09-27, v2.1.2 gate:
+            # sync_not_authorised): the detached check is then not reached, which is not a failure.
+            if ($fixture.Title -eq $Ctx.Document) {
+                # The "fixture" is the write model itself (release gate): not a detached copy.
+                # Checked at the end on a copy of this probe's own central, once it is closed.
+                $deferDetached = $true
+            }
+            elseif ($d.isError -and $dc -eq 'sync_not_authorised' -and -not $d.data.confirmation_token) {
+                Case $nDetached $S 'not_covered' 'the owner switch refused first (sync_not_authorised), so the detached check was not reached; nothing ran'
+            }
+            else { Case $nDetached $S $(if ($d.isError -and $dc -eq 'detached_copy' -and -not $d.data.confirmation_token) { 'pass' } else { 'fail' }) ("code=$dc on '" + $fixture.Title + "' " + (Short $d)) }
 
             # A central of the harness's own, in its own scratch folder, and a new local of it.
             # The title is reported as soon as SaveAs renamed the document, so a failure
@@ -144,7 +172,30 @@ __output__ = {'is_local': bool(i.IsLocal), 'is_central': bool(i.IsCentral), 'cen
                 Skip @($nReal, $nKeep, $nNone) 'the machine owner has not enabled Synchronize with central (Advanced options); a probe never enables it'
                 return $cases
             }
-            Case $nOwnerOff $S 'not_covered' $(if ($pv.isError) { "refused as $pc" } else { 'the owner switch is ON on this machine' })
+            # The switch is ON. A run with an ISOLATED data root (the release gate copies the owner's
+            # settings.json into its own folder) may turn it off in that copy only, prove the
+            # refusal, and turn it back on. The owner's own file is never touched: the check below
+            # refuses unless the isolated root is a different folder from the owner's.
+            $isoRoot = [string]$env:HORIZUN_DATA_ROOT
+            $ownerRoot = Join-Path $env:USERPROFILE '.horizun'
+            $isoSettings = if ($isoRoot) { Join-Path $isoRoot 'settings.json' } else { $null }
+            if ($pv.isError) { Case $nOwnerOff $S 'not_covered' "refused as $pc" }
+            elseif (-not $isoSettings -or -not (Test-Path -LiteralPath $isoSettings) -or
+                    [IO.Path]::GetFullPath($isoRoot).TrimEnd('\') -ieq [IO.Path]::GetFullPath($ownerRoot).TrimEnd('\')) {
+                Case $nOwnerOff $S 'not_covered' 'the owner switch is ON and this run has no isolated settings copy to turn it off in'
+            }
+            else {
+                $orig = [IO.File]::ReadAllText($isoSettings)
+                try {
+                    $js = $orig | ConvertFrom-Json
+                    $js.sync_with_central_owner_granted = $false
+                    [IO.File]::WriteAllText($isoSettings, ($js | ConvertTo-Json -Depth 20))
+                    $off = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $local; relinquish = 'all'; comment = ('hz probe off ' + $run); dry_run = $true }
+                    $offc = Code $off
+                    Case $nOwnerOff $S $(if ($off.isError -and $offc -eq 'sync_not_authorised' -and [string]$off.text -like '*Advanced options*' -and -not $off.data.confirmation_token) { 'pass' } else { 'fail' }) ("switch turned off in the run's isolated settings copy only: code=$offc " + (Short $off))
+                }
+                finally { [IO.File]::WriteAllText($isoSettings, $orig) }
+            }
             if ($pv.isError -or $pv.data.preview_kind -ne 'estimate' -or -not $pv.data.confirmation_token) {
                 Case $nReal $S 'fail' ('the preview is not a labelled estimate with a token: ' + (Short $pv))
                 Skip @($nKeep, $nNone) 'the relinquish=all sync did not run'
@@ -231,6 +282,24 @@ __output__ = out
         finally {
             if ($local) { $null = Exit-HzWorksharedFixture $Ctx @{ Title = $local; WritePath = $fixture.WritePath } 'sync-local' }
             if (-not $centralClosed) { $null = Exit-HzWorksharedFixture $Ctx $fixture 'sync' }
+            if ($deferDetached) {
+                $ownCentral = Join-Path $dir 'HZ_SYNC_CENTRAL.rvt'
+                if (-not (Test-Path -LiteralPath $ownCentral)) { Case $nDetached $S 'not_covered' 'the write model is the fixture and this probe made no central of its own to copy' }
+                else {
+                    $dcopy = Join-Path $dir 'HZ_SYNC_DETACHED.rvt'
+                    Copy-Item -LiteralPath $ownCentral -Destination $dcopy -Force
+                    $df = Enter-HzFixtureFile $Ctx $dcopy 'sync-detached' $fixture.WritePath
+                    if (-not $df.Title) { Case $nDetached $S 'fail' ('a copy of the probe''s own closed central did not open detached: ' + $df.Why) }
+                    else {
+                        try {
+                            $dd = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $df.Title; dry_run = $true }
+                            $ddc = Code $dd
+                            Case $nDetached $S $(if ($dd.isError -and $ddc -eq 'detached_copy' -and -not $dd.data.confirmation_token) { 'pass' } else { 'fail' }) ("code=$ddc on the detached copy '" + $df.Title + "' of the probe's own central " + (Short $dd))
+                        }
+                        finally { $null = Exit-HzWorksharedFixture $Ctx $df 'sync-detached' }
+                    }
+                }
+            }
             if (Test-Path -LiteralPath $dir) {
                 $failed = @($cases | Where-Object { $_.Outcome -eq 'fail' })
                 if ($failed.Count -eq 0) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }

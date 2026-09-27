@@ -11393,7 +11393,7 @@ if (Test-Path -LiteralPath $probeModuleDir) {
 }
 $probeModuleCtx = [pscustomobject]@{
     Year = $Year; Document = $WriteDocument; ScratchRoot = $scratchDir; RunId = $probeRun; WriteGate = [bool]$writeGate
-    ClosedWorksetDocument = $ClosedWorksetDocument
+    ClosedWorksetDocument = $ClosedWorksetDocument; LinkSourceFile = $LinkSourceFile
     Call = { param($tool, $arguments) Invoke-Write $tool $arguments }
     Apply = { param($tool, $arguments, $key) Invoke-WriteApply $tool $arguments $key }
 }
@@ -11761,6 +11761,18 @@ foreach ($k in $fixtureGaps.Keys) {
 
 $notCovered = @($notCovered | Select-Object -Unique)
 
+# NAMED RELEASE-GATE EXEMPTION (docs/RELEASE-POLICY.md, approved by the project owner
+# 2026-09-27). ONE case, and only for the reason given: the release runner has no DENSE
+# point-cloud fixture (the only scan available measured ~1 point per m2, so a floor's top
+# face is honestly not_measured for low coverage). It is still printed and recorded as NOT
+# COVERED; it only stops being a gate failure. Remove it when a dense fixture exists.
+$releaseGateExempt = @(
+    [pscustomobject]@{
+        Case   = 'links-survey: scan_deviation measures the top face of a floor staged on a scanned floor'
+        Prefix = 'links-survey: scan_deviation measures the top face of a floor staged on a scanned floor: fixture PointCloudFloor'
+    }
+)
+
 if ($notCovered.Count -gt 0) {
     Write-Host ""
     Write-Host "  NOT COVERED by this run - named, because a guarantee missing from the" -ForegroundColor DarkYellow
@@ -11920,6 +11932,8 @@ $report = [pscustomobject]@{
     }
     probes            = $results
     not_covered       = $notCovered
+    release_gate_exemptions = @($releaseGateExempt | ForEach-Object { $_.Case })
+    release_gate_exemptions_policy = 'docs/RELEASE-POLICY.md#named-release-gate-exemption'
 }
 
 # THE REPORT MAY NOT DISAGREE WITH ITSELF. The incremental counters and the row
@@ -11967,7 +11981,18 @@ if ($Json) {
 # ---------------------------------------------------------------------------
 if ($failed -gt 0) { exit 1 }
 if ($unverified -gt 0) { exit 2 }
+$gateNotCovered = @($notCovered | Where-Object { $nc = $_; -not @($releaseGateExempt | Where-Object { $nc.StartsWith($_.Prefix, [StringComparison]::Ordinal) }).Count })
+if ($ReleaseGate -and $gateNotCovered.Count -lt $notCovered.Count) {
+    Write-Host ""
+    Write-Host "  RELEASE GATE: named exemption (docs/RELEASE-POLICY.md), still reported as NOT COVERED above:" -ForegroundColor DarkYellow
+    foreach ($nc in @($notCovered | Where-Object { $gateNotCovered -notcontains $_ })) { Write-Host ("    - {0}" -f $nc) -ForegroundColor DarkYellow }
+}
 if ($notCovered.Count -gt 0) {
+    if ($ReleaseGate -and $gateNotCovered.Count -eq 0) {
+        Write-Host ""
+        Write-Host "  (exit 0: every NOT COVERED case above is a named release-gate exemption.)" -ForegroundColor DarkYellow
+        exit 0
+    }
     if ($ReleaseGate) {
         Write-Host ""
         Write-Host "  RELEASE GATE: NOT COVERED is a failure here. A release cannot rest on" -ForegroundColor Red

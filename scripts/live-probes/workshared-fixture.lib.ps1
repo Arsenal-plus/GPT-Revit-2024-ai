@@ -22,6 +22,11 @@ function Enter-HzWorksharedFixture($Ctx, [string]$Lane) {
     $writePath = [string]$me.path
     $fixturePath = Join-Path ([IO.Path]::GetDirectoryName($writePath)) ([string]$Ctx.ClosedWorksetDocument + '.rvt')
     if (-not (Test-Path -LiteralPath $fixturePath)) { return @{ Why = "no fixture file at $fixturePath" } }
+    # The release gate names the write model itself as this fixture: opening its path returns
+    # the document already open, not a detached copy - and a copy of that central cannot be
+    # opened while the central is (Revit: 'Cannot open the local model and the central model
+    # in the same Revit session', MEASURED 2026-09-27). Callers that need a DETACHED document
+    # compare the returned title with the write document's.
     return (Enter-HzFixtureFile $Ctx $fixturePath $Lane $writePath)
 }
 
@@ -52,7 +57,17 @@ function Exit-HzWorksharedFixture($Ctx, $Fixture, [string]$Lane) {
         path = ([string]$Fixture.WritePath).Replace([char]92, '/'); activate = $true
         expected_version = [string]$Ctx.Year; idempotency_key = ('fixture-back-' + $Lane + '-' + $Ctx.RunId)
     }
-    $dry = & $Ctx.Call 'horizun_document_session' @{ operation = 'close'; target_document = $Fixture.Title; discard_unsaved = $true; dry_run = $true }
+    if ($back.isError) {
+        # The release gate's write model is a CENTRAL opened with open_central, and
+        # open_document refuses a central (MEASURED 2026-09-27, v2.1.2 gate): the fixture
+        # stayed active and every later probe refused the active-document check.
+        # document_session open over an already-open document only activates it.
+        $back = & $Ctx.Call 'horizun_document_session' @{
+            operation = 'open'; file_path = ([string]$Fixture.WritePath).Replace([char]92, '/'); open_central = $true
+            expected_version = [string]$Ctx.Year; idempotency_key = ('fixture-back-central-' + $Lane + '-' + $Ctx.RunId)
+        }
+    }
+    $dry =& $Ctx.Call 'horizun_document_session' @{ operation = 'close'; target_document = $Fixture.Title; discard_unsaved = $true; dry_run = $true }
     if ($dry.isError -or -not $dry.data) { return ('close dry run refused: ' + [string]$dry.text) }
     # A CLOSE THAT DISCARDS NOTHING NEEDS NO TOKEN. MEASURED 2026-09-26: an unmodified
     # document (a sample opened only to be read) rehearses with would_discard_unsaved=false

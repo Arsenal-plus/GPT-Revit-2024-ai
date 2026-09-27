@@ -128,7 +128,34 @@ $script:HzProbeModules += [pscustomobject]@{
             }
         }
         elseif (-not $ws.isError -and $null -ne $ws.data.worksets) {
-            Case 'worksets: a model that is not workshared is refused typed (not_workshared)' $W 'not_covered' "'$doc' is workshared, so the refusal cannot be provoked here"
+            # The release gate's write model is a workshared central (MEASURED 2026-09-27): the
+            # refusal is provoked on a scratch copy of the run's link source, a plain model,
+            # opened as the active document and closed without saving.
+            $nNot = 'worksets: a model that is not workshared is refused typed (not_workshared)'
+            $srcFile = if ($Ctx.PSObject.Properties['LinkSourceFile']) { [string]$Ctx.LinkSourceFile } else { '' }
+            if (-not $srcFile -or -not (Test-Path -LiteralPath $srcFile)) {
+                Case $nNot $W 'not_covered' "'$doc' is workshared and the run names no -LinkSourceFile to open a plain model from"
+            }
+            else {
+                New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+                $plain = Join-Path $Ctx.ScratchRoot ('HZ_PLAIN_' + ($Ctx.RunId -replace '[^A-Za-z0-9]', '') + '.rvt')
+                Copy-Item -LiteralPath $srcFile -Destination $plain -Force
+                $pf = Enter-HzFixtureFile $Ctx $plain 'grp-plain' $null
+                if (-not $pf.Title) { Case $nNot $W 'not_covered' ("'$doc' is workshared and the plain copy did not open: " + $pf.Why) }
+                else {
+                    try {
+                        $pl = & $Ctx.Call $W @{ operation = 'list'; target_document = $pf.Title }
+                        $plc = if ($pl.data) { $pl.data.code } elseif ($pl.structured) { $pl.structured.code } else { $null }
+                        if (-not $pl.isError -and $null -ne $pl.data.worksets) { Case $nNot $W 'not_covered' "the link source copy '$($pf.Title)' is workshared too" }
+                        else {
+                            $pw = & $Ctx.Call $W @{ operation = 'create'; target_document = $pf.Title; name = 'HZ_PROBE_WS'; dry_run = $true }
+                            $pwc = if ($pw.data) { $pw.data.code } elseif ($pw.structured) { $pw.structured.code } else { $null }
+                            Case $nNot $W $(if ($pl.isError -and $plc -eq 'not_workshared' -and $pw.isError -and $pwc -eq 'not_workshared') { 'pass' } else { 'fail' }) "on the plain copy '$($pf.Title)': list code=$plc, create code=$pwc"
+                        }
+                    }
+                    finally { $null = Exit-HzWorksharedFixture $Ctx $pf 'grp-plain' }
+                }
+            }
             Invoke-WsWrites $doc $(if ($free.Count -gt 0) { $free[0] } else { Get-HzFreeHostElement $Ctx })
         }
         else {

@@ -43,9 +43,18 @@ $script:HzProbeModules += [pscustomobject]@{
         function Verified($r) { $r.stage -eq 'apply' -and -not $r.answer.isError -and $r.answer.data -and $r.answer.data.postconditions.all_verified -eq $true }
         function Why($r) { if ($r.stage -ne 'apply') { 'the rehearsal issued no token: ' + (Short $r.answer) } else { Short $r.answer } }
         function Types($category) {
-            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 500 }
-            if (-not $q.data) { return @() }
-            return @($q.data.rows | Where-Object { $_.is_element_type })
+            # Every page: instances share the rows, and a copied type has a high id.
+            $types = @(); $cursor = $null
+            for ($page = 0; $page -lt 20; $page++) {
+                $a = @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 500 }
+                if ($cursor) { $a['cursor'] = $cursor }
+                $q = & $Ctx.Call 'horizun_query_model' $a
+                if (-not $q.data) { break }
+                $types += @($q.data.rows | Where-Object { $_.is_element_type })
+                if ($q.data.truncated -ne $true -or -not $q.data.next_cursor) { break }
+                $cursor = [string]$q.data.next_cursor
+            }
+            return $types
         }
         function Create($elements, $key) {
             $r = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @($elements) } $key
@@ -87,7 +96,21 @@ $script:HzProbeModules += [pscustomobject]@{
 
             if ($lineId) {
                 $mullionType = Types 'OST_CurtainWallMullions' | Select-Object -First 1
-                if (-not $mullionType) { Case $catalog[2] 'horizun_manage_curtain' 'not_covered' 'the fixture offers no mullion type' }
+                $mullionWhy = 'the fixture offers no mullion type'
+                if (-not $mullionType) {
+                    # An HVAC sample has no curtain content (MEASURED 2026-09-27, release gate): the year's
+                    # own Autodesk template carries 'Rectangular Mullion: 50 x 150mm'.
+                    $tpl = 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates\English\DefaultMetric.rte'
+                    if ($Ctx.PSObject.Properties['TemplateRoot'] -and $Ctx.TemplateRoot) { $tpl = Join-Path ([string]$Ctx.TemplateRoot) 'English\DefaultMetric.rte' }
+                    if (Test-Path -LiteralPath $tpl) {
+                        $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = 'OST_CurtainWallMullions'
+                                type_names = @('Rectangular Mullion: 50 x 150mm'); duplicate_types = 'use_destination' } 'arch-cw-mulltype'
+                        $mullionType = @(Types 'OST_CurtainWallMullions' | Where-Object { [string]$_.type -eq '50 x 150mm' }) | Select-Object -First 1
+                        if (-not $mullionType) { $mullionWhy = 'the fixture offers no mullion type and the template copy brought none: ' + (Why $cp) }
+                    }
+                    else { $mullionWhy = "the fixture offers no mullion type and there is no template at $tpl" }
+                }
+                if (-not $mullionType) { Case $catalog[2] 'horizun_manage_curtain' 'not_covered' $mullionWhy }
                 else {
                     $m = & $Ctx.Apply 'horizun_manage_curtain' @{ target_document = $doc; operation = 'set_mullions'; element_id = $cwId; grid_line_id = $lineId; mode = 'add'; mullion_type_id = $mullionType.element_id } 'arch-cw-mullion'
                     if (Verified $m) { Case $catalog[2] 'horizun_manage_curtain' 'pass' ('mullions ' + (@($m.answer.data.evidence.mullion_ids) -join ',')) } else { Case $catalog[2] 'horizun_manage_curtain' 'fail' (Why $m) }

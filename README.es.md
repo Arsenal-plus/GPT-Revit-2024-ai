@@ -21,6 +21,7 @@ el runtime del servidor y los add-ins.
 
 **[Descargar](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** ·
 **[Ver demostración](https://www.youtube.com/watch?v=tlFs5p3EM4M)** ·
+[Novedades de la 2.1](#novedades-de-la-versión-21) ·
 [Instalar con Claude Desktop Free](#video-de-instalación-claude-desktop-free) ·
 [Todas las herramientas](#catálogo-completo-de-herramientas) ·
 [Suboperaciones](#suboperaciones-y-modos) · [Pruebas](#probado-en-revit-evidencia-publicada) · [Instalar](#instalar)
@@ -34,13 +35,64 @@ el runtime del servidor y los add-ins.
 | Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
 | Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
 | Planos y entregables | 24 acciones de vistas/láminas, 10 acciones de anotación, tablas nativas y distribución de láminas | [Producción de planos](docs/PLANIMETRY-PRODUCTION.md) |
-| Formatos de exportación | PDF, DWG, IFC, NWC, FBX, imágenes y CSV de tablas | `horizun_export` |
+| Formatos de exportación | PDF, DWG, DGN, DWFx, IFC, NWC, FBX, gbXML, COBie, familias RFA, imágenes y CSV de tablas | `horizun_export` |
 | Ejemplo de release verificada | 1.230 ejecuciones de pruebas aprobadas entre cinco años de Revit en **v1.3.3** | [Informes publicados](#probado-en-revit-evidencia-publicada) |
 | Instalación | Setup de Windows con runtime incluido; sin Git, Visual Studio ni SDK de .NET para el usuario | [Pasos finales por cliente](docs/CLIENTS.md) |
 
 Los recuentos describen la superficie completa del producto. El perfil de
 permisos y los paquetes elegidos determinan qué herramientas anuncia una sesión;
 más abajo se explican los perfiles medidos de 70, 79 y 80 herramientas.
+
+## Novedades de la versión 2.1
+
+Cada punto forma parte de esta versión, se construyó con el mismo contrato de escritura
+verificada (ensayo, token, aplicación, relectura) y, donde hay un modelo de prueba, se
+midió en vivo en Revit. El detalle de cada uno está en el [CHANGELOG](CHANGELOG.md).
+
+**Herramientas nuevas y nuevas formas de modelar**
+
+1. **Entramado liviano, `horizun_framing`** — montantes, canales, jambas, dinteles, antepechos, cortos y bloqueos dentro de una capa del muro, y entramado de cielos suspendidos, a partir de un detalle que el cliente MCP lee de una imagen o DWG (prompt `framing-from-detail`).
+2. **Entramado por el método curtain** — el mismo entramado modelado con muros cortina y capas de sloped glazing planas (montantes como mullions, rejillas a distancia fija, colgantes hasta la losa superior), para equipos que trabajan así.
+3. **Explotar muros multicapa con vanos** — `horizun_split_multilayer_walls` ahora convierte muros que alojan puertas, ventanas y componentes anidados: el muro portador conserva su identidad y sus insertos, y cada capa pasa a ser su propio muro.
+4. **Libro COBie 2.4** — `horizun_export format=cobie`: hojas Facility, Floor, Space, Zone, Type, Component y System, releídas celda por celda, con `deliverable_ready` y un hallazgo por cada valor obligatorio que falte.
+5. **Nuevos tipos de elemento** — rociador, tubería flexible, ducto flexible, espacio, área y límite de área en `horizun_create_elements`; habitaciones y espacios para cada recinto vacío (`placement=all_enclosed`); toposólidos (Revit 2024+).
+6. **Editar el boceto sin perder el elemento** — `edit_sketch` en losas, cielos y aberturas conserva el id y los datos alojados.
+
+**MEP y resolución de interferencias**
+
+7. **Trazado MEP automático** — `horizun_mep_routing route`: un recorrido 3D ortogonal que esquiva elementos físicos y vínculos, con tramos y codos releídos en cada unión.
+8. **Pendientes por gravedad** — `slope`: una línea de tubería a la pendiente pedida desde un extremo fijo, con cada conexión releída.
+9. **Soportes** — `hangers`: una familia del usuario en estaciones espaciadas bajo la estructura superior (propia o vinculada).
+10. **Aberturas y camisas para interferencias** — `horizun_resolve_clash propose_opening / apply_opening` corta muros, losas, cubiertas y cielos o coloca una familia de camisa cuando mover no resuelve el choque.
+11. **Interferencias contra vínculos y recorridos conectados** — cada movimiento se verifica contra todos los vínculos cargados, y una red conectada tubería-codo-tubería se mueve como un solo cuerpo rígido (`run_shift`).
+12. **Análisis de sistemas** — `horizun_plan_mep system_analysis` lee la ruta crítica, la pérdida de presión, el caudal y la velocidad que calculó Revit.
+
+**Coordinación, CDE y openBIM**
+
+13. **Incidencias de ACC** — `horizun_cde_cloud issues_list / issue_create / issue_update`, como el usuario que inició sesión, idempotentes por una clave externa y releídas después de cada escritura.
+14. **Ida y vuelta con Navisworks** — preparación y revisión de las vistas 3D que lee Navisworks, y sugerencias de estado desde el registro de coordinación.
+15. **BCF desde cualquier herramienta** — incidencias de Navisworks, ACC, Solibri o BIMcollab (BCF 2.1/3.0) resueltas por IFC GUID o por el id de la herramienta de autoría.
+16. **Gestión de la información ISO 19650** — contexto del proyecto (`project-intake`), contenedores de información entre WIP/Compartido/Publicado/Archivado, y entrega IFC demostrada contra IDS, mapeo de Psets y georreferencia.
+17. **Sincronizar con el central** — `horizun_document_session sync_with_central`, apagado por defecto y habilitado solo por el dueño del equipo desde Revit; liberar todo, conservar lo prestado o nada, verificado después de sincronizar.
+18. **Coordenadas compartidas, nubes de puntos y desviación respecto al escaneo** — `acquire_coordinates`, vínculo de nubes de puntos y `scan_deviation` de las caras del modelo contra un escaneo, con la cobertura medida.
+
+**Verificación que se puede ver**
+
+19. **Revisión espacial después de cada escritura** — superposiciones, puertas bloqueadas, duplicados y MEP atravesando estructura se reportan con la escritura; `horizun_verify_changes` devuelve una imagen con los elementos cambiados resaltados.
+20. **Capturas antes/después** — `snapshot / compare_to` con la misma cámara y una diferencia en rojo vinculada a los elementos escritos.
+21. **Zonas libres de equipos** — `clearance_rules` verifica zonas de trabajo contra el modelo y sus vínculos.
+22. **Distancia de evacuación** — `horizun_code_check` con el recorrido de evacuación de Revit, reportada como cota inferior o `not_decidable` con la razón.
+23. **Preparación para análisis energético** — `energy_readiness` construye y revierte el modelo energético y reporta cerramientos, construcciones y relación ventana-muro.
+
+**Documentación, cantidades e intercambio**
+
+24. **Más formatos de exportación** — DWG de muchas vistas o láminas en un solo trabajo, gbXML, DGN, DWFx y familias cargadas a `.rfa`, cada archivo releído.
+25. **Acabados por recinto** — `horizun_quantities room_finishes`: caras de muro, piso y cielo por habitación o espacio, por material, con los vanos descontados.
+26. **Presupuesto a BC3** — `horizun_budget_compare export_bc3` (FIEBDC-3) desde las cantidades y los precios del usuario.
+27. **Láminas y vistas** — `renumber_sheets` con las colisiones revisadas antes, y `set_view_display` corrige nivel de detalle o disciplina citando el hallazgo de la auditoría.
+28. **Modelo analítico estructural y cargas** — `horizun_query_structure analytical` y `loads`, agrupadas por caso de carga.
+29. **Tablero de coordinación en Power BI** — un ejemplo `.pbip` sobre el registro de coordinación.
+30. **Una lista de herramientas más liviana** — `tools/list` pesa unos 64 KB menos sin quitar ninguna herramienta, argumento u operación, así que los clientes la cargan más rápido.
 
 ## Demostración: de un PDF de planos a un modelo Revit
 

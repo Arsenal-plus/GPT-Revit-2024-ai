@@ -32,7 +32,12 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
             $src = Join-Path $Ctx.ScratchRoot ('HZ_LINKSRC_' + ($run -replace '[^A-Za-z0-9]', '') + '.rvt')
-            Copy-Item -LiteralPath ([string]$me.path) -Destination $src -Force
+            # A copy of the host is refused when the host is a workshared central: Revit answers
+            # SameCentralModelAsHost (MEASURED 2026-09-27, v2.1.2 release gate). The harness's own
+            # link source, a different model of the same year, is taken when it names one.
+            $from = [string]$me.path
+            if ($Ctx.PSObject.Properties['LinkSourceFile'] -and $Ctx.LinkSourceFile -and (Test-Path -LiteralPath ([string]$Ctx.LinkSourceFile))) { $from = [string]$Ctx.LinkSourceFile }
+            Copy-Item -LiteralPath $from -Destination $src -Force
             $add = & $Ctx.Apply 'horizun_manage_links' @{ operation = 'add'; target_document = $doc; path = $src.Replace([char]92, '/') } ($run + '-sl-add')
             if ($add.stage -ne 'apply' -or $add.answer.isError) { foreach ($i in 0..1) { Case $i 'unverified' ('the link could not be added: ' + (Short $add.answer)) }; throw 'HZ_STOP' }
             $linkTypeId = [long]$add.answer.data.link_type_id

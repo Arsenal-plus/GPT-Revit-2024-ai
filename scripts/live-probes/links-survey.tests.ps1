@@ -33,6 +33,8 @@ function New-Fake([string]$mode, [bool]$withFixtures, [bool]$importerOnDisk = $t
         switch ($tool) {
             'horizun_health' { return & $reply ([pscustomobject]@{ open_documents = @([pscustomobject]@{ title = 'HZ_WRITE'; path = $s.Src }) }) }
             'horizun_query_model' {
+                # A re-read by ids answers the ones not deleted (QueryModelCommand element_ids).
+                if ($a.element_ids) { return & $reply ([pscustomobject]@{ rows = @(@($a.element_ids) | Where-Object { @($s.Deleted) -notcontains $_ } | ForEach-Object { [pscustomobject]@{ element_id = $_ } }) }) }
                 $rows = if ([string]@($a.categories)[0] -eq 'OST_Walls') { @([pscustomobject]@{ element_id = 70; is_element_type = $true; family = 'Curtain Wall'; type = 'Curtain Wall 1' }, [pscustomobject]@{ element_id = 72; is_element_type = $true; family = 'Basic Wall'; type = 'Exterior - Brick' }, [pscustomobject]@{ element_id = 71; is_element_type = $true; family = 'Basic Wall'; type = 'Generic - 200mm' }) } else { @([pscustomobject]@{ element_id = 80; is_element_type = $true; family = 'Floor'; type = 'Generic 150mm' }) }
                 if ($s.Mode -eq 'no-types') { $rows = @() }
                 return & $reply ([pscustomobject]@{ rows = $rows })
@@ -110,7 +112,8 @@ try {
     Check ($r.Count -eq 8) 'eight cases'
     Check (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0) ('all pass with fixtures: ' + (($r | ForEach-Object { $_.Outcome }) -join ','))
     Check ($h.State.Restored -and [double]$h.State.Restored.east_west -eq 1.5 -and [double]$h.State.Restored.angle_to_true_north -eq 12) 'shared position restored from the dry run''s project_position_before'
-    Check ((@(900, 950, 960, 500, 501, 502, 503) | Where-Object { $h.State.Deleted -notcontains $_ }).Count -eq 0) ('link types, point cloud type, levels, wall and floor deleted: ' + ($h.State.Deleted -join ','))
+    Check ((@(900, 951, 960, 500, 501, 502, 503) | Where-Object { $h.State.Deleted -notcontains $_ }).Count -eq 0) ('link types, the point cloud INSTANCE, levels, wall and floor deleted: ' + ($h.State.Deleted -join ','))
+    Check ($h.State.Deleted -notcontains 950) 'the point cloud TYPE is not asked for: Revit''s API refuses to delete it'
     Check ($r[2].Detail -match 'Revit refused') 'a type placed twice is answered by Revit for the named instance'
     Check ($r[5].Detail -match 'points=800' -and $r[5].Detail -match 'frame=identity') 'the floor''s top face is measured, with its points and frame'
     Check ($h.State.TwiceAsked -eq 'off-site') 'the placed-twice question is asked while the site still differs, so Revit answers it'

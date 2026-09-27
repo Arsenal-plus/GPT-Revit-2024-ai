@@ -212,6 +212,14 @@ $ownerSettings = Join-Path $env:USERPROFILE '.horizun\settings.json'
 if (Test-Path -LiteralPath $ownerSettings -PathType Leaf) {
     Copy-Item -LiteralPath $ownerSettings -Destination (Join-Path $dataRoot 'settings.json')
 }
+# The owner's 3-legged ACC sign-in, when there is one, so the cde_cloud issue probes run as
+# that user. APS rotates the refresh token on use, so the finally below returns a refreshed
+# pair to the owner's file and removes the copy: a copy left behind would hold a live token.
+$ownerApsToken = Join-Path $env:USERPROFILE '.horizun\aps-token.json'
+$isolatedApsToken = Join-Path $dataRoot 'aps-token.json'
+if (Test-Path -LiteralPath $ownerApsToken -PathType Leaf) {
+    Copy-Item -LiteralPath $ownerApsToken -Destination $isolatedApsToken
+}
 
 $oldDataRoot = $env:HORIZUN_DATA_ROOT
 $oldTargetYear = $env:HORIZUN_REVIT_YEAR
@@ -352,6 +360,14 @@ finally {
     }
     $env:HORIZUN_DATA_ROOT = $oldDataRoot
     $env:HORIZUN_REVIT_YEAR = $oldTargetYear
+    if (Test-Path -LiteralPath $isolatedApsToken -PathType Leaf) {
+        $copied = Get-Item -LiteralPath $isolatedApsToken
+        $owner = Get-Item -LiteralPath $ownerApsToken -ErrorAction SilentlyContinue
+        if (-not $owner -or $copied.LastWriteTimeUtc -gt $owner.LastWriteTimeUtc) {
+            Copy-Item -LiteralPath $isolatedApsToken -Destination $ownerApsToken -Force
+        }
+        Remove-Item -LiteralPath $isolatedApsToken -Force -ErrorAction SilentlyContinue
+    }
     # The link-source copy exists only so the harness could stage a link; unlike
     # the call transcripts, a copied fixture model is not evidence and does not
     # stay behind.

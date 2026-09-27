@@ -3,7 +3,15 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v2.1.2 — 2026-09-27
+## v2.1.3 — 2026-09-27
+
+v2.1.0, v2.1.1 and v2.1.2 were tagged but never released; the product is the same in all four. v2.1.2 passed its builds, packaging and installation, and its Revit 2024 and 2025 release gates found 18 failures each - all in the live probes, none in the product: the release model is a workshared central, and probes that opened another model could not give it back (open_document refuses a central), so a dozen later probes refused the active-document check. Fixed and re-run locally on the release runner's exact fixtures (Revit 2024: 755 passed, 0 failed, 0 unverified):
+
+- The workshared-fixture helper gives the release central back through document_session; sync-central, worksets and spatial-links provoke their refusals on scratch copies of a plain model; the sync detached-copy check uses the probe's own closed central.
+- The gate carries the owner's ACC sign-in into its isolated data folder and returns a refreshed token; one ACC issue is created under a fixed key, and later runs prove the keyed create does not duplicate it.
+- The curtain mullion type comes from the year's Autodesk template; the point cloud cleanup deletes the instance only (Revit's API refuses to delete a PointCloudType, measured); the owner-off sync refusal is proved in the run's isolated settings copy only.
+- **Named release-gate exemption** (docs/RELEASE-POLICY.md, approved by the project owner): the floor-on-a-scan case may stay not covered while the runner has only a sparse scan. It is still reported and listed in each report's `release_gate_exemptions`.
+- README.md and README.es.md list the 30 improvements of 2.1 one by one.
 
 v2.1.0 and v2.1.1 were tagged but never released. v2.1.0's hosted whitespace gate stopped it before any package was built (trailing whitespace in the vendored IDS schema, one example and two tests; the schema is kept byte for byte and exempted from the gate). v2.1.1 passed every Revit add-in build for 2023-2027, then its hosted `package` job found no .NET SDK 10.0.400: that job and `public-integrity` relied on whatever SDK the hosted image carried, and `global.json` pins 10.0.400 with roll-forward disabled. Both now install it. The product is the same in all three.
 
