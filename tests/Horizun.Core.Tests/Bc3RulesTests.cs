@@ -103,6 +103,33 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Verify_catches_a_dropped_element_a_changed_yield_a_twice_listed_code_and_a_measure_outside_the_root()
+        {
+            // Each edit leaves a file that still parses: only the verifier stands between it and
+            // a budget that disagrees with the takeoff it claims to be.
+            Bc3Budget b = Sample();
+            string text = Bc3Rules.Write(b), fourEmpty = B + B + B + B;
+            Func<string, List<string>> verify = t => { JObject c; return Bc3Rules.Verify(t, b, out c); };
+
+            string dropped = text.Replace(B + "link 7 id 102" + B + "2.25" + fourEmpty, "");
+            Assert.NotEqual(text, dropped);
+            Assert.Contains(verify(dropped), p => p.Contains("~M E05.01 holds 1 line(s); 2 element(s) were written"));
+
+            string yield = text.Replace("E05.01" + B + "1" + B + "3.5" + B, "E05.01" + B + "1" + B + "3.6" + B);
+            Assert.NotEqual(text, yield);
+            Assert.Contains(verify(yield), p => p.Contains("~D yield for E05.01 is 3.6, the takeoff says 3.5"));
+
+            string twice = text + "~C|E05.01|m3|otra|1|26092026|0|\r\n";
+            Assert.Contains(verify(twice), p => p.Contains("~C E05.01 appears twice"));
+
+            string outside = text.Replace("~M|HZ_TAKEOFF##" + B + "E08-2|", "~M|OTRO##" + B + "E08-2|");
+            Assert.NotEqual(text, outside);
+            List<string> po = verify(outside);
+            Assert.Contains(po, p => p.Contains("is not under the root"));
+            Assert.Contains(po, p => p.Contains("~M for E08-2 is missing"));
+        }
+
+        [Fact]
         public void Verify_catches_a_changed_price_a_changed_measure_a_missing_record_and_a_wrong_charset()
         {
             Bc3Budget b = Sample();
