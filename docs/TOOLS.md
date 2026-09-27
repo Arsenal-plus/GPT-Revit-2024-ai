@@ -5,8 +5,8 @@ The [README](../README.md) has the short version; this page is the complete
 surface.
 
 This surface is **123 tools** <!--inventory:tools--> - **45** <!--inventory:reads--> of them
-read-only - dispatching **435 distinct suboperations and modes** <!--inventory:operations--> across
-**1541 enumerated argument values** <!--inventory:enumerated_variants-->.
+read-only - dispatching **456 distinct suboperations and modes** <!--inventory:operations--> across
+**1586 enumerated argument values** <!--inventory:enumerated_variants-->.
 
 Those numbers are GENERATED, never typed by hand. `scripts/generate-inventory.ps1`
 asks the built server for `tools/list` - the same call a client makes - and writes
