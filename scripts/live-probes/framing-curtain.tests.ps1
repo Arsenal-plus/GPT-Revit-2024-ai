@@ -27,6 +27,8 @@ function New-State {
     $script:nextId = 7000; $script:wallApplies = 0; $script:sent = @{}; $script:deleted = $null; $script:removeTargets = @()
     $script:noGlazing = $false; $script:w1Restore = @{ restored = $true; inserts_changed = 0; why = $null }; $script:notAtSupport = @()
     $script:nextTypeId = 600; $script:typesRefused = $false; $script:layoutText = 'Fixed Distance'
+    $script:noOverlap = $false; $script:w3Restored = $true
+    $script:overlapNote = 'the curtain walls OVERLAP the kept carrier: a wall with several openings (multi_opening=keep_carrier) stays full length with the placeholder type so its inserts keep their ids, tags and data'
 }
 
 $fakeCall = {
@@ -47,6 +49,14 @@ $fakeCall = {
     }
     if ($tool -eq 'horizun_framing' -and $arguments.operation -eq 'wall') {
         $sid = [long]@($arguments.element_ids)[0]; $tid = [long]$arguments.spec.wall.curtain_type_id
+        if ($sid -eq 7007) {
+            $src = [pscustomobject]@{ source_id = 7007; status = 'planned'; method = 'curtain'; length_mm = 6000.0; height_mm = 3000.0; core_offset_mm = 0.0
+                openings = @([pscustomobject]@{ id = '7008'; start = 1042.5; end = 1957.5; sill = 0.0; head = 2134.0 }, [pscustomobject]@{ id = '7009'; start = 4042.5; end = 4957.5; sill = 0.0; head = 2134.0 })
+                pieces = @(0..4 | ForEach-Object { [pscustomobject]@{ i = $_; role = $(if ($_ -lt 3) { 'curtain_segment' } else { 'curtain_header' }); type_id = $tid } })
+                skipped = @(); warnings = @('2 openings: ' + $script:overlapNote)
+                carrier = [pscustomobject]@{ action = 'keep'; original_type_id = 502; type_id = 503; span = @(0.0, 6000.0); opening_id = $null; replaced_by = $null; overlap = $script:overlapNote } }
+            return Reply ([pscustomobject]@{ dry_run = $true; operation = 'wall'; plan = [pscustomobject]@{ method = 'curtain'; sources = @($src); member_count = 5 } }) $false ''
+        }
         if ($sid -eq 7002) {
             $src = [pscustomobject]@{ source_id = 7002; status = 'planned'; method = 'curtain'; length_mm = 6000.0; height_mm = 3000.0; core_offset_mm = 0.0
                 openings = @([pscustomobject]@{ id = '7004'; start = 2042.5; end = 2957.5; sill = 0.0; head = 2134.0 })
@@ -106,6 +116,10 @@ $fakeApply = {
                         $restores += [pscustomobject]@{ carrier_id = 7002; action_at_apply = 'trim'; wall_id = 7002; restored = $script:w1Restore.restored; line_deviation_mm = 0.0
                                                         inserts_checked = 1; inserts_changed = $script:w1Restore.inserts_changed; not_restored_because = $script:w1Restore.why }
                     }
+                    elseif ([long]$id -eq 7007) {
+                        $restores += [pscustomobject]@{ carrier_id = 7007; action_at_apply = 'keep'; wall_id = 7007; restored = $script:w3Restored; line_deviation_mm = 0.0; inserts_changed = 0
+                            not_restored_because = $(if ($script:w3Restored) { $null } else { 'its type changed after the apply' }) }
+                    }
                     elseif ([long]$id -eq 7003) {
                         $restores += [pscustomobject]@{ carrier_id = 7003; action_at_apply = 'delete'; wall_id = 9999; recreated_with_new_id = $true; restored = $true
                                                         line_deviation_mm = 0.0; base_deviation_mm = 0.0; top_deviation_mm = 0.0; not_in_record = 'mark, comments, phase, workset and other instance parameters' }
@@ -128,6 +142,15 @@ $fakeApply = {
                     application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
                     evidence = [pscustomobject]@{ hanger_recheck = [pscustomobject]@{ stations_checked = 9; not_at_support = $script:notAtSupport; max_gap_mm = 0.1 }
                         sources = @([pscustomobject]@{ source_id = 7006; already_applied = $false; pieces = $pieces; not_built = @(); member_ids = @(9101..9105) }) } }) $false '') }
+            }
+            if ($sid -eq 7007) {
+                $grid3 = [pscustomobject]@{ vertical_lines = 3; horizontal_lines = 0; layout_vert = 1; layout_vert_text = $script:layoutText; spacing_mm = 406.4; spacing_problems = @() }
+                $pieces3 = @(0..4 | ForEach-Object { [pscustomobject]@{ i = $_; role = $(if ($_ -lt 3) { 'curtain_segment' } else { 'curtain_header' }); id = 9301 + $_; grid = $grid3 } })
+                $carrier3 = [pscustomobject]@{ id = 7007; action = 'keep'; type_ok = $true; curve_deviation_mm = 0.0; inserts_checked = 2; inserts_changed = 0
+                    overlap = $(if ($script:noOverlap) { $null } else { $script:overlapNote }); overlapped_by = $(if ($script:noOverlap) { @() } else { @(9301..9305) }) }
+                return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = $false
+                    application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
+                    evidence = [pscustomobject]@{ sources = @([pscustomobject]@{ source_id = 7007; already_applied = $false; pieces = $pieces3; carrier = $carrier3; piece_ids = @(9301..9305) }) } }) $false '') }
             }
             if ($sid -eq 7002) {
                 $script:wallApplies++
@@ -178,8 +201,26 @@ try {
     Check 'the ceiling apply sends two OWN sloped glazing layers 30 mm apart and the template curtain type as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
         (@($ceilSent.spec.ceiling.layers | Where-Object { $_.type_id -ne 604 }).Count -eq 0) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 501))
     Check 'cleanup deletes the own types and the recreated carrier, never the deleted one' ((@($script:deleted) -contains 9999) -and -not (@($script:deleted) -contains 7003) -and
-        (@(601..604 | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0) -and (@($script:deleted).Count -eq 10))
+        (@(601..604 | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0) -and (@($script:deleted).Count -eq 13))
     Check 'the manage_curtain case reports the grid angles' ($by[$names[7]].Detail -match 'grid 1 at 0 deg, grid 2 at 90 deg')
+    $a3Sent = $script:sent['t1-frc-apply3']
+    Check 'the one-door and the two-door walls run on the DEFAULT multi_opening (none sent)' ((-not $applySent.spec.wall.ContainsKey('multi_opening')) -and ($null -ne $a3Sent) -and
+        (-not $a3Sent.spec.wall.ContainsKey('multi_opening')) -and ($a3Sent.element_ids[0] -eq 7007))
+    Check 'both doors are hosted on the third wall and its kept carrier is removed on its own' (($script:sent['t1-frc-door3a'].elements[0].host_id -eq 7007) -and
+        ($script:sent['t1-frc-door3b'].elements[0].host_id -eq 7007) -and ((@($script:sent['t1-frc-remove3'].element_ids) -join ',') -eq '7007'))
+    Check 'the two-door case reports the overlapping piece ids' ($by[$names[10]].Detail -match 'overlapped_by 9301,9302,9303,9304,9305')
+
+    # ---- a kept carrier whose result does not name the overlap fails, and is still removed ----
+    New-State; $script:noOverlap = $true
+    $ovBy = RunBy (Ctx 't9')
+    Check 'a kept carrier whose result does not name the overlap fails the two-door case' (($ovBy[$names[10]].Outcome -eq 'fail') -and ($ovBy[$names[10]].Detail -match 'does not name the overlap'))
+    Check 'that committed apply is still removed, and the cleanup passes' ((@($script:removeTargets) -contains 7007) -and ($ovBy[$names[8]].Outcome -eq 'pass'))
+
+    # ---- the kept carrier not restored: the two-door case and the cleanup fail ----
+    New-State; $script:w3Restored = $false
+    $w3By = RunBy (Ctx 't10')
+    Check 'a kept carrier not restored fails the two-door case with its reason, and the cleanup' (($w3By[$names[10]].Outcome -eq 'fail') -and
+        ($w3By[$names[10]].Detail -match 'type changed after the apply') -and ($w3By[$names[8]].Outcome -eq 'fail'))
 
     # ---- a carrier whose restore is refused fails the remove case, and the cleanup ----
     New-State; $script:w1Restore = @{ restored = $false; inserts_changed = 0; why = 'its type changed after the apply' }

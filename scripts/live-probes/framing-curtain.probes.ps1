@@ -41,6 +41,7 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'manage_curtain read: a sloped glazing layer''s grid is read with its angles'; Tool = 'horizun_manage_curtain' }
         @{ Name = 'framing curtain probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
         @{ Name = 'framing curtain types: own 41.3 x 92.1 mm stud and track, a 406.4 mm fixed-grid core and a one-way ceiling layer are duplicated and set'; Tool = 'horizun_manage_system_types' }
+        @{ Name = 'framing curtain wall: two doors under the default keep_carrier, the pieces split around both overlap the kept placeholder, the doors unchanged, remove restores it'; Tool = 'horizun_framing' }
     )
     Run     = {
         param($Ctx)
@@ -56,7 +57,8 @@ $script:HzProbeModules += [pscustomobject]@{
             'framing curtain ceiling: apply verified, layer planes, footprints and grids re-read, hangers reach the staged floor',
             'manage_curtain read: a sloped glazing layer''s grid is read with its angles',
             'framing curtain probes: everything created is deleted',
-            'framing curtain types: own 41.3 x 92.1 mm stud and track, a 406.4 mm fixed-grid core and a one-way ceiling layer are duplicated and set')
+            'framing curtain types: own 41.3 x 92.1 mm stud and track, a 406.4 mm fixed-grid core and a one-way ceiling layer are duplicated and set',
+            'framing curtain wall: two doors under the default keep_carrier, the pieces split around both overlap the kept placeholder, the doors unchanged, remove restores it')
         # Tool names apart from every case-insensitive variable below ($T is not $t, $McTool is not $mr).
         $T = 'horizun_framing'; $McTool = 'horizun_manage_curtain'; $DeleteTool = 'horizun_delete_verified'
         $TypesTool = 'horizun_manage_system_types'; $WpTool = 'horizun_write_params_verified'
@@ -176,7 +178,8 @@ $script:HzProbeModules += [pscustomobject]@{
             $wall2 = Create @(@{ kind = 'wall'; start = @($X, ($Y + 8000), $E); end = @(($X + 3000), ($Y + 8000), $E); level_id = $level; type_id = $carrierType.element_id; height = 3000 }) 'wall2'
         }
         if ($wall1 -and $doorType) { $door = Create @(@{ kind = 'family_instance'; type_id = $doorType.element_id; host_id = $wall1; point = @(($X + 2500), $Y, $E); coordinate_mode = 'absolute'; level_id = $level }) 'door' }
-        function WallSpec { @{ wall = @{ method = 'curtain'; curtain_type_id = $coreTypeId; placeholder_type_id = [long]$placeholderType.element_id; multi_opening = 'refuse' } } }
+        # multi_opening is never sent: every wall case runs on the DEFAULT (keep_carrier since 2026-09-26).
+        function WallSpec { @{ wall = @{ method = 'curtain'; curtain_type_id = $coreTypeId; placeholder_type_id = [long]$placeholderType.element_id } } }
         $ready = $wall1 -and $door -and $coreTypeId -and $placeholderType
         $why = "staging incomplete: wall $wall1, door $door, curtain type '$coreTypeId', placeholder type '$($placeholderType.element_id)'"
         # With the own core every piece must re-read ITS grid: layout 1 reading as Fixed Distance
@@ -364,10 +367,62 @@ $script:HzProbeModules += [pscustomobject]@{
             else { Case $catalog[7] $McTool 'pass' ("u $($rd.counts.u_lines) / v $($rd.counts.v_lines) grid lines, $($rd.counts.mullions) mullions, $($rd.counts.panels) panels; grid 1 at $($rd.grid1_angle_deg) deg, grid 2 at $($rd.grid2_angle_deg) deg") }
         }
 
+        # ==== 11: two doors under the DEFAULT multi_opening (keep_carrier) =====================
+        # The user's decision of 2026-09-26: the carrier stays full length with the placeholder type
+        # so both doors keep their ids, tags and data; the pieces still split around both openings
+        # and OVERLAP it, which the plan and the verified result must say (carrier.overlap).
+        # MEASURED LIVE HERE: that both doors stay hosted, unchanged, under the overlapping pieces.
+        $w3Restored = $true
+        $wall3 = $null; $door3a = $null; $door3b = $null
+        if ($level -and $carrierType) { $wall3 = Create @(@{ kind = 'wall'; start = @($X, ($Y + 16000), $E); end = @(($X + 6000), ($Y + 16000), $E); level_id = $level; type_id = $carrierType.element_id; height = 3000 }) 'wall3' }
+        if ($wall3 -and $doorType) {
+            $door3a = Create @(@{ kind = 'family_instance'; type_id = $doorType.element_id; host_id = $wall3; point = @(($X + 1500), ($Y + 16000), $E); coordinate_mode = 'absolute'; level_id = $level }) 'door3a'
+            $door3b = Create @(@{ kind = 'family_instance'; type_id = $doorType.element_id; host_id = $wall3; point = @(($X + 4500), ($Y + 16000), $E); coordinate_mode = 'absolute'; level_id = $level }) 'door3b'
+        }
+        if (-not ($wall3 -and $door3a -and $door3b -and $coreTypeId -and $placeholderType)) { Case $catalog[10] $T 'not_covered' "staging incomplete: wall $wall3, doors $door3a/$door3b, curtain type '$coreTypeId'" }
+        else {
+            $w3Args = @{ operation = 'wall'; target_document = $doc; element_ids = @($wall3); spec = (WallSpec) }
+            $d3 = & $Ctx.Call $T ($w3Args + @{ dry_run = $true })
+            $s3 = $null; if ($d3.data) { $s3 = @($d3.data.plan.sources)[0] }
+            $problems = @()
+            if ($d3.isError -or -not $s3) { $problems += 'rehearsal: ' + (Short $d3) }
+            else {
+                if (@($s3.openings).Count -ne 2) { $problems += "read $(@($s3.openings).Count) openings, expected 2" }
+                if ((Count $s3.pieces 'curtain_segment') -ne 3 -or (Count $s3.pieces 'curtain_header') -ne 2) { $problems += "$(Count $s3.pieces 'curtain_segment') segments and $(Count $s3.pieces 'curtain_header') headers, expected 3 and 2" }
+                if ([string]$s3.carrier.action -ne 'keep' -or [long]$s3.carrier.type_id -ne [long]$placeholderType.element_id) { $problems += "carrier '$($s3.carrier.action)' to type $($s3.carrier.type_id), expected keep with the placeholder" }
+                if ([string]$s3.carrier.overlap -notmatch 'OVERLAP') { $problems += 'the plan does not say the pieces overlap the kept carrier' }
+            }
+            $w3Committed = $false; $ev3 = $null
+            if ($problems.Count -eq 0) {
+                $a3 = & $Ctx.Apply $T $w3Args ($run + '-frc-apply3')
+                $w3Committed = ($a3.stage -eq 'apply' -and -not $a3.answer.isError -and [string]$a3.answer.data.transaction_status -eq 'Committed')
+                if ($a3.answer.data) { $ev3 = @($a3.answer.data.evidence.sources)[0] }
+                if ($a3.stage -ne 'apply' -or $a3.answer.isError -or $a3.answer.data.postconditions.all_verified -ne $true -or -not $ev3) { $problems += 'apply: ' + (Short $a3.answer) }
+                elseif ([string]$ev3.carrier.action -ne 'keep' -or $ev3.carrier.type_ok -ne $true -or [int]$ev3.carrier.inserts_checked -ne 2 -or [int]$ev3.carrier.inserts_changed -ne 0) { $problems += 'carrier: ' + ($ev3.carrier | ConvertTo-Json -Compress -Depth 4) }
+                elseif ([string]$ev3.carrier.overlap -notmatch 'OVERLAP' -or @($ev3.carrier.overlapped_by).Count -ne @($ev3.pieces).Count) {
+                    $problems += "the result does not name the overlap: overlap '$($ev3.carrier.overlap)', overlapped_by $(@($ev3.carrier.overlapped_by).Count) of $(@($ev3.pieces).Count) pieces" }
+                elseif ($ownCore) {
+                    $off3 = @($ev3.pieces | Where-Object { OffOwnGrid @{ layout = $_.grid.layout_vert; text = $_.grid.layout_vert_text; spacing = $_.grid.spacing_mm; problems = $_.grid.spacing_problems } })
+                    if ($off3.Count -gt 0) { $problems += "$($off3.Count) piece(s) do not re-read the own 406.4 mm Fixed Distance grid" }
+                }
+            }
+            # Committed pieces are removed whatever a check said, or the cleanup would leave them.
+            if ($w3Committed) {
+                $rm3 = & $Ctx.Apply $T @{ operation = 'remove'; target_document = $doc; element_ids = @($wall3) } ($run + '-frc-remove3')
+                $r3 = $null; if ($rm3.answer.data) { $r3 = @($rm3.answer.data.evidence.carrier_restores) | Select-Object -First 1 }
+                if ($rm3.stage -ne 'apply' -or $rm3.answer.isError -or $rm3.answer.data.postconditions.all_verified -ne $true -or -not $r3 -or $r3.restored -ne $true -or [int]$r3.inserts_changed -ne 0) {
+                    $w3Restored = $false
+                    $problems += 'remove: ' + $(if ($r3) { "restored $($r3.restored), inserts changed $($r3.inserts_changed) $($r3.not_restored_because)" } else { Short $rm3.answer }) }
+            }
+            if ($problems.Count -gt 0) { Case $catalog[10] $T 'fail' ($problems -join '; ') }
+            else { Case $catalog[10] $T 'pass' ("$(@($ev3.pieces).Count) pieces split around both doors overlap the kept carrier $wall3 (overlapped_by " + (@($ev3.carrier.overlapped_by) -join ',') + '); both doors unchanged and still hosted by it; remove gave it its original type back') }
+        }
+
         # ==== 9: cleanup ======================================================================
         # The ceiling's layers and hangers are not hosted by it: remove runs before the delete.
-        $notes = @(); $framingGone = $restoredOk
+        $notes = @(); $framingGone = $restoredOk -and $w3Restored
         if (-not $restoredOk) { $notes += 'the wall pieces were not removed and their carriers restored' }
+        if (-not $w3Restored) { $notes += 'the two-door wall''s pieces were not removed and its kept carrier restored' }
         if ($cCommitted) {
             $crm = & $Ctx.Apply $T @{ operation = 'remove'; target_document = $doc; element_ids = @($ceiling) } ($run + '-frc-ceiling-remove')
             if ($crm.stage -eq 'apply' -and -not $crm.answer.isError -and $crm.answer.data.postconditions.all_verified -eq $true) { $notes += "ceiling framing removed ($(@($crm.answer.data.evidence.removed_ids).Count) element(s))" }
