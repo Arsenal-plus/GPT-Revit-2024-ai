@@ -32,9 +32,10 @@ function New-State {
     $script:systemRow = { param($id, $classification) Obj @{ id = $id; class = $classification; calculation_level = 'None'; calculation_status = 'not_calculated'
         verdict = 'not_calculated'; verdict_means = 'the system calculation level claims nothing'; critical_path = $null } }
     $script:pwa = { Obj @{ checked = 2; count = 2; ids = @($script:byKind['structural_framing'], $script:byKind['structural_column']); coverage = 'complete' } }
-    $script:wholeRows = { @() }
+    $script:wholeRows = { @(Obj @{ id = 9001; kind = 'member'; associated_physical_ids = @(); association = 'none'; coverage = 'complete'; node_gaps = @(); member = (Obj @{ releases = (Obj @{}) }) }) }
+    $script:loads = { @(Obj @{ id = 900; kind = 'point'; load_case = (Obj @{ id = 50; name = 'DL1'; number = 1 }); nature = 'Dead'; host_id = $null; vector_frame = 'project'; point = (Obj @{ position_mm = @(0, 0, 0); force_kn = @(0, 0, -10) }); unread = @(); coverage = 'complete' }) }
     $script:unmatched = @()
-    $script:gaps = { @{ node_gaps_measured = $true; member_ends_beyond_tolerance = 0; coverage = (Obj @{ coverage = 'complete'; reasons = @() }) } }
+    $script:gaps = { @{ node_gaps_measured = $true; member_ends_beyond_tolerance = 0; member_ends_supported = 0; coverage = (Obj @{ coverage = 'complete'; reasons = @() }) } }
 }
 
 $fakeCall = {
@@ -64,8 +65,8 @@ $fakeCall = {
         }
         'horizun_query_structure' {
             if ($arguments.mode -eq 'loads') {
-                $rows = @(Obj @{ id = 900; kind = 'point'; load_case = (Obj @{ id = 50; name = 'DL1'; number = 1 }); nature = 'Dead'; host_id = $null; unread = @(); coverage = 'complete' })
-                return Reply (Obj @{ mode = 'loads'; matched = 1; returned = 1; rows = $rows; counts = (Obj @{ point = 1; line = 0; area = 0 }); by_load_case = (Obj @{ DL1 = 1 })
+                $rows = @(& $script:loads)
+                return Reply (Obj @{ mode = 'loads'; matched = $rows.Count; returned = $rows.Count; rows = $rows; counts = (Obj @{ point = $rows.Count; line = 0; area = 0 }); by_load_case = (Obj @{ DL1 = $rows.Count })
                                      units = (Obj @{ point_force = 'kN'; point_moment = 'kN*m'; line_force = 'kN/m'; area_force = 'kN/m2' }); coverage = (Obj @{ coverage = 'complete' }) }) $false ''
             }
             if ($arguments.element_ids) {
@@ -75,7 +76,7 @@ $fakeCall = {
             $g = & $script:gaps
             $rows = @(& $script:wholeRows)
             return Reply (Obj @{ mode = 'analytical'; matched = $rows.Count; rows = $rows; tolerance_mm = $arguments.tolerance_mm; tolerance_source = 'caller'
-                                 node_gaps_measured = $g.node_gaps_measured; member_ends_beyond_tolerance = $g.member_ends_beyond_tolerance; coverage = $g.coverage
+                                 node_gaps_measured = $g.node_gaps_measured; member_ends_beyond_tolerance = $g.member_ends_beyond_tolerance; member_ends_supported = $g.member_ends_supported; coverage = $g.coverage
                                  physical_without_analytical = (Obj @{ checked = 0; count = 0; ids = @(); coverage = 'complete' }) }) $false ''
         }
     }
@@ -116,7 +117,7 @@ try {
     Check 'a not_calculated duct system passes and says not_calculated' (($by[$n[0]].Outcome -eq 'pass') -and ($by[$n[0]].Detail -match '^not_calculated'))
     Check 'the pipe system is read by the id on the pipe''s connectors' (($by[$n[1]].Outcome -eq 'pass'))
     Check 'a pipe id is refused by name' (($by[$n[2]].Outcome -eq 'pass') -and ($by[$n[2]].Detail -match 'not a MechanicalSystem'))
-    Check 'own beam and column named without an analytical member pass, saying so' (($by[$n[3]].Outcome -eq 'pass') -and ($by[$n[3]].Detail -match 'named without'))
+    Check 'own beam and column named without an analytical member are not_covered, saying so' (($by[$n[3]].Outcome -eq 'not_covered') -and ($by[$n[3]].Detail -match 'named without'))
     Check 'node gaps measured with the caller tolerance pass' ($by[$n[4]].Outcome -eq 'pass')
     Check 'the own point load is not_covered with the reason' (($by[$n[5]].Outcome -eq 'not_covered') -and ($by[$n[5]].Detail -match 'no typed tool creates a PointLoad'))
     Check 'the loads read passes on counts, kN and per-row coverage' (($by[$n[6]].Outcome -eq 'pass') -and ($by[$n[6]].Detail -match '1 point'))
@@ -158,9 +159,10 @@ try {
     Check 'an associated member without a releases block fails, naming it' (($b6[$n[3]].Outcome -eq 'fail') -and ($b6[$n[3]].Detail -match 'releases'))
     New-State
     $script:pwa = { Obj @{ checked = 2; count = 0; ids = @(); coverage = 'complete' } }
-    $script:wholeRows = { @(5004, 5005 | ForEach-Object { Obj @{ id = 9100 + $_; kind = 'member'; associated_physical_ids = @($_); coverage = 'complete'; member = (Obj @{ releases = (Obj @{}) }) } }) }
+    $script:wholeRows = { @(5004, 5005 | ForEach-Object { Obj @{ id = 9100 + $_; kind = 'member'; associated_physical_ids = @($_); coverage = 'complete'; node_gaps = @(); member = (Obj @{ releases = (Obj @{}) }) } }) }
     $b7 = RunWith 't7'
     Check 'associated beam and column pass with their analytical ids' (($b7[$n[3]].Outcome -eq 'pass') -and ($b7[$n[3]].Detail -match 'associated to analytical member 14104'))
+    Check 'the analytical members read for the own ones are deleted first' ((@($script:deleted[0]) -contains 14104) -and (@($script:deleted[0]) -contains 14105) -and (@($script:deleted[0])[0] -eq 14105))
 
     # ---- node gaps unmeasured without a reason is a fail; with a reason, a pass ----
     New-State
@@ -184,6 +186,24 @@ try {
     $script:systemsLeft = @(700)
     $b11 = RunWith 't11'
     Check 'a run system Revit kept is deleted after the runs' (($b11[$n[7]].Outcome -eq 'pass') -and ($script:deleted.Count -eq 2) -and (@($script:deleted[1])[0] -eq 700))
+
+    # ---- vouched associated but absent from a whole read that fit on one page: a fail ----
+    New-State
+    $script:pwa = { Obj @{ checked = 2; count = 0; ids = @(); coverage = 'complete' } }
+    $b13 = RunWith 't13'
+    Check 'an own member vouched associated that no row of a one-page read lists fails' (($b13[$n[3]].Outcome -eq 'fail') -and ($b13[$n[3]].Detail -match 'no row of the whole analytical read'))
+
+    # ---- nothing to read is not_covered, never a pass ----
+    New-State
+    $script:wholeRows = { @() }
+    $script:loads = { @() }
+    $b14 = RunWith 't14'
+    Check 'no analytical element makes the end classification not_covered' (($b14[$n[4]].Outcome -eq 'not_covered') -and ($b14[$n[4]].Detail -match 'no analytical member'))
+    Check 'no load makes the loads read not_covered' (($b14[$n[6]].Outcome -eq 'not_covered') -and ($b14[$n[6]].Detail -match 'no point, line or area load'))
+    New-State
+    $script:loads = { @(Obj @{ id = 901; kind = 'line'; load_case = (Obj @{ id = 50; name = 'DL1'; number = 1 }); unread = @(); coverage = 'complete'; line = (Obj @{ force1_kn_m = $null }) }) }
+    $b15 = RunWith 't15'
+    Check 'loads with no converted force on the page are not_covered' (($b15[$n[6]].Outcome -eq 'not_covered') -and ($b15[$n[6]].Detail -match 'kN conversion was not exercised'))
 
     # ---- closed write tier: staging cases not_covered, the document reads still run ----
     New-State

@@ -4730,12 +4730,12 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_plan_mep",
                 Command = "horizun_plan_mep",
-                Description = @"Plan a multi-segment pipe or duct run along an explicit polyline, deterministically and READ-ONLY. Collinear vertices are MERGED AND NAMED (the run gets fewer corners than the request had points, and the reply says which); a segment under 50 mm refuses with the measured millimetres and its vertex. The reply is a ready horizun_create_elements request: the segments plus one batch_index elbow per corner, committing as ONE atomic batch through the normal rehearse/token/verify pipeline - the deferred corner selection happens inside the transaction, where any refusal rolls the whole run back.",
+                Description = @"Plan a multi-segment pipe or duct run along an explicit polyline, deterministically and READ-ONLY. Collinear vertices are MERGED AND NAMED (the run gets fewer corners than the request had points, and the reply says which); a segment under 50 mm refuses with the measured millimetres and its vertex. The reply is a ready horizun_create_elements request: the segments plus one batch_index elbow per corner, committing as ONE atomic batch through the normal rehearse/token/verify pipeline - the deferred corner selection happens inside the transaction, where any refusal rolls the whole run back. system_analysis reads Revit's own critical-path results against your limits; an uncalculated system is never ok.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
     ""operation"": { ""type"": ""string"", ""enum"": [""route_run"", ""network_census"", ""system_analysis""] },
-    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""maxItems"": 500, ""description"": ""network_census: seed elements; omitted, every MEP curve seeds (refused above 2000 - name seeds to bound it). Membership is CONNECTOR CONNECTIVITY (IsConnected), never geometric coincidence; each component reports elements, open connectors, systems and domains."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""maxItems"": 500, ""description"": ""network_census: seed elements (omitted: every MEP curve; refused above 2000); connector connectivity (IsConnected), never geometry. system_analysis: system ids only (max 100)."" },
     ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct""] },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""level_id"": { ""type"": ""integer"" },

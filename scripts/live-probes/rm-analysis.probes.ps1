@@ -7,10 +7,13 @@
 # templates with horizun_copy_between_documents; a name found nowhere is not_covered with the
 # copy's own refusal, never "the first type". No typed tool creates a PointLoad
 # (horizun_create_elements has no load kind), so the own-load case is not_covered with that
-# reason; the loads read is still exercised on whatever the document carries. Revit 2023+
-# does not build an analytical member for a physical one by itself, so the analytical case
-# passes either way the read TELLS - associated (its row read, releases included) or named in
-# physical_without_analytical; what fails is an own element the read does not account for.
+# reason; the loads read is still exercised on whatever the document carries, and is
+# not_covered when it carries no load (no row read, no kN conversion ran). Revit 2023+ does
+# not build an analytical member for a physical one by itself: the analytical case passes
+# only when an own element's analytical row was READ (releases and end fields included);
+# named in physical_without_analytical it is not_covered, and an own element the read does
+# not account for fails. The end-classification case is not_covered on a document with no
+# analytical element. Analytical members read for the own ones are deleted with them.
 # What was created is deleted at the end (and a system Revit made for a run, if it outlived
 # the run); the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
@@ -47,6 +50,7 @@ $script:HzProbeModules += [pscustomobject]@{
 
         # ---- staging (write tier only) --------------------------------------------------------
         $created = New-Object System.Collections.ArrayList
+        $ownAnalytical = New-Object System.Collections.ArrayList
         $why = @{}
         $level = $null; $pipe = $null; $duct = $null; $beam = $null; $column = $null; $pipeSystem = $null; $ductSystem = $null
         if (-not $Ctx.WriteGate) {
@@ -180,7 +184,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $w = $whole.data; $problems = @()
             if ([string]$w.tolerance_source -ne 'caller' -or [math]::Abs([double]$w.tolerance_mm - 5) -gt 0.001) { $problems += "tolerance $($w.tolerance_mm) from '$($w.tolerance_source)', expected 5 from the caller" }
             $reasonsText = if ($w.coverage) { $w.coverage | ConvertTo-Json -Depth 8 -Compress } else { '' }
-            if ($w.node_gaps_measured -eq $true) { if ($null -eq $w.member_ends_beyond_tolerance) { $problems += 'gaps measured but member_ends_beyond_tolerance is null' } }
+            if ($w.node_gaps_measured -eq $true) { if ($null -eq $w.member_ends_beyond_tolerance -or $null -eq $w.member_ends_supported) { $problems += 'gaps measured but member_ends_beyond_tolerance or member_ends_supported is null' } }
             elseif ($w.node_gaps_measured -eq $false) {
                 if ($null -ne $w.member_ends_beyond_tolerance) { $problems += 'gaps not measured but a count is given' }
                 if ($reasonsText -notmatch 'node_gaps') { $problems += 'gaps not measured and no coverage reason names node_gaps' }
@@ -189,7 +193,8 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $w.coverage) { $problems += 'no coverage block' }
             if (-not $w.physical_without_analytical) { $problems += 'no physical_without_analytical block' }
             if ($problems.Count) { Case $catalog[4] $tools[4] 'fail' ($problems -join '; ') }
-            else { Case $catalog[4] $tools[4] 'pass' ("$($w.matched) analytical element(s); gaps measured: $($w.node_gaps_measured), ends beyond 5 mm: $($w.member_ends_beyond_tolerance); physical without analytical: $($w.physical_without_analytical.count) of $($w.physical_without_analytical.checked)") }
+            elseif ([int]$w.matched -eq 0) { Case $catalog[4] $tools[4] 'not_covered' ("no analytical member or panel in the document (no typed tool creates one): the end classification ran on nothing; physical without analytical: $($w.physical_without_analytical.count) of $($w.physical_without_analytical.checked)") }
+            else { Case $catalog[4] $tools[4] 'pass' ("$($w.matched) analytical element(s); gaps measured: $($w.node_gaps_measured), ends beyond 5 mm: $($w.member_ends_beyond_tolerance), supported: $($w.member_ends_supported); physical without analytical: $($w.physical_without_analytical.count) of $($w.physical_without_analytical.checked)") }
         }
 
         # ==== 4: the own beam and column are accounted for ======================================
@@ -203,19 +208,24 @@ $script:HzProbeModules += [pscustomobject]@{
                 $pwa = $ar.data.physical_without_analytical
                 $without = @($pwa.ids | ForEach-Object { [long]$_ })
                 $unmatched = @($ar.data.unmatched_ids | ForEach-Object { [long]$_ })
-                $problems = @(); $said = @()
+                $problems = @(); $said = @(); $rowsRead = 0
                 foreach ($id in $own) {
                     if ($unmatched -contains $id) { $problems += "own $id is in unmatched_ids: the read did not see a structural element it staged"; continue }
                     if ($without -contains $id) { $said += "$id named without an analytical member"; continue }
                     if ([string]$pwa.coverage -ne 'complete' -or $null -eq $pwa.ids) { $problems += "own $id neither listed nor vouched for (physical_without_analytical coverage '$($pwa.coverage)')"; continue }
                     $rowsFor = if ($whole.data) { @($whole.data.rows | Where-Object { @($_.associated_physical_ids | ForEach-Object { [long]$_ }) -contains $id }) } else { @() }
-                    if ($rowsFor.Count -eq 0) { $said += "$id associated (its analytical row is not on the first page of $($whole.data.matched))"; continue }
+                    if ($rowsFor.Count -eq 0) {
+                        if ($whole.data -and [int]$whole.data.matched -le 500) { $problems += "own $id is vouched associated but no row of the whole analytical read ($($whole.data.matched) element(s), every one on the page) lists it"; continue }
+                        $said += "$id associated (its analytical row is not on the first page of $($whole.data.matched))"; continue
+                    }
                     $am = $rowsFor[0]
                     if ($am.kind -eq 'member' -and $null -eq $am.member.releases) { $problems += "own $id's analytical member $($am.id) carries no releases block"; continue }
+                    if ($am.kind -eq 'member' -and $whole.data.node_gaps_measured -eq $true -and $null -eq $am.node_gaps) { $problems += "own $id's analytical member $($am.id) carries no node_gaps although gaps were measured"; continue }
                     if (-not $am.coverage) { $problems += "own $id's analytical row $($am.id) carries no coverage"; continue }
-                    $said += "$id associated to analytical $($am.kind) $($am.id) (coverage $($am.coverage), releases read)"
+                    $said += "$id associated to analytical $($am.kind) $($am.id) (coverage $($am.coverage), releases read)"; $rowsRead++; [void]$ownAnalytical.Add([long]$am.id)
                 }
                 if ($problems.Count) { Case $catalog[3] $tools[3] 'fail' ($problems -join '; ') }
+                elseif ($rowsRead -eq 0) { Case $catalog[3] $tools[3] 'not_covered' ('no own element has an analytical row this run could read (Revit 2023+ builds none by itself and no typed tool creates one), so association, releases and end fields were not exercised: ' + ($said -join '; ')) }
                 else { Case $catalog[3] $tools[3] 'pass' ($said -join '; ') }
             }
         }
@@ -236,14 +246,19 @@ $script:HzProbeModules += [pscustomobject]@{
                 elseif ([string]$r.coverage -ne 'complete' -and @($r.unread).Count -eq 0) { $problems += "load $($r.id) is '$($r.coverage)' with nothing named unread" }
             }
             if (-not $l.coverage) { $problems += 'no coverage block' }
+            $converted = @(@($l.rows) | Where-Object { ($_.point -and $null -ne $_.point.force_kn) -or ($_.line -and $null -ne $_.line.force1_kn_m) -or ($_.area -and $null -ne $_.area.force1_kn_m2) })
+            foreach ($r in $converted) { if (-not $r.vector_frame) { $problems += "load $($r.id) publishes force components with no vector_frame" } }
             if ($problems.Count) { Case $catalog[6] $tools[6] 'fail' ($problems -join '; ') }
+            elseif ([int]$l.matched -eq 0) { Case $catalog[6] $tools[6] 'not_covered' 'the document carries no point, line or area load (no typed tool creates one): no load row was read and no kN conversion ran' }
+            elseif ($converted.Count -eq 0) { Case $catalog[6] $tools[6] 'not_covered' "$($l.matched) load(s), but no row on the page published a converted force: the kN conversion was not exercised" }
             else { Case $catalog[6] $tools[6] 'pass' ("$($counts.point) point, $($counts.line) line, $($counts.area) area load(s) read in kN units; by case: $($l.by_load_case | ConvertTo-Json -Compress)") }
         }
 
         # ---- cleanup: members, runs, level; then any system Revit made that outlived its run ----
         if ($Ctx.WriteGate) { Case $catalog[7] $tools[7] 'not_covered' 'the write tier is closed for this run: nothing was created' }
         else {
-            $ids = @($created | Select-Object -Unique)
+            # Analytical members read for the own ones go first (the list is reversed).
+            $ids = @(@($created) + @($ownAnalytical) | Select-Object -Unique)
             if ($ids.Count -eq 0) { Case $catalog[7] $tools[7] 'not_covered' 'nothing was created' }
             else {
                 [array]::Reverse($ids)

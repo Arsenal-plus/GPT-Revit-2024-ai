@@ -2106,19 +2106,30 @@ order, then per `MEPSection` the flow (l/s), velocity (m/s), total pressure loss
 
 - **Scope**: `element_ids` are system ids (anything else is refused by name).
   Without them, `kind` (`pipe`/`duct`, omitted = both) and `classification`
-  (a `MEPSystemClassification` name such as `SupplyAir`, `DomesticColdWater`)
-  select every matching system. More than 100 systems per call is refused.
+  (ONE exact `MEPSystemClassification` name such as `SupplyAir`,
+  `DomesticColdWater`; comma lists and numbers are refused, because
+  `Enum.TryParse` would OR `SupplyAir,ReturnAir` into `ExhaustAir`) select every
+  matching system. More than 100 systems per call is refused.
 - **Limits**: `limits = { max_velocity_m_s, max_pressure_loss_pa,
   max_friction_pa_per_m }`. An unknown key is refused, not ignored. Sections
   beyond a limit are listed under `beyond_limits` with up to 50 element ids.
 - **The calculation level decides what may be judged.** `None`, `Performance`
   and `Volume` are `not_calculated`: the section numbers are NOT read, because
-  they read as zero and would pass any limit. `Flow` claims flow and velocity but
-  not pressure: a pressure or friction limit on such a system is listed in
-  `unmeasured_limits`. Only `All` claims both.
+  they read as zero and would pass any limit, and the system's coverage word is
+  `unreadable` - so a call mixing judged and unjudged systems is `partial`,
+  never the whole truth. `Flow` claims flow only (the API: "System calculation
+  is only for flow"): velocity, pressure and friction limits on such a system
+  are listed in `unmeasured_limits` until a live run proves Revit fills them.
+  Only `All` claims all four. A claimed quantity that comes back null is named
+  in `unread_quantities` (and makes the row `partial`) even with no limits.
+- **Connectivity**: a system Revit does not call well connected
+  (`is_well_connected` false or unreadable) never passes - its disconnected
+  branches carry no flow, so what was read is understated. Its verdict is
+  `not_well_connected` (or `beyond_limits` when a section already exceeds a
+  limit) and its row is `partial`.
 - **Verdicts per system**: `beyond_limits`, `within_limits` (every limit measured
   on every critical-path section), `limits_partly_unmeasured` (not a pass),
-  `no_limits_given`, `not_calculated`, `unreadable`, `no_critical_path`
+  `no_limits_given`, `not_well_connected`, `not_calculated`, `unreadable`, `no_critical_path`
   (a calculated system with no base equipment or badly connected) and
   `critical_path_unreadable`. None of them is "ok".
 - `critical_path_pressure_loss_pa` is the sum of the critical-path section losses,
@@ -2136,17 +2147,30 @@ Revit 2023+ analytical model: every `AnalyticalMember` and `AnalyticalPanel`
   `unreadable`.
 - **Members**: start/end (mm), length, section type, cross-section rotation,
   and releases per end: `GetReleaseType(start)` plus the six
-  `ReleaseConditions` flags (`true` = released).
-- **Node gaps**: a member end farther than `tolerance_mm` from every OTHER
-  analytical curve (members and panel outer contours) is listed with its nearest
-  distance and element. It is measured to the nearest point ON each curve, so a
-  beam framing into mid-girder is connected. Default tolerance: Revit's own
-  `VertexTolerance`, reported as `tolerance_source`. Every analytical element of
-  the model is a target, whatever the page shows. Above 50,000,000 end x segment
-  checks the gap check is NOT run and says so (`node_gaps_measured: false`).
+  `ReleaseConditions` flags, published raw: the API does not state whether
+  `true` is released or fixed, so no polarity is claimed (`flags_polarity`)
+  until a live read of a Pinned member fixes it.
+- **Member ends**: an end is CONNECTED when another analytical element reaches
+  it within `tolerance_mm`: a member's REAL curve (`Curve.Distance` - a curved
+  member is not judged on Revit's display tessellation, whose chords sag
+  millimetres), an `AnalyticalLink`, a panel edge, or a panel SURFACE (inside
+  its outer contour and outside its openings: a flat-slab column top is
+  connected). An end only a `BoundaryConditions` element (point, line or area)
+  holds is SUPPORTED: listed in `supported_ends`, counted in
+  `member_ends_supported`, not a gap. The rest are `node_gaps`, counted in
+  `member_ends_beyond_tolerance`: near-misses AND intended free ends such as
+  cantilever tips, which this read does not tell apart - `nearest_mm` and
+  `nearest_element_id` do. Default tolerance: Revit's own `VertexTolerance`,
+  reported as `tolerance_source`. Every analytical element of the model is a
+  target, whatever the page shows. Above 50,000,000 end x segment checks the
+  check is NOT run and says so (`node_gaps_measured: false`).
 - **Physical without analytical**: structural framing, structural columns,
-  structural foundations and walls/floors flagged structural whose
-  `HasAssociation` is false (up to 200 ids listed, with the full count).
+  structural foundations (family instances, wall foundations and foundation
+  slabs, which need no structural flag) and walls/floors flagged structural
+  whose `HasAssociation` is false (up to 200 ids listed, with the full count).
+  An element of any other class in those categories is counted in
+  `excluded_other_classes`, named in a coverage reason, and makes the block
+  `partial` - it was not checked.
 - Each row carries `unread` and its own `coverage` word.
 
 ### horizun_query_structure mode=loads
@@ -2155,4 +2179,8 @@ Point, line and area loads with load case (id, name, number), nature, category,
 reaction flag, host and orientation. Magnitudes through `UnitUtils`: point force
 kN, point moment kN*m, line force kN/m, line moment kN*m/m, area force kN/m2,
 area m2, positions mm. `counts` per kind and `by_load_case` count every load in
-scope, not only the page. Nothing is judged.
+scope, not only the page. Nothing is judged. Force and moment components are in
+the load's own frame, `vector_frame` (`project`, `work_plane` or `host_local`,
+from `OrientTo`): only `project` components are project coordinates and add up
+with each other. A field that throws is named in `unread`; `host_id` null with
+nothing unread means the load is not hosted.
