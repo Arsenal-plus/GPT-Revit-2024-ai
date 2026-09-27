@@ -88,6 +88,7 @@
          status strings it emits are pinned to CodeStatus by a Core test rather than
          by linking the readiness chain that CodeStatus lives beside. -->
     <Compile Include="..\Horizun.Revit\Core\BudgetComparisonRules.cs" />
+    <Compile Include="..\Horizun.Revit\Core\Bc3Rules.cs" />
     <!-- ISO 19650 information containers: naming, validation and the verified sidecar.
          Revit-free and net48-safe, because horizun_export compiles the same file into the
          add-in to name and stamp what it produces. -->

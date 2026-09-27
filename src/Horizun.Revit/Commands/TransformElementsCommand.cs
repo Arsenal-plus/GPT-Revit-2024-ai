@@ -50,6 +50,9 @@ namespace Horizun.Revit.Commands
                         "here. Send it alone.");
                 return ExecuteRealignWallSketch(app, gate, request, input);
             }
+            // edit_sketch: the same SketchEditScope path, one element per call (TransformElementsCommand.EditSketch.cs).
+            if (input.Any(t => string.Equals((t as JObject)?.Value<string>("operation"), EditSketchOp, StringComparison.OrdinalIgnoreCase)))
+                return ExecuteEditSketch(app, gate, request, input);
 
             double scale;
             if (!Scale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale))

@@ -214,6 +214,8 @@
          judgement about the numbers and their labels - unit, coverage, price -
          and every way that judgement can lie is provable without a model. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\BudgetComparisonRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Bc3Rules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SketchEditRules.cs" />
     <!-- WHICH DOCUMENTS A LINKED TAKEOFF MEASURES, AND UNDER WHOSE NAME. Two
          instances of one linked file are two placements of the same Document, and
          the numbering that tells them apart needs no Revit to be wrong. -->
