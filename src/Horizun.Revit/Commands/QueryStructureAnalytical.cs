@@ -77,16 +77,26 @@ namespace Horizun.Revit.Commands
             var polylines = new Dictionary<long, AnalysisReadRules.AnalyticalPolyline>();
             var surfaces = new List<AnalysisReadRules.AnalyticalSurface>();
             int panelsWithoutSurface = 0;
+            var unreadableCurves = new List<long>();
             foreach (Element e in everyAnalytical)
             {
                 AnalysisReadRules.AnalyticalPolyline line = Polyline(e);
                 if (line != null) polylines[line.ElementId] = line;
+                else unreadableCurves.Add(Rid.Value(e.Id));
                 if (e is AnalyticalPanel panel)
                 {
                     AnalysisReadRules.AnalyticalSurface surface = Surface(doc, panel);
                     if (surface != null) surfaces.Add(surface); else panelsWithoutSurface++;
                 }
             }
+            // Named for the whole call, not only on the page that shows the element: a curve that
+            // would not read is neither checked (its ends) nor a target (ends framing into it), so the
+            // count below is a floor wherever that element sits.
+            if (unreadableCurves.Count > 0)
+                reasons.Add(StructuralCoverage.Reason("node_gaps", unreadableCurves.Count + " analytical member " +
+                    "curve(s) or panel contour(s) would not read (" + string.Join(", ", unreadableCurves.Take(20)) +
+                    (unreadableCurves.Count > 20 ? ", ..." : "") + "): a member's ends were not checked, and an end " +
+                    "framing into any of them may be counted as a gap."));
             if (panelsWithoutSurface > 0)
                 reasons.Add(StructuralCoverage.Reason("panel_surfaces", panelsWithoutSurface + " panel(s) would not give a " +
                     "planar contour with readable openings: an end inside them was judged against their edges only."));
@@ -335,9 +345,9 @@ namespace Horizun.Revit.Commands
             {
                 ["id"] = id,
                 ["kind"] = e is AnalyticalMember ? "member" : "panel",
-                ["name"] = Str(() => e.Name),
-                ["structural_role"] = Str(() => ae.StructuralRole.ToString()),
-                ["analyze_as"] = Str(() => ae.AnalyzeAs.ToString())
+                ["name"] = Field(() => e.Name, unread, "name"),
+                ["structural_role"] = Field(() => ae.StructuralRole.ToString(), unread, "structural_role"),
+                ["analyze_as"] = Field(() => ae.AnalyzeAs.ToString(), unread, "analyze_as")
             };
 
             JToken associated = JValue.CreateNull();
@@ -371,14 +381,18 @@ namespace Horizun.Revit.Commands
                     m["end_mm"] = MmArray(line.Points[line.Points.Count - 1]);
                 }
                 else unread.Add("curve");
-                m["length_mm"] = Round(Num(() => member.GetCurve().Length) * FtToMm, 1);
-                m["section_type_id"] = SafeId(() => member.SectionTypeId);
-                m["cross_section_rotation_deg"] = Round(Num(() => member.CrossSectionRotation) * 180 / Math.PI, 3);
-                JObject releases = Releases(member);
-                if (releases == null) unread.Add("releases");
-                m["releases"] = releases;
+                m["length_mm"] = Field(() => Math.Round(member.GetCurve().Length * FtToMm, 1), unread, "length");
+                m["section_type_id"] = IdField(() => member.SectionTypeId, unread, "section_type_id");
+                m["cross_section_rotation_deg"] = Field(() => Math.Round(member.CrossSectionRotation * 180 / Math.PI, 3),
+                                                        unread, "cross_section_rotation");
+                m["releases"] = Releases(member, unread);
                 row["member"] = m;
-                if (gaps == null) { row["node_gaps"] = null; row["supported_ends"] = null; unread.Add("node_gaps"); }
+                // Not measured - for the whole call, or for this member whose curve would not read - is
+                // null and named, never an empty list that reads as "ends checked, no gap".
+                if (gaps == null || line == null)
+                {
+                    row["node_gaps"] = null; row["supported_ends"] = null; unread.Add("node_gaps");
+                }
                 else
                 {
                     gaps.TryGetValue(id, out List<AnalysisReadRules.NodeGap> mine);
@@ -391,9 +405,9 @@ namespace Horizun.Revit.Commands
             {
                 row["panel"] = new JObject
                 {
-                    ["thickness_mm"] = Round(Num(() => panel.Thickness) * FtToMm, 1),
+                    ["thickness_mm"] = Field(() => Math.Round(panel.Thickness * FtToMm, 1), unread, "thickness"),
                     ["contour_points"] = line == null ? JValue.CreateNull() : (JToken)(line.Points.Count - 1),
-                    ["opening_ids"] = IdArray(() => panel.GetAnalyticalOpeningsIds().ToList())
+                    ["opening_ids"] = IdsField(() => panel.GetAnalyticalOpeningsIds(), unread, "opening_ids")
                 };
                 if (line == null) unread.Add("contour");
             }
@@ -409,28 +423,40 @@ namespace Horizun.Revit.Commands
         // type" - not whether true means released or fixed. Until a live run fixes the
         // polarity (a Pinned member read back), the flags are published raw, beside the
         // release type that gives them their meaning, and no polarity is claimed.
-        private static JObject Releases(AnalyticalMember member)
+        // An end with no ReleaseConditions, or whose flags throw, is named ("releases.start"), so
+        // a row never reads complete with the six flags silently missing.
+        private static JObject Releases(AnalyticalMember member, List<string> unread)
         {
-            try
+            IList<ReleaseConditions> conditions;
+            try { conditions = member.GetReleaseConditions(); }
+            catch { unread.Add("releases"); return null; }
+            var o = new JObject();
+            foreach (bool start in new[] { true, false })
             {
-                var o = new JObject();
-                IList<ReleaseConditions> conditions = member.GetReleaseConditions();
-                foreach (bool start in new[] { true, false })
+                string key = start ? "start" : "end";
+                var end = new JObject
                 {
-                    var end = new JObject { ["type"] = member.GetReleaseType(start).ToString() };
-                    ReleaseConditions rc = conditions?.FirstOrDefault(c => c.Start == start);
-                    if (rc != null)
+                    ["type"] = Field(() => member.GetReleaseType(start).ToString(), unread, "releases." + key + ".type")
+                };
+                ReleaseConditions rc = null;
+                try { rc = conditions?.FirstOrDefault(c => c != null && c.Start == start); } catch { }
+                if (rc == null) unread.Add("releases." + key);
+                else
+                {
+                    try
                     {
-                        end["fx"] = rc.Fx; end["fy"] = rc.Fy; end["fz"] = rc.Fz;
-                        end["mx"] = rc.Mx; end["my"] = rc.My; end["mz"] = rc.Mz;
+                        var fx = rc.Fx; var fy = rc.Fy; var fz = rc.Fz;
+                        var mx = rc.Mx; var my = rc.My; var mz = rc.Mz;
+                        end["fx"] = fx; end["fy"] = fy; end["fz"] = fz;
+                        end["mx"] = mx; end["my"] = my; end["mz"] = mz;
                     }
-                    o[start ? "start" : "end"] = end;
+                    catch { unread.Add("releases." + key); }
                 }
-                o["flags_polarity"] = "unmeasured: the API does not state whether true is released or fixed; " +
-                                      "read the flags with the release type.";
-                return o;
+                o[key] = end;
             }
-            catch { return null; }
+            o["flags_polarity"] = "unmeasured: the API does not state whether true is released or fixed; " +
+                                  "read the flags with the release type.";
+            return o;
         }
 
         // `seen` collects the physical ids looked at, so an id the caller named that is
@@ -447,29 +473,56 @@ namespace Horizun.Revit.Commands
             };
             // Collect ignores categories when ids are named, so the category is checked here.
             var catIds = new HashSet<long>(cats.Select(c => Rid.Value(new ElementId(c))));
-            long foundationCat = Rid.Value(new ElementId(BuiltInCategory.OST_StructuralFoundation));
+            long wallCat = Rid.Value(new ElementId(BuiltInCategory.OST_Walls));
+            long floorCat = Rid.Value(new ElementId(BuiltInCategory.OST_Floors));
             foreach (Element e in Collect(doc, cats, ids))
             {
-                if (e is AnalyticalElement || e is ElementType || e.Category == null ||
-                    !catIds.Contains(Rid.Value(e.Category.Id))) continue;
-                bool foundation = Rid.Value(e.Category.Id) == foundationCat;
-                if (e is Wall && ParamNumberInt(e, BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT) != 1) continue;
-                // A foundation slab is structural by its category; the floor flag may be absent or unset on it.
-                if (e is Floor && !foundation && ParamNumberInt(e, BuiltInParameter.FLOOR_PARAM_IS_STRUCTURAL) != 1) continue;
-                if (!(e is FamilyInstance) && !(e is Wall) && !(e is Floor) && !(e is WallFoundation))
+                if (e is AnalyticalElement || e is ElementType || e.Category == null) continue;
+                long cat = Rid.Value(e.Category.Id);
+                if (!catIds.Contains(cat)) continue;
+                long eid = Rid.Value(e.Id);
+                if (cat == wallCat || cat == floorCat)
                 {
-                    excluded.Add(Rid.Value(e.Id));
-                    continue;
+                    // The category decides before the class. In walls and floors only a Wall or a
+                    // Floor carries the structural flag this check reads; an in-place or loadable
+                    // wall/floor family is a FamilyInstance there, with no such flag, and accepted as
+                    // one it would make every architectural in-place parapet "a gap the analysis export
+                    // drops". It is excluded - named, the block partial - never counted.
+                    if (e is Wall) { if (ParamNumberInt(e, BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT) != 1) continue; }
+                    else if (e is Floor) { if (ParamNumberInt(e, BuiltInParameter.FLOOR_PARAM_IS_STRUCTURAL) != 1) continue; }
+                    else { excluded.Add(eid); seen.Add(eid); continue; }
+                }
+                // Framing, columns and foundations: family instances, wall foundations and foundation
+                // slabs (a Floor there is structural by its category; the floor flag may be unset on it).
+                else if (!(e is FamilyInstance) && !(e is Floor) && !(e is WallFoundation))
+                {
+                    excluded.Add(eid); seen.Add(eid); continue;
                 }
                 physical.Add(e);
-                seen.Add(Rid.Value(e.Id));
+                seen.Add(eid);
             }
             if (excluded.Count > 0)
                 reasons.Add(StructuralCoverage.Reason("physical_without_analytical",
-                    excluded.Count + " element(s) in these categories are of a class this check does not read and " +
-                    "were NOT checked: " + string.Join(", ", excluded.Take(20)) + (excluded.Count > 20 ? ", ..." : "") + "."));
+                    excluded.Count + " element(s) in these categories are of a class this check does not read (an " +
+                    "in-place or loadable wall/floor family carries no structural flag it reads) and were NOT " +
+                    "checked: " + string.Join(", ", excluded.Take(20)) + (excluded.Count > 20 ? ", ..." : "") + "."));
             string scope = "structural framing, structural columns, structural foundations (family instances, wall " +
-                           "foundations and foundation slabs), and walls/floors flagged structural";
+                           "foundations and foundation slabs), and Wall/Floor elements flagged structural";
+            if (ids != null && ids.Count > 0)
+            {
+                scope = "only the element_ids named, where they are " + scope + " - not the model";
+                // Named ids that are all analytical (the documented narrowing) checked nothing: a
+                // count of 0 under complete would read as "the model has no gap".
+                if (physical.Count == 0 && excluded.Count == 0)
+                    return new JObject
+                    {
+                        ["checked"] = 0, ["count"] = null, ["ids"] = null,
+                        ["excluded_other_classes"] = 0, ["scope"] = scope,
+                        ["coverage"] = StructuralCoverage.NotApplicable,
+                        ["means"] = "no element_ids entry is a physical element of these categories, so nothing was " +
+                                    "checked; omit element_ids to check the model."
+                    };
+            }
             if (manager == null)
                 return new JObject
                 {
@@ -510,10 +563,27 @@ namespace Horizun.Revit.Commands
             catch { return null; }
         }
 
-        private static JToken SafeId(Func<ElementId> f)
+        /// <summary>An id: null when none is set (InvalidElementId); null AND named when the read throws.</summary>
+        private static JToken IdField(Func<ElementId> read, List<string> unread, string what)
         {
-            ElementId id = Safe(f);
-            return id == null || id == ElementId.InvalidElementId ? JValue.CreateNull() : (JToken)Rid.Value(id);
+            try
+            {
+                ElementId id = read();
+                return id == null || id == ElementId.InvalidElementId ? JValue.CreateNull() : (JToken)Rid.Value(id);
+            }
+            catch { unread.Add(what); return JValue.CreateNull(); }
+        }
+
+        /// <summary>A set of ids, sorted; null AND named when the read throws or answers null.</summary>
+        private static JToken IdsField(Func<IEnumerable<ElementId>> read, List<string> unread, string what)
+        {
+            try
+            {
+                IEnumerable<ElementId> ids = read();
+                if (ids == null) { unread.Add(what); return JValue.CreateNull(); }
+                return new JArray(ids.Select(Rid.Value).OrderBy(v => v).Cast<object>().ToArray());
+            }
+            catch { unread.Add(what); return JValue.CreateNull(); }
         }
 
         // --------------------------------------------------------------- loads
