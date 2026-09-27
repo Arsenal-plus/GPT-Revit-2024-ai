@@ -2156,3 +2156,54 @@ number`, as ONE action inside the batch's single transaction:
   `create_sheet` in the same batch, which checks the document as it was.
 - Why not `horizun_fix_planimetry set_sheet_number`: that one corrects a cited
   finding and refuses a number another sheet holds, which a swap needs.
+
+## horizun_write_params_verified: `sequence` (values numbered in spatial order)
+
+`sequence` is a third source for the batch, beside `writes` and `tabular_source` (give
+exactly one): instead of listing the writes, the command GENERATES one write per target,
+numbering the targets in a declared spatial order - door, window and room marks, or any
+text parameter.
+
+| Field | Meaning |
+|---|---|
+| `parameter` | Required. Resolved on every target exactly like a `writes` entry (BuiltInParameter name, shared-parameter GUID or name): `ALL_MODEL_MARK` for doors and windows, `ROOM_NUMBER` for rooms. Values are written as text. |
+| `element_ids` / `category` | Exactly one. Ids must be instance elements of the document. A `category` (OST_ name) sweeps every instance of it; an unplaced room, area or space has no position and is excluded, listed by id in `excluded_unplaced`. At most 5000 targets. |
+| `order_by` | Required: keys applied left to right from `level`, `x`, `y`, `room`. `level` sorts by elevation, then name. `x`/`y` are the location point (a curve's midpoint) in internal coordinates, quantised to 1 mm so a rounding difference cannot swap two targets between rehearsal and apply. `room` is the room number compared naturally ("2" before "10"). The element id breaks the last tie, so one model always yields one order. |
+| `phase_id` | Required with `room`: a room exists in a phase, and the same point can stand in one room in one phase and in another (or none) in the next. |
+| `prefix`, `start` (1), `step` (1), `pad` (0 = none, at most 12) | Value = prefix + counter, zero-padded to `pad` digits. |
+| `restart_per_level` | The counter returns to `start` on every level. Requires `level` as the FIRST key (each level's targets must be contiguous); values that then repeat across levels set `repeats_across_levels` - Revit may warn about duplicate marks. |
+
+**The room of a target** (at the phase): a door or window takes `ToRoom`, then `FromRoom`
+(the usual door-numbering rule: the room it opens into); another family instance its
+`Room`; anything else the room at its location point, retried 1 ft (304.8 mm) higher
+because an insertion point on the floor plane lies on the room's lower boundary. Each
+target reports `room_from` (`to_room`, `from_room`, `room`, `point`, `point_raised_1ft`).
+
+**Refused before anything is generated** (nothing written): an unknown field; no
+`parameter`; neither or both of `element_ids`/`category`; a `phase_id` that is not a phase
+of the document; `room` without `phase_id`; `restart_per_level` without `level` first; and
+a target without the datum its order needs (no level - its own or its host's -, no
+readable location, not inside a room at the phase), named by id and never sorted to an end.
+
+**Rehearsal and apply.** The reply's `sequence` block lists `order[]` (position, target_id,
+value, level, x_mm, y_mm, room, room_from; the first 500) beside the ordinary `rows`. The
+token binds the options (request hash) AND every generated value (resolved plan): a target
+moved, added or re-roomed between rehearsal and apply regenerates different values and the
+apply is refused as stale. After the commit every row is re-read exactly as for `writes`.
+
+```json
+{ "target_document": "Tower", "sequence": { "parameter": "ALL_MODEL_MARK", "category": "OST_Doors",
+  "order_by": ["level", "room", "x"], "phase_id": 12345, "prefix": "D-", "pad": 3, "restart_per_level": true } }
+```
+
+Live probes: `scripts/live-probes/params-sequence.probes.ps1` (own levels, walls and room at
+X = 1,120,000 mm; offline fakes in `params-sequence.tests.ps1`).
+
+### Resumen (español)
+
+`sequence` genera las escrituras en vez de listarlas: numera los objetivos (`element_ids` o
+una `category`) en el orden declarado por `order_by` (nivel, x, y, habitación; la habitación
+exige `phase_id`), con `prefix`, `start`, `step`, `pad` y `restart_per_level` (que exige el
+nivel como primera clave). Un objetivo sin el dato que su orden necesita se nombra y la
+generación entera se rechaza. Los valores se muestran en el ensayo, el token los ata y cada
+uno se relee tras el commit.
