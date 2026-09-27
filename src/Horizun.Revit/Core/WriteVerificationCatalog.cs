@@ -164,7 +164,7 @@ namespace Horizun.Revit.Core
                 F(C + "LinkScheduleCommand.cs", C + "LinkScheduleWrite.cs", C + "LinkScheduleStatusView.cs"),
                 "LinkScheduleStatusView.cs: only the surface foreground colour of each override is re-read, not the cut pattern or line colour."),
             Row("horizun_code_check", VerificationMechanism.PerRowReread, E("paths", "application"), F(C + "CodeCheckTravel.cs"),
-                "CodeCheckTravel.cs KeepPaths: a kept PathOfTravel is re-read by owner view and total length (within max(50 mm, 1 %) of the measured route), not vertex by vertex; operation=check, energy_readiness (its energy model is always rolled back) and measure-only travel_distance write nothing."),
+                "CodeCheckTravel.cs KeepPaths: a kept PathOfTravel is re-read by owner view and total length (within max(50 mm, 1 %) of the measured route), not vertex by vertex; operation=check, energy_readiness (its energy model is always rolled back), headroom (rays only) and measure-only travel_distance write nothing."),
             Row("horizun_manage_schedules", VerificationMechanism.PerRowReread, E("actions_verified", "application"), F(C + "ManageSchedulesCommand.cs"),
                 "ManageSchedulesCommand.cs set_filters / set_sorting: the field each filter or sort entry targets is not re-read, only the entries' shape."),
             Row("horizun_manage_revisions", VerificationMechanism.PerRowReread, E("rows", "application"), F(C + "ManageRevisionsCommand.cs"),
