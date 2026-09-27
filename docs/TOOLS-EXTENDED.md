@@ -2122,3 +2122,52 @@ than `NewRooms2`/`NewSpaces2`, which fill every circuit and could honour
 for rooms, `point_inside_room`. NOT PROVEN yet: whether Room Bounding walls of a
 LINKED model close a host circuit - the reply says so and the live probe measures
 it. When nothing is left to fill the reply lists the circuits and writes nothing.
+`phase_id` and `min_area_m2` belong to the placement: beside a `point` they are refused by
+name rather than accepted and ignored (a point room goes in with `NewRoom(Level, UV)`, in the
+phase Revit gives it). The advertised room/space branches therefore require only `level_id`:
+a row carries either a `point` or `placement: "all_enclosed"`.
+
+### `horizun_create_elements` — `kind: "toposolid"` (Revit 2024+)
+
+`{kind: "toposolid", level_id, type_id, points: [[x, y, z], ...]}` creates one toposolid with
+`Toposolid.Create(doc, points, typeId, levelId)`: the points ARE its top surface, triangulated
+by Revit. They are in the request's `units` and in ABSOLUTE internal coordinates - not shared or
+survey coordinates; take surveyed or shared points into internal
+coordinates first. Between 3 and 100 points (the `points` field is
+the one the flex kinds use, and its `maxItems` is 100), all finite, one height per plan point
+(two points closer than ~0.3 mm in plan are refused), not all on one plan line.
+
+`type_id` is required - the type is never "the first one": a row without it is refused with
+the document's toposolid types listed by name and id (copy one in with
+`horizun_copy_between_documents` when there is none).
+
+**Verified after the commit** by re-reading the solid, not the call that did not throw: at up
+to 50 sampled input points (every point when there are fewer; the lowest and the highest
+always, the rest evenly spread), each named `top_z_at_point_<i>` in the postconditions, the top
+of the solid at that X,Y must stand at the point's Z within 1 mm. The height is read from the
+solid's own vertices at that plan point and, when Revit merged the point into a flat face,
+from a vertical line through its faces; an X,Y where neither finds the solid is unmeasured and
+the row fails.
+
+**Not measured yet**: whether Revit reads a point's Z as absolute or relative to the level.
+Absolute is asserted; a Revit that reads it the other way fails the row (rolled back) instead
+of passing. The live probe stages its level at 500 mm precisely so the two readings differ.
+
+**Revit 2023** has no Toposolid (it arrived in 2024): the row is refused by name,
+`toposolid_not_in_revit_2023`, and a TopographySurface - a different element - is not created
+in its place. A LandXML TIN is not read by this build: export the surface's points and pass
+them as `points`.
+
+**Live probe** (`scripts/live-probes/rooms-topo-federation.probes.ps1`, offline twin
+`rooms-topo-federation.tests.ps1`, shapes from the code until the first live run). On its own
+level at 71 000 mm, far from the model (X = 1 150 000 mm), it draws two bays with walls of
+`Basic Wall: Generic - 200mm` brought by name from the year's `DefaultMetric.rte` (6 x 4 m and
+2 x 4 m at the centrelines, sharing a wall) and uses the document's last phase: the rehearsal
+lists both circuits, `min_area_m2 = 10` marks the small one `skipped_min_area`, the apply
+creates two verified rooms, a second call plans nothing (`skipped_has_room`), the space
+rehearsal lists the same circuits, and link-bounded circuits stay `not_covered` with the
+reply's `not_proven` declaration. The toposolid goes on a second own level at 500 mm from six
+non-coplanar points (Z 1 000 to 4 000 mm) with the type `Toposolid: Toposolid` by name, or is
+`not_covered` naming the types it saw; in 2023 the named refusal is the pass. Everything is
+deleted with `horizun_delete_verified` `mode: "ids"`; nothing is saved.
+
