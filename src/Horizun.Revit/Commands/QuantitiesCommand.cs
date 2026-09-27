@@ -395,11 +395,8 @@ namespace Horizun.Revit.Commands
             public Dictionary<string, TakeoffQuantityTally> Quantities = new Dictionary<string, TakeoffQuantityTally>(StringComparer.Ordinal);
         }
 
-        private sealed class TakeoffQuantityTally
-        {
-            public double Total;
-            public int Measured, Absent, Empty, Unreadable, Invalid;
-        }
+        // The tally and its arithmetic live in Core (RollupRules), shared by by_code and by_room.
+        private sealed class TakeoffQuantityTally : QuantityTally { }
 
         /// <summary>
         /// ONE PLACEMENT TO MEASURE. The host is one of these with no Link and no
@@ -676,14 +673,9 @@ namespace Horizun.Revit.Commands
                         TakeoffReading r = ReadTakeoffQuantity(owner, e, d, options);
                         TakeoffQuantityTally qt;
                         if (!tally.Quantities.TryGetValue(d.Name, out qt)) tally.Quantities[d.Name] = qt = new TakeoffQuantityTally();
-                        switch (r.State)
-                        {
-                            case QuantityState.Measured: qt.Measured++; qt.Total += r.Value.Value; break;
-                            case QuantityState.Absent: qt.Absent++; break;
-                            case QuantityState.Empty: qt.Empty++; break;
-                            case QuantityState.Invalid: qt.Invalid++; invalidReads++; break;
-                            default: qt.Unreadable++; unreadableReads++; break;
-                        }
+                        string bucket = RollupRules.Add(qt, r.State, r.Value);
+                        if (bucket == QuantityState.Invalid) invalidReads++;
+                        else if (bucket == RollupRules.UnreadableBucket) unreadableReads++;
                         if (roomTally != null) TallyRoomReading(roomTally, d.Name, r);
                         quantities[d.Name] = new JObject
                         {
@@ -736,7 +728,7 @@ namespace Horizun.Revit.Commands
                         ["empty"] = qt.Empty,
                         ["unreadable"] = qt.Unreadable,
                         ["invalid"] = qt.Invalid,
-                        ["complete"] = qt.Measured == kv.Value.Elements
+                        ["complete"] = RollupRules.Complete(qt, kv.Value.Elements)
                     };
                 }
                 codeRollup[kv.Key] = new JObject

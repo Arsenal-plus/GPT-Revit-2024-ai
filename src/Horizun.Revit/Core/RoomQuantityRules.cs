@@ -358,4 +358,36 @@ namespace Horizun.Revit.Core
             => state == AssignedState && rooms != null && rooms.Count == 1 ? rooms[0]
              : state == SpansRoomsState ? MultipleRooms : Unassigned;
     }
+
+    /// <summary>One quantity's tally in one rollup key (a classification code or a room).</summary>
+    public class QuantityTally
+    {
+        public double Total;
+        public int Measured, Absent, Empty, Unreadable, Invalid;
+    }
+
+    /// <summary>
+    /// The per-quantity arithmetic of a takeoff rollup, shared by by_code and by_room so the two can never
+    /// disagree: a measured reading adds its value, every other state is counted under its own name, and a
+    /// key is complete for a quantity only when EVERY element in it was measured - an absent value is not a
+    /// zero, and '(unassigned)', '(multiple rooms)' and '(unlocatable)' are keys like any other.
+    /// </summary>
+    public static class RollupRules
+    {
+        public const string UnreadableBucket = "unreadable";
+
+        /// <summary>Counts one reading; returns the bucket it went to (a QuantityState name, or UnreadableBucket).</summary>
+        public static string Add(QuantityTally t, string state, double? value)
+        {
+            if (state == QuantityState.Measured && value.HasValue && !double.IsNaN(value.Value))
+            { t.Measured++; t.Total += value.Value; return QuantityState.Measured; }
+            if (state == QuantityState.Absent) { t.Absent++; return QuantityState.Absent; }
+            if (state == QuantityState.Empty) { t.Empty++; return QuantityState.Empty; }
+            if (state == QuantityState.Invalid) { t.Invalid++; return QuantityState.Invalid; }
+            t.Unreadable++;
+            return UnreadableBucket;
+        }
+
+        public static bool Complete(QuantityTally t, int elements) => t != null && t.Measured == elements;
+    }
 }

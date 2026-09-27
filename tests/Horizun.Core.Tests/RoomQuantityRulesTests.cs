@@ -294,5 +294,27 @@ namespace Horizun.Core.Tests
             Assert.Empty(rooms);
             Assert.Equal("(unassigned)", RoomMembershipRules.KeyOf("unassigned", rooms));
         }
+
+        [Fact]
+        public void A_rollup_key_is_complete_only_when_every_element_in_it_was_measured()
+        {
+            var t = new QuantityTally();
+            Assert.Equal(QuantityState.Measured, RollupRules.Add(t, QuantityState.Measured, 2.5));
+            Assert.Equal(QuantityState.Measured, RollupRules.Add(t, QuantityState.Measured, 0));
+            Assert.True(RollupRules.Complete(t, 2));
+            Assert.Equal(QuantityState.Absent, RollupRules.Add(t, QuantityState.Absent, null));
+            Assert.False(RollupRules.Complete(t, 3));
+            Assert.Equal(RollupRules.UnreadableBucket, RollupRules.Add(t, "no such state", null));
+            Assert.Equal(RollupRules.UnreadableBucket, RollupRules.Add(t, QuantityState.Measured, double.NaN));
+            Assert.Equal(QuantityState.Invalid, RollupRules.Add(t, QuantityState.Invalid, null));
+            Assert.Equal(QuantityState.Empty, RollupRules.Add(t, QuantityState.Empty, null));
+            Assert.Equal(2.5, t.Total, 6);
+            Assert.Equal(2, t.Measured);
+            Assert.Equal(1, t.Absent);
+            Assert.Equal(2, t.Unreadable);
+            Assert.Equal(1, t.Invalid);
+            Assert.Equal(1, t.Empty);
+            Assert.False(RollupRules.Complete(null, 0));
+        }
     }
 }

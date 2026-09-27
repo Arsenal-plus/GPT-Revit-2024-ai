@@ -39,19 +39,12 @@ namespace Horizun.Revit.Commands
             return RoomMembershipReader.Create(doc, request.Value<string>("phase"), out problem);
         }
 
-        /// <summary>The per-quantity half of the by_code switch, applied to the room tally.</summary>
+        /// <summary>The same Core rule as by_code (RollupRules.Add), applied to the room tally.</summary>
         private static void TallyRoomReading(TakeoffCodeTally tally, string quantityName, TakeoffReading r)
         {
             TakeoffQuantityTally qt;
             if (!tally.Quantities.TryGetValue(quantityName, out qt)) tally.Quantities[quantityName] = qt = new TakeoffQuantityTally();
-            switch (r.State)
-            {
-                case QuantityState.Measured: qt.Measured++; qt.Total += r.Value.Value; break;
-                case QuantityState.Absent: qt.Absent++; break;
-                case QuantityState.Empty: qt.Empty++; break;
-                case QuantityState.Invalid: qt.Invalid++; break;
-                default: qt.Unreadable++; break;
-            }
+            RollupRules.Add(qt, r.State, r.Value);
         }
 
         private static JObject RoomRollup(Dictionary<string, TakeoffCodeTally> byRoom, Dictionary<string, SpatialElement> rooms,
@@ -74,7 +67,7 @@ namespace Horizun.Revit.Commands
                         ["empty"] = qt.Empty,
                         ["unreadable"] = qt.Unreadable,
                         ["invalid"] = qt.Invalid,
-                        ["complete"] = qt.Measured == kv.Value.Elements
+                        ["complete"] = RollupRules.Complete(qt, kv.Value.Elements)
                     };
                 }
                 SpatialElement room;
