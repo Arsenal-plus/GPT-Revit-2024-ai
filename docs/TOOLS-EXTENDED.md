@@ -2090,3 +2090,144 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+## horizun_quantities - mode room_finishes
+
+Gross wall, floor and ceiling area of each room or space, per bounding element type,
+material and classification code, from Revit's `SpatialElementGeometryCalculator` at the
+**finish** face (`SpatialElementBoundaryLocation.Finish`). Read-only.
+
+```json
+{ "mode": "room_finishes", "phase": "New Construction", "level": "Level 1", "code_parameter": "Assembly Code" }
+```
+
+- `phase` is **required**: rooms, spaces and the side a door faces are per phase, and a hidden
+  default would silently measure a different building. `element_ids` (rooms/spaces) or `level`
+  narrow the scope; without them every room and space of that phase is measured.
+- Each face piece comes from `GetBoundaryFaceInfo`: `SubfaceType.Side` is a wall finish,
+  `Bottom` the floor, `Top` the ceiling. A face piece no element bounds (an unbounded room top)
+  is its own row under `(no bounding element)`, so the rows still add up to the room.
+- `material` is the finish the room sees on that face: the **paint** when the face is painted
+  (`Document.IsPainted` / `GetPaintedMaterial`), else the face's own material
+  (`Face.MaterialElementId` of `GetBoundingElementFace()`); `material_source` says `paint` or
+  `face` (`paint_unreadable` when the paint check failed). Named non-values: `(no material on
+  face)`, `(face unreadable)`, and `(separation line: no face)` for a room separation line.
+- Rows carry `kind` (room | space) and `totals_by_kind` totals rooms and spaces **apart**: a space
+  drawn over a room measures the same faces again, so one sum over both would count every face
+  twice. A repeated id in `element_ids` is measured once and listed in `duplicate_ids`.
+- **Openings are never netted.** The room solid runs past doors, windows and wall openings, so
+  `gross_m2` is gross. `openings_deduction_m2` is a separate column: the inserts of each bounding
+  wall (`FindInserts` with rectangular openings and embedded walls) that are **in the wall in the
+  phase** (`GetPhaseStatus` New or Existing, or None: not phased) and face this room (a
+  door/window of a room: Revit's `FromRoom`/`ToRoom` in the phase; otherwise a point probe on
+  each side of the insert). A door/window is sized by `rough` width x height when the family
+  publishes it, else `nominal` (`DOOR_`/`WINDOW_`/`FAMILY_` width and height, instance then type),
+  else `bounding_box` measured along the wall; a rectangular wall opening by `opening_rect` (its
+  `BoundaryRect`). The top-level `openings` list gives EACH opening with `width_m`, `height_m`,
+  `area_m2` and `size_basis`, so a rule such as "openings under X m2 are not deducted" can be
+  applied. When a wall's faces in one room fall into two rows (two materials), its deductions go to
+  the row where it has the most area. Deduct by your contract's rule; this tool computes no net.
+- `inserts_other_phase_status` names the inserts of a bounding wall that are Demolished, Past,
+  Future or Temporary in the phase (not deducted). `inserts_not_deducted` names the rest: other
+  categories, and an **embedded wall** (storefront) facing the room, whose opening is not sized
+  here - that one makes the deductions incomplete.
+- **Named, never zero**: `unplaced`, `not_enclosed`, `redundant` (its point lies inside another
+  enclosed room of the same phase), `other_phase`, `other_level` (for explicit ids),
+  `geometry_failed`. A face whose boundary info or subface area could not be read goes to a row
+  under `(bounding element not read)` and to `face_read_failures`. `coverage.areas_complete` is
+  false on any of them or on an unreadable bounding element or material;
+  `coverage.deductions_complete` is false on an unsized or unattributed opening, an embedded wall
+  facing the room, an insert whose phase could not be read, or a **linked wall** (its openings are
+  not read). `coverage.complete` needs both.
+- **Links**: a room bounded by a linked element gets that face's area (it is the room's own
+  geometry) and the element's type, material and code read from the link document; if the link is
+  not loaded only the area is read. Openings hosted in a **linked** wall are not read - their
+  From/To room answers the link's rooms, not this document's - and each such bound is listed in
+  `linked_bounding_elements` with what was and was not read (`hosted_openings_not_read` is true
+  for a linked wall or a link that is not loaded, and makes the deductions incomplete).
+
+## horizun_quantities - mode carbon
+
+Volume, area and mass per material, multiplied by **your** factor table. Nothing is compiled in.
+
+```json
+{ "mode": "carbon", "category": "OST_Walls", "code_parameter": "Assembly Code",
+  "factor_source": "Project EPD list rev B",
+  "carbon_factors": [ { "material": "Concrete, Cast-in-Place gray", "factor": 240, "per": "m3" },
+                      { "material_class": "Metal", "factor": 1.55, "per": "kg" } ] }
+```
+
+- Readings are `Element.GetMaterialIds(false)` x `GetMaterialVolume` / `GetMaterialArea`; density
+  is the material's `StructuralAsset.Density` (kg/m3) when it has one.
+- A factor names exactly one of `material` or `material_class`; name matches first, then class,
+  case-insensitive. A repeated key is refused (the total would depend on order). Negative factors
+  are accepted: EPDs declare biogenic carbon negative.
+- `per: "m3"` multiplies the volume; `per: "kg"` multiplies volume x density.
+- Rows are flat - material x code x level x `phase_created` x `phase_demolished` with `volume_m3`, `area_m2`, `mass_kg`, `kgco2e` and the
+  counts `readings / counted / no_factor / no_density / unreadable_volume` - ready for
+  `horizun_power_bi_push`. `kgco2e` sums **only** counted readings; `materials_without_factor`,
+  `materials_without_density`, `unreadable_volumes` and `elements_without_materials` name the rest.
+  Host document only; linked models are not read. A failed `GetMaterialArea` is named in
+  `unreadable_areas` and counted per row (`unreadable_area`, `area_complete: false`).
+- Carbon does NOT filter by phase or level: a category sweep reads every phase, demolished
+  elements too, so `phase_created` and `phase_demolished` are grouping columns - filter them.
+  A repeated id is read once and listed in `duplicate_ids`.
+
+A key that another mode reads is **refused, not ignored**, in a mode that does not read it -
+the reply names the key and the modes that read it, and nothing is measured. `carbon` refuses
+`phase`, `level`, `quantities`, `classification_parameter`, `include_links`, `detail_level`,
+`tolerance_pct` and `only_disagreements`; `room_finishes` refuses the same takeoff/volume keys
+plus `category`, `carbon_factors` and `factor_source`; `takeoff` refuses `level`,
+`carbon_factors` and `factor_source` (and `phase` without `group_by: "room"`). Without the
+refusal, "the carbon of phase X" would silently come back as the carbon of every phase.
+
+### Room membership: `horizun_query_model` include_room and takeoff group_by='room'
+
+`horizun_query_model` with `include_room: true, phase: "<name>"` adds `room` to every row
+(`state` assigned | unassigned | unlocatable, `room` and `space` as `{id, number, name, level}`,
+the sampling `basis` and the `sample_point` in the query's coordinate units) and a
+`room_membership` block with the counts. `horizun_quantities` mode `takeoff` with
+`group_by: "room", phase: "<name>"` adds `room` to every row and a `by_room` rollup beside
+`by_code`, keyed by room id, with the keys `(unassigned)` and `(unlocatable)` for the rest.
+Both refuse `phase` without the option that reads it, and query_model refuses include_room
+with `group_by` or `response_mode: "summary"` (there are no rows to carry it).
+
+Sampling: point elements at the family's room calculation point, else the location point +1 mm
+(and -1 mm for a ceiling-hosted instance the lift left in no room: basis `location_point_below`);
+curves at start, middle and end (`curve_points`); floors at up to 32 points on their top face
+(+1 mm); walls at an interior point of their solid (the centroid when inside, else the middle of
+the wall piece a vertical line through it crosses - a centred door leaves only its header there).
+Samples in two or more **different** rooms give `spans_rooms`: the row lists the rooms and
+by_room keys the element under `(multiple rooms)` - never billed whole to one room. A miss beside
+a hit is ignored (a slab's points under its own walls are in no room).
+
+The two rules, written:
+
+1. **The phase is mandatory.** Rooms and spaces exist per phase. There is no default: the
+   last phase would silently answer for a different building. It is the HOST's phase.
+2. **A linked element is placed in the HOST's rooms.** Its sample point goes through its
+   own `RevitLinkInstance.GetTotalTransform()` and the host answers
+   `Document.GetRoomAtPoint(point, phase)` / `GetSpaceAtPoint(point, phase)`. Whether the
+   link is room-bounding does not change that query; it only shapes the host's rooms (a
+   host room that needs the link's walls to close is not enclosed without them and holds
+   nothing, so those elements come back unassigned). Rooms INSIDE a linked model are not
+   read.
+
+Sampling, one point per element:
+
+| Element | Sample | Why |
+|---|---|---|
+| point-based (LocationPoint) | the point, lifted 1 mm | an element standing on its level is not lost on the room's bottom boundary |
+| curve-based (LocationCurve) | the curve's midpoint | |
+| wall | its largest solid's centroid, used only when a vertical line through it proves it lies inside the wall | a curved wall's centroid can fall outside it, into the room it bounds; that wall is unlocatable, not guessed |
+| floor | a point ON its top face (one triangle's centroid), lifted 1 mm | a floor's body sits below the room it carries |
+
+Consequences, by design: a room-bounding wall's centroid lies outside every room computed
+at the wall finish, so **a wall that separates rooms is unassigned** (it belongs to none).
+`room_membership.room_boundary_location` reports the document's room computation; when it
+is not `Finish`, a `boundary_warning` says that a bounding wall's centroid can sit ON a
+room boundary. Doors and windows sit inside their host wall, so their location point is
+unassigned too; their sides are read with From/To room by `room_finishes`. An element with
+no sample (a curtain wall, a ceiling, an element without location) is `unlocatable`, never
+counted as unassigned. A floor whose top face lies below its room's base (a structural slab
+under a finish floor) is unassigned.
