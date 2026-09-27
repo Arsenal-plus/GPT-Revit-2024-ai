@@ -239,6 +239,8 @@ namespace Horizun.Server
                 ["mcp_paused"] = Horizun.Revit.Core.Settings.McpPaused,
                 ["mcp_paused_means"] = "When true, only horizun_health is available until the local Revit owner resumes MCP.",
                 ["force_read_only_on_workshared"] = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared,
+                ["sync_with_central_owner_granted"] = Horizun.Revit.Core.Settings.SyncWithCentralOwnerEnabled,
+                ["sync_with_central_owner_granted_means"] = "The machine owner's grant for synchronize with central (Advanced options). The typed operation also needs permission_profile=full_write; force_read_only_on_workshared wins over it.",
                 ["execute_python_allowed"] = python,
                 ["execute_python_temporary_grant_until_utc"] = until == null
                     ? JValue.CreateNull() : JToken.FromObject(until.Value.ToString("O")),

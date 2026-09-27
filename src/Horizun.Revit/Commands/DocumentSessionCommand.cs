@@ -622,8 +622,9 @@ namespace Horizun.Revit.Commands
             bool compact = request.Value<bool?>("compact") ?? false;
             bool force = request.Value<bool?>("force_workshared") ?? false;
 
-            // No sync. Not now, not behind a flag. A workshared save is still a write
-            // to a file other people are standing on, and a central save is worse.
+            // save/close never sync: synchronizing is operation=sync_with_central, behind the
+            // machine owner's own switch (DocumentSessionSync.cs). A workshared save is still a
+            // write to a file other people are standing on, and a central save is worse.
             //
             // Read ONCE into a bool?. The old line was
             // `bool workshared = SafeWorkshared(doc) is bool && (bool)SafeWorkshared(doc);`
@@ -642,10 +643,11 @@ namespace Horizun.Revit.Commands
                         ? "This document is WORKSHARED and force_workshared was not set. Refusing. "
                         : "Whether this document is workshared is UNKNOWN — Document.IsWorkshared could not be read — and " +
                           "force_workshared was not set. Refusing: an unreadable workshared state is not a non-workshared " +
-                          "state, and this is the one write in this tool that cannot be undone. ") +
+                          "state, and a save cannot be undone. ") +
                     "On a local file this would write the local; on a central file it would write the central out from " +
                     "under everyone attached to it. " +
-                    "Note this tool has no sync operation and will not get one — synchronizing to central is a human's call. " +
+                    "Save and close never synchronize; operation=sync_with_central does, and only when the machine owner enabled it " +
+                    "(Advanced options > Synchronize with central). " +
                     "If you want a standalone deliverable, re-open with detach=true and save_as from there. " +
                     "Document: " + (sourcePath ?? SafeTitle(doc)));
             }
@@ -921,12 +923,11 @@ namespace Horizun.Revit.Commands
                 ["synced_to_central"] = false,
                 ["sync_note"] = worksharedState == true
                     ? "This document is workshared and was saved, NOT synchronized. No changes were relinquished and nothing " +
-                      "reached other users. This tool does not sync. force_workshared was passed to reach this write."
+                      "reached other users. Save and close never sync; operation=sync_with_central does, only when the machine owner enabled it. force_workshared was passed to reach this write."
                     : worksharedState == null
                         ? "Whether this document is workshared is UNKNOWN: Document.IsWorkshared could not be read. It was " +
                           "SAVED anyway because force_workshared was passed. If it was in fact workshared, this write landed " +
-                          "on the local — or on the central — and nothing was synchronized or relinquished. This tool does " +
-                          "not sync. Null here means nobody looked successfully, NOT that the document is non-workshared."
+                          "on the local — or on the central — and nothing was synchronized or relinquished. Save and close never sync; operation=sync_with_central does, only when the machine owner enabled it. Null here means nobody looked successfully, NOT that the document is non-workshared."
                         : null,
                 ["file_on_disk_before"] = beforeProbe,
                 ["version_on_disk_before"] = versionBefore,
@@ -1310,11 +1311,11 @@ namespace Horizun.Revit.Commands
                     ? null
                     : worksharedState == true
                         ? "This document is workshared and was SAVED on close, NOT synchronized. No changes were relinquished " +
-                          "and nothing reached other users. force_workshared was passed to reach this write. This tool does not sync."
+                          "and nothing reached other users. force_workshared was passed to reach this write. Save and close never sync; operation=sync_with_central does, only when the machine owner enabled it."
                         : worksharedState == null
                             ? "Whether this document was workshared is UNKNOWN: Document.IsWorkshared could not be read before " +
                               "the close, and it cannot be asked now. It was SAVED on close because force_workshared was passed. " +
-                              "If it was workshared, nothing was synchronized or relinquished. This tool does not sync."
+                              "If it was workshared, nothing was synchronized or relinquished. Save and close never sync; operation=sync_with_central does, only when the machine owner enabled it."
                             : null,
                 ["file_on_disk_after"] = ProbeFile(path)
             });

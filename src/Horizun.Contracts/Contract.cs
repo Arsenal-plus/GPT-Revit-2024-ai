@@ -4426,12 +4426,12 @@ namespace Horizun.Contracts
                      ""description"": ""open only: how a modal dialog raised WHILE opening is answered unattended. 'cancel' (default) presses Cancel; 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort, recorded in revit_said; scoped to the open call - every other dialog still cancels."" },
     ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path."" },
     ""compact"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save/save_as: pass Compact to the API. The response reports the byte delta it actually produced."" },
-    ""comment"": { ""type"": ""string"", ""description"": ""sync_with_central: comment stored in central."" },
+    ""comment"": { ""type"": ""string"", ""description"": ""sync_with_central: stored in central; at most 30000 chars."" },
     ""relinquish"": { ""type"": ""string"", ""enum"": [""all"", ""keep_borrowed"", ""none""], ""default"": ""all"", ""description"": ""sync_with_central: ownership to give back."" },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save_as: allow overwriting an existing destination file."" },
     ""max_backups"": { ""type"": ""integer"", ""minimum"": 1, ""description"": ""save_as: cap the .000N backup pile Revit leaves behind."" },
     ""force_workshared"": { ""type"": ""boolean"", ""default"": false,
-                            ""description"": ""Required to save/save_as a workshared document, to close one with save_on_close, and in either case when the workshared state cannot be read at all (unknown is not a clearance). This tool never syncs to central; on a central model a save still writes to central."" },
+                            ""description"": ""Required to save/save_as a workshared document or close one with save_on_close, also when that state is unreadable. Save/close never sync; saving a central writes it."" },
     ""save_on_close"": { ""type"": ""boolean"", ""default"": false, ""description"": ""close: save before closing. Off by default - closing should not be a write you did not ask for."" },
     ""discard_unsaved"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""close: REQUIRED to close a document that has unsaved changes without saving them. Close() discards them, returns true, and leaves nothing behind to detect it - the file on disk is untouched and IsModified cannot be asked of a closed document, so an hour of lost edits and an untouched model produce identical responses. Not enough on its own: a dry_run token is required too. Unknown counts as modified."" },
@@ -7259,6 +7259,12 @@ namespace Horizun.Contracts
             ((JObject)props["profile"]["anyOf"][0])["items"]["minItems"] = 2;
             item["oneOf"] = variants;
         }
+        // What a sync caller needs that the base descriptions (written for save/close) do not say.
+        private static readonly Dictionary<string, string> SyncNotes = new Dictionary<string, string>
+        {
+            ["confirmation_token"] = "From the estimate, bound to it; single use.",
+            ["compact"] = "Compacts central."
+        };
         private static readonly Dictionary<string, string[]> SessionFields = new Dictionary<string, string[]>
         {
             ["inspect"] = new[] { "file_path" },
@@ -7305,6 +7311,7 @@ namespace Horizun.Contracts
                     {
                         props[field] = properties[field].DeepClone();
                         if (terse) ((JObject)props[field]).Remove("description");
+                        if (terse && SyncNotes.TryGetValue(field, out string note)) props[field]["description"] = note;
                     }
                 props["operation"] = new JObject { ["const"] = operation };
                 if (operation == "open") props["dry_run"] = new JObject { ["const"] = false };
