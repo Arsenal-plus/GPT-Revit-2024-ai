@@ -1680,7 +1680,7 @@ namespace Horizun.Contracts
     ""target_document"": { ""type"": ""string"" }, ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_area_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""create_callout"", ""duplicate_view"", ""apply_template"", ""set_phase"", ""assign_scope_box"", ""set_view_range"", ""set_crop"", ""set_annotation_crop"", ""create_sheet"", ""create_placeholder_sheet"", ""convert_placeholder_sheet"", ""duplicate_sheet"", ""place_view"", ""place_schedule"", ""set_viewport_type"", ""align_viewports"", ""create_filter"", ""apply_filter"", ""color_by_value"", ""set_element_overrides"", ""hide_elements"", ""isolate_elements"", ""reset_temporary"", ""set_category_visibility"", ""create_legend"", ""place_legend_component"", ""edit_filter"", ""order_filters"", ""explain_graphics"", ""create_template"", ""set_template_controls"", ""sheet_set_list"", ""sheet_set_create"", ""sheet_set_update"", ""sheet_set_delete""],
+        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_area_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""create_callout"", ""duplicate_view"", ""apply_template"", ""set_phase"", ""assign_scope_box"", ""set_view_range"", ""set_crop"", ""set_annotation_crop"", ""create_sheet"", ""create_placeholder_sheet"", ""convert_placeholder_sheet"", ""duplicate_sheet"", ""place_view"", ""place_schedule"", ""set_viewport_type"", ""align_viewports"", ""create_filter"", ""apply_filter"", ""color_by_value"", ""set_element_overrides"", ""hide_elements"", ""isolate_elements"", ""reset_temporary"", ""set_category_visibility"", ""create_legend"", ""place_legend_component"", ""edit_filter"", ""order_filters"", ""explain_graphics"", ""create_template"", ""set_template_controls"", ""sheet_set_list"", ""sheet_set_create"", ""sheet_set_update"", ""sheet_set_delete"", ""renumber_sheets"", ""create_perspective"", ""set_sun_study""],
           ""description"": ""sheet_set_list reads every PrintManager.ViewSheetSetting sheet set (id, name, is_automatic, member views/sheets); sheet_set_create needs name and view_ids; sheet_set_update needs sheet_set_id and name and/or view_ids (view_ids REPLACES membership); sheet_set_delete needs sheet_set_id. The print manager's own current selection is saved and restored around each call."" },
         ""key"": { ""type"": ""string"", ""description"": ""Unique alias for an object this action creates."" },
         ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""GRAPHIC CONTROL. Categories a filter applies to. Prefer the BuiltInCategory name (OST_Walls): a display name depends on the Revit language and would break on another machine."" },
@@ -1717,6 +1717,10 @@ namespace Horizun.Contracts
         ""detail_level"": { ""type"": ""string"", ""enum"": [""coarse"", ""medium"", ""fine""], ""description"": ""place_legend_component: how the component is drawn."" },
         ""hidden"": { ""type"": ""boolean"", ""description"": ""set_category_visibility: true hides it."" },
         ""name"": { ""type"": ""string"" }, ""number"": { ""type"": ""string"" },
+        ""renumber"": { ""type"": ""object"", ""description"": ""renumber_sheets: old sheet number -> new. Swaps allowed; any collision refused before writing."" },
+        ""up"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""create_perspective: eye=start, target=end (in units); up defaults to Z; fan=N views turned 360/N about Z."" },
+        ""fan"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 36 },
+        ""sun"": { ""type"": ""object"", ""description"": ""set_sun_study: {type:still|single_day|multi_day, start, end: ISO-8601+offset, lat, lon: project site, degrees}"" },
         ""sheet_set_id"": { ""type"": ""integer"", ""description"": ""sheet_set_update/sheet_set_delete: an existing saved sheet set."" },
         ""view_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""sheet_set_create/sheet_set_update: the views/sheets the set holds. On update this REPLACES the whole membership."" },
         ""level_id"": { ""type"": ""integer"" }, ""view_family_type_id"": { ""type"": ""integer"" }, ""plan_view_id"": { ""type"": ""integer"" },
@@ -3041,9 +3045,10 @@ namespace Horizun.Contracts
                 Command = "horizun_fix_planimetry",
                 Description =
                     "Turn findings from horizun_audit_planimetry into TYPED, rehearsed, confirmed, atomic and " +
-                    "re-read corrections. Nine operations, closed: set_view_template (explicit template " +
+                    "re-read corrections. Ten operations, closed: set_view_template (explicit template " +
                     "ElementId, validated as a compatible ViewTemplate, ViewTemplateId re-read), set_view_scale " +
-                    "(explicit 1..24000, refused for views that take no scale), rename_view and rename_sheet " +
+                    "(explicit 1..24000, refused for views that take no scale), set_view_display (detail level/discipline, " +
+                    "refused when the view's template controls them), rename_view and rename_sheet " +
                     "(explicit final name/number, duplicates refused before the transaction, both re-read), " +
                     "place_title_block (explicit sheet and title-block FamilySymbol, placeholders and wrong " +
                     "categories refused, symbol activated safely, instance/family/type/sheet re-read, never a " +
@@ -3091,7 +3096,7 @@ namespace Horizun.Contracts
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": {
       ""type"": ""object"", ""required"": [""operation"", ""finding""],
       ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""set_view_template"", ""set_view_scale"", ""rename_view"", ""rename_sheet"", ""place_title_block"", ""move_viewport"", ""move_schedule"", ""clear_element_override"", ""set_crop""] },
+        ""operation"": { ""type"": ""string"", ""enum"": [""set_view_template"", ""set_view_scale"", ""rename_view"", ""rename_sheet"", ""place_title_block"", ""move_viewport"", ""move_schedule"", ""clear_element_override"", ""set_crop"", ""set_view_display""] },
         ""finding"": { ""type"": ""object"", ""required"": [""rule_id"", ""requirement_set"", ""requirement_set_version"", ""element_ids"", ""observed""], ""properties"": {
           ""rule_id"": { ""type"": ""string"", ""minLength"": 1 },
           ""requirement_set"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""The set id the finding cites: horizun-universal-planimetry or the inline set's id."" },
@@ -3103,9 +3108,11 @@ namespace Horizun.Contracts
           ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": { ""type"": ""integer"" } },
           ""observed"": { ""type"": ""object"", ""description"": ""The finding's observed block, VERBATIM. The fix recomputes the finding and refuses as a stale observation when the model no longer shows this state."" }
         }, ""additionalProperties"": false },
-        ""view_id"": { ""type"": ""integer"", ""description"": ""set_view_template / set_view_scale / rename_view / set_crop: the view to change. clear_element_override: the view whose element override is cleared."" },
+        ""view_id"": { ""type"": ""integer"", ""description"": ""set_view_template / set_view_scale / set_view_display / rename_view / set_crop: the view to change. clear_element_override: the view whose element override is cleared."" },
         ""template_id"": { ""type"": ""integer"", ""description"": ""set_view_template: the ViewTemplate's ElementId. Never resolved from a name."" },
         ""scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000 },
+        ""detail_level"": { ""type"": ""string"", ""enum"": [""Coarse"", ""Medium"", ""Fine""] },
+        ""discipline"": { ""type"": ""string"", ""description"": ""ViewDiscipline name, e.g. Architectural."" },
         ""new_name"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""rename_view / rename_sheet: the explicit final name."" },
         ""new_number"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""rename_sheet: the explicit final sheet number."" },
         ""sheet_id"": { ""type"": ""integer"", ""description"": ""rename_sheet / place_title_block: the sheet."" },
@@ -4297,6 +4304,7 @@ namespace Horizun.Contracts
           ""description"": ""DECLARED, never guessed from the file. When present, a cell that parses as a number under this separator and lands on a Double parameter is compared NUMERICALLY against the model's value converted to that parameter's display unit (Integer storage compares the integer), so '300' no longer rewrites a parameter displaying '300.00 mm'. Equal means within 1e-6 relative. A cell that does not parse (a unit suffix, the other separator) falls back to the exact display-string compare, which writes - harmlessly. Absent: every cell uses the exact display-string compare, as before."" }
       }
     },
+    ""sequence"": { ""type"": ""object"", ""description"": ""Generates:{parameter,order_by[level|x|y|room],element_ids|category,prefix,start,step,pad,restart_per_level,phase_id}"" },
     ""writes"": {
       ""type"": ""array"", ""minItems"": 1,
       ""description"": ""The batch. Each entry names ONE parameter on ONE target."",

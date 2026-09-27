@@ -86,13 +86,13 @@ namespace Horizun.Core.Tests
         // =====================================================================
 
         [Fact]
-        public void The_catalog_holds_exactly_the_nine_operations_this_phase_implements()
+        public void The_catalog_holds_exactly_the_ten_operations_this_phase_implements()
         {
             var expected = new[]
             {
                 "set_view_template", "set_view_scale", "rename_view", "rename_sheet",
                 "place_title_block", "move_viewport", "move_schedule",
-                "clear_element_override", "set_crop"
+                "clear_element_override", "set_crop", "set_view_display"
             };
             Assert.Equal(expected.OrderBy(x => x, StringComparer.Ordinal),
                          PlanimetryFixRules.Catalog.Select(o => o.Name).OrderBy(x => x, StringComparer.Ordinal));
@@ -109,6 +109,37 @@ namespace Horizun.Core.Tests
                 foreach (string required in op.RequiredFields)
                     Assert.Contains(required, op.Fields);
             }
+        }
+
+        [Fact]
+        public void Set_view_display_needs_at_least_one_of_detail_level_or_discipline()
+        {
+            PlanimetryFixOperation op = PlanimetryFixRules.Operation("set_view_display");
+            Assert.NotNull(op);
+            Assert.Contains("detail_level", PlanimetryFixRules.RequiredFieldError(op, f => f == "view_id"));
+            Assert.Null(PlanimetryFixRules.RequiredFieldError(op, f => f == "view_id" || f == "discipline"));
+            Assert.Null(PlanimetryFixRules.RequiredFieldError(op, f => f == "view_id" || f == "detail_level"));
+            Assert.Contains("'scale'", PlanimetryFixRules.UnknownFieldError(op, new[] { "view_id", "scale" }));
+        }
+
+        [Fact]
+        public void Display_values_are_the_audit_spelling_exactly()
+        {
+            Assert.Null(PlanimetryFixRules.EnumNameError("detail_level", "Fine", PlanimetryFixRules.DetailLevels));
+            Assert.Null(PlanimetryFixRules.EnumNameError("detail_level", null, PlanimetryFixRules.DetailLevels));
+            // Undefined is a reading, never a target; case is not forgiven.
+            Assert.NotNull(PlanimetryFixRules.EnumNameError("detail_level", "Undefined", PlanimetryFixRules.DetailLevels));
+            Assert.NotNull(PlanimetryFixRules.EnumNameError("detail_level", "fine", PlanimetryFixRules.DetailLevels));
+            Assert.NotNull(PlanimetryFixRules.EnumNameError("discipline", 1, PlanimetryFixRules.Disciplines));
+            Assert.Null(PlanimetryFixRules.EnumNameError("discipline", "Coordination", PlanimetryFixRules.Disciplines));
+        }
+
+        [Fact]
+        public void Set_view_display_addresses_view_findings_only()
+        {
+            PlanimetryFixOperation op = PlanimetryFixRules.Operation("set_view_display");
+            Assert.Null(PlanimetryFixRules.RemedyError("views.detail", "office-set", "view", op));
+            Assert.NotNull(PlanimetryFixRules.RemedyError("sheets.number", "office-set", "sheet", op));
         }
 
         [Fact]
@@ -1095,6 +1126,22 @@ namespace Horizun.Core.Tests
             PlanimetryFixRules.CitedFinding cited = PlanimetryFixRules.ParseFinding(json, out error);
             Assert.True(cited != null, "the finding did not parse: " + error);
             return cited;
+        }
+
+        [Fact]
+        public void Set_view_display_changes_only_what_its_finding_is_about()
+        {
+            var detail = new PlanimetryFixRules.CitedFinding
+            { RuleId = "r1", Observed = new JObject { ["field"] = "detail_level", ["value"] = "Coarse" } };
+            Assert.Null(PlanimetryFixRules.DisplayPropertyError(detail, "detail_level"));
+            Assert.Contains("asserts 'detail_level'", PlanimetryFixRules.DisplayPropertyError(detail, "discipline"));
+            var name = new PlanimetryFixRules.CitedFinding
+            { RuleId = "r2", Observed = new JObject { ["field"] = "name", ["value"] = "x" } };
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(name, "detail_level"));
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(name, "discipline"));
+            var keyed = new PlanimetryFixRules.CitedFinding { RuleId = "r3", Observed = new JObject { ["discipline"] = "Structural" } };
+            Assert.Null(PlanimetryFixRules.DisplayPropertyError(keyed, "discipline"));
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(keyed, "detail_level"));
         }
     }
 }

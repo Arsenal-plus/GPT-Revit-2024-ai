@@ -1776,6 +1776,38 @@ this and still goes through `View.CropBox`.
   Revit is free to start or wind the loop however it likes. A rectangle's crop
   still compares as a bounding box, unchanged.
 
+## horizun_fix_planimetry: `set_view_display` (detail level and discipline)
+
+`set_view_display` sets `View.DetailLevel` and/or `View.Discipline` of ONE view,
+citing a finding about that view - in practice a requirement-set rule of
+`horizun_audit_planimetry` with `entity: "view"` and `field: "detail_level"` or
+`"discipline"` (the same property names `horizun_model_scan`'s `view_profile`
+judges as `expected_detail_level` / `expected_discipline`). No universal check
+maps to it, so a universal finding cannot cite it.
+
+```json
+{ "operation": "set_view_display", "finding": { "...": "copied verbatim" },
+  "view_id": 12345, "detail_level": "Fine", "discipline": "Architectural" }
+```
+
+- **Values are the audit's own spelling, exactly.** `detail_level` is `Coarse`,
+  `Medium` or `Fine` (`Undefined` is a reading, never a target); `discipline` is
+  `Architectural`, `Structural`, `Mechanical`, `Electrical`, `Plumbing` or
+  `Coordination`. Case is not forgiven, because the re-read compares strings.
+- **At least one of the two**, otherwise the action names nothing and is refused.
+- **Refused BY NAME before any transaction** when the view's template controls
+  the parameter (`GetTemplateParameterIds` minus
+  `GetNonControlledTemplateParameterIds` contains `VIEW_DETAIL_LEVEL` /
+  `VIEW_DISCIPLINE`): the assignment would be overwritten by the template. The
+  remedies are `set_view_template` or an edit of the template itself. Also refused
+  on a template, a sheet or a schedule, when `HasDetailLevel` /
+  `HasViewDiscipline` is false, and when `CanModifyDetailLevel` /
+  `CanModifyViewDiscipline` is false.
+- **Re-read after the commit:** the requested value(s) must read back, and the
+  property NOT requested must read back exactly as it was before
+  (`detail_level_unchanged` / `discipline_unchanged`). The audit then re-runs and
+  reports the cited finding as resolved or persistent.
+
 ## horizun_deliver_ifc: telling an empty parameter apart from a dropped mapping
 
 `model_comparison` (inside the `pset_mapping` gate's evidence) merges a
@@ -2231,3 +2263,170 @@ unassigned too; their sides are read with From/To room by `room_finishes`. An el
 no sample (a curtain wall, a ceiling, an element without location) is `unlocatable`, never
 counted as unassigned. A floor whose top face lies below its room's base (a structural slab
 under a finish floor) is unassigned.
+
+## horizun_manage_views: `renumber_sheets` (a register-wide map)
+
+`renumber_sheets` renumbers many sheets at once from a map `old number -> new
+number`, as ONE action inside the batch's single transaction:
+
+```json
+{ "operation": "renumber_sheets",
+  "renumber": { "A101": "A102", "A102": "A101", "A103": "A110" } }
+```
+
+- **Collisions are refused before anything is written, all at once**: an old
+  number no sheet holds, an old number named twice, two sheets sent to the same
+  number, a new number held by a sheet the map does NOT move (checked against
+  EVERY sheet, placeholders included), and a number another action of the same
+  batch creates. Numbers compare case-insensitively, like the create operations.
+- **Swaps and cycles are allowed.** Revit refuses a number another sheet still
+  holds at the moment of assignment, so the steps are ordered: a sheet moves
+  straight to its target as soon as it is free, and each closed cycle parks ONE
+  sheet on a temporary `HZTMP-n` number that no sheet or target holds. A swap
+  costs one extra step; a shifted series (`A101->A102->A103->A104`) costs none.
+- **The rehearsal shows the plan**: `plan[i].renumber` lists `final` (sheet id,
+  from, to), the ordered `steps` with `temporary` flags, `temporary_steps` and
+  `unchanged` (entries whose new number equals the old one exactly).
+- **The token binds the whole register** (every sheet's UniqueId and number):
+  a sheet renumbered by anyone between rehearsal and apply refuses as stale.
+- **After the commit every sheet is re-read**: `rows[i].renumber.renumbered[]`
+  carries `reread` and `verified` per sheet; a single mismatch fails the action
+  and the batch rolls back before commit.
+- One `renumber_sheets` per batch (merge the maps). Its targets are reserved for
+  the rest of the batch; the numbers it frees are NOT offered to a later
+  `create_sheet` in the same batch, which checks the document as it was.
+- Why not `horizun_fix_planimetry set_sheet_number`: that one corrects a cited
+  finding and refuses a number another sheet holds, which a swap needs.
+
+## horizun_manage_views: `create_perspective` (a camera, or a fan of them)
+
+`create_perspective` creates a perspective 3D view from an eye (`start`), a target
+(`end`), both in the batch `units`, and an optional `up` DIRECTION (unitless,
+default world Z). `fan: N` (1..36) creates N views from the same eye, turned about
+world Z in steps of 360/N starting at the target's azimuth and keeping the pitch of
+eye -> target:
+
+```json
+{ "operation": "create_perspective", "key": "cam", "name": "Entrance",
+  "start": [0, -8000, 1600], "end": [0, 0, 1600], "fan": 4 }
+```
+
+- **Nothing is nudged.** An eye closer than 1 mm to its target, an `up` parallel
+  to the line of sight, and a camera looking straight up or down without an
+  explicit `up` (or with `fan` > 1, which needs an azimuth) are refused in the
+  rehearsal, by name.
+- `up` is made perpendicular to the line of sight before it is sent (Revit refuses
+  one that is not); the triple ACTUALLY sent is what is reported and re-read.
+- **Names**: with `name` and no fan the view takes it; with a fan each view is
+  `<name> azNNN` (whole-degree azimuth, counter-clockwise from +X). A name another
+  3D view already holds is refused in the rehearsal. Without `name` Revit names them.
+- **The rehearsal lists every camera**: `plan[i].perspective.views_to_create` and
+  `cameras[]` (name, azimuth_degrees, pitch_degrees, eye_internal_feet, forward, up).
+- **After the commit each view is re-read**: `rows[i].perspective.views[]` carries
+  `view_id`, the camera sent, `reread` (GetOrientation's eye/forward/up, the name,
+  IsPerspective), `orientation_verified` (eye within 1e-6 ft, directions within
+  1e-4 degrees) and `verified`. One view that does not re-read fails the action and
+  the batch rolls back before commit.
+- `key` aliases the FIRST view of a fan. `view_scale` is refused: a perspective has
+  no drawing scale. `view_family_type_id` must be a 3D view type.
+
+## horizun_manage_views: `set_sun_study` (a view's sun: still, single-day, multi-day)
+
+`set_sun_study` writes the `SunAndShadowSettings` of an existing view (`view_id`, or
+`view_key` for a view created earlier in the batch):
+
+```json
+{ "operation": "set_sun_study", "view_id": 123456,
+  "sun": { "type": "single_day", "start": "2026-06-21T07:00:00-05:00",
+           "end": "2026-06-21T18:00:00-05:00" } }
+```
+
+- `sun.type`: `still` (one instant: `start`), `single_day` (start and end, at most
+  24 h apart) or `multi_day` (start and end). Revit's `Lighting` type is not offered.
+- **Instants carry their offset** (`Z` or `+hh:mm`). One without it is refused in the
+  rehearsal: Revit rejects an unspecified kind, and picking a time zone for the
+  caller would move the sun by hours. Each instant is sent as the UTC it names; Revit
+  shows it in the site's own time zone.
+- An `end` on a `still` sun is refused (Revit would store and ignore it). A study
+  clears `SunriseToSunset` when it is on, because Revit ignores the given times while
+  it is set; the row says so (`sunrise_to_sunset_cleared`).
+- **`sun.lat` / `sun.lon` (degrees, both or neither) move the PROJECT site**, not the
+  view: `SunAndShadowSettings.Latitude/Longitude` are read-only (MEASURED 2026-09-26 by
+  reflection over the 2023 RevitAPI.dll: `CanWrite=False`), so the only writable place
+  is the `SiteLocation` of the project location the settings use. Every view's sun
+  moves, and Revit re-derives the place name, time zone and weather station from the
+  coordinates. The rehearsal says so (`location_scope: "project_site"`,
+  `location_side_effects`).
+- **The rehearsal** (`plan[i].sun`) shows `requested` (type, `start_utc`, `end_utc`,
+  site degrees), `location_scope` and, for an existing view, `current` (the settings'
+  type, instants, `sunrise_to_sunset`, `shares_settings`, and the site's degrees, time
+  zone and place name). `shares_settings: true` means other views share these settings
+  and change with them. The token binds the current type, instants and site
+  coordinates: a change made between rehearsal and apply refuses it as stale.
+- **After the commit** `rows[i].sun` carries `before`, `reread` (same fields as
+  `current`) and `checks`: the type, each instant within 1 minute of the one sent, and,
+  when moved, the site's latitude/longitude within 1e-7 rad. The settings' own
+  `settings_latitude_raw`/`settings_longitude_raw` are reported and NOT judged: their
+  unit is not documented. A sun that does not re-read fails the action.
+- Not measured live yet: whether a view template that controls the view's graphic
+  display options overrides a sun written here; `before`/`reread` expose the
+  per-view element either way.
+
+## horizun_write_params_verified: `sequence` (values numbered in spatial order)
+
+`sequence` is a third source for the batch, beside `writes` and `tabular_source` (give
+exactly one): instead of listing the writes, the command GENERATES one write per target,
+numbering the targets in a declared spatial order - door, window and room marks, or any
+text parameter.
+
+| Field | Meaning |
+|---|---|
+| `parameter` | Required. Resolved on every target exactly like a `writes` entry (BuiltInParameter name, shared-parameter GUID or name): `ALL_MODEL_MARK` for doors and windows, `ROOM_NUMBER` for rooms. Values are written as text. |
+| `element_ids` / `category` | Exactly one. Ids must be instance elements of the document. A `category` (OST_ name) sweeps every instance of it; an unplaced room, area or space has no position and is excluded, listed by id in `excluded_unplaced`. At most 5000 targets. |
+| `order_by` | Required: keys applied left to right from `level`, `x`, `y`, `room`. `level` sorts by elevation, then name. `x`/`y` are the location point (a curve's midpoint) in internal coordinates, quantised to 1 mm so a rounding difference cannot swap two targets between rehearsal and apply. `room` is the room number compared naturally ("2" before "10"). The element id breaks the last tie, so one model always yields one order. |
+| `phase_id` | Required with `room`: a room exists in a phase, and the same point can stand in one room in one phase and in another (or none) in the next. |
+| `prefix`, `start` (1), `step` (1), `pad` (0 = none, at most 12) | Value = prefix + counter, zero-padded to `pad` digits. |
+| `restart_per_level` | The counter returns to `start` on every level. Requires `level` as the FIRST key (each level's targets must be contiguous); values that then repeat across levels set `repeats_across_levels` - Revit may warn about duplicate marks. |
+
+**The room of a target** (at the phase): a door or window takes `ToRoom`, then `FromRoom`
+(the usual door-numbering rule: the room it opens into); another family instance its
+`Room`; anything else the room at its location point, retried 1 ft (304.8 mm) higher
+because an insertion point on the floor plane lies on the room's lower boundary. Each
+target reports `room_from` (`to_room`, `from_room`, `room`, `point`, `point_raised_1ft`).
+
+**Refused before anything is generated** (nothing written): an unknown field; no
+`parameter`; neither or both of `element_ids`/`category`; a `category` that is not one
+exact `OST_` name (numbers and comma lists are refused); a `category` sweep without
+`phase_id`; a `phase_id` that is not a phase of the document; `room` without `phase_id`;
+a second source beside `sequence` (`writes` or `tabular_source`); `restart_per_level` without `level` first; and
+a target without the datum its order needs (no level - its own or its host's -, no
+readable location, not inside a room at the phase), named by id and never sorted to an end.
+
+**Rehearsal and apply.** The reply's `sequence` block lists `order[]` (position, target_id,
+value, level, x_mm, y_mm, room, room_from, design_option, phase_status; the first 500)
+beside the ordinary `rows`. A `category` sweep numbers only what exists at `phase_id` (New
+or Existing, unphased, or a room/space OF that phase) and nothing in a secondary design
+option; the rest is listed by id in `excluded_other_phase` / `excluded_secondary_option`
+(unplaced rooms in `excluded_unplaced`). The token binds the options (request hash) AND
+every generated VALUE (resolved plan): a change between rehearsal and apply that alters any
+value (order, membership, room) is refused as stale, while a move that leaves every value
+as it was applies exactly what was rehearsed. After the commit every row is re-read exactly
+as for `writes`.
+
+```json
+{ "target_document": "Tower", "sequence": { "parameter": "ALL_MODEL_MARK", "category": "OST_Doors",
+  "order_by": ["level", "room", "x"], "phase_id": 12345, "prefix": "D-", "pad": 3, "restart_per_level": true } }
+```
+
+Live probes: `scripts/live-probes/params-sequence.probes.ps1` (own levels, walls and room at
+X = 1,120,000 mm; offline fakes in `params-sequence.tests.ps1`).
+
+### Resumen (español)
+
+`sequence` genera las escrituras en vez de listarlas: numera los objetivos (`element_ids` o
+una `category`) en el orden declarado por `order_by` (nivel, x, y, habitación; la habitación
+exige `phase_id`, y también un barrido por `category`, que solo numera lo que existe en esa
+fase y nada de opciones de diseño secundarias), con `prefix`, `start`, `step`, `pad` y
+`restart_per_level` (que exige el nivel como primera clave). Un objetivo sin el dato que su orden necesita se nombra y la
+generación entera se rechaza. Los valores se muestran en el ensayo, el token los ata y cada
+uno se relee tras el commit.

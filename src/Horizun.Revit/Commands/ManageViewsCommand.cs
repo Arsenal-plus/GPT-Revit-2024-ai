@@ -25,7 +25,7 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
-            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : ParseVerbatim(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -66,6 +66,10 @@ namespace Horizun.Revit.Commands
                     // rehearsal came back without the sets it exists to list).
                     if (string.Equals(a.Value<string>("operation"), "sheet_set_list", StringComparison.OrdinalIgnoreCase))
                         planRow["report"] = SheetSetCensus(doc);
+                    // The renumbering is shown step by step, temporaries included, before any write.
+                    if (IsRenumberOperation(a.Value<string>("operation"))) planRow["renumber"] = RenumberPreview(doc, a);
+                    if (IsPerspectiveOperation(a.Value<string>("operation"))) planRow["perspective"] = PerspectivePreview(a, scale);
+                    if (IsSunStudyOperation(a.Value<string>("operation"))) planRow["sun"] = SunStudyPreview(doc, a);
                     plans.Add(planRow);
                 }
             }
@@ -105,6 +109,8 @@ namespace Horizun.Revit.Commands
                     BeforeValues = new Dictionary<string, string>()
                 };
                 row.ProposedValues = new Dictionary<string,string> { { "specification", a.ToString(Formatting.None) } };
+                if (IsRenumberOperation(op)) BindRenumber(doc, row.BeforeValues);
+                if (IsSunStudyOperation(op)) BindSunStudy(doc, a, row.BeforeValues);
                 if (op == "apply_template" && a["view_id"] != null)
                 {
                     View targetView = doc.GetElement(Rid.Make(a.Value<long>("view_id"))) as View;
@@ -250,6 +256,9 @@ namespace Horizun.Revit.Commands
                 JObject detail = GraphicsDetail(doc, a.Action, a.Operation.ToLowerInvariant(), e)
                                  ?? ControlDetail(a.Action, a.Operation.ToLowerInvariant());
                 if (detail != null) row["graphics"] = detail;
+                if (IsRenumberOperation(a.Operation)) row["renumber"] = RenumberDetail(a.Action);
+                if (IsPerspectiveOperation(a.Operation)) row["perspective"] = PerspectiveDetail(a.Action);
+                if (IsSunStudyOperation(a.Operation)) row["sun"] = SunStudyDetail(a.Action);
                 rows.Add(row);
             }
             if (verified != applied.Count)
@@ -280,7 +289,7 @@ namespace Horizun.Revit.Commands
             "convert_placeholder_sheet", "set_phase", "assign_scope_box", "set_view_range",
             "set_crop", "set_annotation_crop", "set_viewport_type", "align_viewports",
             "edit_filter", "order_filters", "set_template_controls", "explain_graphics",
-            "sheet_set_list", "sheet_set_update", "sheet_set_delete"
+            "sheet_set_list", "sheet_set_update", "sheet_set_delete", "renumber_sheets", "set_sun_study"
         };
 
         /// <summary>
@@ -340,7 +349,7 @@ namespace Horizun.Revit.Commands
                     case "create_floor_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.FloorPlan); break;
                     case "create_ceiling_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.CeilingPlan); break;
                     case "create_structural_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.StructuralPlan); break;
-                    case "create_3d": OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); break;
+                    case "create_3d": OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); Reserve3DViewName(a.Value<string>("name"), known); break;
                     case "create_drafting": OptionalViewFamilyType(doc, a, ViewFamily.Drafting); break;
                     case "create_section": OptionalViewFamilyType(doc, a, ViewFamily.Section); SectionBox(a, 1); break;
                     case "create_elevation":
@@ -561,6 +570,12 @@ namespace Horizun.Revit.Commands
                         if (IsLegendOperation(op)) { ValidateLegend(doc, a, op, known); break; }
                         // Filter editing/order, the precedence report and templates. See ManageViewsControl.cs.
                         if (IsControlOperation(op)) { ValidateControl(doc, a, op, known); break; }
+                        // Register-wide renumbering by map. See ManageViewsRenumber.cs.
+                        if (IsRenumberOperation(op)) { ValidateRenumber(doc, a, known); break; }
+                        // A camera from eye/target/up, or a fan of them. See ManageViewsPerspective.cs.
+                        if (IsPerspectiveOperation(op)) { ValidatePerspective(doc, a, known); break; }
+                        // A view's sun: still, single-day or multi-day. See ManageViewsSunStudy.cs.
+                        if (IsSunStudyOperation(op)) { ValidateSunStudy(doc, a, known); break; }
                         // A capability gap, not a fixable argument: this command implements a
                         // fixed set of documentation operations and this is not one of them.
                         unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
@@ -622,6 +637,9 @@ namespace Horizun.Revit.Commands
             if (IsGraphicsOperation(op)) return ApplyGraphics(doc, a, op, aliases);
             if (IsLegendOperation(op)) return ApplyLegend(doc, a, op, aliases, scale);
             if (IsControlOperation(op)) return ApplyControl(doc, a, op, aliases);
+            if (IsRenumberOperation(op)) return ApplyRenumber(doc, a);
+            if (IsPerspectiveOperation(op)) return ApplyPerspective(doc, a, scale);
+            if (IsSunStudyOperation(op)) return ApplySunStudy(doc, a, aliases);
             if (op == "create_floor_plan" || op == "create_ceiling_plan" || op == "create_structural_plan")
             {
                 ViewFamily family = op == "create_floor_plan" ? ViewFamily.FloorPlan :
@@ -1150,6 +1168,9 @@ namespace Horizun.Revit.Commands
                     if (IsGraphicsOperation(graphicsOp)) return VerifyGraphics(doc, a.Action, graphicsOp, e);
                     if (IsLegendOperation(graphicsOp)) return VerifyLegend(doc, a.Action, graphicsOp, e, a.Scale);
                     if (IsControlOperation(graphicsOp)) return VerifyControl(doc, a.Action, graphicsOp, e);
+                    if (IsRenumberOperation(graphicsOp)) return VerifyRenumber(doc, a.Action);
+                    if (IsPerspectiveOperation(graphicsOp)) return VerifyPerspective(doc, a.Action, e);
+                    if (IsSunStudyOperation(graphicsOp)) return VerifySunStudy(doc, a.Action, e);
                     return false;
                 }
             }
@@ -1284,7 +1305,7 @@ namespace Horizun.Revit.Commands
             switch ((operation ?? "").ToLowerInvariant())
             {
                 case "create_floor_plan": case "create_ceiling_plan": case "create_structural_plan": return typeof(ViewPlan);
-                case "create_3d": return typeof(View3D);
+                case "create_3d": case "create_perspective": return typeof(View3D);
                 case "create_drafting": return typeof(ViewDrafting);
                 case "create_section": case "create_elevation": return typeof(ViewSection);
                 case "duplicate_view": case "apply_template": return typeof(View);
@@ -1298,6 +1319,7 @@ namespace Horizun.Revit.Commands
                 case "set_phase": case "assign_scope_box": case "set_crop": case "set_annotation_crop":
                     return typeof(View);
                 case "set_view_range": return typeof(ViewPlan);
+                case "set_sun_study": return typeof(View);
                 case "set_viewport_type": case "align_viewports": return typeof(Viewport);
                 // Graphic control. create_filter yields the filter itself, so a later
                 // action in the same batch can reference it by key; everything else

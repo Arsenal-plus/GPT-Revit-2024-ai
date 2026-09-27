@@ -60,7 +60,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public class WriteParamsCommand : ICommand
+    public partial class WriteParamsCommand : ICommand
     {
         public string Name => "horizun_write_params_verified";
 
@@ -110,6 +110,14 @@ namespace Horizun.Revit.Commands
             }
 
             var writesToken = request["writes"] as JArray;
+            // A sequence beside another source is refused BEFORE either expands: a tabular
+            // source with nothing to write returns a completed no-op below, and would
+            // otherwise swallow a sequence that was never generated nor refused.
+            bool hasSequence = request["sequence"] != null && request["sequence"].Type != JTokenType.Null;
+            bool hasTabular = request["tabular_source"] != null && request["tabular_source"].Type != JTokenType.Null;
+            if (hasSequence && (hasTabular || (writesToken != null && writesToken.Count > 0)))
+                return CommandResult.Fail("Give writes, tabular_source OR sequence - one source per batch, " +
+                    "because two sources of the same batch cannot be reconciled honestly. Nothing was written.");
             // ---- tabular_source: the writes come from a CSV, diffed against the model
             // NOW. The expansion is deterministic (same file + same model = same ops),
             // the request hash binds the mapping, and the RESOLVED PLAN binds the
@@ -139,8 +147,20 @@ namespace Horizun.Revit.Commands
                     return CommandResult.Ok(noOp);
                 }
             }
+            // ---- sequence: the writes are GENERATED from the targets' spatial order
+            // (WriteParamsSequence.cs). Bound like tabular_source: the request hash binds
+            // the options and the resolved plan binds every generated value.
+            JObject sequenceReport = null;
+            if (request["sequence"] is JObject sequenceSource)
+            {
+                if ((writesToken != null && writesToken.Count > 0) || tabularReport != null)
+                    return CommandResult.Fail("Give writes, tabular_source OR sequence - one source per batch, " +
+                        "because two sources of the same batch cannot be reconciled honestly. Nothing was written.");
+                CommandResult sequenceRefusal = ExpandSequence(doc, sequenceSource, out writesToken, out sequenceReport);
+                if (sequenceRefusal != null) return sequenceRefusal;
+            }
             if (writesToken == null || writesToken.Count == 0)
-                return CommandResult.Fail("writes is required and must be a non-empty array (or give tabular_source).");
+                return CommandResult.Fail("writes is required and must be a non-empty array (or give tabular_source or sequence).");
 
             var mode = (request.Value<string>("on_failure") ?? "atomic").ToLowerInvariant();
             if (mode != "atomic" && mode != "best_effort")
@@ -159,7 +179,7 @@ namespace Horizun.Revit.Commands
             // and bind_shared_param this one was never exploitable. Named correctly so it
             // stays that way.
             string planHash = DocumentGate.PlanHash(request, "writes", "on_failure",
-                                                    "allow_vary_between_groups", "tabular_source");
+                                                    "allow_vary_between_groups", "tabular_source", "sequence");
 
             // The confirmation is validated AFTER the resolve loop below, not here: the
             // stale-plan check needs the plan recomputed NOW, and a plan cannot be compared
@@ -288,6 +308,7 @@ namespace Horizun.Revit.Commands
                 {
                     ["mode"] = "dry_run",
                     ["tabular"] = tabularReport,
+                    ["sequence"] = sequenceReport,
                     ["on_failure_if_run"] = mode,
                     ["transaction_status"] = "not_started",
                     ["transaction_name"] = txName,
@@ -562,6 +583,7 @@ namespace Horizun.Revit.Commands
             {
                 ["mode"] = mode,
                 ["tabular"] = tabularReport,
+                ["sequence"] = sequenceReport,
                 ["transaction_status"] = txStatus,
                 ["transaction_name"] = txName,
                 ["document"] = SafeTitle(doc),
