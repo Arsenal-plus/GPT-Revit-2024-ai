@@ -833,7 +833,6 @@ namespace Horizun.Contracts
         ""elevation"": { ""type"": ""number"" },
         ""placement"": { ""type"": ""string"", ""enum"": [""all_enclosed""], ""description"": ""room/space: one per closed circuit of level_id+phase_id without one; no point"" },
         ""phase_id"": { ""type"": ""integer"" }, ""min_area_m2"": { ""type"": ""number"", ""description"": ""all_enclosed: skip smaller circuits"" },
-        ""points"": { ""type"": ""array"", ""description"": ""flex_pipe/flex_duct path; toposolid (2024+): top-surface [x,y,z] points, internal coords"" },
         ""number"": { ""type"": ""string"", ""description"": ""kind='room': the room NUMBER, which is separate from its name and is the identity Revit requires to be unique. Set inside the creating transaction and re-read from the model afterwards."" },
         ""base_level_id"": { ""type"": ""integer"", ""description"": ""kind='shaft': the storey the shaft starts at. A shaft cuts every floor, roof and ceiling between its two levels - that is what separates it from a hole in one slab - and a drawing carries neither, so both are required and neither is defaulted."" },
         ""top_level_id"": { ""type"": ""integer"", ""description"": ""kind='shaft': the storey it stops at. Must sit above base_level_id. Columns (structural_column, or a two-level family_instance such as an architectural column): the top level, with top_offset; or give height instead. Set and read back."" },
@@ -7066,7 +7065,7 @@ namespace Horizun.Contracts
             ["floor"] = new[] { "profile", "level_id", "type_id", "offset", "structural" },
             ["ceiling"] = new[] { "profile", "level_id", "type_id", "offset" },
             ["roof"] = new[] { "profile", "level_id", "type_id", "offset", "slope_degrees", "slope_ratio", "edge_slopes" },
-            ["room"] = new[] { "point", "level_id", "name", "number" },
+            ["room"] = new[] { "point", "level_id", "name", "number", "placement", "phase_id", "min_area_m2" },
             // flip: a MIRRORED symbol. No rotation reproduces a reflection, and a
             // drawing distinguishes a left-handed fixture from a right-handed one
             // that way. Applied with flipHand() and verified by re-reading
@@ -7090,9 +7089,11 @@ namespace Horizun.Contracts
             ["flex_duct"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
             // Space: a 2D point on a level, like room. Area/area_boundary: a POINT/PROFILE
             // in an area plan VIEW, not a level - Revit finds the boundary through the view.
-            ["space"] = new[] { "point", "level_id" },
+            ["space"] = new[] { "point", "level_id", "placement", "phase_id", "min_area_m2" },
             ["area"] = new[] { "point", "view_id" },
-            ["area_boundary"] = new[] { "profile", "view_id" }
+            ["area_boundary"] = new[] { "profile", "view_id" },
+            // Toposolid.Create(doc, points, typeId, levelId): the points ARE the top surface (Revit 2024+).
+            ["toposolid"] = new[] { "points", "type_id", "level_id" }
         };
         public static string ValidateCreation(JObject item, string kind)
         {
@@ -7116,6 +7117,7 @@ namespace Horizun.Contracts
             ((JArray)props["kind"]["enum"]).Add("wall_profile");
             ((JArray)props["kind"]["enum"]).Add("displacement");
             ((JArray)props["kind"]["enum"]).Add("stairs");
+            ((JArray)props["kind"]["enum"]).Add("toposolid");
             props["source_row"] = new JObject { ["type"]="integer", ["minimum"]=1 };
             // JOIN RULE. Declared here because every field named in CreationFields
             // is cloned from these properties: a field in that table with no
@@ -7168,7 +7170,7 @@ namespace Horizun.Contracts
             {
                 ["type"] = "array", ["minItems"] = 2, ["maxItems"] = 100,
                 ["items"] = new JObject { ["type"] = "array", ["minItems"] = 3, ["maxItems"] = 3, ["items"] = new JObject { ["type"] = "number" } },
-                ["description"] = "The flex path; ends included."
+                ["description"] = "Flex path, ends included. toposolid (Revit 2024+): the top surface, absolute internal coords."
             };
             props["desired_risers"]=new JObject { ["type"]="integer",["minimum"]=1,["maximum"]=1000 };
             props["tread_depth"]=new JObject { ["type"]="number",["exclusiveMinimum"]=0 };
@@ -7188,7 +7190,7 @@ namespace Horizun.Contracts
                 // whole tool over budget. ValidateCreation still allows both fields by name for
                 // every kind - this only affects what the compact, advertised schema documents.
                 bool leanKind = pair.Key == "flex_pipe" || pair.Key == "flex_duct" || pair.Key == "sprinkler" ||
-                                pair.Key == "space" || pair.Key == "area" || pair.Key == "area_boundary";
+                                pair.Key == "space" || pair.Key == "area" || pair.Key == "area_boundary" || pair.Key == "toposolid";
                 var specific = new JObject { ["kind"] = new JObject { ["const"] = pair.Key } };
                 if (!leanKind)
                 {
@@ -7222,14 +7224,15 @@ namespace Horizun.Contracts
                     case "floor": case "ceiling": case "roof": requiredFields = new[] { "profile", "level_id" }; break;
                     case "wall_profile": requiredFields = new[] { "profile", "level_id", "type_id" }; break;
                     case "wall_opening": requiredFields = new[] { "host_id" }; break;
-                    case "room": requiredFields = new[] { "point", "level_id" }; break;
+                    case "room": requiredFields = new[] { "level_id" }; break; // a point, or placement all_enclosed
                     case "family_instance": case "sprinkler": requiredFields = new[] { "point", "type_id", "coordinate_mode" }; break;
                     case "structural_column": requiredFields = new[] { "point", "type_id", "level_id", "coordinate_mode" }; break;
                     case "stairs": requiredFields = new[] { "level_id", "top_level_id", "type_id", "desired_risers", "tread_depth", "runs" }; break;
                     case "displacement": requiredFields = new[] { "view_id", "element_ids", "displacement" }; break;
                     case "duct": case "pipe": requiredFields = new[] { "start", "end", "type_id", "level_id", "system_type_id" }; break;
                     case "flex_pipe": case "flex_duct": requiredFields = new[] { "points", "type_id", "level_id", "system_type_id" }; break;
-                    case "space": requiredFields = new[] { "point", "level_id" }; break;
+                    case "space": requiredFields = new[] { "level_id" }; break;
+                    case "toposolid": requiredFields = new[] { "points", "type_id", "level_id" }; break;
                     case "area": requiredFields = new[] { "point", "view_id" }; break;
                     case "area_boundary": requiredFields = new[] { "profile", "view_id" }; break;
                     case "cable_tray": requiredFields = new[] { "start", "end", "level_id" }; break;

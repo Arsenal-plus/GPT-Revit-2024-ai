@@ -324,7 +324,7 @@ namespace Horizun.Revit.Commands
             var p = new Plan { Index = index, Kind = kind, Input = item, Scale = scale };
             try
             {
-                string invalid = Horizun.Contracts.ToolInputRules.ValidateCreation(item, kind);
+                string invalid = Horizun.Contracts.ToolInputRules.ValidateCreation(EnclosedPublicView(item), kind);
                 if (invalid != null) throw new ArgumentException(invalid);
                 switch (kind)
                 {

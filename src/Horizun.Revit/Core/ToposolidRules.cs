@@ -15,7 +15,8 @@ namespace Horizun.Revit.Core
 {
     public static class ToposolidRules
     {
-        public const int MaxPoints = 500;
+        // = the contract's points maxItems (shared with the flex kinds), so the schema and this agree.
+        public const int MaxPoints = 100;
         /// <summary>How many input points the post-commit re-read samples at most (the reply names each one).</summary>
         public const int MaxSamples = 50;
 

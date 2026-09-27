@@ -340,7 +340,7 @@ namespace Horizun.Server.Tests
         }
 
         [Theory]
-        [InlineData("horizun_create_elements", "properties.elements.items.properties.kind.enum", 32)]
+        [InlineData("horizun_create_elements", "properties.elements.items.properties.kind.enum", 33)]
         [InlineData("horizun_manage_views", "properties.actions.items.properties.operation.enum", 43)]
         [InlineData("horizun_export", "properties.format.enum", 8)]
         [InlineData("horizun_create_family", "properties.forms.items.properties.kind.enum", 5)]

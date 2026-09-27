@@ -47,7 +47,19 @@ namespace Horizun.Revit.Commands
         private static string ExpandEnclosed(Document doc, JObject request, ref JArray input, out JArray block)
         {
             block = null;
-            if (!input.OfType<JObject>().Any(o => o.Value<string>("placement") == "all_enclosed")) return null;
+            for (int i = 0; i < input.Count; i++)
+            {
+                var r = input[i] as JObject;
+                if (r == null) continue;
+                // The expansion's own bookkeeping: a caller's row carrying it would be planned as a circuit it never was.
+                if (r["enclosed_from"] != null || r["circuit_area_m2"] != null)
+                    return "elements[" + i + "]: enclosed_from and circuit_area_m2 are written by placement='all_enclosed', not by a caller.";
+                // A point room/space goes in with NewRoom(Level, UV)/NewSpace(Level, UV), in the phase Revit
+                // gives it: a phase_id or min_area_m2 beside a point would be accepted and silently ignored.
+                if (r["placement"] == null && (r["phase_id"] != null || r["min_area_m2"] != null))
+                    return "elements[" + i + "]: phase_id and min_area_m2 go with placement='all_enclosed' only.";
+            }
+            if (!input.OfType<JObject>().Any(o => o["placement"] != null)) return null;
             double scale;
             if (!Scale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale)) return "units must be mm, m or feet.";
             var expanded = new JArray();
@@ -123,6 +135,19 @@ namespace Horizun.Revit.Commands
                 ["enclosed"] = block,
                 ["note"] = "no circuit is left to fill: each one listed already holds a room/space or is under min_area_m2. Nothing was written."
             });
+        }
+
+        /// <summary>
+        /// The row ValidateCreation judges. An expanded row carries the expansion's own bookkeeping
+        /// (enclosed_from, circuit_area_m2), which is not a caller field; ExpandEnclosed refuses a
+        /// caller's row that carries it, so only rows it wrote reach here with it.
+        /// </summary>
+        private static JObject EnclosedPublicView(JObject item)
+        {
+            if (item["enclosed_from"] == null) return item;
+            var copy = (JObject)item.DeepClone();
+            copy.Remove("enclosed_from"); copy.Remove("circuit_area_m2");
+            return copy;
         }
 
         private static Space SpaceAt(Document doc, Level level, Phase phase, UV pt)
