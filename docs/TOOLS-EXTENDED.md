@@ -2104,18 +2104,33 @@ as OFF. *Protect shared models* (`force_read_only_on_workshared`) wins over the 
 The typed operation also needs *What may the assistant do?* at the level that opens and
 closes documents (`permission_profile` `full_write`): under the default `safe_write`
 every document-session call is refused, so the grant alone does not make it reachable.
-The switch covers `horizun_execute_python` too: while it is OFF, a script whose masked
-source calls `SynchronizeWithCentral(` is refused before it runs (`detail.code`
-`sync_not_authorised`). That is a text scan, not a sandbox. `RelinquishOwnership` is not
-covered: it is not a synchronize and has its own typed tool, `horizun_relinquish_all`.
+Both switches cover `horizun_execute_python` too, over the main script **and every
+include** (they run in the same scope): a script whose masked source mentions
+`SynchronizeWithCentral` - a call or a bare alias such as `s = doc.SynchronizeWithCentral`
+- or the `SynchronizeNow` / `SynchronizeAndModifySettings` postable commands is refused
+before it runs: `force_read_only_on_workshared` while shared models are protected,
+whatever the grant says (a script reaches every open document through `app.Documents`),
+and `sync_not_authorised` while the grant is OFF. That is a text scan, not a sandbox: a
+name assembled at runtime (getattr with a built string) is not caught.
+`RelinquishOwnership` is not covered: it is not a synchronize and has its own typed tool,
+`horizun_relinquish_all`.
 
 Refusals before anything runs (`write_started: false`) carry `detail.code`:
 `not_workshared`, `workshared_state_unreadable`, `detached_copy`,
 `detached_state_unreadable`, `force_read_only_on_workshared`, `sync_not_authorised`,
-`document_read_only`, `transaction_open` (Document.IsModifiable is true only inside an
-open transaction, which the call refuses), `no_central_path`,
-`ownership_census_incomplete`, `confirmation_rejected`, and `sync_precondition_failed`
-(the call threw one of its documented InvalidOperation/Argument preconditions).
+`document_read_only`, `local_file_read_only` (Document.IsReadOnlyFile: the call cannot
+save a read-only local before or after synchronizing, and the API does not say at which
+step it notices), `transaction_open` (Document.IsModifiable is true only inside an open
+transaction, which the call refuses), `no_central_path`, `invalid_comment` (over the
+30,000 characters SynchronizeWithCentralOptions.Comment accepts),
+`ownership_census_incomplete`, `confirmation_rejected` and `sync_options_rejected`.
+
+`sync_precondition_failed`: the call threw one of its documented InvalidOperation/Argument
+preconditions. Not every one is placed before the central write, so the reply re-reads
+first: `write_started: false` (`transaction_status: not_started`) only when ownership,
+IsModified and a file-based central's write time prove nothing moved; `true` when
+something measured moved; `null` (`transaction_status: unknown`) otherwise - a server
+central, whose write time cannot be read, always lands here.
 
 **The preview is an ESTIMATE, not a rehearsal** (`preview_kind: "estimate"`). A sync can
 be neither rehearsed nor rolled back. An omitted `dry_run` is a preview (the operation's
@@ -2154,13 +2169,19 @@ API documents that an ElementId may change across a sync, so `element_id` values
 report are for display. Ownership is re-counted and held against the choice (`all`:
 nothing owned; `keep_borrowed`: no workset owned and exactly the previously borrowed,
 still existing elements owned; `none`: worksets and owned elements unchanged). The same
-sample is re-read (every present element must read `CurrentWithCentral`),
-`HasAllChangesFromCentral()` must read true, and a save must be witnessed:
+sample is re-read, `HasAllChangesFromCentral()` - read FIRST, right after the call
+returns - must read true, and a save must be witnessed:
 `is_modified_after` false (SaveLocalAfter) or, for a file-based central,
 `central_file_written` true (its write time advanced; Revit saves to central even with no
 changes). `sync_verified` is true only when all of that holds, false whenever the call
-threw or something measured contradicts it, and null when something could not be
-measured. A sync that returned but did not verify is reported as a failure with
+threw or something measured contradicts THIS sync (ownership against the choice, a
+sampled element still `NotYetInCentral`, no save witnessed), and null when something could
+not be measured. `HasAllChangesFromCentral()` false and sampled elements reading
+`UpdatedInCentral` / `DeletedInCentral` (listed in `update_status_sample.moved_in_central_since`)
+describe the central as it is now - another user's sync after this one produces them - so
+they leave `sync_verified` null, never false. With `relinquish=none`, elements the sync's
+reload brought into a workset this user still owns read as owned; they are listed in
+`ownership.arrived_in_owned_worksets` and not counted against the choice. A sync that returned but did not verify is reported as a failure with
 `changes_applied: true`: it happened, and it did not verify. Revit's own Synchronize with
 Central and other add-ins are not intercepted (see the prevention gate's
 `not_interceptable` list).
