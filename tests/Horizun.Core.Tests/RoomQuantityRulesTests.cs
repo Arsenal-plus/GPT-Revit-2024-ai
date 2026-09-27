@@ -203,7 +203,7 @@ namespace Horizun.Core.Tests
         [InlineData(true, true, true, true, "solid_interior")]
         [InlineData(true, false, true, true, null)]
         [InlineData(false, true, true, false, "location_point")]
-        [InlineData(false, false, false, true, "curve_midpoint")]
+        [InlineData(false, false, false, true, "curve_points")]
         [InlineData(false, false, false, false, null)]
         public void Membership_samples_the_right_point(bool wallOrFloor, bool solid, bool point, bool curve, string expected)
             => Assert.Equal(expected, RoomMembershipRules.SampleBasis(wallOrFloor, solid, point, curve));
@@ -213,6 +213,86 @@ namespace Horizun.Core.Tests
         {
             Assert.Equal(RoomMembershipRules.Unassigned, RoomMembershipRules.GroupKey(null));
             Assert.Equal("101 Office", RoomMembershipRules.GroupKey("101 Office"));
+        }
+
+        [Fact]
+        public void Paint_and_face_materials_of_one_name_fall_in_separate_rows()
+        {
+            var a = Face("r1", "wall", "host:1", "Walls: W", "White", 10); a.MaterialSource = "paint";
+            var b = Face("r1", "wall", "host:2", "Walls: W", "White", 4); b.MaterialSource = "face";
+            List<OpeningDeductionFact> orphans;
+            var g = RoomFinishRules.Group(new[] { a, b }, null, out orphans);
+            Assert.Equal(2, g.Count);
+            Assert.Equal("paint", g[0].MaterialSource);
+            Assert.Equal(10, g[0].GrossM2, 6);
+            Assert.Equal("face", g[1].MaterialSource);
+            Assert.Equal(4, g[1].GrossM2, 6);
+        }
+
+        [Fact]
+        public void Each_attributed_opening_is_kept_with_its_own_size_and_basis()
+        {
+            var faces = new[] { Face("r1", "wall", "host:1", "Walls: W", "M", 20) };
+            var ops = new[]
+            {
+                new OpeningDeductionFact { RoomKey = "r1", BoundingKey = "host:1", InsertId = "10", InsertKind = "door", SizeBasis = "rough", WidthM = 1.0, HeightM = 2.1 },
+                new OpeningDeductionFact { RoomKey = "r1", BoundingKey = "host:1", InsertId = "11", InsertKind = "wall_opening", SizeBasis = "opening_rect", WidthM = 0.5, HeightM = 0.5 },
+                new OpeningDeductionFact { RoomKey = "r1", BoundingKey = "host:1", InsertId = "10", InsertKind = "door", SizeBasis = "rough", WidthM = 1.0, HeightM = 2.1 }
+            };
+            List<OpeningDeductionFact> orphans;
+            var g = RoomFinishRules.Group(faces, ops, out orphans).Single();
+            Assert.Equal(new[] { "10", "11" }, g.OpeningFacts.Select(o => o.InsertId).ToArray());
+            Assert.Equal("opening_rect", g.OpeningFacts[1].SizeBasis);
+            Assert.Equal(2.35, g.OpeningDeductionM2, 6);
+            Assert.Empty(orphans);
+        }
+
+        [Theory]
+        [InlineData("New", true)]
+        [InlineData("Existing", true)]
+        [InlineData("None", true)]
+        [InlineData("Demolished", false)]
+        [InlineData("Past", false)]
+        [InlineData("Future", false)]
+        [InlineData("Temporary", false)]
+        [InlineData(null, false)]
+        public void Only_an_insert_in_the_wall_in_the_phase_is_deducted(string status, bool expected)
+            => Assert.Equal(expected, RoomFinishRules.ExistsInPhase(status));
+
+        [Fact]
+        public void An_unreadable_area_is_counted_and_the_phase_is_a_column()
+        {
+            var f = new List<CarbonFactor> { new CarbonFactor { Material = "Concrete", Per = "m3", Factor = 100 } };
+            var readings = new[]
+            {
+                new CarbonReading { ElementId = "1", Material = "Concrete", Level = "L1", PhaseCreated = "New", VolumeM3 = 1, AreaM2 = 2 },
+                new CarbonReading { ElementId = "2", Material = "Concrete", Level = "L1", PhaseCreated = "New", VolumeM3 = 1, AreaM2 = null },
+                new CarbonReading { ElementId = "3", Material = "Concrete", Level = "L1", PhaseCreated = "Existing", PhaseDemolished = "New", VolumeM3 = 1, AreaM2 = 3 }
+            };
+            var g = CarbonRules.Group(readings, f);
+            Assert.Equal(2, g.Count);
+            Assert.Equal(2, g[0].AreaM2, 6);
+            Assert.Equal(1, g[0].UnreadableArea);
+            Assert.False(g[0].AreaComplete);
+            Assert.True(g[0].Complete);
+            Assert.Equal(200, g[0].KgCO2e, 6);
+            Assert.Equal("New", g[1].PhaseDemolished);
+            Assert.True(g[1].AreaComplete);
+        }
+
+        [Fact]
+        public void Samples_in_two_rooms_span_them_and_a_miss_beside_a_hit_is_ignored()
+        {
+            List<string> rooms;
+            Assert.Equal("assigned", RoomMembershipRules.Classify(new[] { null, "7", "7", null }, out rooms));
+            Assert.Equal(new[] { "7" }, rooms.ToArray());
+            Assert.Equal("7", RoomMembershipRules.KeyOf("assigned", rooms));
+            Assert.Equal("spans_rooms", RoomMembershipRules.Classify(new[] { "7", null, "9" }, out rooms));
+            Assert.Equal(new[] { "7", "9" }, rooms.ToArray());
+            Assert.Equal("(multiple rooms)", RoomMembershipRules.KeyOf("spans_rooms", rooms));
+            Assert.Equal("unassigned", RoomMembershipRules.Classify(new string[] { null, null }, out rooms));
+            Assert.Empty(rooms);
+            Assert.Equal("(unassigned)", RoomMembershipRules.KeyOf("unassigned", rooms));
         }
     }
 }

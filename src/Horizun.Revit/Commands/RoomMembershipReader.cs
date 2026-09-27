@@ -4,29 +4,37 @@
 // THE TWO WRITTEN RULES (docs/TOOLS-EXTENDED.md, "Room membership"):
 //  1. THE PHASE IS MANDATORY. Rooms and spaces exist per phase; a hidden default (the last
 //     phase) would silently answer for a different building. It is the HOST's phase.
-//  2. A LINKED element is placed in the HOST's rooms: its sample point goes through its
+//  2. A LINKED element is placed in the HOST's rooms: its sample points go through its
 //     RevitLinkInstance.GetTotalTransform and the host answers GetRoomAtPoint(pt, phase).
 //     Whether the link is room-bounding does not change that query - it only shapes the
 //     host's rooms (a host room that needs the link's walls to close is not enclosed
 //     without them, and holds nothing). Rooms INSIDE a linked model are not read.
 //
-// SAMPLING (Core/RoomQuantityRules.cs, RoomMembershipRules.SampleBasis):
-//  - point-based elements at their LocationPoint, lifted 1 mm so an element standing on
-//    its level is not lost on the room's bottom boundary;
-//  - curve-based elements at their curve's midpoint, not lifted;
-//  - walls at their largest solid's centroid, and only when a vertical line through it
-//    proves the centroid lies INSIDE the wall (a curved wall's centroid can fall outside
-//    it, into the very room it bounds). A room-bounding wall's centroid lies outside every
-//    room computed at the wall finish, so it comes back UNASSIGNED - by design: a wall
-//    that separates two rooms belongs to neither;
-//  - floors at a point ON their top face (the centroid of one triangle of it, which lies
-//    on the face even for an L-shaped floor), lifted 1 mm: a floor's body sits below the
-//    room it carries, so its own solid is never inside that room.
-// A miss is 'unassigned'. An element with no sample is 'unlocatable' - never folded into
-// unassigned, never guessed.
+// SAMPLING (Core/RoomQuantityRules.cs, RoomMembershipRules.SampleBasis and Classify):
+//  - point-based elements at the family's own room calculation point when it has one
+//    (what Revit's own Room/Space properties read); else at their LocationPoint lifted
+//    1 mm, so an element standing on its level is not lost on the room's bottom boundary.
+//    An instance hosted by a CEILING has its origin on the ceiling's underside - the top of
+//    the room - where the lift lands inside the ceiling; when the lift finds no room it is
+//    probed 1 mm BELOW (basis location_point_below). Only a ceiling-hosted instance goes
+//    below: a floor-standing element outside every room would land in the room underneath;
+//  - curve-based elements at their curve's start, middle and end, not lifted;
+//  - floors at up to 32 points ON their top face (inside its triangles, so on the face even
+//    for an L-shaped floor), lifted 1 mm: a floor's body sits below the room it carries;
+//  - walls at an interior point of their largest solid: the centroid when a vertical line
+//    through it proves it lies INSIDE the wall; else the middle of the longest piece of wall
+//    that line crosses (a centred door or window leaves only the header and sill there);
+//    else the same through the location curve's midpoint. A room-bounding wall's interior
+//    lies outside every room computed at the wall finish, so it comes back UNASSIGNED - by
+//    design: a wall that separates two rooms belongs to neither.
+// Samples in two or more DIFFERENT rooms: spans_rooms, key '(multiple rooms)', the rooms
+// listed - never billed whole to one of them. A miss beside a hit is ignored (a slab's
+// samples under its own walls are in no room). No room at all is 'unassigned'. An element
+// with no sample is 'unlocatable' - never folded into unassigned, never guessed.
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Autodesk.Revit.DB;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
@@ -35,30 +43,36 @@ namespace Horizun.Revit.Commands
 {
     internal sealed class RoomHit
     {
-        public string State;          // assigned | unassigned | unlocatable
+        public string State;          // assigned | spans_rooms | unassigned | unlocatable
         public string Basis;
-        public XYZ Point;             // host coordinates, feet
-        public SpatialElement Room;
-        public SpatialElement Space;
+        public XYZ Point;             // host coordinates, feet: the first sample that found a room, else the first one
+        public SpatialElement Room;   // only when exactly one room holds the samples
+        public readonly List<SpatialElement> Rooms = new List<SpatialElement>();
+        public SpatialElement Space;  // only when exactly one space holds the samples
+        public readonly List<SpatialElement> Spaces = new List<SpatialElement>();
+        public int Samples;
         public string Reason;
         public string SpaceProblem;
 
-        /// <summary>The by_room key: the room id, else '(unlocatable)' or '(unassigned)'.</summary>
-        public string RoomKey => Room != null ? Rid.Value(Room.Id).ToString()
-            : State == "unlocatable" ? RoomMembershipReader.UnlocatableKey : RoomMembershipRules.GroupKey(null);
+        /// <summary>The by_room key: the room id, '(multiple rooms)', '(unlocatable)' or '(unassigned)'.</summary>
+        public string RoomKey => State == "unlocatable" ? RoomMembershipReader.UnlocatableKey
+            : RoomMembershipRules.KeyOf(State, Rooms.Select(r => Rid.Value(r.Id).ToString()).ToList());
     }
 
     internal sealed class RoomMembershipReader
     {
         public const string UnlocatableKey = "(unlocatable)";
         private const double LiftFeet = 1.0 / 304.8;   // 1 mm
+        private const int MaxFloorSamples = 32;
 
         public const string Rules =
-            "Points at their location point (+1 mm); curves at their midpoint; walls at their solid's centroid, proven " +
-            "inside the wall; floors at a point on their top face (+1 mm). A room-bounding wall lies outside every room " +
-            "computed at the wall finish, so it is unassigned by design. Linked elements: the point is moved by the link " +
-            "instance's total transform and placed in the HOST's rooms of this phase, room-bounding link or not; rooms " +
-            "inside a link are not read. No sample = unlocatable, never unassigned.";
+            "Points at the family's room calculation point, else their location point +1 mm (-1 mm for a ceiling-hosted " +
+            "instance the lift left in no room); curves at start, middle and end; floors at up to 32 points on their top " +
+            "face (+1 mm); walls at an interior point of their solid. Samples in different rooms: spans_rooms under " +
+            "'(multiple rooms)', never billed to one. A room-bounding wall lies outside every room computed at the wall " +
+            "finish, so it is unassigned by design. Linked elements: the points are moved by the link instance's total " +
+            "transform and placed in the HOST's rooms of this phase, room-bounding link or not; rooms inside a link are " +
+            "not read. No sample = unlocatable, never unassigned.";
 
         private readonly Document _host;
         private readonly Phase _phase;
@@ -66,7 +80,7 @@ namespace Horizun.Revit.Commands
         {
             ComputeReferences = false, IncludeNonVisibleObjects = false, DetailLevel = ViewDetailLevel.Coarse
         };
-        public int Assigned, Unassigned, Unlocatable, InSpace, SpaceUnreadable;
+        public int Assigned, SpansRooms, Unassigned, Unlocatable, InSpace, SpaceUnreadable;
 
         private RoomMembershipReader(Document host, Phase phase) { _host = host; _phase = phase; }
 
@@ -102,29 +116,64 @@ namespace Horizun.Revit.Commands
                 hit.State = "unlocatable"; hit.Reason = noTransform; Unlocatable++;
                 return hit;
             }
-            XYZ local;
+            List<XYZ> local;
+            bool firstHitWins;
             string reason;
-            try { local = Sample(e, out hit.Basis, out reason); }
-            catch (Exception ex) { local = null; reason = "the sample point could not be read: " + ex.Message; }
-            if (local == null)
+            try { local = Sample(e, out hit.Basis, out reason, out firstHitWins); }
+            catch (Exception ex) { local = null; firstHitWins = false; reason = "the sample points could not be read: " + ex.Message; }
+            if (local == null || local.Count == 0)
             {
-                hit.State = "unlocatable"; hit.Reason = reason; Unlocatable++;
+                hit.State = "unlocatable"; hit.Reason = reason ?? "no sample point could be read."; Unlocatable++;
                 return hit;
             }
-            hit.Point = toHost == null ? local : toHost.OfPoint(local);
-            try { hit.Room = _host.GetRoomAtPoint(hit.Point, _phase); }
-            catch (Exception ex)
+
+            var roomKeys = new List<string>();
+            int firstHit = -1;
+            for (int i = 0; i < local.Count; i++)
             {
-                hit.State = "unlocatable"; hit.Reason = "GetRoomAtPoint failed: " + ex.Message; Unlocatable++;
-                return hit;
+                XYZ pt = toHost == null ? local[i] : toHost.OfPoint(local[i]);
+                if (hit.Point == null) hit.Point = pt;
+                SpatialElement room;
+                try { room = _host.GetRoomAtPoint(pt, _phase); }
+                catch (Exception ex)
+                {
+                    hit.State = "unlocatable"; hit.Reason = "GetRoomAtPoint failed: " + ex.Message; Unlocatable++;
+                    return hit;
+                }
+                hit.Samples++;
+                roomKeys.Add(room == null ? null : Rid.Value(room.Id).ToString());
+                AddDistinct(hit.Rooms, room);
+                if (room != null && firstHit < 0) { firstHit = i; hit.Point = pt; }
+                // The space is read at every sample the room is, and a failed read is said, not nulled.
+                if (!firstHitWins) ReadSpace(hit, pt);
+                if (firstHitWins && room != null) break;
             }
-            // The space is read beside the room, and a failed read is said, not nulled.
-            try { hit.Space = _host.GetSpaceAtPoint(hit.Point, _phase); }
-            catch (Exception ex) { hit.SpaceProblem = "GetSpaceAtPoint failed: " + ex.Message; SpaceUnreadable++; }
-            if (hit.Space != null) InSpace++;
-            if (hit.Room != null) { hit.State = "assigned"; Assigned++; }
-            else { hit.State = "unassigned"; Unassigned++; }
+            // A point-based element has ONE position: its space is read where its room was found.
+            if (firstHitWins) ReadSpace(hit, hit.Point);
+            if (firstHitWins && firstHit == 1 && hit.Basis == "location_point") hit.Basis = "location_point_below";
+
+            List<string> roomIds;
+            hit.State = RoomMembershipRules.Classify(roomKeys, out roomIds);
+            hit.Room = hit.Rooms.Count == 1 ? hit.Rooms[0] : null;
+            hit.Space = hit.Spaces.Count == 1 ? hit.Spaces[0] : null;
+            if (hit.SpaceProblem != null) SpaceUnreadable++;
+            if (hit.Spaces.Count > 0) InSpace++;
+            if (hit.State == RoomMembershipRules.AssignedState) Assigned++;
+            else if (hit.State == RoomMembershipRules.SpansRoomsState) SpansRooms++;
+            else Unassigned++;
             return hit;
+        }
+
+        private void ReadSpace(RoomHit hit, XYZ pt)
+        {
+            if (hit.SpaceProblem != null || pt == null) return;
+            try { AddDistinct(hit.Spaces, _host.GetSpaceAtPoint(pt, _phase)); }
+            catch (Exception ex) { hit.SpaceProblem = "GetSpaceAtPoint failed: " + ex.Message; }
+        }
+
+        private static void AddDistinct(List<SpatialElement> list, SpatialElement s)
+        {
+            if (s != null && !list.Any(x => x.Id == s.Id)) list.Add(s);
         }
 
         public JObject ToJson(RoomHit h, double scale)
@@ -135,9 +184,12 @@ namespace Horizun.Revit.Commands
                 ["room"] = Describe(h.Room),
                 ["space"] = Describe(h.Space),
                 ["basis"] = h.Basis,
+                ["samples"] = h.Samples,
                 ["sample_point"] = h.Point == null ? JValue.CreateNull()
                     : new JArray(Math.Round(h.Point.X * scale, 3), Math.Round(h.Point.Y * scale, 3), Math.Round(h.Point.Z * scale, 3))
             };
+            if (h.Rooms.Count > 1) j["rooms"] = new JArray(h.Rooms.Select(r => Describe(r)).ToArray());
+            if (h.Spaces.Count > 1) j["spaces"] = new JArray(h.Spaces.Select(s => Describe(s)).ToArray());
             if (h.Reason != null) j["reason"] = h.Reason;
             if (h.SpaceProblem != null) j["space_problem"] = h.SpaceProblem;
             return j;
@@ -166,6 +218,7 @@ namespace Horizun.Revit.Commands
             {
                 ["phase"] = _phase.Name,
                 ["assigned"] = Assigned,
+                ["spans_rooms"] = SpansRooms,
                 ["unassigned"] = Unassigned,
                 ["unlocatable"] = Unlocatable,
                 ["in_space"] = InSpace,
@@ -176,13 +229,19 @@ namespace Horizun.Revit.Commands
             };
             if (boundary != null && boundary != "Finish")
                 j["boundary_warning"] = "Rooms are computed at the wall " + boundary + ", not at its finish: a room-bounding " +
-                                        "wall's centroid can sit ON a room's boundary, and which side Revit answers there is Revit's.";
+                                        "wall's interior point can sit ON a room's boundary, and which side Revit answers there is Revit's.";
             return j;
         }
 
-        private XYZ Sample(Element e, out string basis, out string reason)
+        /// <summary>
+        /// The points to place, in the element's own coordinates. firstHitWins: they are alternatives for ONE
+        /// position (the first that finds a room is the answer); otherwise they are parts of the element and
+        /// every one is placed.
+        /// </summary>
+        private List<XYZ> Sample(Element e, out string basis, out string reason, out bool firstHitWins)
         {
             reason = null;
+            firstHitWins = false;
             bool isFloor = e is Floor;
             bool wallOrFloor = isFloor || e is Wall;
             Solid solid = wallOrFloor ? LargestSolid(e) : null;
@@ -193,21 +252,48 @@ namespace Horizun.Revit.Commands
             switch (basis)
             {
                 case "location_point":
-                    return lp.Point + new XYZ(0, 0, LiftFeet);
-                case "curve_midpoint":
-                    return curve.Evaluate(0.5, true);
+                {
+                    firstHitWins = true;
+                    var fi = e as FamilyInstance;
+                    bool hasCalcPoint = false;
+                    try { hasCalcPoint = fi != null && fi.HasSpatialElementCalculationPoint; } catch { }
+                    if (hasCalcPoint)
+                    {
+                        basis = "calculation_point";
+                        return new List<XYZ> { fi.GetSpatialElementCalculationPoint() };
+                    }
+                    var pts = new List<XYZ> { lp.Point + new XYZ(0, 0, LiftFeet) };
+                    bool onCeiling = false;
+                    try { onCeiling = fi != null && fi.Host is Ceiling; } catch { }
+                    if (onCeiling) pts.Add(lp.Point - new XYZ(0, 0, LiftFeet));
+                    return pts;
+                }
+                case "curve_points":
+                    return new List<XYZ> { curve.Evaluate(0, true), curve.Evaluate(0.5, true), curve.Evaluate(1, true) };
                 case "solid_interior":
+                {
                     if (isFloor)
                     {
                         basis = "floor_top_face";
-                        XYZ top = TopFacePoint((Floor)e, out reason);
-                        return top == null ? null : top + new XYZ(0, 0, LiftFeet);
+                        List<XYZ> top = TopFacePoints((Floor)e, out reason);
+                        return top?.Select(t => t + new XYZ(0, 0, LiftFeet)).ToList();
                     }
                     basis = "wall_solid_centroid";
                     XYZ c = solid.ComputeCentroid();
-                    if (InsideVertically(solid, c)) return c;
-                    reason = "the wall's solid centroid lies outside the wall (a curved or non-convex wall); it is not guessed.";
+                    XYZ inside = InteriorOnVertical(solid, c, true);
+                    if (inside != null)
+                    {
+                        if (!inside.IsAlmostEqualTo(c)) basis = "wall_solid_interior";
+                        return new List<XYZ> { inside };
+                    }
+                    Curve axis = null;
+                    try { axis = (e.Location as LocationCurve)?.Curve; } catch { }
+                    inside = axis == null ? null : InteriorOnVertical(solid, axis.Evaluate(0.5, true), false);
+                    if (inside != null) { basis = "wall_axis_interior"; return new List<XYZ> { inside }; }
+                    reason = "neither the vertical line through the wall's solid centroid nor the one through its location-curve " +
+                             "midpoint crosses its solid; no interior point is guessed.";
                     return null;
+                }
                 default:
                     reason = wallOrFloor
                         ? "a wall or floor with no readable solid (a curtain wall carries its geometry in its panels)."
@@ -234,13 +320,17 @@ namespace Horizun.Revit.Commands
             return best;
         }
 
-        /// <summary>A point on a floor's top face: the centroid of one triangle of it.</summary>
-        private static XYZ TopFacePoint(Floor floor, out string reason)
+        /// <summary>
+        /// Points on a floor's top faces: inside each triangle (its centroid and the midpoints from the centroid to
+        /// its corners), at most MaxFloorSamples spread evenly over all of them.
+        /// </summary>
+        private static List<XYZ> TopFacePoints(Floor floor, out string reason)
         {
             reason = null;
             IList<Reference> refs;
             try { refs = HostObjectUtils.GetTopFaces(floor); }
             catch (Exception ex) { reason = "the floor's top faces could not be read: " + ex.Message; return null; }
+            var all = new List<XYZ>();
             foreach (Reference r in refs)
             {
                 Face f = null;
@@ -248,31 +338,50 @@ namespace Horizun.Revit.Commands
                 if (f == null) continue;
                 Mesh m = null;
                 try { m = f.Triangulate(); } catch { }
-                if (m == null || m.NumTriangles == 0) continue;
-                MeshTriangle t = m.get_Triangle(0);
-                return (t.get_Vertex(0) + t.get_Vertex(1) + t.get_Vertex(2)) * (1.0 / 3.0);
+                if (m == null) continue;
+                for (int i = 0; i < m.NumTriangles; i++)
+                {
+                    MeshTriangle t = m.get_Triangle(i);
+                    XYZ a = t.get_Vertex(0), b = t.get_Vertex(1), c = t.get_Vertex(2);
+                    XYZ g = (a + b + c) * (1.0 / 3.0);
+                    all.Add(g);
+                    all.Add((g + a) * 0.5);
+                    all.Add((g + b) * 0.5);
+                    all.Add((g + c) * 0.5);
+                }
             }
-            reason = "no top face of the floor could be read and triangulated.";
-            return null;
+            if (all.Count == 0) { reason = "no top face of the floor could be read and triangulated."; return null; }
+            if (all.Count <= MaxFloorSamples) return all;
+            var picked = new List<XYZ>();
+            double step = (double)all.Count / MaxFloorSamples;
+            for (int i = 0; i < MaxFloorSamples; i++) picked.Add(all[(int)(i * step)]);
+            return picked;
         }
 
-        /// <summary>True when a vertical line through p crosses the solid in a segment that contains p.</summary>
-        private static bool InsideVertically(Solid solid, XYZ p)
+        /// <summary>
+        /// A point of the solid on the vertical line through p: p itself when acceptP and the line crosses the
+        /// solid in a piece that contains p; else the middle of the longest piece it crosses; null when none.
+        /// </summary>
+        private static XYZ InteriorOnVertical(Solid solid, XYZ p, bool acceptP)
         {
             try
             {
                 Line probe = Line.CreateBound(p - new XYZ(0, 0, 1000), p + new XYZ(0, 0, 1000));
                 SolidCurveIntersection hits = solid.IntersectWithCurve(probe,
                     new SolidCurveIntersectionOptions { ResultType = SolidCurveIntersectionMode.CurveSegmentsInside });
+                XYZ best = null;
+                double bestLength = 0;
                 for (int i = 0; i < hits.SegmentCount; i++)
                 {
                     Curve seg = hits.GetCurveSegment(i);
-                    double z0 = seg.GetEndPoint(0).Z, z1 = seg.GetEndPoint(1).Z;
-                    if (p.Z >= Math.Min(z0, z1) - 1e-6 && p.Z <= Math.Max(z0, z1) + 1e-6) return true;
+                    XYZ a = seg.GetEndPoint(0), b = seg.GetEndPoint(1);
+                    if (acceptP && p.Z >= Math.Min(a.Z, b.Z) - 1e-6 && p.Z <= Math.Max(a.Z, b.Z) + 1e-6) return p;
+                    double length = Math.Abs(b.Z - a.Z);
+                    if (length > bestLength) { bestLength = length; best = (a + b) * 0.5; }
                 }
+                return best;
             }
-            catch { }
-            return false;
+            catch { return null; }
         }
     }
 }

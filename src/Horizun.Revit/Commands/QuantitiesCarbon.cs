@@ -57,12 +57,14 @@ namespace Horizun.Revit.Commands
             if (string.IsNullOrWhiteSpace(codeParameter)) codeParameter = null;
 
             var failed = new JArray();
-            var elements = ResolveHostScope(doc, request, failed, out problem);
+            var duplicateIds = new JArray();
+            var elements = ResolveHostScope(doc, request, failed, duplicateIds, out problem);
             if (elements == null) return CommandResult.Fail("mode 'carbon': " + problem + " Nothing was measured.");
 
             var readings = new List<CarbonReading>();
             var noMaterials = new JArray();
             var unreadable = new JArray();
+            var unreadableAreas = new JArray();
             var densityCache = new Dictionary<long, double?>();
             var levelCache = new Dictionary<long, string>();
             foreach (var e in elements)
@@ -74,17 +76,22 @@ namespace Horizun.Revit.Commands
                 if (mats == null || mats.Count == 0) { noMaterials.Add(eid); continue; }
                 string level = LevelLabel(doc, e, levelCache);
                 string code = codeParameter == null ? null : ReadCode(doc, e, codeParameter);
+                // A sweep reads every phase, demolished elements too: the phase is a column the reader filters.
+                string phaseCreated = PhaseLabel(doc, () => e.CreatedPhaseId, "(no phase)");
+                string phaseDemolished = PhaseLabel(doc, () => e.DemolishedPhaseId, "(not demolished)");
                 foreach (var mid in mats)
                 {
                     var mat = doc.GetElement(mid) as Material;
                     var r = new CarbonReading
                     {
                         ElementId = eid.ToString(), Material = mat?.Name ?? "(material " + Rid.Value(mid) + " unreadable)",
-                        MaterialClass = mat == null ? null : SafeString(() => mat.MaterialClass), Code = code, Level = level
+                        MaterialClass = mat == null ? null : SafeString(() => mat.MaterialClass), Code = code, Level = level,
+                        PhaseCreated = phaseCreated, PhaseDemolished = phaseDemolished
                     };
                     try { r.VolumeM3 = e.GetMaterialVolume(mid) * CarbonRules.CubicFeetToM3; }
                     catch (Exception ex) { unreadable.Add(new JObject { ["element_id"] = eid, ["material"] = r.Material, ["error"] = ex.Message }); }
-                    try { r.AreaM2 = e.GetMaterialArea(mid, false) * RoomFinishRules.SquareFeetToM2; } catch { }
+                    try { r.AreaM2 = e.GetMaterialArea(mid, false) * RoomFinishRules.SquareFeetToM2; }
+                    catch (Exception ex) { unreadableAreas.Add(new JObject { ["element_id"] = eid, ["material"] = r.Material, ["error"] = ex.Message }); }
                     r.DensityKgM3 = DensityOf(doc, mat, densityCache);
                     readings.Add(r);
                 }
@@ -96,22 +103,25 @@ namespace Horizun.Revit.Commands
                 rows.Add(new JObject
                 {
                     ["material"] = g.Material, ["material_class"] = g.MaterialClass, ["code"] = g.Code, ["level"] = g.Level,
+                    ["phase_created"] = g.PhaseCreated, ["phase_demolished"] = g.PhaseDemolished,
                     ["factor"] = g.Factor, ["factor_per"] = g.FactorPer, ["matched_by"] = g.MatchedBy,
                     ["volume_m3"] = Math.Round(g.VolumeM3, 6), ["area_m2"] = Math.Round(g.AreaM2, 4),
                     ["mass_kg"] = g.MassReadings > 0 ? (JToken)Math.Round(g.MassKg, 3) : JValue.CreateNull(),
                     ["mass_readings"] = g.MassReadings,
                     ["kgco2e"] = g.Counted > 0 ? (JToken)Math.Round(g.KgCO2e, 3) : JValue.CreateNull(),
                     ["readings"] = g.Readings, ["counted"] = g.Counted, ["no_factor"] = g.NoFactor,
-                    ["no_density"] = g.NoDensity, ["unreadable_volume"] = g.UnreadableVolume, ["complete"] = g.Complete
+                    ["no_density"] = g.NoDensity, ["unreadable_volume"] = g.UnreadableVolume, ["complete"] = g.Complete,
+                    ["unreadable_area"] = g.UnreadableArea, ["area_complete"] = g.AreaComplete
                 });
 
-            bool complete = failed.Count == 0 && noMaterials.Count == 0 && groups.All(g => g.Complete);
+            bool complete = failed.Count == 0 && noMaterials.Count == 0 && unreadableAreas.Count == 0 && groups.All(g => g.Complete);
             return CommandResult.Ok(new JObject
             {
                 ["mode"] = "carbon",
                 ["factor_source"] = factorSource,
                 ["code_parameter"] = codeParameter,
-                ["scope"] = "host document only; linked models are not read",
+                ["scope"] = "host document only; linked models are not read. Every phase is read, demolished elements too: " +
+                            "phase_created and phase_demolished are row columns - filter them, the total does not.",
                 ["rule"] = "kgco2e sums ONLY counted readings. A reading with no factor, a per-kg factor without a density, or an " +
                            "unreadable volume is counted by reason and excluded - never a zero. Rows are flat for horizun_power_bi_push.",
                 ["rows"] = rows,
@@ -121,6 +131,8 @@ namespace Horizun.Revit.Commands
                 ["materials_without_factor"] = new JArray(groups.Where(g => g.NoFactor > 0).Select(g => g.Material).Distinct()),
                 ["materials_without_density"] = new JArray(groups.Where(g => g.NoDensity > 0).Select(g => g.Material).Distinct()),
                 ["unreadable_volumes"] = unreadable,
+                ["unreadable_areas"] = unreadableAreas,
+                ["duplicate_ids"] = duplicateIds,
                 ["elements_without_materials"] = noMaterials,
                 ["failed"] = failed,
                 ["coverage"] = new JObject
@@ -132,18 +144,21 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>element_ids, or a category swept in the host document.</summary>
-        private static List<Element> ResolveHostScope(Document doc, JObject request, JArray failed, out string problem)
+        private static List<Element> ResolveHostScope(Document doc, JObject request, JArray failed, JArray duplicates, out string problem)
         {
             problem = null;
             var list = new List<Element>();
             var ids = request["element_ids"] as JArray;
             if (ids != null && ids.Count > 0)
             {
+                var seen = new HashSet<long>();
                 foreach (var tok in ids)
                 {
                     long id;
                     if (tok.Type != JTokenType.Integer || !Rid.CanRepresentElementId(id = tok.Value<long>()))
                     { failed.Add(new JObject { ["element_id"] = tok.ToString(), ["error"] = "Not a usable element id." }); continue; }
+                    // A repeated id would count the element's carbon twice: read once, and named.
+                    if (!seen.Add(id)) { duplicates.Add(id); continue; }
                     var e = doc.GetElement(Rid.ToElementId(id));
                     if (e == null) failed.Add(new JObject { ["element_id"] = id, ["error"] = "Element not found." });
                     else list.Add(e);
@@ -197,6 +212,15 @@ namespace Horizun.Revit.Commands
             catch { d = null; }
             cache[key] = d;
             return d;
+        }
+
+        /// <summary>A phase id's name; the given label when there is none, named when unreadable.</summary>
+        private static string PhaseLabel(Document doc, Func<ElementId> read, string none)
+        {
+            ElementId id;
+            try { id = read(); } catch { return "(phase unreadable)"; }
+            if (id == null || id == ElementId.InvalidElementId) return none;
+            return SafeString(() => doc.GetElement(id)?.Name) ?? "(phase " + Rid.Value(id) + " unreadable)";
         }
 
         private static string SafeString(Func<string> f) { try { return f(); } catch { return null; } }

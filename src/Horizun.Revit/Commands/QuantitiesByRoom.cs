@@ -1,7 +1,8 @@
 // horizun_quantities, mode takeoff, group_by='room': the same caller-named quantities, rolled
 // up per room of ONE phase beside the per-code rollup. Membership is RoomMembershipReader's
 // (the rules are written there and in docs/TOOLS-EXTENDED.md). An element outside every room
-// is '(unassigned)' and an element with no sample point is '(unlocatable)': both are keys of
+// is '(unassigned)', one whose samples fall in several rooms '(multiple rooms)' and one with no
+// sample point '(unlocatable)': all are keys of
 // their own, so their sums are visible and never spread over the rooms or dropped.
 
 using System;
@@ -92,6 +93,7 @@ namespace Horizun.Revit.Commands
         {
             ["state"] = h.State,
             ["room_id"] = h.Room == null ? JValue.CreateNull() : new JValue(Rid.Value(h.Room.Id)),
+            ["room_ids"] = h.Rooms.Count > 1 ? new JArray(h.Rooms.Select(r => (object)Rid.Value(r.Id)).ToArray()) : (JToken)JValue.CreateNull(),
             ["basis"] = h.Basis,
             ["reason"] = h.Reason
         };

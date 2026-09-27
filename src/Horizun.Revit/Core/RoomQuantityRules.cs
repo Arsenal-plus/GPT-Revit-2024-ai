@@ -45,6 +45,7 @@ namespace Horizun.Revit.Core
         public string Surface;       // wall | floor | ceiling
         public string BoundingKey;   // null: no element bounds this face (the room's own limit)
         public string TypeName, Material, Code;
+        public string MaterialSource;  // paint | face | paint_unreadable; null when no face was read
         public double GrossM2;
     }
 
@@ -52,19 +53,22 @@ namespace Horizun.Revit.Core
     public sealed class OpeningDeductionFact
     {
         public string RoomKey, BoundingKey, InsertId;
-        public string SizeBasis;     // rough | nominal | bounding_box
+        public string InsertKind;    // door | window | wall_opening
+        public string SizeBasis;     // rough | nominal | bounding_box | opening_rect
         public double? WidthM, HeightM;
     }
 
     public sealed class FinishGroup
     {
-        public string RoomKey, Surface, TypeName, Material, Code;
+        public string RoomKey, Surface, TypeName, Material, MaterialSource, Code;
         public double GrossM2;
         public double OpeningDeductionM2;
         public int Openings, OpeningsUnsized;
         public readonly SortedSet<string> SizeBases = new SortedSet<string>(StringComparer.Ordinal);
         public readonly Dictionary<string, double> AreaByBoundingKey = new Dictionary<string, double>(StringComparer.Ordinal);
         public readonly List<string> OpeningIds = new List<string>();
+        // Each opening as attributed, so a reader can apply the size threshold its contract names.
+        public readonly List<OpeningDeductionFact> OpeningFacts = new List<OpeningDeductionFact>();
     }
 
     public static class RoomFinishRules
@@ -95,7 +99,16 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Folds faces into rows keyed by room, surface, bounding type, material and code,
+        /// Whether an insert with this ElementOnPhaseStatus name is in the building of the measured
+        /// phase. New and Existing are; None is an element that carries no phasing, so it is in every
+        /// phase. Demolished, Past, Future and Temporary are not: that door is not in the wall then,
+        /// and deducting it would take area off a face that is really there.
+        /// </summary>
+        public static bool ExistsInPhase(string phaseStatus)
+            => phaseStatus == "New" || phaseStatus == "Existing" || phaseStatus == "None";
+
+        /// <summary>
+        /// Folds faces into rows keyed by room, surface, bounding type, material (and its source) and code,
         /// and hangs each opening's deduction on the row of ITS wall in ITS room. A wall
         /// whose faces in one room fall in two rows (two materials on one face) takes its
         /// deductions to the row where it has the most area - deterministic, and stated.
@@ -112,11 +125,11 @@ namespace Horizun.Revit.Core
             {
                 if (f == null) continue;
                 string type = f.BoundingKey == null ? NoBoundingElement : (f.TypeName ?? "(unreadable type)");
-                string key = string.Join("\u001f", f.RoomKey ?? "", f.Surface ?? "", type, f.Material ?? "", f.Code ?? "");
+                string key = string.Join("\u001f", f.RoomKey ?? "", f.Surface ?? "", type, f.Material ?? "", f.MaterialSource ?? "", f.Code ?? "");
                 FinishGroup g;
                 if (!groups.TryGetValue(key, out g))
                 {
-                    g = new FinishGroup { RoomKey = f.RoomKey, Surface = f.Surface, TypeName = type, Material = f.Material, Code = f.Code };
+                    g = new FinishGroup { RoomKey = f.RoomKey, Surface = f.Surface, TypeName = type, Material = f.Material, MaterialSource = f.MaterialSource, Code = f.Code };
                     groups[key] = g;
                     order.Add(g);
                 }
@@ -148,6 +161,7 @@ namespace Horizun.Revit.Core
                 if (best == null) { orphans.Add(o); continue; }
                 best.Openings++;
                 best.OpeningIds.Add(o.InsertId);
+                best.OpeningFacts.Add(o);
                 double? area = RectangleM2(o.WidthM, o.HeightM);
                 if (area.HasValue)
                 {
@@ -171,17 +185,20 @@ namespace Horizun.Revit.Core
     public sealed class CarbonReading
     {
         public string ElementId, Material, MaterialClass, Code, Level;
+        public string PhaseCreated, PhaseDemolished;
         public double? VolumeM3, AreaM2, DensityKgM3;
     }
 
     public sealed class CarbonGroup
     {
-        public string Material, MaterialClass, Code, Level;
+        public string Material, MaterialClass, Code, Level, PhaseCreated, PhaseDemolished;
         public string FactorPer, MatchedBy;
         public double? Factor;
         public double VolumeM3, AreaM2, MassKg, KgCO2e;
-        public int Readings, Counted, NoFactor, NoDensity, UnreadableVolume, MassReadings;
+        public int Readings, Counted, NoFactor, NoDensity, UnreadableVolume, MassReadings, UnreadableArea;
         public bool Complete => Counted == Readings;
+        /// <summary>AreaM2 sums the readings that had an area; false when one of them had none readable.</summary>
+        public bool AreaComplete => UnreadableArea == 0;
     }
 
     public static class CarbonRules
@@ -248,7 +265,9 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Rows by material x code x level. Volume and area sum every reading that has one;
+        /// Rows by material x code x level x phase created x phase demolished (a sweep takes every
+        /// phase, demolished elements too, so the phase is a column, never mixed in silently).
+        /// Volume and area sum every reading that has one (UnreadableArea counts the rest);
         /// mass sums the readings with a density (MassReadings says how many); kgCO2e sums
         /// ONLY the counted ones, and every excluded reading is counted by reason.
         /// </summary>
@@ -259,7 +278,7 @@ namespace Horizun.Revit.Core
             foreach (var r in readings ?? Enumerable.Empty<CarbonReading>())
             {
                 if (r == null) continue;
-                string key = string.Join("\u001f", r.Material ?? "", r.Code ?? "", r.Level ?? "");
+                string key = string.Join("\u001f", r.Material ?? "", r.Code ?? "", r.Level ?? "", r.PhaseCreated ?? "", r.PhaseDemolished ?? "");
                 CarbonGroup g;
                 if (!map.TryGetValue(key, out g))
                 {
@@ -268,6 +287,7 @@ namespace Horizun.Revit.Core
                     g = new CarbonGroup
                     {
                         Material = r.Material, MaterialClass = r.MaterialClass, Code = r.Code, Level = r.Level,
+                        PhaseCreated = r.PhaseCreated, PhaseDemolished = r.PhaseDemolished,
                         Factor = f?.Factor, FactorPer = f?.Per, MatchedBy = matchedBy
                     };
                     map[key] = g;
@@ -280,6 +300,7 @@ namespace Horizun.Revit.Core
                 g.Readings++;
                 if (r.VolumeM3.HasValue && !double.IsNaN(r.VolumeM3.Value)) g.VolumeM3 += r.VolumeM3.Value;
                 if (r.AreaM2.HasValue && !double.IsNaN(r.AreaM2.Value)) g.AreaM2 += r.AreaM2.Value;
+                else g.UnreadableArea++;
                 if (mass.HasValue) { g.MassKg += mass.Value; g.MassReadings++; }
                 switch (state)
                 {
@@ -301,16 +322,40 @@ namespace Horizun.Revit.Core
         /// <summary>
         /// Walls and floors are sampled at a point of their solid (a wall's LocationCurve is its
         /// axis, which a room-bounding wall never lies inside); other elements at their location
-        /// point, else their location curve's midpoint. Null when none of those exists.
+        /// point, else their location curve's start, middle and end. Null when none of those exists.
         /// </summary>
         public static string SampleBasis(bool isWallOrFloor, bool hasSolid, bool hasPoint, bool hasCurve)
         {
             if (isWallOrFloor) return hasSolid ? "solid_interior" : null;
             if (hasPoint) return "location_point";
-            if (hasCurve) return "curve_midpoint";
+            if (hasCurve) return "curve_points";
             return null;
         }
 
+        public const string MultipleRooms = "(multiple rooms)";
+        public const string AssignedState = "assigned", SpansRoomsState = "spans_rooms", UnassignedState = "unassigned";
+
         public static string GroupKey(string roomKey) => string.IsNullOrWhiteSpace(roomKey) ? Unassigned : roomKey;
+
+        /// <summary>
+        /// The state of an element sampled at several points (a floor's top-face triangles, a
+        /// curve's ends and middle) from the room key each sample fell in (null: in no room). A
+        /// miss is ignored while another sample found a room - a slab's samples under its own
+        /// walls are in no room. Two or more DISTINCT rooms is spans_rooms: billing the whole
+        /// element to one of them would be a guess, so it gets its own key and the rooms are listed.
+        /// </summary>
+        public static string Classify(IEnumerable<string> sampleRoomKeys, out List<string> rooms)
+        {
+            rooms = new List<string>();
+            foreach (var k in sampleRoomKeys ?? Enumerable.Empty<string>())
+                if (!string.IsNullOrWhiteSpace(k) && !rooms.Contains(k)) rooms.Add(k);
+            if (rooms.Count == 0) return UnassignedState;
+            return rooms.Count == 1 ? AssignedState : SpansRoomsState;
+        }
+
+        /// <summary>The by_room key of a classified element: its room, (multiple rooms) or (unassigned).</summary>
+        public static string KeyOf(string state, IList<string> rooms)
+            => state == AssignedState && rooms != null && rooms.Count == 1 ? rooms[0]
+             : state == SpansRoomsState ? MultipleRooms : Unassigned;
     }
 }
