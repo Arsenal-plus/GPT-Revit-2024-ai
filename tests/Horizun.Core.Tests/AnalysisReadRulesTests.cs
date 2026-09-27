@@ -71,15 +71,51 @@ namespace Horizun.Core.Tests
         }
 
         [Theory]
-        [InlineData(false)]
-        [InlineData(null)]
-        public void A_network_not_provably_well_connected_never_passes(bool? wellConnected)
+        [InlineData(false, "not_well_connected")]
+        [InlineData(null, "connectivity_unreadable")]
+        public void A_network_not_provably_well_connected_is_neither_passed_nor_breached(bool? wellConnected, string word)
         {
-            Assert.Equal("not_well_connected", AnalysisReadRules.SystemVerdict(false, 1, 0, wellConnected, out _));
-            Assert.Equal("beyond_limits", AnalysisReadRules.SystemVerdict(true, 1, 0, wellConnected, out _));
+            // RevitAPI.xml 2023 and 2026, IsWellConnected: "If the system is not well connected,
+            // parameters which need to be calculated are invalid." Invalid, not understated: a
+            // breach judged on them is as false as a pass.
+            Assert.False(AnalysisReadRules.ValuesValid(wellConnected));
+            Assert.Equal(word, AnalysisReadRules.SystemVerdict(false, 1, 0, wellConnected, 3, 3, out _));
+            Assert.Equal(word, AnalysisReadRules.SystemVerdict(true, 1, 0, wellConnected, 3, 3, out _));
+            Assert.Equal(StructuralCoverage.Unreadable,
+                AnalysisReadRules.SystemCoverage(AnalysisReadRules.Calculated, true, 0, 0, 0, wellConnected, out string why));
+            Assert.StartsWith(word, why);
+            Assert.Equal("within_limits", AnalysisReadRules.SystemVerdict(false, 1, 0, true, 3, 3, out _));
+            Assert.Equal("beyond_limits", AnalysisReadRules.SystemVerdict(true, 1, 0, true, 3, 3, out _));
+        }
+
+        [Fact]
+        public void A_critical_path_whose_sections_all_failed_to_read_never_says_numbers_read()
+        {
+            Assert.Equal("critical_path_unreadable",
+                AnalysisReadRules.SystemVerdict(false, 0, 0, true, 0, 4, out string means));
+            Assert.DoesNotContain("numbers read", means);
+            Assert.Equal("no_limits_given", AnalysisReadRules.SystemVerdict(false, 0, 0, true, 3, 4, out means));
+            Assert.Contains("3 of 4", means);
+            Assert.Equal(StructuralCoverage.Unreadable,
+                AnalysisReadRules.SystemCoverage(AnalysisReadRules.Calculated, false, 4, 0, 0, true, out string why));
+            Assert.StartsWith("critical_path_unread", why);
+        }
+
+        [Fact]
+        public void A_partial_system_names_its_own_cause_and_a_complete_one_none()
+        {
             Assert.Equal(StructuralCoverage.Partial,
-                AnalysisReadRules.SystemCoverage(AnalysisReadRules.Calculated, true, 0, 0, 0, wellConnected));
-            Assert.Equal("within_limits", AnalysisReadRules.SystemVerdict(false, 1, 0, true, out _));
+                AnalysisReadRules.SystemCoverage(AnalysisReadRules.FlowOnly, true, 0, 0, 0, true, out string why));
+            Assert.StartsWith("flow_only", why);
+            Assert.Equal(StructuralCoverage.Partial,
+                AnalysisReadRules.SystemCoverage(AnalysisReadRules.Calculated, true, 1, 2, 0, true, out why));
+            Assert.Contains("1 critical-path section(s) would not read", why);
+            Assert.Contains("2 section limit(s) unmeasured", why);
+            Assert.Equal(StructuralCoverage.Complete,
+                AnalysisReadRules.SystemCoverage(AnalysisReadRules.Calculated, true, 0, 0, 0, true, out why));
+            Assert.Null(why);
+            AnalysisReadRules.SystemCoverage(AnalysisReadRules.NotCalculated, false, 0, 0, 0, null, out why);
+            Assert.StartsWith("not_calculated", why);
         }
 
         [Fact]

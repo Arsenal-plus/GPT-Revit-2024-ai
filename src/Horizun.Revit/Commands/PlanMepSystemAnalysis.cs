@@ -13,9 +13,15 @@
 // are not read at all, and their coverage word is unreadable - never
 // not_applicable, which the aggregate would drop and publish "complete" over
 // systems nobody judged (Core/AnalysisReadRules.cs decides what each level may
-// claim). A calculated system with no critical path is named, never "ok", and
-// one Revit does not call well connected never passes: its disconnected
-// branches carry no flow, so what was read is understated.
+// claim). A calculated system with no critical path is named, never "ok".
+//
+// CONNECTIVITY IS READ SECOND. RevitAPI.xml (2023 and 2026) on
+// MechanicalSystem/PipingSystem.IsWellConnected: "If the system is not well
+// connected, parameters which need to be calculated are invalid." Invalid, not
+// understated: such a system's flows, velocities and losses - and its critical
+// path, the path of greatest pressure loss and so chosen from them - are
+// neither read nor judged, never a pass and never a breach. Connectivity that
+// would not read proves nothing either (connectivity_unreadable).
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -38,8 +44,13 @@ namespace Horizun.Revit.Commands
             if (limitError != null) return CommandResult.Fail(limitError);
 
             var systems = new List<MEPSystem>();
-            if (request["element_ids"] is JArray idsToken && idsToken.Count > 0)
+            if (request["element_ids"] is JArray idsToken)
             {
+                // An empty selection is not "every system": that would silently widen the scope
+                // the caller named to the whole model.
+                if (idsToken.Count == 0)
+                    return CommandResult.Fail("element_ids is empty; name the systems to read, or omit element_ids " +
+                        "to read every system of kind/classification. Nothing was read.");
                 foreach (JToken token in idsToken)
                 {
                     long id = token.Value<long?>() ?? -1;
@@ -103,16 +114,18 @@ namespace Horizun.Revit.Commands
             var words = new List<string>();
             foreach (MEPSystem system in systems)
             {
-                JObject row = AnalyseSystem(doc, system, limits, out string coverage, out bool breached);
+                JObject row = AnalyseSystem(doc, system, limits);
                 rows.Add(row);
+                string coverage = (string)row["coverage"];
                 words.Add(coverage);
-                if (breached) beyond++;
+                if ((string)row["verdict"] == "beyond_limits") beyond++;
                 if (coverage == StructuralCoverage.Complete) measured++;
                 else
                 {
+                    // The row's own cause (flow only, unread quantities, not well connected...), not
+                    // its verdict: "no_limits_given" would not say why the system is partial.
                     notMeasured++;
-                    reasons.Add(StructuralCoverage.Reason("system " + Rid.Value(system.Id),
-                        (string)row["verdict"] + ": " + (string)row["verdict_means"]));
+                    reasons.Add(StructuralCoverage.Reason("system", (string)row["coverage_reason"], Rid.Value(system.Id)));
                 }
             }
 
@@ -135,15 +148,15 @@ namespace Horizun.Revit.Commands
                            "flow order. This bridge calculates nothing: a system whose type calculates None, " +
                            "Performance or Volume is not_calculated, was not judged and makes the coverage partial " +
                            "or unreadable; Flow claims flow only (velocity and pressure at All). A limit the level " +
-                           "does not claim is listed as unmeasured, never as a pass, and a network Revit does not " +
-                           "call well connected never passes."
+                           "does not claim is listed as unmeasured, never as a pass. A system Revit does not call " +
+                           "well connected is not read at all: the API calls its calculated values invalid."
             });
         }
 
-        private static JObject AnalyseSystem(Document doc, MEPSystem system, IDictionary<string, double> limits,
-                                             out string coverage, out bool breached)
+        private static JObject AnalyseSystem(Document doc, MEPSystem system, IDictionary<string, double> limits)
         {
-            breached = false;
+            bool breached = false;
+            string why;
             var type = doc.GetElement(system.GetTypeId()) as MEPSystemType;
             string level = null, classification = null;
             try { level = type?.CalculationLevel.ToString(); } catch { }
@@ -174,31 +187,34 @@ namespace Horizun.Revit.Commands
 
             if (status == AnalysisReadRules.NotCalculated || status == AnalysisReadRules.Unreadable)
             {
-                coverage = AnalysisReadRules.SystemCoverage(status, false, 0, 0, 0, wellConnected);
                 row["verdict"] = status;
                 row["verdict_means"] = status == AnalysisReadRules.Unreadable
                     ? "the system type's calculation level could not be read, so no number was judged."
                     : "the system type calculates " + level + ": Revit computed no flow or pressure to read, " +
                       "so nothing was judged. This is not 'ok'.";
-                return row;
+                return Unjudged(row, limits, AnalysisReadRules.SystemCoverage(status, false, 0, 0, 0, wellConnected, out why), why);
+            }
+            if (!AnalysisReadRules.ValuesValid(wellConnected))
+            {
+                row["verdict"] = AnalysisReadRules.SystemVerdict(false, limits.Count, 0, wellConnected, 0, 0, out string means);
+                row["verdict_means"] = means;
+                return Unjudged(row, limits, AnalysisReadRules.SystemCoverage(status, false, 0, 0, 0, wellConnected, out why), why);
             }
 
             IList<int> numbers;
             try { numbers = system.GetCriticalPathSectionNumbers() ?? new List<int>(); }
             catch (Exception ex)
             {
-                coverage = AnalysisReadRules.SystemCoverage(status, false, 0, 0, 0, wellConnected);
                 row["verdict"] = "critical_path_unreadable";
                 row["verdict_means"] = "GetCriticalPathSectionNumbers threw: " + ex.Message;
-                return row;
+                return Unjudged(row, limits, AnalysisReadRules.SystemCoverage(status, false, 0, 0, 0, wellConnected, out why), why);
             }
             if (numbers.Count == 0)
             {
-                coverage = AnalysisReadRules.SystemCoverage(status, false, 0, 0, 0, wellConnected);
                 row["verdict"] = "no_critical_path";
-                row["verdict_means"] = "Revit returned no critical path for a calculated system - usually no " +
-                    "base equipment or a system that is not well connected. Nothing was judged.";
-                return row;
+                row["verdict_means"] = "Revit returned no critical path for a calculated, well-connected system - " +
+                    "usually no base equipment. Nothing was judged.";
+                return Unjudged(row, limits, AnalysisReadRules.SystemCoverage(status, false, 0, 0, 0, wellConnected, out why), why);
             }
 
             var sections = new JArray();
@@ -263,11 +279,29 @@ namespace Horizun.Revit.Commands
             row["critical_path_pressure_loss_counted"] = lossCounted;
             row["unmeasured_limits"] = new JArray(unmeasured.Cast<object>().ToArray());
             row["unread_quantities"] = new JArray(unreadQuantities.Cast<object>().ToArray());
+            int sectionsRead = numbers.Count - unreadableSections;
             row["verdict"] = AnalysisReadRules.SystemVerdict(breached, limits.Count, unmeasured.Count, wellConnected,
-                                                             out string means);
-            row["verdict_means"] = means;
-            coverage = AnalysisReadRules.SystemCoverage(status, true, unreadableSections, unmeasured.Count,
-                                                        unreadQuantities.Count, wellConnected);
+                                                             sectionsRead, numbers.Count, out string verdictMeans);
+            row["verdict_means"] = verdictMeans;
+            // "Critical path read" means at least one of its sections was: a path whose every section
+            // failed to read is unreadable, not partial.
+            row["coverage"] = AnalysisReadRules.SystemCoverage(status, sectionsRead > 0, unreadableSections,
+                unmeasured.Count, unreadQuantities.Count, wellConnected, out why);
+            row["coverage_reason"] = why;
+            return row;
+        }
+
+        /// <summary>
+        /// A system nothing was read from: no critical path, no path loss, every limit the caller
+        /// gave unmeasured for the whole system - and its coverage word with its own cause.
+        /// </summary>
+        private static JObject Unjudged(JObject row, IDictionary<string, double> limits, string coverage, string why)
+        {
+            row["critical_path"] = null;
+            row["critical_path_pressure_loss_pa"] = null;
+            row["unmeasured_limits"] = new JArray(limits.Keys.Cast<object>().ToArray());
+            row["coverage"] = coverage;
+            row["coverage_reason"] = why;
             return row;
         }
 

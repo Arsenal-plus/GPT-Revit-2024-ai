@@ -15,6 +15,8 @@
 // else; only All claims velocity and pressure. A limit the caller gave whose
 // value could not be read is NAMED as unmeasured, never counted as a pass, and
 // a system nobody calculated weakens the aggregate instead of vanishing from it.
+// A system Revit does not call well connected is not read either: the API calls
+// its calculated values invalid - not understated - so they judge nothing.
 //
 // STRUCTURE. A member end is CONNECTED when another analytical element reaches
 // it within the tolerance: a point ON another member's real curve (a secondary
@@ -72,53 +74,109 @@ namespace Horizun.Revit.Core
         public static bool PressureClaimed(string status) => status == Calculated;
 
         /// <summary>
-        /// The coverage word of one system row. A system Revit did not calculate
-        /// is UNREADABLE, never not_applicable: the question "does it exceed the
-        /// limits" arises, and the model has no computed answer to give.
-        /// not_applicable is dropped by StructuralCoverage.Weakest once anything
-        /// else was measured, so one judged system beside nine unjudged ones
-        /// would publish complete - the aggregate "ok" over systems nobody judged.
-        /// A network Revit does not call well connected leaves out the flow of
-        /// its disconnected branches, so what was read is a floor: partial.
+        /// Whether a system's calculated values may be read at all. RevitAPI.xml
+        /// (2023 and 2026), MechanicalSystem/PipingSystem.IsWellConnected: "If the
+        /// system is not well connected, parameters which need to be calculated
+        /// are invalid." Invalid, not understated: judged against a limit they
+        /// could fake a breach as easily as a pass. The critical path is the path
+        /// of greatest pressure loss, chosen from those same values, so it is not
+        /// read either. Connectivity that would not read proves nothing.
         /// </summary>
+        public static bool ValuesValid(bool? wellConnected) => wellConnected == true;
+
         public static string SystemCoverage(string status, bool criticalPathRead, int unreadableSections,
                                             int unmeasuredLimits, int unreadQuantities, bool? wellConnected)
+            => SystemCoverage(status, criticalPathRead, unreadableSections, unmeasuredLimits, unreadQuantities,
+                              wellConnected, out _);
+
+        /// <summary>
+        /// The coverage word of one system row, and <paramref name="why"/> it is
+        /// not complete (null when it is): the row publishes both, and the
+        /// aggregate's reason is the row's own cause, not its verdict. A system
+        /// Revit did not calculate is UNREADABLE, never not_applicable: the
+        /// question "does it exceed the limits" arises, and the model has no
+        /// computed answer to give. not_applicable is dropped by
+        /// StructuralCoverage.Weakest once anything else was measured, so one
+        /// judged system beside nine unjudged ones would publish complete - the
+        /// aggregate "ok" over systems nobody judged. A system whose values the
+        /// API calls invalid (not well connected, or connectivity unread) is
+        /// unreadable for the same reason. <paramref name="criticalPathRead"/>
+        /// means at least one critical-path section was read.
+        /// </summary>
+        public static string SystemCoverage(string status, bool criticalPathRead, int unreadableSections,
+                                            int unmeasuredLimits, int unreadQuantities, bool? wellConnected,
+                                            out string why)
         {
-            if (status != Calculated && status != FlowOnly) return StructuralCoverage.Unreadable;
-            if (!criticalPathRead) return StructuralCoverage.Unreadable;
-            if (status == FlowOnly) return StructuralCoverage.Partial; // velocity and pressure were never claimed
-            if (unreadableSections > 0 || unmeasuredLimits > 0 || unreadQuantities > 0 || wellConnected != true)
-                return StructuralCoverage.Partial;
-            return StructuralCoverage.Complete;
+            if (status == NotCalculated)
+            {
+                why = "not_calculated: the system type calculates nothing this read may judge, so no number was read.";
+                return StructuralCoverage.Unreadable;
+            }
+            if (status != Calculated && status != FlowOnly)
+            {
+                why = "calculation_level_unreadable: the system type's calculation level could not be read, so no " +
+                      "number was read.";
+                return StructuralCoverage.Unreadable;
+            }
+            if (!ValuesValid(wellConnected))
+            {
+                why = (wellConnected == false
+                          ? "not_well_connected: Revit reports the system not well connected"
+                          : "connectivity_unreadable: whether the system is well connected could not be read") +
+                      "; the API calls the calculated values of a system that is not well connected invalid, so " +
+                      "none was read or judged.";
+                return StructuralCoverage.Unreadable;
+            }
+            if (!criticalPathRead)
+            {
+                why = "critical_path_unread: no critical-path section could be read, so nothing was judged.";
+                return StructuralCoverage.Unreadable;
+            }
+            var causes = new List<string>();
+            if (status == FlowOnly)
+                causes.Add("flow_only: the type calculates flow only; velocity, pressure loss and friction were not read");
+            if (unreadableSections > 0) causes.Add(unreadableSections + " critical-path section(s) would not read");
+            if (unmeasuredLimits > 0) causes.Add(unmeasuredLimits + " section limit(s) unmeasured (unmeasured_limits)");
+            if (unreadQuantities > 0)
+                causes.Add(unreadQuantities + " claimed quantity(ies) came back null (unread_quantities)");
+            if (causes.Count == 0) { why = null; return StructuralCoverage.Complete; }
+            why = string.Join("; ", causes) + ".";
+            return StructuralCoverage.Partial;
         }
 
         /// <summary>
-        /// The verdict of a calculated system whose critical path was read. A
-        /// breach is reported whatever the connectivity (an understated network
-        /// that already exceeds a limit exceeds it); a pass is never claimed on a
-        /// network Revit does not call well connected, nor on one whose
-        /// connectivity could not be read.
+        /// The verdict of a calculated system. Nothing is judged - neither a pass
+        /// nor a breach - on a system whose calculated values the API calls
+        /// invalid (<see cref="ValuesValid"/>), nor when no critical-path section
+        /// was read: "numbers read" is claimed only over sections that were.
         /// </summary>
         public static string SystemVerdict(bool breached, int limitCount, int unmeasuredLimits, bool? wellConnected,
-                                           out string means)
+                                           int sectionsRead, int sectionCount, out string means)
         {
-            if (breached)
-            {
-                means = "at least one critical-path section exceeds a limit you gave" + (wellConnected == true ? "."
-                    : "; the network is not provably well connected, so other values may be understated too.");
-                return "beyond_limits";
-            }
-            if (wellConnected != true)
+            if (!ValuesValid(wellConnected))
             {
                 means = (wellConnected == false
-                    ? "Revit reports the system NOT well connected: disconnected branches carry no flow, so "
-                    : "whether the system is well connected could not be read; if it is not, ") +
-                    "flows, velocities and losses are understated. No pass is claimed.";
-                return "not_well_connected";
+                    ? "Revit reports the system NOT well connected"
+                    : "whether the system is well connected could not be read") +
+                    ": the API calls the calculated values of a system that is not well connected invalid (and the " +
+                    "critical path is chosen from them), so nothing was read or judged - neither a pass nor a breach.";
+                return wellConnected == false ? "not_well_connected" : "connectivity_unreadable";
+            }
+            if (sectionsRead <= 0)
+            {
+                means = "no critical-path section could be read, so no number was read or judged.";
+                return "critical_path_unreadable";
+            }
+            string over = sectionsRead >= sectionCount ? "every critical-path section"
+                : sectionsRead + " of " + sectionCount + " critical-path sections";
+            if (breached)
+            {
+                means = "at least one critical-path section exceeds a limit you gave (read on " + over + ").";
+                return "beyond_limits";
             }
             if (limitCount == 0)
             {
-                means = "numbers read; nothing judged because no limits were given.";
+                means = "numbers read on " + over + "; nothing judged because no limits were given.";
                 return "no_limits_given";
             }
             if (unmeasuredLimits > 0)
