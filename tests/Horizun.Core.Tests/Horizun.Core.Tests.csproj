@@ -655,6 +655,9 @@
     <!-- horizun_mep_routing's `route` op: 3-D A* on an orthogonal grid, boxes and
          points only - no Autodesk.* here so the search itself is provable at a desk. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\RouteSearch.cs" />
+    <!-- horizun_quantities room_finishes / carbon and room membership: grouping,
+         deductions and factor arithmetic, Revit-free. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\RoomQuantityRules.cs" />
   </ItemGroup>
 
   <ItemGroup>
