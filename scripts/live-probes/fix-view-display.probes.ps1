@@ -12,6 +12,7 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'view_display: a requirement set produces a detail_level finding on an own view'; Tool = 'horizun_audit_planimetry' }
         @{ Name = 'view_display: set_view_display applies the cited detail level and re-reads it'; Tool = 'horizun_fix_planimetry' }
         @{ Name = 'view_display: the audit run afterwards no longer produces the finding'; Tool = 'horizun_audit_planimetry' }
+        @{ Name = 'view_display: refused by name when the view template CONTROLS the detail level'; Tool = 'horizun_fix_planimetry' }
     )
     Run     = {
         param($Ctx)
@@ -23,9 +24,10 @@ $script:HzProbeModules += [pscustomobject]@{
         $A = 'horizun_audit_planimetry'; $F = 'horizun_fix_planimetry'
         $names = @('view_display: a requirement set produces a detail_level finding on an own view',
                    'view_display: set_view_display applies the cited detail level and re-reads it',
-                   'view_display: the audit run afterwards no longer produces the finding')
-        $tools = @($A, $F, $A)
-        function AllNotCovered($why) { for ($i = 0; $i -lt 3; $i++) { Case $names[$i] $tools[$i] 'not_covered' $why } }
+                   'view_display: the audit run afterwards no longer produces the finding',
+                   'view_display: refused by name when the view template CONTROLS the detail level')
+        $tools = @($A, $F, $A, $F)
+        function AllNotCovered($why) { for ($i = 0; $i -lt 4; $i++) { Case $names[$i] $tools[$i] 'not_covered' $why } }
 
         if ($Ctx.WriteGate) { AllNotCovered 'write tier is not open for this run'; return $cases.ToArray() }
 
@@ -60,6 +62,7 @@ $script:HzProbeModules += [pscustomobject]@{
         if (-not $finding) {
             Case $names[0] $A 'fail' ('no failed probe-detail-level finding for view ' + $viewId + ': ' + [string]$au.text)
             Case $names[1] $F 'not_covered' 'no finding to cite'; Case $names[2] $A 'not_covered' 'no finding to cite'
+            Case $names[3] $F 'not_covered' 'no finding to cite'
         }
         else {
             Case $names[0] $A 'pass' ("finding on view $viewId expecting detail_level=$want")
@@ -79,10 +82,42 @@ $script:HzProbeModules += [pscustomobject]@{
                 $again = Get-Audit $set
                 if ($again.data -and -not (Get-Finding $again)) { Case $names[2] $A 'pass' "probe-detail-level no longer fails on view $viewId" }
                 else { Case $names[2] $A 'fail' ('the finding is still produced: ' + [string]$again.text) }
+
+                # A template made FROM the view now carries $want and governs VIEW_DETAIL_LEVEL;
+                # applied back to the view, a rule demanding the other level fails, and citing
+                # that finding must be refused by name in the rehearsal - nothing is written.
+                $other = if ($want -eq 'Fine') { 'Coarse' } else { 'Fine' }
+                $t = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
+                        @{ operation = 'create_template'; view_id = $viewId; name = "HZ_VD_TPL_$tag"; key = 'tpl' }) } 'vd-tpl-create'
+                $tpl = if (Applied $t) { $t.answer.data.aliases.tpl } else { $null }
+                if (-not $tpl) { Case $names[3] $F 'not_covered' ('no own template: ' + (Why $t)) }
+                else {
+                    [void]$created.Add([long]$tpl)
+                    $g = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
+                            @{ operation = 'set_template_controls'; view_id = [long]$tpl; parameters = @('VIEW_DETAIL_LEVEL'); controlled = $true }
+                            @{ operation = 'apply_template'; view_id = $viewId; template_view_id = [long]$tpl }) } 'vd-tpl-apply'
+                    $set2 = Get-Set $other; $au2 = Get-Audit $set2; $f2 = Get-Finding $au2
+                    if (-not (Applied $g) -or -not $f2) { Case $names[3] $F 'not_covered' ('template not governing or no finding: ' + (Why $g) + ' | ' + [string]$au2.text) }
+                    else {
+                        $cite2 = @{ rule_id = $f2.rule_id; requirement_set = $f2.requirement_set; requirement_set_version = $f2.requirement_set_version
+                                    element_ids = @($f2.element_ids | ForEach-Object { [long]$_ }); observed = $f2.observed }
+                        if ($f2.requirement_set_sha256) { $cite2['requirement_set_sha256'] = $f2.requirement_set_sha256 }
+                        if ($f2.entity_kind) { $cite2['entity_kind'] = $f2.entity_kind }
+                        if ($null -ne $f2.view_id) { $cite2['view_id'] = [long]$f2.view_id }
+                        $rf = & $Ctx.Call $F @{ target_document = $doc; units = 'mm'; dry_run = $true; requirement_set = $set2
+                                               source_audit = @{ finding_set_fingerprint = $au2.data.finding_set_fingerprint; units = 'mm' }
+                                               actions = @(@{ operation = 'set_view_display'; finding = $cite2; view_id = $viewId; detail_level = $other }) }
+                        $said = [string]$rf.text + ' ' + ($rf.data | ConvertTo-Json -Compress -Depth 8)
+                        $shown = $said.Substring(0, [Math]::Min(300, $said.Length))
+                        if ($said -cmatch 'CONTROLS' -and -not $rf.data.confirmation_token) { Case $names[3] $F 'pass' ('refused: ' + $shown) }
+                        else { Case $names[3] $F 'fail' ('not refused by name: ' + $shown) }
+                    }
+                }
             }
             else {
                 Case $names[1] $F 'fail' ((Why $fx) + ' state=' + $fx.answer.data.state)
                 Case $names[2] $A 'not_covered' 'the fix did not apply'
+                Case $names[3] $F 'not_covered' 'the fix did not apply'
             }
         }
 

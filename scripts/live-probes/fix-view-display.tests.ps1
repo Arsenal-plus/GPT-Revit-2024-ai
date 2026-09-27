@@ -10,7 +10,7 @@ $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'fix-view-display'
 if (-not $module) { 'module did not register'; exit 1 }
 
 function New-Ctx([bool]$gate, [string]$initial = 'Medium', [bool]$fixWorks = $true) {
-    $state = @{ applies = New-Object System.Collections.Generic.List[string]; level = $initial }
+    $state = @{ applies = New-Object System.Collections.Generic.List[string]; level = $initial; governed = $false; refusals = 0 }
     $call = {
         param($tool, $arguments)
         if ($tool -eq 'horizun_query_planimetry') {
@@ -26,6 +26,11 @@ function New-Ctx([bool]$gate, [string]$initial = 'Medium', [bool]$fixWorks = $tr
             }
             return @{ isError = $false; data = [pscustomobject]@{ finding_set_fingerprint = 'fp12345678'; findings = $findings } }
         }
+        if ($tool -eq 'horizun_fix_planimetry' -and $state.governed) {
+            # FixPlanimetryDisplay.RefuseIfTemplateControls throws an ArgumentException in the rehearsal.
+            $state.refusals++
+            return @{ isError = $true; text = "view template 'HZ_VD_TPL_t1' (901) CONTROLS Detail Level on view_id 900: an assignment would be ignored" }
+        }
         return @{ isError = $true; text = 'unexpected tool ' + $tool }
     }.GetNewClosure()
     $apply = {
@@ -33,6 +38,9 @@ function New-Ctx([bool]$gate, [string]$initial = 'Medium', [bool]$fixWorks = $tr
         $state.applies.Add($key)
         if ($tool -eq 'horizun_delete_verified') { return @{ stage = 'apply'; answer = @{ isError = $false; data = [pscustomobject]@{}; text = 'ok' } } }
         if ($tool -eq 'horizun_manage_views') {
+            $op = $arguments.actions[0].operation
+            if ($op -eq 'create_template') { return @{ stage = 'apply'; answer = @{ isError = $false; data = [pscustomobject]@{ aliases = [pscustomobject]@{ tpl = 901 }; rows = @() } } } }
+            if ($op -eq 'set_template_controls') { $state.governed = $true }
             return @{ stage = 'apply'; answer = @{ isError = $false; data = [pscustomobject]@{ rows = @([pscustomobject]@{ verified = $true; element_id = 900 }) } } }
         }
         if ($tool -eq 'horizun_fix_planimetry') {
@@ -56,7 +64,8 @@ function Expect($label, $cond) { if (-not $cond) { Write-Host "FAIL: $label"; $s
 
 $ctx = New-Ctx $false 'Medium'
 $r = @(& $module.Run $ctx)
-Expect 'three cases' ($r.Count -eq 3)
+Expect 'four cases' ($r.Count -eq 4)
+Expect 'the template refusal was asked in a rehearsal' ($ctx.State.refusals -eq 1)
 Expect 'all pass on a Medium view' (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
 Expect 'fixed to Fine' ($ctx.State.level -eq 'Fine')
 Expect 'cleanup ran' ($ctx.State.applies -contains 'vd-cleanup')
@@ -67,7 +76,7 @@ Expect 'a Fine view is corrected to Coarse' ($ctx.State.level -eq 'Coarse' -and 
 
 $ctx = New-Ctx $false 'Medium' $false
 $r = @(& $module.Run $ctx)
-Expect 'a failed fix is a fail, the re-audit not_covered' ($r[1].Outcome -eq 'fail' -and $r[2].Outcome -eq 'not_covered')
+Expect 'a failed fix is a fail, the re-audit not_covered' ($r[1].Outcome -eq 'fail' -and $r[2].Outcome -eq 'not_covered' -and $r[3].Outcome -eq 'not_covered')
 
 $ctx = New-Ctx $true
 $r = @(& $module.Run $ctx)
