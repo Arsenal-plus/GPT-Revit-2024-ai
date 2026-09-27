@@ -29,6 +29,10 @@
 // had no opening (after the pieces exist), or - several openings, the default
 // multi_opening = keep_carrier - kept full length under the pieces, which then
 // overlap it: carrier.overlap says so in the plan and in the verified result.
+// A kept or trimmed carrier stays on its own CENTRE PLANE, where its doors and windows sit: its
+// location line is set to the wall centreline before the type change (a type change keeps the
+// location line), so the thinner placeholder does not move them. A carrier with an embedded wall
+// (a storefront) is refused: nothing here can verify it stays embedded in the placeholder.
 // An insert whose span cannot be measured, or an edited wall profile, refuses the
 // wall: trimming or deleting it could take an element nobody planned for with it.
 //
@@ -69,6 +73,10 @@ namespace Horizun.Revit.Commands
         /// <summary>The delete's cascade as the plan measured it (the token binds it), and what the delete took that this apply had created.</summary>
         public readonly List<long> CarrierDeleteMeasured = new List<long>(), CarrierDeleteCreated = new List<long>();
         public bool Structural;
+        /// <summary>The carrier's centre plane from its location line along Normal (feet): where the placeholder stays.</summary>
+        public double CentreOffsetFt;
+        /// <summary>What deleting the carrier takes along (ids, by category) as the plan measured it: remove names them as not restored.</summary>
+        public JObject DeletedWithCarrier;
 
         /// <summary>A point of the frame on the core centreline, at the base level's elevation.</summary>
         public XYZ At(double xMm, double levelZ) => new XYZ(Origin.X, Origin.Y, levelZ) + Dir * (xMm / 304.8) + Normal * CoreOffsetFt;
@@ -81,6 +89,7 @@ namespace Horizun.Revit.Commands
             ["top_level_id"] = TopLevelId, ["top_offset_ft"] = TopOffsetFt, ["unconnected_ft"] = UnconnectedFt,
             ["original_type_id"] = OriginalTypeId, ["original_curve"] = new JArray(P(OriginalStart), P(OriginalEnd)),
             ["new_curve"] = NewStart == null ? null : new JArray(P(NewStart), P(NewEnd)), ["flipped"] = Flipped, ["key_ref"] = KeyRef, ["structural"] = Structural,
+            ["centre_offset_ft"] = CentreOffsetFt, ["deleted_with_carrier"] = DeletedWithCarrier?.DeepClone(),
             ["pieces"] = new JArray(Plan.Pieces.Select(m => new JObject { ["role"] = m.Role, ["type"] = m.TypeKey, ["x0"] = m.X0, ["x1"] = m.X1, ["z0"] = m.Z0, ["z1"] = m.Z1, ["src"] = m.Source })),
             ["carrier"] = new JObject { ["action"] = Plan.Carrier.Action, ["x0"] = Plan.Carrier.X0, ["x1"] = Plan.Carrier.X1, ["type"] = Plan.Carrier.TypeKey, ["opening"] = Plan.Carrier.OpeningId },
             ["inserts"] = new JObject(inserts.Select(kv => new JProperty(kv.Key.ToString(CultureInfo.InvariantCulture), kv.Value))),
@@ -102,6 +111,7 @@ namespace Horizun.Revit.Commands
                 TopLevelId = (long)r["top_level_id"], TopOffsetFt = (double)r["top_offset_ft"], UnconnectedFt = (double)r["unconnected_ft"],
                 OriginalTypeId = (long)r["original_type_id"], OriginalStart = X(r["original_curve"][0]), OriginalEnd = X(r["original_curve"][1]),
                 NewStart = nc == null ? null : X(nc[0]), NewEnd = nc == null ? null : X(nc[1]), Flipped = (bool)r["flipped"], KeyRef = (int)r["key_ref"], Structural = (bool?)r["structural"] ?? false,
+                CentreOffsetFt = (double?)r["centre_offset_ft"] ?? 0, DeletedWithCarrier = r["deleted_with_carrier"] as JObject,
             };
         }
 
@@ -165,13 +175,22 @@ namespace Horizun.Revit.Commands
 
         private static List<FramingSourcePlan> PlanCurtainWalls(Document doc, JObject request, CurtainWallFramingSpec spec, string specHash, List<string> skipped)
         {
-            foreach (long id in spec.TypeIds())
+            // By ROLE, not by distinct id: an id given for two roles is checked as both (the parser
+            // already refuses a curtain, header or sill type equal to the placeholder).
+            var roles = new List<KeyValuePair<string, long>>
             {
+                new KeyValuePair<string, long>("curtain_type_id", spec.CurtainTypeId), new KeyValuePair<string, long>("placeholder_type_id", spec.PlaceholderTypeId)
+            };
+            if (spec.HeaderTypeId.HasValue) roles.Add(new KeyValuePair<string, long>("header_type_id", spec.HeaderTypeId.Value));
+            if (spec.SillTypeId.HasValue) roles.Add(new KeyValuePair<string, long>("sill_type_id", spec.SillTypeId.Value));
+            foreach (KeyValuePair<string, long> role in roles)
+            {
+                long id = role.Value;
                 WallType t = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) as WallType : null;
-                bool placeholder = id == spec.PlaceholderTypeId;
-                if (t == null) throw new ArgumentException("type id " + id + " in spec.wall is not a wall type of this document.");
+                bool placeholder = role.Key == "placeholder_type_id";
+                if (t == null) throw new ArgumentException("spec.wall." + role.Key + " " + id + " is not a wall type of this document.");
                 if (placeholder && t.Kind != WallKind.Basic) throw new ArgumentException("placeholder_type_id " + id + " is a " + t.Kind + " wall type; the placeholder is a Basic wall type.");
-                if (!placeholder && t.Kind != WallKind.Curtain) throw new ArgumentException("type id " + id + " is a " + t.Kind + " wall type; curtain/header/sill types are Curtain Wall types.");
+                if (!placeholder && t.Kind != WallKind.Curtain) throw new ArgumentException(role.Key + " " + id + " is a " + t.Kind + " wall type; curtain, header and sill types are Curtain Wall types.");
             }
             var plans = new List<FramingSourcePlan>();
             int total = 0;
@@ -200,6 +219,10 @@ namespace Horizun.Revit.Commands
                 if (wall.SketchId != ElementId.InvalidElementId) throw new ArgumentException(who + " has an edited profile; the curtain method trims or deletes the carrier and refuses a profile it cannot keep.");
                 FramedWall fw = ReadWall(doc, wall, new WallFramingSpec(), out string refusal);
                 if (fw == null) throw new ArgumentException(refusal);
+                List<long> embeddedWalls = fw.InsertIds.Where(i => doc.GetElement(Rid.Make(i)) is Wall).ToList();
+                if (embeddedWalls.Count > 0)
+                    throw new ArgumentException(who + " hosts embedded wall(s) " + string.Join(", ", embeddedWalls) + " (a storefront): the placeholder keeps doors, windows and openings, "
+                                                + "but nothing here can verify an embedded wall stays embedded in it. Split the wall at the embedded wall, or unembed it, first.");
                 if (fw.InsertIds.Count != fw.OpeningsMm.Count)
                     throw new ArgumentException(who + " hosts " + fw.InsertIds.Count + " insert(s) but only " + fw.OpeningsMm.Count + " have a measurable span; the carrier cannot be trimmed or deleted safely.");
                 var s = new CurtainSourceState
@@ -231,28 +254,51 @@ namespace Horizun.Revit.Commands
                 CurtainWallPlan plan = CurtainFramingRules.PlanWall(spec.ToInput(fw.LengthMm, fw.HeightMm, fw.OpeningsMm));
                 if (!string.IsNullOrEmpty(plan.Refusal)) throw new ArgumentException(who + ": " + plan.Refusal);
                 s.Plan = plan;
-                if (plan.Carrier.Action == CurtainFramingRoles.CarrierTrim)
+                if (plan.Carrier.Action != CurtainFramingRoles.CarrierDelete)
                 {
-                    // The trimmed carrier stays on its own location line (no core offset), at its own z.
-                    s.NewStart = new XYZ(fw.Origin.X, fw.Origin.Y, s.OriginalStart.Z) + fw.Dir * (plan.Carrier.X0 / 304.8);
-                    s.NewEnd = new XYZ(fw.Origin.X, fw.Origin.Y, s.OriginalStart.Z) + fw.Dir * (plan.Carrier.X1 / 304.8);
+                    // The placeholder stays centred where the carrier is centred - its doors and windows sit
+                    // on that plane: the apply sets the location line to the wall centreline BEFORE the type
+                    // change (a type change keeps the location line), then asserts this line on that plane.
+                    Parameter keyRef = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM);
+                    if (s.KeyRef != (int)WallLocationLine.WallCenterline && (keyRef == null || keyRef.IsReadOnly))
+                        throw new ArgumentException(who + ": its location line cannot be set to the wall centreline, so the placeholder could not keep its inserts where they are.");
+                    s.CentreOffsetFt = -LocationLineFromCentre(wall);
+                    XYZ centre = fw.Normal * s.CentreOffsetFt;
+                    if (plan.Carrier.Action == CurtainFramingRoles.CarrierTrim)
+                    {
+                        XYZ o = new XYZ(fw.Origin.X, fw.Origin.Y, s.OriginalStart.Z) + centre;
+                        s.NewStart = o + fw.Dir * (plan.Carrier.X0 / 304.8);
+                        s.NewEnd = o + fw.Dir * (plan.Carrier.X1 / 304.8);
+                    }
+                    else { s.NewStart = s.OriginalStart + centre; s.NewEnd = s.OriginalEnd + centre; }
+                    double apart = Math.Abs(s.CoreOffsetFt - s.CentreOffsetFt) * 304.8;
+                    if (apart > EndpointToleranceMm)
+                        p.Warnings.Add(who + ": the placeholder stays on the carrier's centre plane (its inserts sit there), " + Math.Round(apart, 1)
+                                       + " mm from the pieces' core centreline (carrier.placeholder_offset_from_pieces_mm)");
                 }
                 if (!spec.HeaderTypeId.HasValue && plan.Pieces.Any(m => m.Role == CurtainFramingRoles.Header)) p.Warnings.Add("header_type_id not given: headers use the curtain type");
                 if (!spec.SillTypeId.HasValue && plan.Pieces.Any(m => m.Role == CurtainFramingRoles.Sill)) p.Warnings.Add("sill_type_id not given: sills use the curtain type");
                 if (plan.Carrier.Action != CurtainFramingRoles.CarrierDelete)
-                    p.Warnings.Add("a curtain type with Automatically Embed on is embedded by Revit in a wall it overlaps (the placeholder under a header); read the carrier after the apply");
+                    foreach (string key in plan.Pieces.Select(m => m.TypeKey).Distinct())
+                        if ((doc.GetElement(Rid.Make(long.Parse(key, CultureInfo.InvariantCulture))) as WallType)?.get_Parameter(BuiltInParameter.ALLOW_AUTO_EMBED)?.AsInteger() == 1)
+                            p.Warnings.Add("type " + key + " has Automatically Embed on: Revit may embed a piece in the carrier it overlaps, and the apply then rolls back (pieces_not_embedded); turn it off on the type");
                 p.Warnings.AddRange(plan.Warnings);
                 p.Members = plan.Pieces;
                 p.Signature = plan.Signature();
                 total += p.Members.Count;
                 if (total > MaxCurtainPiecesTotal) throw new ArgumentException("the plan exceeds " + MaxCurtainPiecesTotal + " curtain walls; frame fewer walls per call.");
-                foreach (long insert in fw.InsertIds) p.InsertsBefore[insert] = InsertState(doc, insert);
+                foreach (long insert in fw.InsertIds) p.InsertsBefore[insert] = CurtainInsertState(doc, insert);
                 if (plan.Carrier.Action == CurtainFramingRoles.CarrierDelete)
                 {
                     // Measured last (FramingCurtainRemove.cs): the rolled-back delete may leave this
                     // wall's wrapper stale, so the source is read again afterwards.
                     s.CarrierDeleteMeasured.AddRange(MeasureCarrierCascade(doc, wall));
                     p.Source = doc.GetElement(Rid.Make(sid)) ?? p.Source;
+                    s.DeletedWithCarrier = new JObject
+                    {
+                        ["ids"] = new JArray(s.CarrierDeleteMeasured),
+                        ["by_category"] = JObject.FromObject(s.CarrierDeleteMeasured.GroupBy(id => CategoryLabel(doc, id)).ToDictionary(g => g.Key, g => g.Count())),
+                    };
                     if (s.CarrierDeleteMeasured.Count > 0)
                         p.Warnings.Add("deleting the carrier also deletes " + s.CarrierDeleteMeasured.Count + " element(s) Revit hosts on or ties to it (carrier.deleted_with_it); the token binds them");
                 }
@@ -279,6 +325,28 @@ namespace Horizun.Revit.Commands
             return (coreExt + coreInt) / 2 - loc;
         }
 
+        /// <summary>The location line's distance from the wall's centre plane along Wall.Orientation (feet); ReadWall's arithmetic (no core: the whole wall).</summary>
+        private static double LocationLineFromCentre(Wall wall)
+        {
+            CompoundStructure cs = wall.WallType?.GetCompoundStructure();
+            IList<CompoundStructureLayer> layers = cs?.GetLayers();
+            double total = cs?.GetWidth() ?? 0;
+            int first = cs?.GetFirstCoreLayerIndex() ?? -1, last = cs?.GetLastCoreLayerIndex() ?? -1;
+            bool core = layers != null && first >= 0 && last >= first && last < layers.Count;
+            Func<int, double> faceAfter = k => total / 2 - layers.Take(k).Sum(l => l.Width);
+            double coreExt = core ? faceAfter(first) : total / 2, coreInt = core ? faceAfter(last + 1) : -total / 2;
+            int key = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)?.AsInteger() ?? 0;
+            return key == 1 ? (coreExt + coreInt) / 2 : key == 2 ? total / 2 : key == 3 ? -total / 2 : key == 4 ? coreExt : key == 5 ? coreInt : 0;
+        }
+
+        /// <summary>An insert's type, position AND host, as the curtain method snapshots it and re-reads it.</summary>
+        private static string CurtainInsertState(Document doc, long id)
+        {
+            Element e = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+            long host = e is FamilyInstance fi && fi.Host != null ? Rid.Value(fi.Host.Id) : e is Opening o && o.Host != null ? Rid.Value(o.Host.Id) : -1;
+            return InsertState(doc, id) + "|host " + host.ToString(CultureInfo.InvariantCulture);
+        }
+
         /// <summary>
         /// Earlier curtain framing of this carrier: the same spec re-verifies from the record its
         /// pieces carry (already_applied); another spec, or pieces missing, refuses - remove first.
@@ -302,8 +370,10 @@ namespace Horizun.Revit.Commands
                 Members = s.Plan.Pieces, Signature = signature, AlreadyApplied = true
             };
             foreach (KeyValuePair<Element, FramingMark> x in members) p.MemberIds[x.Value.Index] = Rid.Value(x.Key.Id);
+            // Snapshot NOW: a re-apply writes nothing, and an edit made to a door since the first apply is
+            // the user's, not a disagreement with this plan (the record keeps the state before the first apply).
             if (record["inserts"] is JObject inserts)
-                foreach (JProperty kv in inserts.Properties()) p.InsertsBefore[long.Parse(kv.Name, CultureInfo.InvariantCulture)] = (string)kv.Value;
+                foreach (JProperty kv in inserts.Properties()) { long id = long.Parse(kv.Name, CultureInfo.InvariantCulture); p.InsertsBefore[id] = CurtainInsertState(doc, id); }
             return p;
         }
 
@@ -350,17 +420,22 @@ namespace Horizun.Revit.Commands
                     (id >= firstCreated ? s.CarrierDeleteCreated : s.CarrierDeleteCascade).Add(id);
                 return;
             }
+            // Location line to the wall centreline FIRST: a type change keeps the location line, so the
+            // placeholder then narrows about the carrier's centre plane, where its doors and windows sit.
+            // Then the planned line (on that plane) is asserted: whether setting the reference moved the
+            // curve or the wall, the pair ends as planned (WallSplitExecutor's rule).
+            Parameter keyRef = carrier.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM);
+            if (keyRef != null && keyRef.AsInteger() != (int)WallLocationLine.WallCenterline) keyRef.Set((int)WallLocationLine.WallCenterline);
             carrier.ChangeTypeId(Rid.Make(long.Parse(s.Plan.Carrier.TypeKey, CultureInfo.InvariantCulture)));
-            if (action == CurtainFramingRoles.CarrierTrim)
-                ((LocationCurve)carrier.Location).Curve = Line.CreateBound(s.NewStart, s.NewEnd);
+            ((LocationCurve)carrier.Location).Curve = Line.CreateBound(s.NewStart, s.NewEnd);
         }
 
         // ---- verifying ------------------------------------------------------------------
 
         private static PostconditionCheck VerifyCurtainWalls(Document doc, List<FramingSourcePlan> plans, JObject evidence)
         {
-            var check = new PostconditionCheck("curtain_wall_count", "curtain_types", "curtain_location", "curtain_base_top", "grid_spacing", "mullion_types", "carrier", "inserts_untouched", "carrier_cascade_as_measured");
-            int planned = 0, found = 0, wrongType = 0, gridProblems = 0, mullionProblems = 0, carrierProblems = 0, insertsChanged = 0, cascadeDiffers = 0;
+            var check = new PostconditionCheck("curtain_wall_count", "curtain_types", "curtain_location", "curtain_base_top", "grid_spacing", "mullion_types", "carrier", "inserts_untouched", "carrier_cascade_as_measured", "pieces_not_embedded");
+            int planned = 0, found = 0, wrongType = 0, gridProblems = 0, mullionProblems = 0, carrierProblems = 0, insertsChanged = 0, cascadeDiffers = 0, embeddedWalls = 0;
             double maxLoc = 0, maxBaseTop = 0;
             var rows = new JArray();
             foreach (FramingSourcePlan p in plans)
@@ -432,12 +507,18 @@ namespace Horizun.Revit.Commands
                     carrierRow["type_ok"] = typeOk;
                     carrierRow["curve_deviation_mm"] = Math.Round(dev, 3);
                     if (!typeOk || dev > EndpointToleranceMm) carrierProblems++;
-                    foreach (KeyValuePair<long, string> kv in p.InsertsBefore)
-                    {
-                        Element ins = Rid.CanRepresent(kv.Key) ? doc.GetElement(Rid.Make(kv.Key)) : null;
-                        long host = ins is FamilyInstance fi && fi.Host != null ? Rid.Value(fi.Host.Id) : ins is Opening o && o.Host != null ? Rid.Value(o.Host.Id) : -1;
-                        if (InsertState(doc, kv.Key) != kv.Value || host != s.CarrierId) changed++;
-                    }
+                    // Each insert against its snapshot - type, position and host: taken before this apply, or
+                    // at this call for a re-apply (CurtainFromRecord).
+                    changed = p.InsertsBefore.Count(kv => CurtainInsertState(doc, kv.Key) != kv.Value);
+                    int keyNow = carrier.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)?.AsInteger() ?? -1;
+                    carrierRow["location_line"] = keyNow;
+                    if (keyNow != (int)WallLocationLine.WallCenterline) carrierProblems++;
+                    carrierRow["placeholder_offset_from_pieces_mm"] = Math.Round((s.CoreOffsetFt - s.CentreOffsetFt) * 304.8, 1);
+                    // Automatically Embed cuts a piece into the wall it overlaps; the carrier was to stay whole
+                    // (the plan refuses a carrier that had an embedded wall, so every one found here is new).
+                    List<long> embedded = carrier.FindInserts(false, false, true, false).Where(id => doc.GetElement(id) is Wall).Select(Rid.Value).OrderBy(id => id).ToList();
+                    carrierRow["embedded_walls"] = new JArray(embedded);
+                    embeddedWalls += embedded.Count;
                 }
                 insertsChanged += changed;
                 carrierRow["inserts_checked"] = p.InsertsBefore.Count;
@@ -457,6 +538,7 @@ namespace Horizun.Revit.Commands
             check.Compare("carrier", 0, carrierProblems);
             check.Compare("inserts_untouched", 0, insertsChanged);
             check.Compare("carrier_cascade_as_measured", 0, cascadeDiffers);
+            check.Compare("pieces_not_embedded", 0, embeddedWalls);
             evidence["sources"] = rows;
             return check;
         }
@@ -593,6 +675,8 @@ namespace Horizun.Revit.Commands
                         ["type_id"] = s.Plan.Carrier.TypeKey == null ? null : (JToken)long.Parse(s.Plan.Carrier.TypeKey, CultureInfo.InvariantCulture),
                         ["span"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? null : new JArray(Math.Round(s.Plan.Carrier.X0, 1), Math.Round(s.Plan.Carrier.X1, 1)),
                         ["opening_id"] = s.Plan.Carrier.OpeningId,
+                        ["location_line"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? null : "wall_centreline: set before the type change, so the placeholder stays centred where the carrier was",
+                        ["placeholder_offset_from_pieces_mm"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? null : (JToken)Math.Round((s.CoreOffsetFt - s.CentreOffsetFt) * 304.8, 1),
                         ["replaced_by"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? "every curtain_segment piece" : null,
                         ["overlap"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierKeep ? CurtainFramingRules.OverlapNote() : null,
                         ["deleted_with_it"] = s.Plan.Carrier.Action != CurtainFramingRoles.CarrierDelete || p.AlreadyApplied ? null : new JObject

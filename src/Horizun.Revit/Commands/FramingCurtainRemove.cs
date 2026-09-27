@@ -17,8 +17,10 @@
 // NOT overwritten: its restore is refused by name and only its pieces go.
 // The token binds every restore (carrier, action, original type, original line to
 // 0.1 mm) and the committed model is re-read: type, line within 1 mm, base and top,
-// location-line reference, flip, structural flag, and the carrier's inserts back where
-// they were before the apply, still hosted by it.
+// location-line reference, flip, structural flag, and the carrier's inserts as they were when
+// the remove was planned (an edit made to a door since the apply is the user's), still hosted
+// by it. What a deleted carrier took with it does not come back: the record names it, and so do
+// the plan and the evidence (deleted_with_carrier_not_restored).
 //
 // CASCADE. Deleting a carrier takes whatever Revit hosts on it or ties to it (tags,
 // dimensions, face-hosted families, sweeps). The plan measures that set in a
@@ -52,7 +54,7 @@ namespace Horizun.Revit.Commands
         public string Refusal;
         /// <summary>The recreated carrier's id (a deleted carrier comes back under a new id).</summary>
         public long RecreatedId = -1;
-        /// <summary>Insert id -> "type|x,y,z" before the apply (from the record).</summary>
+        /// <summary>Insert id -> "type|x,y,z|host" when the remove is planned (CurtainInsertState).</summary>
         public readonly Dictionary<long, string> Inserts = new Dictionary<long, string>();
 
         public bool Recreates => Action == CurtainFramingRoles.CarrierDelete;
@@ -90,8 +92,14 @@ namespace Horizun.Revit.Commands
                 if (record == null) continue;   // the member method: its source was never changed
                 CurtainSourceState s = CurtainSourceState.FromRecord(record);
                 var restore = new CurtainRestore { CarrierId = g.Key, State = s, Action = s.Plan.Carrier.Action };
+                // Snapshot NOW (type, position, host): the remove must leave them as they are, and an edit
+                // made to a door since the apply is the user's, not a reason to fail the restore.
+                var insertIds = new HashSet<long>();
                 if (record["inserts"] is JObject inserts)
-                    foreach (JProperty kv in inserts.Properties()) restore.Inserts[long.Parse(kv.Name, CultureInfo.InvariantCulture)] = (string)kv.Value;
+                    foreach (JProperty kv in inserts.Properties()) insertIds.Add(long.Parse(kv.Name, CultureInfo.InvariantCulture));
+                if (RestoreLookup(doc, g.Key) is Wall carrierNow)
+                    foreach (ElementId id in carrierNow.FindInserts(true, false, false, false)) insertIds.Add(Rid.Value(id));
+                foreach (long id in insertIds.OrderBy(i => i)) restore.Inserts[id] = CurtainInsertState(doc, id);
                 restore.Refusal = RestoreRefusal(doc, restore);
                 restores.Add(restore);
             }
@@ -139,6 +147,7 @@ namespace Horizun.Revit.Commands
                 ["inserts"] = r.Inserts.Count,
                 ["not_in_record"] = r.Recreates && r.Refusal == null
                     ? "mark, comments, phase, workset and other instance parameters of the deleted carrier are not restored" : null,
+                ["deleted_with_carrier_not_restored"] = r.Recreates && r.Refusal == null ? (r.State.DeletedWithCarrier?.DeepClone() ?? new JObject { ["ids"] = new JArray() }) : null,
             }));
         }
 
@@ -156,8 +165,16 @@ namespace Horizun.Revit.Commands
                 if (!r.Recreates)
                 {
                     Wall w = (Wall)doc.GetElement(Rid.Make(r.CarrierId));
+                    // The apply left it on its centre plane with the wall centreline as its location line: the
+                    // original type widens back about that plane, the full span returns on it, then the
+                    // recorded reference and line are restored - whichever of the two Revit moves when the
+                    // reference is set, the pair ends as recorded.
                     w.ChangeTypeId(typeId);
-                    if (r.Action == CurtainFramingRoles.CarrierTrim) ((LocationCurve)w.Location).Curve = original;
+                    XYZ centre = s.Normal * s.CentreOffsetFt;
+                    ((LocationCurve)w.Location).Curve = Line.CreateBound(s.OriginalStart + centre, s.OriginalEnd + centre);
+                    Parameter refParam = w.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM);
+                    if (refParam != null && !refParam.IsReadOnly && refParam.AsInteger() != s.KeyRef) refParam.Set(s.KeyRef);
+                    ((LocationCurve)w.Location).Curve = original;
                     continue;
                 }
                 Wall made;
@@ -230,17 +247,15 @@ namespace Horizun.Revit.Commands
                     bool structural = (w.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT)?.AsInteger() ?? 0) == 1;
                     if (structural != s.Structural) bad.Add("structural");
                     row["not_in_record"] = "mark, comments, phase, workset and other instance parameters";
+                    row["deleted_with_carrier_not_restored"] = s.DeletedWithCarrier?.DeepClone() ?? new JObject { ["ids"] = new JArray() };
                 }
                 else
                 {
-                    int changed = 0;
-                    foreach (KeyValuePair<long, string> kv in r.Inserts)
-                    {
-                        Element ins = RestoreLookup(doc, kv.Key);
-                        long host = ins is FamilyInstance fi && fi.Host != null ? Rid.Value(fi.Host.Id) : ins is Opening o && o.Host != null ? Rid.Value(o.Host.Id) : -1;
-                        if (InsertState(doc, kv.Key) != kv.Value || host != r.CarrierId) changed++;
-                    }
+                    // Against the snapshot taken when the remove was planned: type, position and host.
+                    int changed = r.Inserts.Count(kv => CurtainInsertState(doc, kv.Key) != kv.Value);
                     insertsChanged += changed;
+                    int keyRefNow = w.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)?.AsInteger() ?? -1;
+                    if (keyRefNow != s.KeyRef) bad.Add("location line reference " + keyRefNow + " (recorded " + s.KeyRef + ")");
                     row["inserts_checked"] = r.Inserts.Count;
                     row["inserts_changed"] = changed;
                 }
@@ -290,6 +305,34 @@ namespace Horizun.Revit.Commands
             return parts.Count == 0 ? "" : "|carrier_cascade:" + string.Join(";", parts);
         }
 
+        private static bool DeletesCarrier(FramingSourcePlan p) => p.Curtain != null && !p.AlreadyApplied && p.Curtain.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete;
+
+        /// <summary>The resolved plan's action for a framing source: a curtain carrier the apply deletes is a Delete, not a Modify.</summary>
+        private static PlannedAction CurtainSourceAction(FramingSourcePlan p) => DeletesCarrier(p) ? PlannedAction.Delete : PlannedAction.Modify;
+
+        /// <summary>Delete rows for what the carrier's delete takes along (as measured and bound), so plan_resolved counts them.</summary>
+        private static IEnumerable<PlannedElement> CurtainCascadeRows(Document doc, FramingSourcePlan p, JObject request)
+        {
+            if (!DeletesCarrier(p)) yield break;
+            foreach (long id in p.Curtain.CarrierDeleteMeasured)
+                if (RestoreLookup(doc, id) is Element e) yield return ModelEditRunner.Planned(e, PlannedAction.Delete, request);
+        }
+
+        /// <summary>The restores' resolved-plan rows: a kept or trimmed carrier is modified, a deleted one is created again.</summary>
+        private static IEnumerable<PlannedElement> CurtainRestoreRows(Document doc, List<CurtainRestore> restores, JObject request)
+        {
+            foreach (CurtainRestore r in restores.Where(x => x.Refusal == null))
+            {
+                if (!r.Recreates) { yield return ModelEditRunner.Planned(doc.GetElement(Rid.Make(r.CarrierId)), PlannedAction.Modify, request); continue; }
+                yield return new PlannedElement
+                {
+                    UniqueId = "recreate_carrier:" + r.CarrierId.ToString(CultureInfo.InvariantCulture), Category = "OST_Walls",
+                    TypeName = r.State.OriginalTypeId.ToString(CultureInfo.InvariantCulture), Action = PlannedAction.Create,
+                    BeforeValues = new Dictionary<string, string>(), ProposedValues = new Dictionary<string, string> { ["restore"] = r.Key() },
+                };
+            }
+        }
+
         // ---- read -------------------------------------------------------------------------
 
         /// <summary>A curtain-method source's carrier record for operation=read, or null for the member method.</summary>
@@ -309,7 +352,7 @@ namespace Horizun.Revit.Commands
                 ["carrier_type_id"] = carrier == null ? null : (JToken)Rid.Value(carrier.GetTypeId()),
                 ["original_type_id"] = s.OriginalTypeId,
                 ["original_line_mm"] = new JArray(mm(s.OriginalStart), mm(s.OriginalEnd)),
-                ["trimmed_line_mm"] = s.NewStart == null ? null : new JArray(mm(s.NewStart), mm(s.NewEnd)),
+                ["line_after_apply_mm"] = s.NewStart == null ? null : new JArray(mm(s.NewStart), mm(s.NewEnd)),
                 ["inserts_recorded"] = (record["inserts"] as JObject)?.Count ?? 0,
                 ["remove_restores"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete
                     ? "recreates the carrier from this record (a new element id)"

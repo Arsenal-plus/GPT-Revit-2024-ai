@@ -148,9 +148,10 @@ namespace Horizun.Revit.Commands
             };
             foreach (FramingSourcePlan p in plans)
             {
-                PlannedElement pe = ModelEditRunner.Planned(p.Source, PlannedAction.Modify, request);
+                PlannedElement pe = ModelEditRunner.Planned(p.Source, CurtainSourceAction(p), request);
                 pe.ProposedValues["plan_signature"] = p.Signature;
                 resolved.Elements.Add(pe);
+                foreach (PlannedElement dependent in CurtainCascadeRows(doc, p, request)) resolved.Elements.Add(dependent);
             }
             if (toRemove != null)
                 foreach (KeyValuePair<Element, FramingMark> p in toRemove)
@@ -162,8 +163,7 @@ namespace Horizun.Revit.Commands
                     if (dependent != null) resolved.Elements.Add(ModelEditRunner.Planned(dependent, PlannedAction.Delete, request));
                 }
             if (restores != null)
-                foreach (CurtainRestore r in restores.Where(x => x.Refusal == null && !x.Recreates))
-                    resolved.Elements.Add(ModelEditRunner.Planned(doc.GetElement(Rid.Make(r.CarrierId)), PlannedAction.Modify, request));
+                foreach (PlannedElement row in CurtainRestoreRows(doc, restores, request)) resolved.Elements.Add(row);
             string hash = DocumentGate.PlanHash(request, HashScope) + "|" + FramingPlanSignature.Of(new[] { new FramingMember { Role = op, TypeKey = signature } });
 
             JObject summary = op == "remove" ? RemoveSummary(doc, toRemove, cascade, foreignCopies) : op == "ceiling" ? (ceilingSpec.Curtain != null ? CurtainCeilingSummary(plans) : CeilingSummary(plans)) : wallSpec.Curtain != null ? CurtainWallSummary(doc, plans) : WallSummary(plans);

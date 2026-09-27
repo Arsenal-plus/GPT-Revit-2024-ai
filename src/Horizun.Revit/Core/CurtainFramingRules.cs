@@ -253,11 +253,17 @@ namespace Horizun.Revit.Core
                 if (o.Sill > EdgeTolerance) AddPiece(plan, CurtainFramingRoles.Sill, input.SillTypeKey, o.Start, o.End, 0, o.Sill, i, min);
             }
 
-            if (openings.Count == 0)
+            // Whatever the carrier action, a plan with no piece is refused: nothing would replace the
+            // carrier, and no piece would carry the record operation=remove restores it from.
+            if (plan.Pieces.Count == 0)
             {
-                if (plan.Pieces.Count == 0) { plan.Refusal = "the wall is shorter or lower than min_segment_mm: deleting it would leave nothing in its place"; return plan; }
-                plan.Carrier = new CurtainCarrierAction { Action = CurtainFramingRoles.CarrierDelete };
+                plan.Refusal = openings.Count == 0
+                    ? "the wall is shorter or lower than min_segment_mm: deleting it would leave nothing in its place"
+                    : "every curtain piece of this wall is empty or below min_segment_mm: nothing would replace the carrier, and no piece would carry the record operation=remove restores it from";
+                return plan;
             }
+            if (openings.Count == 0)
+                plan.Carrier = new CurtainCarrierAction { Action = CurtainFramingRoles.CarrierDelete };
             else if (openings.Count == 1)
                 plan.Carrier = new CurtainCarrierAction
                 {
@@ -362,6 +368,10 @@ namespace Horizun.Revit.Core
             };
             if (c.PlaceholderTypeId != 0 && c.PlaceholderTypeId == c.CurtainTypeId)
                 r.Fail("spec.wall.placeholder_type_id", "conflict", "the placeholder is a thin Basic wall type, not the curtain type");
+            if (c.PlaceholderTypeId != 0 && c.HeaderTypeId == c.PlaceholderTypeId)
+                r.Fail("spec.wall.header_type_id", "conflict", "the header is a Curtain Wall type, not the placeholder");
+            if (c.PlaceholderTypeId != 0 && c.SillTypeId == c.PlaceholderTypeId)
+                r.Fail("spec.wall.sill_type_id", "conflict", "the sill is a Curtain Wall type, not the placeholder");
             return r.Errors.Count == 0 ? new WallFramingSpec { Curtain = c } : null;
         }
 

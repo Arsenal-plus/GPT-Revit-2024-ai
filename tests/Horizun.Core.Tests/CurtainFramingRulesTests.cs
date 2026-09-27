@@ -117,17 +117,18 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void Short_pieces_are_named_not_built_and_a_flush_opening_leaves_no_zero_piece()
+        public void Short_pieces_are_named_not_built_a_flush_opening_leaves_no_zero_piece_and_a_wall_left_with_none_is_refused()
         {
             // Door flush with the start (no left piece at all), 30 mm of wall after it (below 50 mm),
-            // head 20 mm under the top (a 20 mm header, below 50 mm).
+            // head 20 mm under the top (a 20 mm header, below 50 mm). Nothing is left to build, so the
+            // carrier must not be trimmed: no piece would carry the record remove restores it from.
             CurtainWallPlan plan = CurtainFramingRules.PlanWall(Wall(1000, 2700, Door("D1", 0, 970, 2680)));
-            Assert.Null(plan.Refusal);
+            Assert.Contains("nothing would replace the carrier", plan.Refusal);
             Assert.Empty(plan.Pieces);
             Assert.Equal(2, plan.Skipped.Count);
             Assert.Contains(plan.Skipped, s => s.StartsWith("curtain_segment from x=970"));
             Assert.Contains(plan.Skipped, s => s.StartsWith("curtain_header"));
-            Assert.Equal(CurtainFramingRoles.CarrierTrim, plan.Carrier.Action);
+            Assert.Null(plan.Carrier);
         }
 
         [Fact]
@@ -227,6 +228,31 @@ namespace Horizun.Core.Tests
             string sig = CurtainCeilingPlan.Signature(spec.Curtain, plan.HangerLines);
             spec.Curtain.Layers[1].OffsetMm = 25;
             Assert.NotEqual(sig, CurtainCeilingPlan.Signature(spec.Curtain, plan.HangerLines));
+        }
+
+        [Fact]
+        public void A_plan_with_openings_but_no_piece_is_refused_so_the_carrier_never_changes_unrecorded()
+        {
+            // One door across the whole wall, its head 20 mm under the top: no segment, no header, no sill.
+            var input = new CurtainWallInput
+            {
+                Length = 900, Height = 2700, CurtainTypeKey = "3001", HeaderTypeKey = "3001", SillTypeKey = "3001", PlaceholderTypeKey = "3002", MinSegment = 50,
+                Openings = new System.Collections.Generic.List<WallOpeningSpan> { new WallOpeningSpan { Id = "d1", Start = 0, End = 900, Sill = 0, Head = 2680 } },
+            };
+            CurtainWallPlan plan = CurtainFramingRules.PlanWall(input);
+            Assert.Contains("nothing would replace the carrier", plan.Refusal);
+            Assert.Empty(plan.Pieces);
+            Assert.Null(plan.Carrier);
+        }
+
+        [Fact]
+        public void A_header_or_sill_type_shared_with_the_placeholder_is_a_conflict()
+        {
+            Assert.Null(FramingSpecRules.ParseWall(JObject.Parse(@"{ ""wall"": { ""method"": ""curtain"", ""curtain_type_id"": 5, ""placeholder_type_id"": 7, ""header_type_id"": 7 } }"), out var errors));
+            Assert.Contains(errors, e => e.Code == "conflict" && e.Path == "spec.wall.header_type_id");
+            Assert.Null(FramingSpecRules.ParseWall(JObject.Parse(@"{ ""wall"": { ""method"": ""curtain"", ""curtain_type_id"": 5, ""placeholder_type_id"": 7, ""sill_type_id"": 7 } }"), out errors));
+            Assert.Contains(errors, e => e.Code == "conflict" && e.Path == "spec.wall.sill_type_id");
+            Assert.NotNull(FramingSpecRules.ParseWall(JObject.Parse(@"{ ""wall"": { ""method"": ""curtain"", ""curtain_type_id"": 5, ""placeholder_type_id"": 7, ""header_type_id"": 5, ""sill_type_id"": 5 } }"), out errors));
         }
 
         [Fact]
