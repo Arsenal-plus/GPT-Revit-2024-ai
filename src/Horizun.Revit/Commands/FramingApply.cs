@@ -63,6 +63,8 @@ namespace Horizun.Revit.Commands
         /// <summary>Type key -> symbol, and role|type key -> how it places (shared across the call's sources).</summary>
         public Dictionary<string, FamilySymbol> Symbols;
         public Dictionary<string, FramingPlacementKind> Kinds;
+        /// <summary>The curtain method's plan (FramingCurtain.cs); null for the member method.</summary>
+        public CurtainSourceState Curtain;
     }
 
     public sealed partial class FramingCommand
@@ -122,7 +124,9 @@ namespace Horizun.Revit.Commands
                 }
                 else
                 {
-                    plans = op == "ceiling" ? PlanCeilings(doc, request, ceilingSpec, specHash, skipped) : PlanWalls(doc, request, wallSpec, specHash, skipped);
+                    plans = op == "ceiling" ? PlanCeilings(doc, request, ceilingSpec, specHash, skipped)
+                          : wallSpec.Curtain != null ? PlanCurtainWalls(doc, request, wallSpec.Curtain, specHash, skipped)
+                          : PlanWalls(doc, request, wallSpec, specHash, skipped);
                     signature = string.Join(",", plans.Select(p => Rid.Value(p.Source.Id).ToString(CultureInfo.InvariantCulture) + ":" + p.Signature));
                 }
             }
@@ -154,7 +158,7 @@ namespace Horizun.Revit.Commands
                 }
             string hash = DocumentGate.PlanHash(request, HashScope) + "|" + FramingPlanSignature.Of(new[] { new FramingMember { Role = op, TypeKey = signature } });
 
-            JObject summary = op == "remove" ? RemoveSummary(doc, toRemove, cascade, foreignCopies) : op == "ceiling" ? CeilingSummary(plans) : WallSummary(plans);
+            JObject summary = op == "remove" ? RemoveSummary(doc, toRemove, cascade, foreignCopies) : op == "ceiling" ? CeilingSummary(plans) : wallSpec.Curtain != null ? CurtainWallSummary(plans) : WallSummary(plans);
             if (skipped.Count > 0) summary["skipped"] = new JArray(skipped.ToArray());
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             if (dryRun)
@@ -183,6 +187,7 @@ namespace Horizun.Revit.Commands
             Func<Document, PostconditionCheck> verify = op == "remove"
                 ? (Func<Document, PostconditionCheck>)(d => VerifyRemoved(d, removedIds, SourceIds(request), cascade, cascadedNow, foreignCopies.Count, evidence))
                 : op == "ceiling" ? (Func<Document, PostconditionCheck>)(d => VerifyCeilings(d, plans, evidence))
+                : wallSpec.Curtain != null ? (Func<Document, PostconditionCheck>)(d => VerifyCurtainWalls(d, plans, evidence))
                 : d => VerifyWalls(d, plans, evidence);
             PostconditionCheck check;
             using (var group = new TransactionGroup(doc, txName))
@@ -207,7 +212,7 @@ namespace Horizun.Revit.Commands
                             }
                             else if (op != "remove") foreach (FramingSourcePlan p in plans.Where(x => !x.AlreadyApplied)) PlaceSource(doc, p);
                             doc.Regenerate();
-                            if (op == "wall" && UnjoinFromSources(doc, plans, evidence) > 0) doc.Regenerate();
+                            if (op == "wall" && wallSpec.Curtain == null && UnjoinFromSources(doc, plans, evidence) > 0) doc.Regenerate();
                             Guard.Commit(tx, txName);
                         }
                         catch { said = recorder.Said(); throw; }
@@ -407,6 +412,7 @@ namespace Horizun.Revit.Commands
 
         private static void PlaceSource(Document doc, FramingSourcePlan p)
         {
+            if (p.Curtain != null) { PlaceCurtainSource(doc, p); return; }
             string sourceUid = p.Source.UniqueId;
             long sid = Rid.Value(p.Source.Id);
             Level level = p.Wall?.Level ?? p.Ceiling?.Level;
