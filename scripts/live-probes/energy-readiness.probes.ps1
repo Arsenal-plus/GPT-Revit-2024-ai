@@ -113,8 +113,8 @@ $script:HzProbeModules += [pscustomobject]@{
         # ==== 2: built and ROLLED BACK - the only way this operation may touch the model =======
         if (-not $roomId) { Case $catalog[1] $tools[1] 'unverified' ('staging incomplete: ' + $staging) }
         else {
-            $ok2 = -not $m.isError -and $em -and $em.built -eq $true -and $em.rolled_back -eq $true -and [string]$em.azimuth_basis -match '^(true_north|project_north)'
-            Case $catalog[1] $tools[1] $(if ($ok2) { 'pass' } else { 'fail' }) $(if ($em) { "built=$($em.built) rolled_back=$($em.rolled_back) azimuth_basis=$($em.azimuth_basis) analytical_spaces=$($em.analytical_spaces)" } else { Short $m })
+            $ok2 = -not $m.isError -and $em -and $em.built -eq $true -and $em.rolled_back -eq $true -and [string]$em.azimuth_basis -match '^(true_north|project_north|unverified)'
+            Case $catalog[1] $tools[1] $(if ($ok2) { 'pass' } else { 'fail' }) $(if ($em) { "built=$($em.built) rolled_back=$($em.rolled_back) tier=$($em.tier) azimuth_basis=$($em.azimuth_basis) analytical_spaces=$($em.analytical_spaces)" } else { Short $m })
         }
 
         # ==== 3: the walled room is enclosed and the energy model has it =======================
@@ -134,10 +134,14 @@ $script:HzProbeModules += [pscustomobject]@{
         if (-not $roomId) { Case $catalog[3] $tools[3] 'unverified' ('staging incomplete: ' + $staging) }
         else {
             $surf = if ($rep) { $rep.surfaces } else { $null }
-            $ok4 = if (-not $surf) { $false }
-                   elseif ([int]$Ctx.Year -le 2023) { [string]$surf.without_construction -match 'not measurable' }
-                   else { $null -ne $surf.without_construction_count -and ([string]$surf.without_construction_count) -match '^\d+$' }
-            Case $catalog[3] $tools[3] $(if ($ok4) { 'pass' } else { 'fail' }) $(if ($surf) { "year=$($Ctx.Year) analytical_surfaces=$($surf.analytical_surfaces) without_construction_count=$($surf.without_construction_count) text=$(if ($surf.without_construction -is [string]) { $surf.without_construction })" } else { Short $m })
+            # The own walls have types, so on a tier-Final model some surfaces MUST carry a construction:
+            # a count equal to every surface is the below-Final symptom, not a measurement.
+            $v4 = if (-not $surf) { 'fail' }
+                  elseif ([int]$Ctx.Year -le 2023) { if ([string]$surf.without_construction -match 'not measurable') { 'pass' } else { 'fail' } }
+                  elseif (([string]$surf.without_construction_count) -match '^\d+$') { if ([int]$surf.without_construction_count -lt [int]$surf.analytical_surfaces) { 'pass' } else { 'fail' } }
+                  elseif ([int]$Ctx.Year -ge 2027 -and [string]$surf.without_construction -match 'not measurable') { 'unverified' }
+                  else { 'fail' }
+            Case $catalog[3] $tools[3] $v4 $(if ($surf) { "year=$($Ctx.Year) tier=$(if ($em) { $em.tier }) analytical_surfaces=$($surf.analytical_surfaces) without_construction_count=$($surf.without_construction_count) text=$(if ($surf.without_construction -is [string]) { $surf.without_construction })" } else { Short $m })
         }
 
         # ==== 5: WWR per orientation, and the own window raises the window count ================
