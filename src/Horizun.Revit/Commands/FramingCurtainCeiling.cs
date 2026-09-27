@@ -78,6 +78,11 @@ namespace Horizun.Revit.Commands
             }
             if (spec.HangerTypeId.HasValue && !(RestoreLookup(doc, spec.HangerTypeId.Value) is WallType ht && ht.Kind == WallKind.Curtain))
                 throw new ArgumentException("spec.ceiling.hanger.type_id " + spec.HangerTypeId.Value + " is not a Curtain Wall type of this document.");
+            // The hangers follow layer 0's grid 1 LINES, so layer 0 must have a grid 1.
+            if (spec.HangerTypeId.HasValue && spec.Layers.Count > 0 && RestoreLookup(doc, spec.Layers[0].TypeId) is RoofType first0 &&
+                (first0.get_Parameter(BuiltInParameter.SPACING_LAYOUT_1)?.AsInteger() ?? 0) == 0)
+                throw new ArgumentException("spec.ceiling.layers[0].type_id " + spec.Layers[0].TypeId + " has no grid 1 (its layout is None), and the hanger lines " +
+                                            "follow layer 0's grid 1 lines: put the layer whose members sit on grid 1 first, or leave the hangers out.");
 
             bool viewScope = request["view_id"] != null && SourceIds(request) == null;
             var plans = new List<FramingSourcePlan>();
@@ -98,8 +103,14 @@ namespace Horizun.Revit.Commands
                     foreach (Curve c in arr) loop.Add(c);
                     if (loop.Count > 0) st.SketchLoops.Add(loop);
                 }
+                // MEASURED 2026-09-27 (Revit 2026, flat sloped glazing roofs): grid 1 is the V lines and
+                // they run at CURTAINGRID_ANGLE_1 + 90 deg in project coordinates - the angle names the
+                // direction the lines are SPACED along - while grid 2 (the U lines) runs AT
+                // CURTAINGRID_ANGLE_2; neither follows the footprint's edges. The hangers run along
+                // layer 0's grid 1 LINES, under its members.
                 double angleRad = (spec.Layers[0].AngleDeg ?? 0) * Math.PI / 180;
-                CurtainCeilingPlan plan = CurtainFramingRules.PlanCeiling(fc.LoopsMm, spec, angleRad, MaxMembersPerSource);
+                double lineRad = angleRad + Math.PI / 2;
+                CurtainCeilingPlan plan = CurtainFramingRules.PlanCeiling(fc.LoopsMm, spec, lineRad, MaxMembersPerSource);
                 if (!string.IsNullOrEmpty(plan.Refusal)) throw new ArgumentException("ceiling " + sid + ": " + plan.Refusal);
                 var p = new FramingSourcePlan { Source = ceiling, Operation = "ceiling", Ceiling = fc, SpecHash = specHash, CurtainCeiling = st };
                 p.Warnings.AddRange(plan.Warnings);
@@ -113,7 +124,7 @@ namespace Horizun.Revit.Commands
                     p.Members.Add(new FramingMember { Role = CurtainFramingRoles.Layer, TypeKey = WallFramingSpec.Key(l.TypeId), Source = i, X0 = l.AngleDeg ?? 0, Y0 = l.AngleDeg.HasValue ? 1 : 0, Z0 = z, Z1 = z });
                 }
                 st.HangerBaseMm = Math.Round(fc.TopMm + spec.TopOffsetMm, 1);
-                st.HangerAngleRad = angleRad;
+                st.HangerAngleRad = lineRad;
                 foreach (double[] s in plan.HangerLines)
                     p.Members.Add(new FramingMember { Role = CurtainFramingRoles.Hanger, TypeKey = WallFramingSpec.Key(spec.HangerTypeId.Value), X0 = s[0], Y0 = s[1], X1 = s[2], Y1 = s[3], Z0 = st.HangerBaseMm, Z1 = st.HangerBaseMm });
                 plans.Add(p);
@@ -264,7 +275,10 @@ namespace Horizun.Revit.Commands
                 foreach (Curve c in loop)
                     footprint.Append(c.CreateTransformed(Transform.CreateTranslation(new XYZ(0, 0, level.ProjectElevation - c.GetEndPoint(0).Z))));
             FootPrintRoof roof;
-            ModelCurveArray edges;
+            // Created BEFORE the call although the parameter is `out`: MEASURED 2026-09-27 in Revit 2026,
+            // NewFootPrintRoof reads the array it is handed and throws "Value cannot be null." on a null
+            // one - for any roof type, with any view active. create_elements' roof kind always did this.
+            ModelCurveArray edges = new ModelCurveArray();
             try { roof = doc.Create.NewFootPrintRoof(footprint, level, type, out edges); }
             catch (Exception ex) when (ex is Autodesk.Revit.Exceptions.ApplicationException || ex is ArgumentException)
             { throw new InvalidOperationException("layer " + i + " (type " + m.TypeKey + "): " + ex.Message, ex); }
@@ -423,7 +437,8 @@ namespace Horizun.Revit.Commands
             if (grid == null) { gridProblems++; if (angleDeg.HasValue) directionProblems++; result["read"] = "no curtain grid (not a Sloped Glazing roof?)"; return result; }
             for (int k = 1; k <= 2; k++)
             {
-                ICollection<ElementId> ids = k == 1 ? grid.GetUGridLineIds() : grid.GetVGridLineIds();
+                // Grid 1 is the V lines on a flat footprint roof, grid 2 the U lines (MEASURED; see the plan).
+                ICollection<ElementId> ids = k == 1 ? grid.GetVGridLineIds() : grid.GetUGridLineIds();
                 var g = new JObject { ["lines"] = ids.Count };
                 result["grid" + k] = g;
                 XYZ dir = null;
@@ -458,7 +473,8 @@ namespace Horizun.Revit.Commands
                 g["direction_deg"] = Math.Round(deg, 3);
                 if (k == 1 && angleDeg.HasValue)
                 {
-                    double want = ((angleDeg.Value % 180) + 180) % 180, diff = Math.Abs(deg - want);
+                    // Grid 1 lines run at the angle + 90 deg (they are spaced ALONG the angle).
+                    double want = (((angleDeg.Value + 90) % 180) + 180) % 180, diff = Math.Abs(deg - want);
                     diff = Math.Min(diff, 180 - diff);
                     g["planned_direction_deg"] = Math.Round(want, 3);
                     if (diff > 0.1) { directionProblems++; g["direction_problem"] = "grid 1 lines run at " + Math.Round(deg, 2) + " deg, planned " + Math.Round(want, 2); }

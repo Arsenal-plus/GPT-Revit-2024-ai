@@ -298,9 +298,13 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Hanger lines for the ceiling: parallel to the first layer's grid (angleRad), spacing
-        /// apart, centred and clipped to the boundary loops (first outer, the rest holes).
+        /// Hanger lines for the ceiling: running in the direction <paramref name="angleRad"/> - the
+        /// first layer's grid 1 LINES, which the caller derives from Revit's measured convention -
+        /// spacing apart, centred and clipped to the boundary loops (first outer, the rest holes).
         /// </summary>
+        /// <summary>The largest curtain grid angle Revit accepts (degrees, either sign).</summary>
+        public const double MaxGridAngleDeg = 89;
+
         public static CurtainCeilingPlan PlanCeiling(IReadOnlyList<List<double[]>> loops, CurtainCeilingFramingSpec spec, double angleRad, int maxLines)
         {
             var plan = new CurtainCeilingPlan { HangerAngleRad = angleRad };
@@ -396,8 +400,11 @@ namespace Horizun.Revit.Core
                     JToken a = row["angle_deg"];
                     if (a != null && a.Type != JTokenType.Null)
                     {
-                        if ((a.Type == JTokenType.Integer || a.Type == JTokenType.Float) && Math.Abs((double)a) <= 360) angle = (double)a;
-                        else r.Fail(path + ".angle_deg", "bad_value", "an angle in degrees within -360..360");
+                        // Revit takes a curtain grid angle within -89..89 only (MEASURED 2026-09-27: 90 was accepted
+                        // by Parameter.Set and refused at the commit). A layer across the first is a type whose
+                        // members sit on grid 2, which runs across grid 1 at the same angle - not a 90 here.
+                        if ((a.Type == JTokenType.Integer || a.Type == JTokenType.Float) && Math.Abs((double)a) <= CurtainFramingRules.MaxGridAngleDeg) angle = (double)a;
+                        else r.Fail(path + ".angle_deg", "bad_value", "an angle in degrees within -89..89 (Revit's curtain grid range); for a layer across the first, give a type whose members sit on grid 2 and no 90");
                     }
                     if (id.HasValue && offset.HasValue) result.Layers.Add(new CurtainLayerSpec { TypeId = id.Value, OffsetMm = offset.Value, AngleDeg = angle });
                 }

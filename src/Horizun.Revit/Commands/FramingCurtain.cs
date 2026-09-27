@@ -250,7 +250,7 @@ namespace Horizun.Revit.Commands
                 }
                 var p = new FramingSourcePlan { Source = wall, Operation = "wall", Wall = fw, SpecHash = specHash, Curtain = s };
                 p.Warnings.AddRange(fw.Warnings);
-                double? core = CoreCentreOffset(wall);
+                double? core = CoreCentreOffset(wall, fw.CentreFromCurve);
                 if (core.HasValue) s.CoreOffsetFt = core.Value;
                 else { s.CoreOffsetFt = fw.LayerOffset; p.Warnings.Add(who + ": the type has no core; the pieces run on the thickest layer's centre"); }
 
@@ -265,7 +265,9 @@ namespace Horizun.Revit.Commands
                     Parameter keyRef = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM);
                     if (s.KeyRef != (int)WallLocationLine.WallCenterline && (keyRef == null || keyRef.IsReadOnly))
                         throw new ArgumentException(who + ": its location line cannot be set to the wall centreline, so the placeholder could not keep its inserts where they are.");
-                    s.CentreOffsetFt = -LocationLineFromCentre(wall);
+                    // Measured on the side faces (FramingWall.MeasuredCentreFromCurve), not deduced from
+                    // the location line parameter the curve may no longer sit on.
+                    s.CentreOffsetFt = fw.CentreFromCurve;
                     XYZ centre = fw.Normal * s.CentreOffsetFt;
                     if (plan.Carrier.Action == CurtainFramingRoles.CarrierTrim)
                     {
@@ -323,8 +325,8 @@ namespace Horizun.Revit.Commands
             return plans;
         }
 
-        /// <summary>The core's centre from the location line along Wall.Orientation (feet), or null when the type has no core.</summary>
-        private static double? CoreCentreOffset(Wall wall)
+        /// <summary>The core's centre from the location curve along Wall.Orientation (feet), or null when the type has no core. <paramref name="centreFromCurve"/> is the measured centre plane.</summary>
+        private static double? CoreCentreOffset(Wall wall, double centreFromCurve)
         {
             CompoundStructure cs = wall.WallType?.GetCompoundStructure();
             IList<CompoundStructureLayer> layers = cs?.GetLayers();
@@ -334,23 +336,7 @@ namespace Horizun.Revit.Commands
             double total = cs.GetWidth();
             Func<int, double> faceAfter = k => total / 2 - layers.Take(k).Sum(l => l.Width);
             double coreExt = faceAfter(first), coreInt = faceAfter(last + 1);
-            int key = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)?.AsInteger() ?? 0;
-            double loc = key == 1 ? (coreExt + coreInt) / 2 : key == 2 ? total / 2 : key == 3 ? -total / 2 : key == 4 ? coreExt : key == 5 ? coreInt : 0;
-            return (coreExt + coreInt) / 2 - loc;
-        }
-
-        /// <summary>The location line's distance from the wall's centre plane along Wall.Orientation (feet); ReadWall's arithmetic (no core: the whole wall).</summary>
-        private static double LocationLineFromCentre(Wall wall)
-        {
-            CompoundStructure cs = wall.WallType?.GetCompoundStructure();
-            IList<CompoundStructureLayer> layers = cs?.GetLayers();
-            double total = cs?.GetWidth() ?? 0;
-            int first = cs?.GetFirstCoreLayerIndex() ?? -1, last = cs?.GetLastCoreLayerIndex() ?? -1;
-            bool core = layers != null && first >= 0 && last >= first && last < layers.Count;
-            Func<int, double> faceAfter = k => total / 2 - layers.Take(k).Sum(l => l.Width);
-            double coreExt = core ? faceAfter(first) : total / 2, coreInt = core ? faceAfter(last + 1) : -total / 2;
-            int key = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)?.AsInteger() ?? 0;
-            return key == 1 ? (coreExt + coreInt) / 2 : key == 2 ? total / 2 : key == 3 ? -total / 2 : key == 4 ? coreExt : key == 5 ? coreInt : 0;
+            return centreFromCurve + (coreExt + coreInt) / 2;
         }
 
         /// <summary>An insert's type, position AND host, as the curtain method snapshots it and re-reads it.</summary>

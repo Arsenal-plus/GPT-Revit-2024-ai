@@ -71,6 +71,8 @@ namespace Horizun.Revit.Commands
         public double LengthMm, HeightMm;
         /// <summary>The chosen layer's centre from the LOCATION LINE along Normal, feet.</summary>
         public double LayerOffset;
+        /// <summary>The wall's centre plane from its location curve along Normal (feet), measured on its side faces when they read.</summary>
+        public double CentreFromCurve;
         public double LayerWidthMm;
         public int LayerIndex;
         public string LayerChoice;
@@ -92,6 +94,36 @@ namespace Horizun.Revit.Commands
 
     public sealed partial class FramingCommand
     {
+        /// <summary>
+        /// Where the wall's centre plane really is: the signed distance (feet, along Wall.Orientation)
+        /// from its location curve to the midpoint of its exterior and interior side faces, measured on
+        /// the faces. Null when they do not read as two parallel planes. MEASURED 2026-09-27 in Revit
+        /// 2026: after WALL_KEY_REF_PARAM is set to Finish Face: Exterior on an existing wall, Revit
+        /// keeps the curve AND the wall where they were (faces still at +/-100 mm from the curve of a
+        /// 200 mm wall), so arithmetic on the parameter put a carrier's centre 100 mm off and Revit
+        /// could not cut its door out of it.
+        /// </summary>
+        internal static double? MeasuredCentreFromCurve(Wall wall)
+        {
+            try
+            {
+                if (!(wall.Location is LocationCurve lc) || !(lc.Curve is Line line)) return null;
+                XYZ p = line.GetEndPoint(0);
+                XYZ n = new XYZ(wall.Orientation.X, wall.Orientation.Y, 0).Normalize();
+                double? Side(ShellLayerType kind)
+                {
+                    foreach (Reference r in HostObjectUtils.GetSideFaces(wall, kind))
+                        if (wall.GetGeometryObjectFromReference(r) is PlanarFace f && Math.Abs(Math.Abs(f.FaceNormal.DotProduct(n)) - 1) < 1e-6)
+                            return (f.Origin - p).DotProduct(n);
+                    return null;
+                }
+                double? ext = Side(ShellLayerType.Exterior), inn = Side(ShellLayerType.Interior);
+                if (!ext.HasValue || !inn.HasValue || !(ext.Value > inn.Value)) return null;
+                return (ext.Value + inn.Value) / 2;
+            }
+            catch (Autodesk.Revit.Exceptions.ApplicationException) { return null; }
+        }
+
         internal static FramedWall ReadWall(Document doc, Wall wall, WallFramingSpec spec, out string refusal)
         {
             refusal = null;
@@ -157,7 +189,16 @@ namespace Horizun.Revit.Commands
             double coreExt = first >= 0 ? faceAfter(first) : total / 2, coreInt = last >= 0 ? faceAfter(last + 1) : -total / 2;
             int key = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)?.AsInteger() ?? 0;
             double loc = key == 1 ? (coreExt + coreInt) / 2 : key == 2 ? total / 2 : key == 3 ? -total / 2 : key == 4 ? coreExt : key == 5 ? coreInt : 0;
-            fw.LayerOffset = layerCentre - loc;
+            // The centre plane is MEASURED on the side faces, not deduced from the location line: the
+            // curve does not always sit on the line the parameter names (see MeasuredCentreFromCurve).
+            double? measured = MeasuredCentreFromCurve(wall);
+            fw.CentreFromCurve = measured ?? -loc;
+            if (!measured.HasValue)
+                fw.Warnings.Add(who + ": its side faces could not be read as two parallel planes; the layer is placed by the location line's arithmetic");
+            else if (Math.Abs(measured.Value + loc) * 304.8 > 1.0)
+                fw.Warnings.Add(who + ": the location line reads " + (WallLocationLine)key + " but the curve sits " + Math.Round(Math.Abs(measured.Value + loc) * 304.8, 1)
+                                + " mm from that line (Revit keeps the curve when the location line parameter changes); the measured faces place the layer");
+            fw.LayerOffset = fw.CentreFromCurve + layerCentre;
 
             // ---- the layer's real length ------------------------------------------------------
             // The location curve runs to the join point, which at a T or L junction lies INSIDE

@@ -20,7 +20,7 @@ namespace Horizun.Core.Tests
         private const string CurtainWall = @"{ ""wall"": { ""method"": ""curtain"", ""curtain_type_id"": 3001, ""placeholder_type_id"": 3002 } }";
 
         private const string CurtainCeiling = @"{ ""ceiling"": { ""method"": ""curtain"",
-            ""layers"": [ { ""type_id"": 4001, ""offset_mm"": 40, ""angle_deg"": 0 }, { ""type_id"": 4002, ""offset_mm"": 20, ""angle_deg"": 90 } ],
+            ""layers"": [ { ""type_id"": 4001, ""offset_mm"": 40, ""angle_deg"": 0 }, { ""type_id"": 4002, ""offset_mm"": 20 } ],
             ""hanger"": { ""type_id"": 4003, ""spacing_mm"": 1200, ""max_length_mm"": 2500 } } }";
 
         private static CurtainWallInput Wall(double length, double height, params WallOpeningSpan[] openings)
@@ -191,6 +191,34 @@ namespace Horizun.Core.Tests
             Assert.NotEqual(a, b);
             Assert.NotEqual(a, CurtainFramingRules.PlanWall(other).Signature());
             Assert.Equal(a, CurtainFramingRules.PlanWall(Wall(3000, 2700, Door("D1", 1000, 1900, 2100))).Signature());
+        }
+
+        [Theory]
+        [InlineData(90)]
+        [InlineData(-90)]
+        [InlineData(89.5)]
+        public void A_grid_angle_outside_Revits_range_is_refused_naming_grid_2(double degrees)
+        {
+            // MEASURED 2026-09-27 (Revit 2026): CURTAINGRID_ANGLE_1 = 90 deg was accepted by Parameter.Set
+            // and refused at the commit ("a value between -89.00 and 89.00"). A layer across the first is a
+            // type whose members sit on grid 2, which runs across grid 1 at the same angle.
+            JObject spec = JObject.Parse(CurtainCeiling);
+            ((JObject)spec["ceiling"]["layers"][1])["angle_deg"] = degrees;
+            Assert.Null(FramingSpecRules.ParseCeiling(spec, out var errors));
+            Assert.Contains(errors, e => e.Code == "bad_value" && e.Path == "spec.ceiling.layers[1].angle_deg" && e.Detail.Contains("-89..89") && e.Detail.Contains("grid 2"));
+        }
+
+        [Theory]
+        [InlineData(89)]
+        [InlineData(-89)]
+        [InlineData(0)]
+        public void A_grid_angle_inside_Revits_range_is_read(double degrees)
+        {
+            JObject spec = JObject.Parse(CurtainCeiling);
+            ((JObject)spec["ceiling"]["layers"][1])["angle_deg"] = degrees;
+            CeilingFramingSpec parsed = FramingSpecRules.ParseCeiling(spec, out var errors);
+            Assert.Empty(errors);
+            Assert.Equal(degrees, parsed.Curtain.Layers[1].AngleDeg);
         }
 
         [Fact]

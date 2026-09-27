@@ -2103,12 +2103,15 @@ profile as the border mullions; 1002 is the type for the pieces above and below 
 { "operation": "ceiling", "element_ids": [523456],
   "spec": { "ceiling": { "method": "curtain",
     "layers": [ { "type_id": 2001, "offset_mm": 0, "angle_deg": 0 },
-                { "type_id": 2002, "offset_mm": 27, "angle_deg": 90 } ],
+                { "type_id": 2002, "offset_mm": 27 } ],
     "hanger": { "type_id": 2003, "spacing_mm": 1200, "max_length_mm": 1500, "attach": "structure_above" } } } }
 ```
 
 Here 2001 and 2002 are Sloped Glazing roof types (the furring layer on the ceiling, the main layer
-27 mm above it) and 2003 a Curtain Wall type whose vertical grid places the rods.
+27 mm above it) and 2003 a Curtain Wall type whose vertical grid places the rods. 2001 carries its
+members on grid 1 and 2002 on grid 2 (grid 1 None): a layer ACROSS another is a type on the other
+grid, never `angle_deg: 90` - Revit takes a curtain grid angle within -89..89 only (MEASURED
+2026-09-27: 90 was accepted by `Parameter.Set` and refused at the commit), and the parser refuses it.
 
 - Each layer is a flat footprint roof of its type over the ceiling's own sketch (every edge
   `DefinesSlope = false`), its plane at the ceiling's top face + `offset_mm`, its grid 1 angle set
@@ -2116,8 +2119,8 @@ Here 2001 and 2002 are Sloped Glazing roof types (the furring layer on the ceili
   planning: layer 0 with hangers refuses by name when a roof of its type cannot take it; any other
   layer skips it, named in the warnings and `angle_skipped`). Openings the ceiling hosts, and shafts, are not cut from the layers (named in the plan);
   the hanger lines avoid them. Up to 6 layers.
-- Hangers (optional; they need the first layer's `angle_deg`): vertical curtain walls along lines
-  parallel to the first layer's grid at `spacing_mm`, clipped to the boundary, from the top layer's
+- Hangers (optional; they need the first layer's `angle_deg`, and a first layer with a grid 1):
+  vertical curtain walls along the first layer's grid 1 LINES at `spacing_mm`, clipped to the boundary, from the top layer's
   plane up to the first floor, structural framing or roof above (host or link). Three rays per line
   (both ends and the middle): a line with no support within `max_length_mm`, or whose support is
   not level along it (rods differing by more than 1 mm), is named in `not_built` and never built.
@@ -2126,10 +2129,14 @@ Here 2001 and 2002 are Sloped Glazing roof types (the furring layer on the ceili
   (0.1 deg) and each Fixed Distance grid's spacing; each hanger's line, base and top, its own grid
   and mullions, and after the commit a ray up from under its top at every station must meet the
   support within 1 mm.
-- Measured live, not assumed: which direction Revit measures `CURTAINGRID_ANGLE_1` from on a flat
-  roof, and the numeric value of the Fixed Distance layout. Until the probe
-  (`scripts/live-probes/framing-curtain.probes.ps1`) confirms them, a disagreement fails the
-  postcondition and rolls the edit back rather than reporting a wrong grid.
+- Measured live on flat Sloped Glazing roofs (Revit 2026, 2026-09-27), and what the plan and the
+  verification now assume: grid 1 is the **V** grid lines and they run at `CURTAINGRID_ANGLE_1 + 90`
+  degrees in project coordinates - the angle names the direction the lines are spaced along - while
+  grid 2 is the **U** lines, running AT `CURTAINGRID_ANGLE_2`; neither follows the footprint's edges
+  (a footprint turned 30 degrees leaves them where they were). The Fixed Distance layout is 1.
+  `NewFootPrintRoof` must be handed an already created `ModelCurveArray` although the parameter is
+  `out` (a null one throws "Value cannot be null." for any roof type). A disagreement between the
+  plan and the re-read grid still fails the postcondition and rolls the edit back.
 
 `horizun_manage_curtain operation=read` also reads a sloped glazing roof's grids (`grid_index`),
 with the grid 1 / grid 2 angles, so a layer can be inspected line by line.
