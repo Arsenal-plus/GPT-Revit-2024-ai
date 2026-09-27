@@ -27,7 +27,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class QueryStructureCommand : ICommand
+    public sealed partial class QueryStructureCommand : ICommand
     {
         public string Name => "horizun_query_structure";
         public string Description =>
@@ -41,7 +41,7 @@ namespace Horizun.Revit.Commands
         public static readonly string[] Modes =
         {
             "members", "hosts", "covers", "rebar", "reinforcement_systems", "connections", "coverage",
-            "quantities"
+            "quantities", "analytical", "loads"
         };
 
         public CommandResult Execute(UIApplication app, string paramsJson)
@@ -83,6 +83,8 @@ namespace Horizun.Revit.Commands
                     case "connections": return Connections(doc, ids, offset, maxRows);
                     case "coverage": return Capability(doc);
                     case "quantities": return Quantities(doc, request, ids);
+                    case "analytical": return Analytical(doc, request, ids, offset, maxRows);
+                    case "loads": return Loads(doc, ids, offset, maxRows);
                     default: return CommandResult.Fail("unhandled mode " + mode + ".");
                 }
             }
@@ -712,7 +714,6 @@ namespace Horizun.Revit.Commands
                 },
                 ["not_read_by_this_bridge"] = new JArray(
                     "FabricArea and FabricSheet beyond identity",
-                    "analytical members and panels",
                     "steel fabrication geometry inside a detailed connection - plates, bolts, welds")
             };
             // A COVERAGE WORD, like every other mode. This one published bare counts
