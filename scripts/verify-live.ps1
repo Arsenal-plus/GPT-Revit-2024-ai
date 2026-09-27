@@ -11393,7 +11393,7 @@ if (Test-Path -LiteralPath $probeModuleDir) {
 }
 $probeModuleCtx = [pscustomobject]@{
     Year = $Year; Document = $WriteDocument; ScratchRoot = $scratchDir; RunId = $probeRun; WriteGate = [bool]$writeGate
-    ClosedWorksetDocument = $ClosedWorksetDocument
+    ClosedWorksetDocument = $ClosedWorksetDocument; LinkSourceFile = $LinkSourceFile
     Call = { param($tool, $arguments) Invoke-Write $tool $arguments }
     Apply = { param($tool, $arguments, $key) Invoke-WriteApply $tool $arguments $key }
 }

@@ -68,7 +68,12 @@ $script:HzProbeModules += [pscustomobject]@{
         try {
             $d = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $fixture.Title; dry_run = $true }
             $dc = Code $d
-            Case $nDetached $S $(if ($d.isError -and $dc -eq 'detached_copy' -and -not $d.data.confirmation_token) { 'pass' } else { 'fail' }) "code=$dc"
+            # The owner switch answers first on a release runner (MEASURED 2026-09-27, v2.1.2 gate:
+            # sync_not_authorised): the detached check is then not reached, which is not a failure.
+            if ($d.isError -and $dc -eq 'sync_not_authorised' -and -not $d.data.confirmation_token) {
+                Case $nDetached $S 'not_covered' 'the owner switch refused first (sync_not_authorised), so the detached check was not reached; nothing ran'
+            }
+            else { Case $nDetached $S $(if ($d.isError -and $dc -eq 'detached_copy' -and -not $d.data.confirmation_token) { 'pass' } else { 'fail' }) "code=$dc" }
 
             # A central of the harness's own, in its own scratch folder, and a new local of it.
             # The title is reported as soon as SaveAs renamed the document, so a failure
