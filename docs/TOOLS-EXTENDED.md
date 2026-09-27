@@ -2157,6 +2157,38 @@ number`, as ONE action inside the batch's single transaction:
 - Why not `horizun_fix_planimetry set_sheet_number`: that one corrects a cited
   finding and refuses a number another sheet holds, which a swap needs.
 
+## horizun_manage_views: `create_perspective` (a camera, or a fan of them)
+
+`create_perspective` creates a perspective 3D view from an eye (`start`), a target
+(`end`), both in the batch `units`, and an optional `up` DIRECTION (unitless,
+default world Z). `fan: N` (1..36) creates N views from the same eye, turned about
+world Z in steps of 360/N starting at the target's azimuth and keeping the pitch of
+eye -> target:
+
+```json
+{ "operation": "create_perspective", "key": "cam", "name": "Entrance",
+  "start": [0, -8000, 1600], "end": [0, 0, 1600], "fan": 4 }
+```
+
+- **Nothing is nudged.** An eye closer than 1 mm to its target, an `up` parallel
+  to the line of sight, and a camera looking straight up or down without an
+  explicit `up` (or with `fan` > 1, which needs an azimuth) are refused in the
+  rehearsal, by name.
+- `up` is made perpendicular to the line of sight before it is sent (Revit refuses
+  one that is not); the triple ACTUALLY sent is what is reported and re-read.
+- **Names**: with `name` and no fan the view takes it; with a fan each view is
+  `<name> azNNN` (whole-degree azimuth, counter-clockwise from +X). A name another
+  3D view already holds is refused in the rehearsal. Without `name` Revit names them.
+- **The rehearsal lists every camera**: `plan[i].perspective.views_to_create` and
+  `cameras[]` (name, azimuth_degrees, pitch_degrees, eye_internal_feet, forward, up).
+- **After the commit each view is re-read**: `rows[i].perspective.views[]` carries
+  `view_id`, the camera sent, `reread` (GetOrientation's eye/forward/up, the name,
+  IsPerspective), `orientation_verified` (eye within 1e-6 ft, directions within
+  1e-4 degrees) and `verified`. One view that does not re-read fails the action and
+  the batch rolls back before commit.
+- `key` aliases the FIRST view of a fan. `view_scale` is refused: a perspective has
+  no drawing scale. `view_family_type_id` must be a 3D view type.
+
 ## horizun_write_params_verified: `sequence` (values numbered in spatial order)
 
 `sequence` is a third source for the batch, beside `writes` and `tabular_source` (give
