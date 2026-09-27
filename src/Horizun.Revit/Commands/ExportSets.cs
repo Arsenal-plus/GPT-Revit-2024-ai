@@ -333,8 +333,9 @@ namespace Horizun.Revit.Commands
                         EnergyModelBuild.CreateSpatial(doc);
                         var options = new GBXMLExportOptions();
 #if REVIT2023 || REVIT2024 || REVIT2025
-                        // Deprecated in 2026 and gone in 2027, where the export follows the
-                        // main model's own type - the SpatialElement model created above.
+                        // Explicit where it is the documented default anyway. 2026 defaults it
+                        // to AnalysisMode and 2027 removes it: both then follow the energy
+                        // settings, which CreateSpatial set to rooms/spaces above.
                         options.ExportEnergyModelType = ExportEnergyModelType.SpatialElement;
 #endif
                         accepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output), options);

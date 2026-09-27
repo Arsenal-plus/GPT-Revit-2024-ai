@@ -330,7 +330,9 @@ ella; la persistencia se mide releyendo antes y después del commit, por año.
 - **gbXML** (`.xml`). Refused as **`no spaces`** when the document has no placed,
   bounded room or MEP space — no empty campus is written. The export needs a main
   energy analysis model: one is built from rooms/spaces (SpatialElement,
-  second-level boundaries; on 2027 via the energy settings' `RoomsOrSpaces` mode)
+  second-level boundaries), with the energy settings' analysis mode set to
+  `RoomsOrSpaces` in every year — 2027 builds the model from that mode, and 2026's
+  `GBXMLExportOptions` default the model type to `AnalysisMode`, which follows it —
   inside a transaction that is **rolled back** after the file is on disk, so the
   model, its energy settings and any energy model it had are left as they were.
   The written XML is re-read and its `Campus`/`Space`/`Zone`/`Surface`/`Opening`
