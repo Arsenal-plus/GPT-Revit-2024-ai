@@ -2104,13 +2104,28 @@ Two modes, one per call. The operation is sent **alone** (like `realign_wall_ske
 `SketchEditScope` cannot nest inside the single transaction the other operations share.
 
 - **Replace a loop**: `loop` (the new points `[x,y,z]` in the request's `units`) and
-  `loop_index` (which loop it replaces; the dry run lists them in `loops_before_mm`). A
+  `loop_index` (which loop it replaces; the dry run lists them in `loops_before`, and every
+  refusal that comes after the sketch was read carries them too). A
   closing point that repeats the first is dropped. The new loop is checked before Revit
   sees it: at least three vertices, no edge shorter than 1 mm, no two non-adjacent edges
   that touch or cross, some enclosed area.
 - **Move a vertex**: `start` (the vertex as it is now, matched within 0.5 mm) and `end`
   (where it goes). Both curves that meet at the vertex must be lines: moving the end of an
   arc would redefine the arc, which is not guessed - replace the loop instead.
+
+**The loop's own curves are kept wherever they can be.** A vertex move reshapes the two
+lines that meet there. A loop replaced by one with the SAME number of straight edges
+reshapes every existing line onto the new edge nearest to it (the rotation and direction
+with the least total displacement), so what those curve elements carry - a line's Defines
+Slope flag, dimensions and constraints drawn to it - stays on them (`method:
+reshape_in_place`). Only a loop whose edge count changes, or that holds arcs, is deleted and
+redrawn (`method: delete_and_redraw`), and that path refuses, by name and already in the
+rehearsal, a loop line that defines the slope (the element would come back flat) and any
+deletion that would take another element with it. The loop's curve elements are found
+through each profile curve's `Reference.ElementId` - the mapping `Sketch.GetAllElements`
+documents - cross-checked against their geometry, so a slope arrow drawn along an edge is
+never taken for the edge. A full circle (one closed curve, no vertices) is carried and
+verified but never edited; `fixed_loops` names it.
 
 ```json
 { "operations": [ { "operation": "edit_sketch", "element_ids": [412233], "loop_index": 0,
@@ -2128,9 +2143,15 @@ a wrong elevation is never silently flattened; the refusal names a point of the 
 scope, which is then Cancelled. Revit checks the finished sketch as a whole only when the
 apply commits the scope (a refusal there rolls the whole group back), so the plan first
 refuses by name a loop with fewer than three vertices, an edge under 1 mm, a self-crossing,
-or contact with another loop of the sketch (arcs held by their tessellation). The plan reports `mode`,
-`loop_index`, `vertex_index`, `loops_before_mm` and `loops_expected_mm` (sketch-plane
-`(u, v)` in mm from the plane origin), `sketch_area_before_m2`, `expected_area_m2`,
+or contact with another loop of the sketch, and any loop that would turn from hole to solid
+or back (a hole the new boundary leaves outside would silently become slab, and the area
+would still agree with the sketch). A vertex move on a loop that holds arcs is held on the
+tessellated outline around the moved vertex. The plan reports `mode`, `method`,
+`loop_index`, `vertex_index`, `sketch_plane` (`origin` in the request's units, `x_dir`,
+`y_dir`, `normal`), `loops_before` / `loops_expected` (model `[x,y,z]` in the request's
+units: a vertex can be sent back as `start` as it stands), `loops_before_mm` /
+`loops_expected_mm` (`(u, v)` in mm from `sketch_plane.origin` along `x_dir` and `y_dir`),
+`fixed_loops`, `hosted_elements`, `sketch_area_before_m2`, `expected_area_m2`,
 `area_parameter_before_m2`, `area_check` (`will_verify` | `not_applicable`) and
 `rehearsal_ok` / `rehearsal_error`. The confirmation token binds the element, the edit and
 the units; none is usable while the rehearsal fails.
@@ -2138,6 +2159,12 @@ the units; none is usable while the rehearsal fails.
 After the commit the model is re-read, and the row is `verified` only when:
 
 - the same id still carries the same UniqueId (`unique_id_kept`);
+- every hosted instance, opening and tag that depended on the element still exists
+  (`hosted_check`, `hosted_elements_before` / `hosted_elements_kept`). This, and the loops,
+  are also held BEFORE the transaction group is kept: a lost dependent, or a scope commit
+  Revit rolled back without raising (the old loops still there), rolls the whole edit back
+  and is reported with what Revit said at the commit (`revit_said_at_commit`), never as
+  committed;
 - the committed sketch's loops match the expected loops (`loops_verified`; cyclic, either
   direction, loop order free, 0.5 mm);
 - the element's Area parameter equals the area the new sketch encloses within
@@ -2176,6 +2203,11 @@ compared line never disagree about what the model measured.
   code. Nothing is compiled in: prices are always the caller's.
 - `bc3_path`: absolute, ending in `.bc3`, in an existing folder; an existing file is never
   overwritten. Writing a file needs a profile that allows external side effects.
+- `idempotency_key` (required): claimed in the durable ledger before the file is touched. A
+  retry after a lost reply gets the recorded reply back (`replayed: true`) once the file it
+  names is re-hashed on disk and still matches - nothing is written again; a file that is
+  gone or changed refuses the retry, naming both hashes. A refusal after the claim (say,
+  `bc3_path` already exists) is the recorded answer for that key: a new attempt takes a new key.
 
 **All or nothing.** A takeoff code the APU does not price is refused - a price is never
 invented - and so is a code whose quantity could not be established (the comparison's
@@ -2189,15 +2221,23 @@ windows-1252, CRLF line ends):
 
 ```
 ~V||FIEBDC-3/2020\26092026|Horizun Revit MCP||ANSI||2|
+~K|6\6\6\6\6\6\6\6\\||6\6\6\6\6\6\6\6\6\6\6\6\\|
 ~C|HZ_TAKEOFF##||Horizun takeoff|2000|26092026|0|
 ~C|E05.01|m2|Floor slab|100|26092026|0|
 ~D|HZ_TAKEOFF##|E05.01\1\20\|
 ~M|HZ_TAKEOFF##\E05.01|1\|20|\id 1234\12\\\\\id 1301\8\\\\|
 ```
 
+- `~K`: every decimals slot - field 1 (DN DD DS DR DI DP DC DM) and the 2020 field 3 (DRC
+  DC DFS DRS DUO DI DES DN DD DS DSP DEC) - set to 6, the precision the file is written
+  with, so a reader applying the format's defaults (2 decimals for measurement units and
+  totals, 3 for yields) does not round what was verified. DIVISA is left empty: the
+  currency is the caller's to state.
 - `~C`: one concept per code (unit, APU description as the summary, unit price, date, type
   0) plus the **root `HZ_TAKEOFF##`** - `##` is how FIEBDC marks the root concept, which is
-  why codes may carry neither `#` (reserved for chapters and the root) nor whitespace. The
+  why codes may carry neither `#` (reserved for chapters and the root) nor whitespace - nor
+  `%` or `&`: FIEBDC-3 reads a child code carrying either as a PERCENTAGE over the lines
+  before it in the decomposition, so its quantity would be read as a percentage. The
   root's price is the budget total.
 - `~D`: the root's decomposition - every code with factor 1 and its quantity as the yield.
 - `~M`: one measurement record per code, `<root>\<code>`, its position, its total, and one
@@ -2219,12 +2259,12 @@ line nobody wrote, so the export refuses, naming the field and the character (`U
 before a byte is written.
 
 **Verified from disk.** The bytes go to a temporary file beside the target, are READ BACK,
-decoded as windows-1252 and held to the budget: `~V` first (FIEBDC-3/2020, ANSI); every
+decoded as windows-1252 and held to the budget: `~V` first (FIEBDC-3/2020, ANSI) and a `~K` declaring the 6 decimals; every
 `~C` exactly once (unit, summary, price) and the root at the total; the `~D` yields equal
 the takeoff quantities with factor 1; one `~M` per code whose total equals the yield and
 the sum of its lines, one line per element with its comment and value. Only then is the
 file moved into place and its SHA-256 re-read against the verified bytes. The reply carries
-`verified`, `file_path`, `bytes`, `sha256`, `records` (`V`, `C`, `D`, `M` counts),
+`verified`, `file_path`, `bytes`, `sha256`, `records` (`V`, `K`, `C`, `D`, `M` counts), `idempotency_key`,
 `root_code`, `total_amount` and per code `lines[]` (`unit`, `unit_price`, `quantity`,
 `amount`, `elements`, `quantity_name`, `conversion_factor`, `coverage`).
 
@@ -2236,7 +2276,8 @@ footprint roof at X = 1,170,000 mm, types by name from the year's `DefaultMetric
 rehearsal must still read the original boundary), replaces it (24 -> 20 m2), moves one
 corner (-2 m2), turns the ceiling into an L (12 -> 9 m2) and expects the roof refused by
 name. Each apply is held to the area the probe computed, to `unique_id_kept`, and to an
-independent `horizun_query_model` read of the same id. Everything staged is deleted with
+independent `horizun_query_model` read of the same id. Everything staged, the types copied
+from the template included, is deleted with
 `horizun_delete_verified mode='ids'`. `export_bc3` needs no Revit: its writer, reader and
 verifier are covered by `tests/Horizun.Core.Tests/Bc3RulesTests.cs` and
 `tests/Horizun.Server.Tests/BudgetBc3ExportTests.cs`.
@@ -2253,9 +2294,17 @@ nombre, un lazo que se cruza a sí mismo o que toca otro lazo. Tras el commit se
 pedido, y el área del elemento igual al área del nuevo sketch cuando antes coincidía; si
 no coincidía (pendiente, forma editada, un corte) el chequeo de área queda
 `not_applicable`, nombrado. Un FootPrintRoof se rechaza por nombre (no tiene SketchId).
+Con el mismo número de lados rectos las curvas existentes se reajustan en vez de borrarse
+(la pendiente y las cotas siguen en ellas); con otro número se redibuja, y se rechaza por
+nombre si una línea define la pendiente o si al borrarla caería otro elemento. Un hueco que
+quedaría fuera del contorno, o una isla que quedaría dentro, se rechaza. Los lazos vuelven
+también en coordenadas del modelo en las unidades de la petición, con el plano del sketch.
 
 `export_bc3` escribe un FIEBDC-3/2020 ANSI desde el takeoff y la tabla APU del usuario: todo
 o nada (un código sin precio se rechaza, nunca se inventa), raíz `HZ_TAKEOFF##`, un `~M` por
 código con una línea por elemento, números a 6 decimales con punto. Los separadores
 `~ | \`, los caracteres de control y lo que windows-1252 no representa se rechazan en vez
-de escaparse. El archivo se verifica releyéndolo del disco antes de moverlo a su sitio.
+de escaparse, y también `%` y `&` en los códigos (FIEBDC los lee como porcentaje). Un `~K`
+declara los 6 decimales escritos. Exige `idempotency_key`: un reintento devuelve la
+respuesta registrada tras volver a calcular el hash del archivo. El archivo se verifica
+releyéndolo del disco antes de moverlo a su sitio.
