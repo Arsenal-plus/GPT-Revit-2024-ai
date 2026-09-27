@@ -41,6 +41,12 @@ $call = {
             return (Ok @{ output = [pscustomobject]@{ uid = 'uid-borrowed'; status = 'OwnedByCurrentUser' } })
         }
         if ([string]$a.code -match 'CheckoutWorksets') { return (Ok @{ output = [pscustomobject]@{ workset = 'Workset1'; owned = $true } }) }
+        if ([string]$a.code -match 'BasicFileInfo\.Extract\(local\)') {
+            # The first open and save of the new local (MEASURED 2026-09-27: saved -> IsLocal).
+            [void]$script:calls.Add('first-open:' + [string]$a.target_document)
+            if ($script:mode -eq 'first_open_fails') { return (Ok @{ output = [pscustomobject]@{ is_local = $false; is_central = $true; central_path = 'C:	\HZ_SYNC_CENTRAL.rvt' } }) }
+            return (Ok @{ output = [pscustomobject]@{ is_local = $true; is_central = $false; central_path = 'C:	\HZ_SYNC_CENTRAL.rvt' } })
+        }
         if ($script:mode -eq 'local_fails') {
             # SaveAs renamed the detached copy, then CreateNewLocal threw inside the script.
             return (Ok @{ output = [pscustomobject]@{ central = 'C:\t\HZ_SYNC_CENTRAL.rvt'; local = 'C:\t\HZ_SYNC_LOCAL.rvt'; central_title = 'HZ_SYNC_CENTRAL'; local_exists = $false; error = 'CreateNewLocal failed' } })
@@ -145,6 +151,15 @@ try {
         (IndexOf 'horizun_document_session:close:HZ_SYNC_CENTRAL') -ge 0 -and
         (IndexOf 'horizun_document_session:close:HZ_SYNC_CENTRAL') -lt (IndexOf 'horizun_document_session:open::*HZ_SYNC_LOCAL*'))
     Check 'owner off: nothing failed, so the scratch folder is removed' (-not (Test-Path -LiteralPath $scratch))
+    Check 'the new local is first opened and saved on the write document, after the central closed and before the typed open' (
+        (IndexOf 'first-open:HZ_WRITE') -gt (IndexOf 'horizun_document_session:close:HZ_SYNC_CENTRAL') -and
+        (IndexOf 'first-open:HZ_WRITE') -lt (IndexOf 'horizun_document_session:open::*HZ_SYNC_LOCAL*'))
+
+    $script:mode = 'first_open_fails'; $script:calls.Clear()
+    $r = & $module.Run (Ctx $false)
+    Check 'a local still reading as a central after its first open is never opened; the cases say why' (
+        (Outcome $r $kReal) -eq 'not_covered' -and (Case1 $r $kReal).Detail -like '*did not become a local*is_central=True*' -and
+        (IndexOf 'horizun_document_session:open::*HZ_SYNC_LOCAL*') -lt 0)
 
     $script:mode = 'owner_on'; $script:pyTargets.Clear()
     $r = & $module.Run (Ctx $false)

@@ -1,10 +1,14 @@
 # Live probe module: horizun_resolve_clash against LOADED LINKS and CONNECTED
 # MEP networks (run_shift) - see README.md.
 #
-# (a) Links a scratch COPY of the write document into itself (same trick as
-#     spatial-links.probes.ps1), picks any physical element the link exposes with a
-#     readable bounding box, and stages a small/big host pipe crossing CENTERED on
-#     that element's plan centre, at an elevation just below its bottom. The
+# (a) Links a scratch copy of the year's LinkSourceDocument (never a copy of the write
+#     document: Revit does not load a copy of the host as its link). That fixture may
+#     carry no physical element at all (MEASURED 2026-09-27: HZ_TAGBASE_2026 holds
+#     levels, views and settings only), so a 6 m wall is staged INTO the copy first -
+#     typed: opened, a Generic wall type BY NAME, created, saved, the write document
+#     re-activated. Then it picks a physical element the link exposes with a readable
+#     bounding box, and stages a small/big host pipe crossing CENTERED on that
+#     element's plan centre, at an elevation just below its bottom. The
 #     elevation-UP escape is exact arithmetic (ClashResolveRulesTests documents the
 #     same formula): bigRadius + clearance + smallRadius, independent of the chosen
 #     elevation - so moving the small pipe UP by that amount lands it inside the
@@ -15,6 +19,7 @@
 #     propose mode=run_shift over all three, and apply must move all three together
 #     and re-read both internal connector pairs as still connected.
 # Everything created - pipes, elbow, column, level, the link - is deleted afterwards.
+. (Join-Path $PSScriptRoot 'workshared-fixture.lib.ps1')
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'resolve-clash-links-runs'
     Catalog = @(
@@ -51,19 +56,67 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($t.Count -gt 0) { return $t[0].element_id } else { return $null }
         }
 
+        # A LINK SOURCE THAT IS NOT THE HOST. Revit will not load a copy of the host document as
+        # its own link: the link type is added and stays "not loaded" (MEASURED 2026-09-27 in
+        # Revit 2026, three probes). The source is LinkSourceDocument from live-fixtures.json
+        # ({year} replaced; $Ctx.LinkSourceDocument overrides it), copied into the scratch folder.
+        function LinkSource($tag) {
+            $p = [string]$Ctx.LinkSourceDocument
+            if (-not $p) {
+                $fixturesPath = Join-Path $env:USERPROFILE '.horizun\live-fixtures.json'
+                if (Test-Path -LiteralPath $fixturesPath) {
+                    try { $fx = Get-Content -LiteralPath $fixturesPath -Raw | ConvertFrom-Json; if ($fx.LinkSourceDocument) { $p = [string]$fx.LinkSourceDocument } } catch { }
+                }
+            }
+            if ($p) { $p = $p.Replace('{year}', [string]$Ctx.Year) }
+            if (-not $p -or -not (Test-Path -LiteralPath $p)) { return $null }
+            New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+            $dst = Join-Path $Ctx.ScratchRoot ($tag + '_' + ([string]$Ctx.RunId -replace '[^A-Za-z0-9]', '') + '.rvt')
+            Copy-Item -LiteralPath $p -Destination $dst -Force
+            return $dst
+        }
+        # An own wall in the link source copy, all typed; returns $null, or why it could not.
+        function StageWallInLinkSource([string]$path) {
+            $h = & $Ctx.Call 'horizun_health' @{}
+            $me = if ($h.data) { @($h.data.open_documents | Where-Object { $_.title -eq $doc }) | Select-Object -First 1 } else { $null }
+            if (-not $me -or -not $me.path) { return "the write document's path is not readable from health" }
+            # allow_upgrade: this is the probe's OWN scratch copy, and the fixture it came from may be
+            # saved in an older Revit (MEASURED 2026-09-27: HZ_TAGBASE_2026.rvt is a 2023 file, refused
+            # without it). Upgrading the copy leaves the fixture untouched.
+            $o = & $Ctx.Call 'horizun_document_session' @{ operation = 'open'; file_path = $path.Replace([char]92, '/'); expected_version = [string]$Ctx.Year
+                    allow_upgrade = $true; idempotency_key = ($run + '-rclr-src-open') }
+            if ($o.isError -or -not $o.data -or -not $o.data.title) { return 'the link source copy did not open: ' + (Short $o) }
+            $t = [string]$o.data.title
+            $why = $null
+            try {
+                # Both reads act on the ACTIVE document, which the open just made the copy.
+                $lv = & $Ctx.Call 'horizun_list_elements' @{ category = 'OST_Levels'; max_rows = 5; include_links = $false }
+                $lvl = if ($lv.data -and @($lv.data.rows).Count -gt 0) { @($lv.data.rows)[0].element_id } else { $null }
+                $wt = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Walls'); include_types = $true; include_links = $false; max_rows = 200 }
+                $type = if ($wt.data) { @($wt.data.rows | Where-Object { $_.is_element_type -and [string]$_.family -eq 'Basic Wall' -and [string]$_.type -match '^Generic' }) | Select-Object -First 1 } else { $null }
+                if (-not $lvl -or -not $type) { $why = "the link source copy '$t' has no level or no Basic Wall 'Generic' type (level=$lvl type=$(if ($type) { $type.type }))" }
+                else {
+                    $w = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $t; units = 'mm'; elements = @(@{ kind = 'wall'; start = @(1195000, 20000, 0); end = @(1201000, 20000, 0)
+                            height = 3000; level_id = [long]$lvl; type_id = [long]$type.element_id }) } ($run + '-rclr-src-wall')
+                    if ($w.stage -ne 'apply' -or $w.answer.isError) { $why = "the wall in the link source copy '$t' was not created: " + (Short $w.answer) }
+                    else {
+                        $sv = & $Ctx.Call 'horizun_save_document' @{ target_document = $t; idempotency_key = ($run + '-rclr-src-save') }
+                        if ($sv.isError) { $why = "the link source copy '$t' was not saved: " + (Short $sv) }
+                    }
+                }
+            }
+            finally { $null = Exit-HzWorksharedFixture $Ctx @{ Title = $t; WritePath = [string]$me.path } ($run + '-rclr-src') }
+            return $why
+        }
+
         # ---- scenario (a): a linked element blocks the naive elevation candidate -------
         $created_a = New-Object System.Collections.ArrayList
         $linkTypeId = $null
         try {
-            $h = & $Ctx.Call 'horizun_health' @{}
-            $me = @($h.data.open_documents | Where-Object { $_.title -eq $doc }) | Select-Object -First 1
-            if (-not $me -or -not $me.path -or -not (Test-Path -LiteralPath ([string]$me.path))) {
-                foreach ($i in 0..1) { Case $i 'not_covered' ("the write document's path is not readable from health: " + $me.path) }
-                throw 'HZ_STOP_A'
-            }
-            New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
-            $src = Join-Path $Ctx.ScratchRoot ('HZ_RCLINKSRC_' + ($run -replace '[^A-Za-z0-9]', '') + '.rvt')
-            Copy-Item -LiteralPath ([string]$me.path) -Destination $src -Force
+            $src = LinkSource 'HZ_RCLINKSRC'
+            if (-not $src) { foreach ($i in 0..1) { Case $i 'not_covered' 'no LinkSourceDocument in live-fixtures.json (a model of the run''s year that is not a copy of the write document; Revit does not load a copy of the host as its link)' }; throw 'HZ_STOP_A' }
+            $staged = StageWallInLinkSource $src
+            if ($staged) { foreach ($i in 0..1) { Case $i 'not_covered' ('no own element could be staged in the link source: ' + $staged) }; throw 'HZ_STOP_A' }
             $add = & $Ctx.Apply 'horizun_manage_links' @{ operation = 'add'; target_document = $doc; path = $src.Replace([char]92, '/') } ($run + '-rclr-add')
             if ($add.stage -ne 'apply' -or $add.answer.isError) { foreach ($i in 0..1) { Case $i 'unverified' ('the link could not be added: ' + (Short $add.answer)) }; throw 'HZ_STOP_A' }
             $linkTypeId = [long]$add.answer.data.link_type_id
@@ -73,7 +126,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $q = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Walls', 'OST_Floors', 'OST_StructuralColumns', 'OST_Columns', 'OST_MechanicalEquipment'); include_links = $true; include_bounding_box = $true; max_rows = 500 }
             $linkEl = @($q.data.rows | Where-Object { $_.source_kind -eq 'link' -and -not $_.is_element_type -and $_.bounding_box -and
                     ([double]$_.bounding_box.max[2] - [double]$_.bounding_box.min[2]) -gt 200 }) | Select-Object -First 1
-            if (-not $linkEl) { foreach ($i in 0..1) { Case $i 'not_covered' 'the linked copy exposes no physical element with a usable bounding box' }; throw 'HZ_STOP_A' }
+            if (-not $linkEl) { foreach ($i in 0..1) { Case $i 'not_covered' 'the linked model exposes no physical element with a usable bounding box' }; throw 'HZ_STOP_A' }
             $bb = $linkEl.bounding_box
             $cx = ([double]$bb.min[0] + [double]$bb.max[0]) / 2; $cy = ([double]$bb.min[1] + [double]$bb.max[1]) / 2; $lz0 = [double]$bb.min[2]
 
@@ -118,10 +171,24 @@ $script:HzProbeModules += [pscustomobject]@{
                 $named = @($linkHits | Where-Object { @($_.link_contacts) -like ('*:' + $linkEl.element_id) })
                 if ($named.Count -ge 1) { Case 0 'pass' ('candidate ' + $named[0].kind + ' ' + $named[0].distance_mm + ' mm rejected: ' + (@($named[0].link_contacts) -join ',')) }
                 else { Case 0 'fail' ('no candidate named link element ' + $linkEl.element_id + ' - candidates: ' + ($rowA.candidates | ConvertTo-Json -Depth 6 -Compress)) }
-                $blockedVec = if ($named.Count -ge 1) { (@($named[0].vector_mm) -join ',') } else { $null }
-                $proposedVec = if ($rowA.status -eq 'proposed') { (@($rowA.vector_mm) -join ',') } else { $null }
-                $safe = ($rowA.status -ne 'proposed') -or ($proposedVec -ne $blockedVec)
-                Case 1 $(if ($safe) { 'pass' } else { 'fail' }) ('status=' + $rowA.status + ' vector=' + $proposedVec + ' blocked_vector=' + $blockedVec)
+                # The CHOSEN vector is in next_arguments - the apply the proposal hands over - not in
+                # the proposal row, which carries kind and distance only (MEASURED 2026-09-27: reading
+                # the row gave an empty vector, and "empty differs from blocked" passed on nothing).
+                # $p is the reply the row came from. Compared as numbers: -0 and 0 are one vector.
+                function SameVec($u, $v) {
+                    $a = @($u); $b = @($v)
+                    if ($a.Count -ne 3 -or $b.Count -ne 3) { return $false }
+                    for ($k = 0; $k -lt 3; $k++) { if ([math]::Abs([double]$a[$k] - [double]$b[$k]) -gt 0.5) { return $false } }
+                    return $true
+                }
+                $blocked = if ($named.Count -ge 1) { @($named[0].vector_mm) } else { $null }
+                $chosen = @($p.data.next_arguments.proposals | Where-Object { $_.finding_id -eq $rowA.finding_id }) | Select-Object -First 1
+                $chosenVec = if ($chosen) { @($chosen.vector_mm) } else { $null }
+                $d1 = 'status=' + $rowA.status + ' chosen_vector=' + ($chosenVec -join ',') + ' blocked_vector=' + ($blocked -join ',')
+                if ($rowA.status -eq 'proposed' -and @($chosenVec).Count -ne 3) { Case 1 'fail' ("$d1 - the proposal hands over no vector for finding $($rowA.finding_id), so it cannot be judged") }
+                elseif ($rowA.status -eq 'proposed' -and $blocked -and (SameVec $chosenVec $blocked)) { Case 1 'fail' ("$d1 - the link-blocked candidate was proposed") }
+                elseif (-not $blocked) { Case 1 'fail' ("$d1 - no candidate was blocked by the link, so there is nothing to avoid") }
+                else { Case 1 'pass' $d1 }
             }
         }
         catch { if ([string]$_ -ne 'HZ_STOP_A') { foreach ($i in 0..1) { if (-not @($out | Where-Object { $_.Name -eq $names[$i].Name }).Count) { Case $i 'unverified' ('probe error: ' + $_) } } } }

@@ -21,7 +21,19 @@ function New-Fake([string]$mode) {
     $call = {
         param($tool, $a)
         switch ($tool) {
-            'horizun_health' { return & $reply ([pscustomobject]@{ open_documents = @([pscustomobject]@{ title = $s.Doc; path = $s.Src }) }) }
+            'horizun_health' { return & $reply ([pscustomobject]@{ open_documents = @([pscustomobject]@{ title = $s.Doc; path = 'C:\hz-live\HZ_WRITE.rvt' }) }) }
+            # The link source copy: opened (and made active), saved, re-activated away from, closed.
+            'horizun_document_session' {
+                if ($a.operation -eq 'open') { $s.SrcOpened = [string]$a.file_path; $s.SrcUpgrade = $a.allow_upgrade; return & $reply ([pscustomobject]@{ title = 'HZ_RCLINKSRC_copy' }) }
+                if ($a.operation -eq 'close') { $s.SrcClosed = [string]$a.target_document; return & $reply ([pscustomobject]@{ closed = $true; would_discard_unsaved = $false }) }
+                return & $reply $null $true
+            }
+            'horizun_open_document' { $s.BackTo = [string]$a.path; return & $reply ([pscustomobject]@{ opened = $true }) }
+            'horizun_save_document' {
+                # The real tool refuses a save without an idempotency key (MEASURED 2026-09-27).
+                if (-not $a.idempotency_key) { return & $reply $null $true 'idempotency_key is REQUIRED' }
+                $s.Saved = [string]$a.target_document; return & $reply ([pscustomobject]@{ saved = $true })
+            }
             'horizun_query_model' {
                 if ($a.include_types) {
                     # An MEP fixture has no structural column family until the probe copies one.
@@ -34,6 +46,10 @@ function New-Fake([string]$mode) {
                         return & $reply ([pscustomobject]@{ rows = @(
                             [pscustomobject]@{ element_id = 998; is_element_type = $true; family = 'HZ_MPCOL_x'; type = 'HZC300' },
                             [pscustomobject]@{ element_id = 999; is_element_type = $true; family = 'M_Concrete-Rectangular-Column'; type = '300 x 450mm' }) })
+                    }
+                    if (@($a.categories) -contains 'OST_Walls') {
+                        if ($s.Mode -eq 'no-wall-type') { return & $reply ([pscustomobject]@{ rows = @() }) }
+                        return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 331; is_element_type = $true; family = 'Basic Wall'; type = 'Generic - 200mm' }) })
                     }
                     return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 999; is_element_type = $true }) })
                 }
@@ -59,17 +75,21 @@ function New-Fake([string]$mode) {
             }
             'horizun_resolve_clash' {
                 if (@($a.finding_ids) -contains 'fA') {
+                    # The REAL row shape (MEASURED 2026-09-27): no vector_mm on the proposal row; the
+                    # chosen vector is only in next_arguments.proposals.
                     if ($s.Mode -eq 'no-hit') {
-                        $row = [pscustomobject]@{ finding_id = 'fA'; mover_id = $s.Small; fixed_id = $s.Big; status = 'proposed'; kind = 'shift'; distance_mm = 1500; vector_mm = @(1500, 0, 0); candidates = @() }
+                        $row = [pscustomobject]@{ finding_id = 'fA'; mover_id = $s.Small; fixed_id = $s.Big; status = 'proposed'; kind = 'shift'; distance_mm = 1500; candidates = @() }
                         return & $reply ([pscustomobject]@{ proposals = @($row); next_arguments = [pscustomobject]@{ proposals = @([pscustomobject]@{ finding_id = 'fA'; element_id = $s.Small; vector_mm = @(1500, 0, 0) }) } })
                     }
                     $up = [pscustomobject]@{ kind = 'elevation'; distance_mm = 150; vector_mm = @(0, 0, 150); rejected = 'would_touch_other_elements'; link_contacts = @('SELFLINK:77') }
                     $down = [pscustomobject]@{ kind = 'elevation'; distance_mm = 150; vector_mm = @(0, 0, -150) }
                     $row = [pscustomobject]@{
                         finding_id = 'fA'; mover_id = $s.Small; fixed_id = $s.Big; status = 'proposed'
-                        kind = 'elevation'; distance_mm = 150; vector_mm = @(0, 0, -150); candidates = @($up, $down)
+                        kind = 'elevation'; distance_mm = 150; candidates = @($up, $down)
                     }
-                    return & $reply ([pscustomobject]@{ proposals = @($row); next_arguments = [pscustomobject]@{ proposals = @([pscustomobject]@{ finding_id = 'fA'; element_id = $s.Small; vector_mm = @(0, 0, -150) }) } })
+                    $chosen = switch ($s.Mode) { 'proposes-blocked' { @(-0.0, 0.0, 150) } 'no-vector' { $null } default { @(0, 0, -150) } }
+                    $next = if ($null -eq $chosen) { [pscustomobject]@{ proposals = @() } } else { [pscustomobject]@{ proposals = @([pscustomobject]@{ finding_id = 'fA'; element_id = $s.Small; vector_mm = $chosen }) } }
+                    return & $reply ([pscustomobject]@{ proposals = @($row); next_arguments = $next })
                 }
                 if (@($a.finding_ids) -contains 'fB') {
                     $row = [pscustomobject]@{
@@ -99,6 +119,7 @@ function New-Fake([string]$mode) {
                 elseif ($key -like '*-b-elbow') { $s.Elbow = $id }
                 elseif ($key -like '*-b-col') { $s.Column = $id; $s.ColumnTypeId = [long]$a.elements[0].type_id }
                 elseif ($key -like '*-b-level') { $s.Level = $id; $s.LevelArgs = $a.elements[0] }
+                elseif ($key -like '*-rclr-src-wall') { $s.SrcWall = $a }
                 return & $ok ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) })
             }
             'horizun_resolve_clash' {
@@ -117,7 +138,8 @@ function New-Fake([string]$mode) {
         }
         return @{ stage = 'dry_run'; answer = (& $reply $null $true) }
     }.GetNewClosure()
-    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = $s.Doc; ScratchRoot = (Join-Path $env:TEMP ('hz-rclr-' + [guid]::NewGuid().ToString('N'))); RunId = 't-rclr'; WriteGate = $false; Call = $call; Apply = $apply } }
+    # Hermetic: the link source is the fake's own file, never this machine's live-fixtures.json.
+    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = $s.Doc; ScratchRoot = (Join-Path $env:TEMP ('hz-rclr-' + [guid]::NewGuid().ToString('N'))); RunId = 't-rclr'; WriteGate = $false; Call = $call; Apply = $apply; LinkSourceDocument = $src } }
 }
 
 $f = New-Fake 'ok'
@@ -128,6 +150,9 @@ Check 'names match the catalog exactly' (@($cases | Where-Object { $module.Catal
 Check 'all six pass on fixtures that behave' (@($cases | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
 Check 'the column is the named Autodesk type, not the first listed (HZC300 stands no height)' ($f.State.ColumnTypeId -eq 999)
 Check 'scenario (a) cleanup deleted the pipes and the link type' (($f.State.Deleted -join ',') -match '900')
+Check 'an own wall is staged in the link source copy: opened, Generic type by name, saved, closed after re-activating the write document' (
+    ($f.State.SrcOpened -like '*/HZ_RCLINKSRC_*.rvt') -and ($f.State.SrcUpgrade -eq $true) -and ($f.State.SrcWall.target_document -eq 'HZ_RCLINKSRC_copy') -and ([long]$f.State.SrcWall.elements[0].type_id -eq 331) -and
+    ($f.State.Saved -eq 'HZ_RCLINKSRC_copy') -and ($f.State.BackTo -eq 'C:/hz-live/HZ_WRITE.rvt') -and ($f.State.SrcClosed -eq 'HZ_RCLINKSRC_copy'))
 Check 'scenario (b) cleanup deleted three elements' (@($f.State.Deleted | Where-Object { $_ -match '^\d+$' -or $_ -is [long] }).Count -ge 0)
 
 $g = New-Fake 'no-hit'
@@ -136,6 +161,13 @@ $a0 = $cases2 | Where-Object { $_.Name -eq $module.Catalog[0].Name }
 $a1 = $cases2 | Where-Object { $_.Name -eq $module.Catalog[1].Name }
 Check 'no link_contacts anywhere fails case 0' ($a0.Outcome -eq 'fail')
 Check 'scenario (b) still passes independently of scenario (a) failing' (@($cases2 | Select-Object -Skip 3 | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
+
+$pb = New-Fake 'proposes-blocked'
+$cases7 = @(& $module.Run $pb.Ctx)
+Check 'proposing the link-blocked vector (as -0,0,150) FAILS case 1: vectors compare as numbers' ((@($cases7 | Where-Object { $_.Name -eq $module.Catalog[1].Name })[0].Outcome) -eq 'fail')
+$nv = New-Fake 'no-vector'
+$cases8 = @(& $module.Run $nv.Ctx)
+Check 'a proposed row whose next_arguments carry no vector FAILS case 1, never passes on nothing' ((@($cases8 | Where-Object { $_.Name -eq $module.Catalog[1].Name })[0].Outcome) -eq 'fail')
 
 $h = New-Fake 'no-link'
 $cases3 = @(& $module.Run $h.Ctx)
@@ -146,6 +178,12 @@ Check 'scenario (b) is unaffected' (@($cases3 | Select-Object -Skip 3 | Where-Ob
 Check 'scenario (b) stands on an OWN level with a known elevation, deleted with the rest' (
     $f.State.Level -and ($f.State.LevelArgs.kind -eq 'level') -and ([double]$f.State.LevelArgs.elevation -gt 0) -and (@($f.State.Deleted) -contains $f.State.Level))
 Check 'the link source file is KEPT for the harness-documents manifest to declare' (@(Get-ChildItem -LiteralPath $f.Ctx.ScratchRoot -Filter 'HZ_RCLINKSRC_*.rvt' -ErrorAction SilentlyContinue).Count -eq 1)
+
+$w = New-Fake 'no-wall-type'
+$cases6 = @(& $module.Run $w.Ctx)
+Check 'a link source with no Generic wall type: (a) is not_covered naming it, still closed, and (b) passes' (
+    ($cases6[0].Outcome -eq 'not_covered') -and ($cases6[0].Detail -match 'Generic') -and ($w.State.SrcClosed -eq 'HZ_RCLINKSRC_copy') -and
+    (@($cases6 | Select-Object -Skip 3 | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0))
 
 $k = New-Fake 'no-column-type'
 $cases5 = @(& $module.Run $k.Ctx)

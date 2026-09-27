@@ -13,7 +13,7 @@ function Check($ok, $what) { if ($ok) { Write-Host "  PASS  $what" } else { Writ
 function New-Fake([string]$mode) {
     $src = Join-Path $env:TEMP ('hz-fake-host-' + [guid]::NewGuid().ToString('N') + '.rvt')
     Set-Content -LiteralPath $src -Value 'rvt' -Encoding ascii
-    $s = @{ Mode = $mode; Deleted = @(); Src = $src; Linked = $false; Rooms = $false; Spaces = $false; Plan = $false; NextId = 5000; Made = @(); Y2023 = $false; PosAngle = 30; LxInternal = @(); LxFile = '' }
+    $s = @{ Mode = $mode; Deleted = @(); Src = $src; Linked = $false; Moved = $false; Rooms = $false; Spaces = $false; Plan = $false; NextId = 5000; Made = @(); Y2023 = $false; PosAngle = 30; LxInternal = @(); LxFile = '' }
     $reply = { param($data, $isError = $false, $text = 'fake') [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $call = {
         param($tool, $a)
@@ -25,9 +25,16 @@ function New-Fake([string]$mode) {
                 }
                 $rows = @(); $links = @()
                 if ($s.Linked) {
-                    $state = if ($s.Mode -eq 'differs') { 'differs' } else { 'matches' }
-                    $matching = if ($s.Mode -eq 'differs') { 2 } else { 3 }
-                    $rows += [pscustomobject]@{ instance_id = 901; title = 'HZ_LVLSRC'; state = $state; levels_compared = 3; levels_matching = $matching; mismatches = @(); host_levels_not_in_link = @() }
+                    # The REAL row shape (FederationLevelRules): link levels at 0 / 3000 / 7000 mm match the
+                    # host until the instance moves; 'stuck' is a link whose levels do not move with it.
+                    $up = if ($s.Moved -and $s.Mode -ne 'stuck') { 500 } else { 0 }
+                    $mm = @(); $matching = 3
+                    if ($up -gt 0) {
+                        $matching = 0
+                        foreach ($lv in @(@('L1', 0), @('L2', 3000), @('L3', 7000))) { $mm += [pscustomobject]@{ state = 'elevation_differs'; link_level = $lv[0]; link_elevation_mm = ($lv[1] + $up); delta_mm = $up; host_levels = @() } }
+                    }
+                    $state = if ($mm.Count -gt 0) { 'differs' } else { 'matches' }
+                    $rows += [pscustomobject]@{ instance_id = 901; title = 'HZ_LVLSRC'; state = $state; levels_compared = 3; levels_matching = $matching; mismatches = $mm; host_levels_not_in_link = @() }
                     $links += [pscustomobject]@{ instance_id = 901; title = 'HZ_LVLSRC'; loaded = $true }
                 }
                 $verdict = if ($s.Mode -eq 'differs') { 'fails' } else { 'passes' }
@@ -85,6 +92,7 @@ function New-Fake([string]$mode) {
         $ok = { param($d) @{ stage = 'apply'; answer = [pscustomobject]@{ isError = $false; data = $d; text = 'ok' } } }
         switch ($tool) {
             'horizun_manage_links' { $s.Linked = $true; return & $ok ([pscustomobject]@{ link_type_id = 900; link_instance_id = 901 }) }
+            'horizun_transform_elements' { if (@($a.operations)[0].element_ids -contains 901) { $s.Moved = $true }; return & $ok ([pscustomobject]@{ operations_verified = $true }) }
             'horizun_delete_verified' { $s.Deleted += @($a.ids); if (@($a.ids) -contains 900) { $s.Linked = $false }; return & $ok ([pscustomobject]@{ ok = $true }) }
             'horizun_copy_between_documents' { return & $ok ([pscustomobject]@{ copied = 0 }) }
             'horizun_manage_views' { $s.Plan = $true; $s.NextId = $s.NextId + 1; $s.Made += $s.NextId; return & $ok ([pscustomobject]@{ aliases = [pscustomobject]@{ rtplan = $s.NextId } }) }
@@ -105,7 +113,7 @@ function New-Fake([string]$mode) {
             }
         }
     }.GetNewClosure()
-    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $env:TEMP ('hz-rtf-' + [guid]::NewGuid().ToString('N'))); RunId = 't1'; WriteGate = $false; Call = $call; Apply = $apply } }
+    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $env:TEMP ('hz-rtf-' + [guid]::NewGuid().ToString('N'))); RunId = 't1'; WriteGate = $false; LinkSourceDocument = $src; Call = $call; Apply = $apply } }
 }
 function Outcomes($r) { ($r | ForEach-Object { $_.Outcome }) -join ',' }
 # Results come in the order the cases RUN (case 13 runs right after case 9), so they are found by catalog name.
@@ -128,8 +136,8 @@ Check ($lxi.Count -eq 5 -and $worst -lt 0.001) ('a TIN written through a rotated
 Check ((At $r 11).Outcome -eq 'pass' -and (At $r 11).Detail -match 'HZ_RT_EG' -and (At $r 11).Detail -notmatch 'identity') ('the LandXML case names the surface and the position it used: ' + (At $r 11).Detail)
 Check ($h.State.LxFile -match 'linearUnit="meter"' -and $h.State.LxFile -notmatch '<!DOCTYPE') 'the probe''s file declares its unit and carries no DTD'
 
-$h = New-Fake 'differs'; $r = @(& $module.Run $h.Ctx)
-Check ((At $r 1).Outcome -eq 'fail' -and (At $r 2).Outcome -eq 'pass') 'a self link that differs fails the matches case but still answers'
+$h = New-Fake 'stuck'; $r = @(& $module.Run $h.Ctx)
+Check ((At $r 1).Outcome -eq 'fail' -and (At $r 1).Detail -match 'still match' -and (At $r 2).Outcome -eq 'pass') 'a link whose levels do not rise with it fails the differential case but still answers'
 
 $h = New-Fake 'ok'; $h.Ctx.Year = 2023; $h.State.Y2023 = $true; $r = @(& $module.Run $h.Ctx)
 Check ((At $r 10).Outcome -eq 'pass' -and (At $r 10).Detail -match 'toposolid_not_in_revit_2023') ('2023 reports the named refusal: ' + (At $r 10).Outcome)

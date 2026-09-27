@@ -15,7 +15,7 @@ $script:HzProbeModules += [pscustomobject]@{
     Name    = 'rooms-topo-federation'
     Catalog = @(
         @{ Name = 'levels-match: a malformed levels_match is refused';                                   Tool = 'horizun_federation_check' }
-        @{ Name = 'levels-match: a copy of the document linked into itself matches every level';        Tool = 'horizun_federation_check' }
+        @{ Name = 'levels-match: a linked model moved 500 mm up reads every level 500 mm higher';          Tool = 'horizun_federation_check' }
         @{ Name = 'levels-match: every link instance answers matches, differs or not_read';             Tool = 'horizun_federation_check' }
         @{ Name = 'levels-match: the probe link is deleted afterwards';                                  Tool = 'horizun_delete_verified' }
         @{ Name = 'rooms all_enclosed: the rehearsal lists both circuits of the own level and phase'; Tool = 'horizun_create_elements' }
@@ -42,16 +42,34 @@ $script:HzProbeModules += [pscustomobject]@{
         $bad = & $Ctx.Call 'horizun_federation_check' @{ target_document = $doc; rules = @{ levels_match = @{ tol = 1 } } }
         Case 0 $(if ($bad.isError -and ([string]$bad.text) -match 'unknown key') { 'pass' } else { 'fail' }) (Short $bad)
 
-        # ---- levels_match against the harness's own link -------------------------------------
+        # A LINK SOURCE THAT IS NOT THE HOST. Revit will not load a copy of the host document as
+        # its own link: the link type is added and stays "not loaded" (MEASURED 2026-09-27 in
+        # Revit 2026, three probes). The source is LinkSourceDocument from live-fixtures.json
+        # ({year} replaced; $Ctx.LinkSourceDocument overrides it), copied into the scratch folder.
+        function LinkSource($tag) {
+            $p = [string]$Ctx.LinkSourceDocument
+            if (-not $p) {
+                $fixturesPath = Join-Path $env:USERPROFILE '.horizun\live-fixtures.json'
+                if (Test-Path -LiteralPath $fixturesPath) {
+                    try { $fx = Get-Content -LiteralPath $fixturesPath -Raw | ConvertFrom-Json; if ($fx.LinkSourceDocument) { $p = [string]$fx.LinkSourceDocument } } catch { }
+                }
+            }
+            if ($p) { $p = $p.Replace('{year}', [string]$Ctx.Year) }
+            if (-not $p -or -not (Test-Path -LiteralPath $p)) { return $null }
+            New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+            $dst = Join-Path $Ctx.ScratchRoot ($tag + '_' + ([string]$Ctx.RunId -replace '[^A-Za-z0-9]', '') + '.rvt')
+            Copy-Item -LiteralPath $p -Destination $dst -Force
+            return $dst
+        }
+        # ---- levels_match against a linked model the probe places --------------------------
+        # A DIFFERENTIAL: read, move the link instance 500 mm up, read again. Every link level must
+        # read 500 mm higher and nothing can still match at a 1 mm tolerance - true whatever the
+        # two models call their levels, so the case needs no name in common between them.
         $linkTypeId = $null; $linkInstanceId = $null
         try {
             if (-not $Ctx.WriteGate) {
-                $h = & $Ctx.Call 'horizun_health' @{}
-                $me = @($h.data.open_documents | Where-Object { $_.title -eq $doc }) | Select-Object -First 1
-                if ($me -and $me.path -and (Test-Path -LiteralPath ([string]$me.path))) {
-                    New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
-                    $src = Join-Path $Ctx.ScratchRoot ('HZ_LVLSRC_' + ($run -replace '[^A-Za-z0-9]', '') + '.rvt')
-                    Copy-Item -LiteralPath ([string]$me.path) -Destination $src -Force
+                $src = LinkSource 'HZ_LVLSRC'
+                if ($src) {
                     $add = & $Ctx.Apply 'horizun_manage_links' @{ operation = 'add'; target_document = $doc; path = $src.Replace([char]92, '/') } ($run + '-lm-add')
                     if ($add.stage -eq 'apply' -and -not $add.answer.isError) {
                         $linkTypeId = [long]$add.answer.data.link_type_id
@@ -59,11 +77,12 @@ $script:HzProbeModules += [pscustomobject]@{
                     }
                     else { Case 1 'unverified' ('the probe link could not be added: ' + (Short $add.answer)) }
                 }
-                else { Case 1 'not_covered' ("the write document's path is not readable from health: " + $me.path) }
+                else { Case 1 'not_covered' 'no LinkSourceDocument in live-fixtures.json (a model of the run''s year that is not a copy of the write document; Revit does not load a copy of the host as its link)' }
             }
-            else { Case 1 'not_covered' 'the write tier is closed: the probe cannot link its own copy' }
+            else { Case 1 'not_covered' 'the write tier is closed: the probe cannot place its link' }
 
-            $lm = & $Ctx.Call 'horizun_federation_check' @{ target_document = $doc; rules = @{ levels_match = @{ tolerance_mm = 1 }; same_site = $false } }
+            $lmArgs = @{ target_document = $doc; rules = @{ levels_match = @{ tolerance_mm = 1 }; same_site = $false } }
+            $lm = & $Ctx.Call 'horizun_federation_check' $lmArgs
             if ($lm.isError -or -not $lm.data) {
                 if ($linkInstanceId) { Case 1 'fail' ('refused or crashed: ' + (Short $lm)) }
                 Case 2 'fail' ('refused or crashed: ' + (Short $lm))
@@ -71,9 +90,30 @@ $script:HzProbeModules += [pscustomobject]@{
             else {
                 $rows = @($lm.data.levels)
                 if ($linkInstanceId) {
-                    $mine = $rows | Where-Object { [long]$_.instance_id -eq $linkInstanceId } | Select-Object -First 1
-                    $ok = $mine -and $mine.state -eq 'matches' -and [int]$mine.levels_compared -gt 0 -and [int]$mine.levels_matching -eq [int]$mine.levels_compared
-                    Case 1 $(if ($ok) { 'pass' } else { 'fail' }) ('row: ' + ($mine | ConvertTo-Json -Compress -Depth 5))
+                    $a = $rows | Where-Object { [long]$_.instance_id -eq $linkInstanceId } | Select-Object -First 1
+                    $mv = & $Ctx.Apply 'horizun_transform_elements' @{ target_document = $doc; units = 'mm'; operations = @(@{ operation = 'move'; element_ids = @($linkInstanceId); vector = @(0, 0, 500) }) } ($run + '-lm-move')
+                    $lm2 = & $Ctx.Call 'horizun_federation_check' $lmArgs
+                    $b = if ($lm2.data) { @($lm2.data.levels) | Where-Object { [long]$_.instance_id -eq $linkInstanceId } | Select-Object -First 1 } else { $null }
+                    $problems = @()
+                    if (-not $a -or @('matches', 'differs') -notcontains [string]$a.state -or [int]$a.levels_compared -lt 1) { $problems += 'first read: ' + ($a | ConvertTo-Json -Compress -Depth 5) }
+                    elseif ($mv.stage -ne 'apply' -or $mv.answer.isError) { $problems += 'the link could not be moved: ' + (Short $mv.answer) }
+                    elseif (-not $b -or [int]$b.levels_compared -ne [int]$a.levels_compared) { $problems += 'second read: ' + ($b | ConvertTo-Json -Compress -Depth 5) }
+                    else {
+                        if ([int]$b.levels_matching -ne 0) { $problems += "$($b.levels_matching) level(s) still match 500 mm higher" }
+                        $before = @{}; foreach ($m in @($a.mismatches)) { $before[[string]$m.link_level] = [double]$m.link_elevation_mm }
+                        $checked = 0
+                        foreach ($m in @($b.mismatches)) {
+                            $n = [string]$m.link_level
+                            if ($before.ContainsKey($n)) {
+                                $checked++
+                                $d = [double]$m.link_elevation_mm - $before[$n]
+                                if ([math]::Abs($d - 500) -gt 1) { $problems += "$n moved $d mm, not 500" }
+                            }
+                            elseif ([string]$m.state -eq 'elevation_differs' -and [math]::Abs([double]$m.delta_mm - 500) -gt 1) { $problems += "$n matched before and now differs by $($m.delta_mm) mm, not 500" }
+                        }
+                        if ($problems.Count -eq 0) { $okDetail = "levels_compared $($a.levels_compared), matching $($a.levels_matching) -> 0, $checked level(s) read 500 mm higher" }
+                    }
+                    Case 1 $(if ($problems.Count -eq 0) { 'pass' } else { 'fail' }) $(if ($problems.Count -eq 0) { $okDetail } else { $problems -join '; ' })
                 }
                 if ($rows.Count -eq 0) { Case 2 'not_covered' 'the document has no link instance to answer for' }
                 else {
@@ -227,10 +267,16 @@ $script:HzProbeModules += [pscustomobject]@{
                 $topoLevel = if ($tl.Count) { [long]$tl[0].element_id } else { $null }
                 if ($topoLevel) { $created.Add($topoLevel) }
                 $topoType = Bring 'OST_Toposolid' 'Toposolid' 'Toposolid' 'topotype'
+                # The system family's default type is 'Toposolid 1' in the 2026 fixture (MEASURED 2026-09-27);
+                # the top is re-read from the points, so any type of the Toposolid family serves.
+                if (-not $topoType) {
+                    $tq = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Toposolid'); include_types = $true; include_links = $false; max_rows = 500 }
+                    $topoType = @(@($tq.data.rows) | Where-Object { $_ -and $_.is_element_type -and [string]$_.family -eq 'Toposolid' } | Sort-Object { [string]$_.type }) | Select-Object -First 1
+                }
                 if (-not $topoType) {
                     $q = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Toposolid'); include_types = $true; include_links = $false; max_rows = 500 }
                     $seen = @(@($q.data.rows) | Where-Object { $_ -and $_.is_element_type } | ForEach-Object { [string]$_.family + ': ' + [string]$_.type })
-                    Case 10 'not_covered' ("no toposolid type 'Toposolid: Toposolid' here or in the template; types seen: " + ($seen -join '; '))
+                    Case 10 'not_covered' ("no type of the Toposolid family here or in the template; types seen: " + ($seen -join '; '))
                     Case 11 'not_covered' 'no toposolid type by name (see the previous case)'
                 }
                 elseif (-not $topoLevel) { Case 10 'unverified' 'the toposolid probe level could not be created'; Case 11 'unverified' 'the toposolid probe level could not be created' }

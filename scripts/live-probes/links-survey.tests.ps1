@@ -102,7 +102,7 @@ function New-Fake([string]$mode, [bool]$withFixtures, [bool]$importerOnDisk = $t
             'horizun_create_elements' { $id = $s.Next; $s.Next++; $s.Kinds[[long]$id] = [string]@($a.elements)[0].kind; $s.TypeOf[[long]$id] = @($a.elements)[0].type_id; return & $ok ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) }) }
         }
     }.GetNewClosure()
-    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $root 'scratch'); RunId = 't1'; WriteGate = $false; RevitRoot = $revitRoot; Call = $call; Apply = $apply } }
+    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $root 'scratch'); RunId = 't1'; WriteGate = $false; RevitRoot = $revitRoot; LinkSourceDocument = $src; Call = $call; Apply = $apply } }
 }
 
 try {

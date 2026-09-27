@@ -3,7 +3,11 @@
 # opened DETACHED (workshared-fixture.lib.ps1), and - for a real sync - a central the
 # harness creates from that detached copy in its own scratch folder (SaveAs with
 # WorksharingSaveAsOptions.SaveAsCentral=true, then WorksharingUtils.CreateNewLocal),
-# because no project central may ever be synchronized by a probe. Creating that central
+# because no project central may ever be synchronized by a probe. A new local is not a
+# local on disk until Revit opens it and SAVES it - until then it reads IsCentral=true,
+# IsLocal=false exactly like a copy of its central, and the bridge's open guard refuses it
+# (MEASURED 2026-09-27 in Revit 2026) - so a second script does that first open and save,
+# with the central already closed, as Revit's own "Create New Local" does. Creating that central
 # needs horizun_execute_python, and syncing needs the owner's sync switch; when either
 # is off the case is not_covered with the reason, never forced. Nothing is saved over
 # a fixture. The central is closed before its local is opened (one session holding
@@ -106,8 +110,29 @@ __output__ = out
             }
             $null = Exit-HzWorksharedFixture $Ctx $fixture 'sync'
             $centralClosed = $true
+            # The first open and save of the new local, on the write document (the central is closed).
+            $pyL = @"
+from Autodesk.Revit.DB import ModelPathUtils, OpenOptions, BasicFileInfo
+local = r'$([string]$out.local)'
+dl = doc.Application.OpenDocumentFile(ModelPathUtils.ConvertUserVisiblePathToModelPath(local), OpenOptions())
+try:
+    dl.Save()
+finally:
+    dl.Close(False)
+i = BasicFileInfo.Extract(local)
+__output__ = {'is_local': bool(i.IsLocal), 'is_central': bool(i.IsCentral), 'central_path': i.CentralPath}
+"@
+            $l = & $Ctx.Call 'horizun_execute_python' @{ code = $pyL; target_document = $Ctx.Document; idempotency_key = ('sync-first-open-' + $run) }
+            $lo = Out $l
+            if ($l.isError -or -not $lo -or $lo.is_local -ne $true -or $lo.is_central -ne $false) {
+                Skip @($nOwnerOff, $nReal, $nKeep, $nNone) ('the new local did not become a local on its first open and save: ' +
+                    $(if ($lo) { "is_local=$($lo.is_local) is_central=$($lo.is_central) " } else { '' }) + (Short $l))
+                return $cases
+            }
             $o = & $Ctx.Call $S @{ operation = 'open'; file_path = ([string]$out.local).Replace([char]92, '/'); expected_version = [string]$Ctx.Year; idempotency_key = ('sync-open-' + $run) }
             if ($o.isError -or -not $o.data.title) {
+                # A refusal that says a document WAS opened left it open: the finally closes it too.
+                if ([string]$o.text -match "A DOCUMENT WAS OPENED.*?title '([^']+)'") { $local = $Matches[1] }
                 Skip @($nOwnerOff, $nReal, $nKeep, $nNone) ('the scratch local did not open: ' + (Short $o))
                 return $cases
             }

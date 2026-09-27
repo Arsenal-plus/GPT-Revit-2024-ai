@@ -27,7 +27,17 @@ $script:HzProbeModules += [pscustomobject]@{
         function Case($name, $tool, $outcome, $detail) { $cases.Add(@{ Name = $name; Tool = $tool; Outcome = $outcome; Detail = [string]$detail }) }
         function Applied($r) { $r.stage -eq 'apply' -and -not $r.answer.isError -and $r.answer.data }
         function Why($r) { "stage=$($r.stage) " + [string]$r.answer.text }
-        function Utc($s) { [DateTimeOffset]::Parse([string]$s, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
+        # ConvertFrom-Json (pwsh 7) turns an ISO instant into a DateTime; [string] of it drops the zone
+        # and a re-parse would read it as LOCAL time (MEASURED 2026-09-27: 12:00Z compared as 17:00Z
+        # on a -05:00 machine). A DateTime is taken by its Kind; a string by its own offset.
+        function Utc($s) {
+            if ($s -is [DateTime]) {
+                if ($s.Kind -eq [DateTimeKind]::Local) { return $s.ToUniversalTime() }
+                return [DateTime]::SpecifyKind($s, [DateTimeKind]::Utc)
+            }
+            if ($s -is [DateTimeOffset]) { return $s.UtcDateTime }
+            [DateTimeOffset]::Parse([string]$s, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime
+        }
         function Near($a, $b) { [Math]::Abs(((Utc $a) - (Utc $b)).TotalSeconds) -le 60 }
         $doc = $Ctx.Document
         $names = @('sun: the rehearsal shows the current and requested sun, scope unchanged, and binds a token',
@@ -49,8 +59,8 @@ $script:HzProbeModules += [pscustomobject]@{
         $dry = & $Ctx.Call $V ($req + @{ dry_run = $true })
         $pv = if ($dry.data) { @($dry.data.plan)[0].sun } else { $null }
         $site = if ($pv -and $pv.current) { $pv.current } else { $null }
-        if ($pv -and $pv.requested.type -eq 'OneDayStudy' -and $pv.requested.start_utc -eq '2026-06-21T12:00:00Z' -and
-            $pv.requested.end_utc -eq '2026-06-21T23:00:00Z' -and $pv.location_scope -eq 'unchanged' -and $site -and $dry.data.confirmation_token) {
+        if ($pv -and $pv.requested.type -eq 'OneDayStudy' -and (Near $pv.requested.start_utc '2026-06-21T12:00:00Z') -and
+            (Near $pv.requested.end_utc '2026-06-21T23:00:00Z') -and $pv.location_scope -eq 'unchanged' -and $site -and $dry.data.confirmation_token) {
             Case $names[0] $V 'pass' ('current=' + ($site | ConvertTo-Json -Compress -Depth 3))
         } else { Case $names[0] $V 'fail' ('plan=' + ($pv | ConvertTo-Json -Compress -Depth 5) + ' text=' + [string]$dry.text) }
 

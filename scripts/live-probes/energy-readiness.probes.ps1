@@ -1,15 +1,18 @@
 # Live probes: horizun_code_check operation=energy_readiness (Revit's energy model, built in a
 # transaction that is always rolled back). Stages its OWN level far from the model, one room
-# placed with NO walls (it must come back BY ID as not enclosed) and, 12 m away, a 6 x 4 m room
-# closed by four walls with one window, so the energy model has an own space and an own window
-# to count against a baseline read taken before staging. Wall and window types come BY NAME from
+# placed with NO walls (it must come back BY ID as not enclosed) and, 12 m away, a 6 x 4 m
+# enclosure of four walls with one window holding BOTH an own room and an own MEP space: the
+# energy model is built from the energy settings' export category (rooms OR spaces - a fixture
+# exporting spaces never models a room, MEASURED 2026-09-27 on HZ_WRITE), so whichever the
+# settings name is the own space to find, and the own window is counted against a baseline read
+# taken before staging. Wall and window types come BY NAME from
 # this Revit's own Autodesk template. Everything created is deleted; the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'energy-readiness'
     Catalog = @(
         @{ Name = 'energy: an own room placed without walls is listed by id in spaces.not_enclosed'; Tool = 'horizun_code_check' }
         @{ Name = 'energy: the energy model is built and rolled back (built, rolled_back, azimuth_basis named)'; Tool = 'horizun_code_check' }
-        @{ Name = 'energy: the own walled room is enclosed and not missing from the energy model'; Tool = 'horizun_code_check' }
+        @{ Name = 'energy: the own walled room and space are enclosed, and the one of the export category is in the energy model'; Tool = 'horizun_code_check' }
         @{ Name = 'energy: surfaces without a construction are a count from 2024 and named not measurable in 2023'; Tool = 'horizun_code_check' }
         @{ Name = 'energy: window_to_wall has the four orientations N,E,S,W and counts the own window'; Tool = 'horizun_code_check' }
         @{ Name = 'energy probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
@@ -97,11 +100,30 @@ $script:HzProbeModules += [pscustomobject]@{
                       level_id = $levelId; host_id = $walls[0] } 'window'
         } else { $null }
         $roomId = if ($closed) { Create @{ kind = 'room'; point = @(($X2 + $Wd / 2), ($Y2 + $Dp / 2)); level_id = $levelId } 'room' } else { $null }
-        $staging = "level=$levelId loose_room=$looseRoom walls=$(@($walls | Where-Object { $_ }).Count) window=$windowId room=$roomId " + ($why -join '; ')
+        $spaceId = if ($closed) { Create @{ kind = 'space'; point = @(($X2 + $Wd / 2), ($Y2 + $Dp / 2)); level_id = $levelId } 'space' } else { $null }
+        $staging = "level=$levelId loose_room=$looseRoom walls=$(@($walls | Where-Object { $_ }).Count) window=$windowId room=$roomId space=$spaceId " + ($why -join '; ')
 
+        # Whether the document HAS a main energy model, read before and after the rolled-back
+        # build through gbXML's read-only dry run (the one reply that publishes it): the build
+        # must leave it as it found it. The dry run needs a placed space, so it is read now.
+        function MainModel {
+            $d = & $Ctx.Call 'horizun_export' @{ target_document = $doc; format = 'gbxml'; output_path = (Join-Path $Ctx.ScratchRoot ("hz-enr-main-$run.xml")); overwrite = $true; dry_run = $true }
+            if (-not $d.isError -and $d.data -and $null -ne $d.data.main_energy_model_present) { return [string][bool]$d.data.main_energy_model_present }
+            return $null
+        }
+        $mainBefore = MainModel
         $m = Energy
+        $mainAfter = MainModel
         $rep = $m.data
         $em = if ($rep) { $rep.energy_model } else { $null }
+        # The own element the energy model must hold: the export category's, read from the reply
+        # (energy_scope names it whether or not a model was built). Unreadable -> both must be in.
+        $scope = if ($rep -and $rep.spaces) { [string]$rep.spaces.energy_scope } else { '' }
+        $exported = if ($scope -match '^MEP spaces') { 'space' } elseif ($scope -match '^rooms of') { 'room' } else { 'either' }
+        # Decided per id, never by counting a switch's output: @($null) out of a switch collapses to
+        # $null, whose Count is 0 - "0 of 0 staged" read as ready with nothing staged.
+        $ownReady = switch ($exported) { 'space' { [bool]$spaceId } 'room' { [bool]$roomId } default { [bool]$roomId -and [bool]$spaceId } }
+        $ownIds = @(@($(switch ($exported) { 'space' { $spaceId } 'room' { $roomId } default { $roomId; $spaceId } })) | Where-Object { $_ } | ForEach-Object { [long]$_ })
 
         # ==== 1: the loose room comes back BY ID as not enclosed ===============================
         if (-not $looseRoom) { Case $catalog[0] $tools[0] 'unverified' ('staging incomplete: ' + $staging) }
@@ -111,27 +133,34 @@ $script:HzProbeModules += [pscustomobject]@{
         }
 
         # ==== 2: built and ROLLED BACK - the only way this operation may touch the model =======
-        if (-not $roomId) { Case $catalog[1] $tools[1] 'unverified' ('staging incomplete: ' + $staging) }
+        if (-not $ownReady) { Case $catalog[1] $tools[1] 'unverified' ("staging incomplete for the export category ($exported): " + $staging) }
         else {
             $ok2 = -not $m.isError -and $em -and $em.built -eq $true -and $em.rolled_back -eq $true -and [string]$em.azimuth_basis -match '^(true_north|project_north|unverified)'
-            Case $catalog[1] $tools[1] $(if ($ok2) { 'pass' } else { 'fail' }) $(if ($em) { "built=$($em.built) rolled_back=$($em.rolled_back) tier=$($em.tier) azimuth_basis=$($em.azimuth_basis) analytical_spaces=$($em.analytical_spaces)" } else { Short $m })
+            # A MEASURED change of the main energy model fails; an unreadable side is named, not judged.
+            $mainChanged = $mainBefore -and $mainAfter -and $mainBefore -ne $mainAfter
+            $mainText = if ($mainBefore -and $mainAfter) { "main_energy_model_present $mainBefore -> $mainAfter" } else { "main_energy_model_present unread (before=$mainBefore after=$mainAfter)" }
+            Case $catalog[1] $tools[1] $(if ($ok2 -and -not $mainChanged) { 'pass' } else { 'fail' }) $(if ($em) { "built=$($em.built) rolled_back=$($em.rolled_back) tier=$($em.tier) azimuth_basis=$($em.azimuth_basis) analytical_spaces=$($em.analytical_spaces); $mainText" } else { Short $m })
         }
 
-        # ==== 3: the walled room is enclosed and the energy model has it =======================
-        if (-not $roomId) { Case $catalog[2] $tools[2] 'unverified' ('staging incomplete: ' + $staging) }
+        # ==== 3: room and space enclosed; the export category's own one is IN the model =========
+        # Judged only on a BUILT model: with none, not_in_energy_model is absent and "not missing"
+        # would pass on nothing at all.
+        if (-not $roomId -or -not $spaceId) { Case $catalog[2] $tools[2] 'unverified' ('staging incomplete: ' + $staging) }
         elseif (-not $rep -or -not $rep.spaces) { Case $catalog[2] $tools[2] 'fail' (Short $m) }
         else {
+            $asEnclosed = @($rep.spaces.not_enclosed | Where-Object { [long]$_.id -eq $roomId -or [long]$_.id -eq $spaceId } | ForEach-Object { [long]$_.id })
             $missing = $rep.spaces.not_in_energy_model
-            $asEnclosed = @($rep.spaces.not_enclosed | Where-Object { [long]$_.id -eq $roomId }).Count -gt 0
-            if ($missing -is [string]) { Case $catalog[2] $tools[2] 'unverified' ("the match is unavailable: $missing") }
+            $d3 = "export=$exported ($scope) own room=$roomId space=$spaceId in not_enclosed=[$($asEnclosed -join ',')]"
+            if (-not $em -or $em.built -ne $true) { Case $catalog[2] $tools[2] 'fail' ("$d3 - no energy model was built: " + $(if ($em) { $em.why } else { Short $m })) }
+            elseif ($missing -is [string]) { Case $catalog[2] $tools[2] 'unverified' ("$d3 - the match is unavailable: $missing") }
             else {
-                $isMissing = @($missing | Where-Object { $_ -and [long]$_.id -eq $roomId }).Count -gt 0
-                Case $catalog[2] $tools[2] $(if (-not $asEnclosed -and -not $isMissing -and -not $m.isError) { 'pass' } else { 'fail' }) "own room $roomId in not_enclosed=$asEnclosed in not_in_energy_model=$isMissing"
+                $absent = @($missing | Where-Object { $_ -and $ownIds -contains [long]$_.id } | ForEach-Object { [long]$_.id })
+                Case $catalog[2] $tools[2] $(if ($asEnclosed.Count -eq 0 -and $absent.Count -eq 0 -and -not $m.isError) { 'pass' } else { 'fail' }) "$d3 not_in_energy_model own=[$($absent -join ',')] analytical_spaces=$($em.analytical_spaces)"
             }
         }
 
         # ==== 4: constructions - a count from 2024, named not measurable in 2023 ================
-        if (-not $roomId) { Case $catalog[3] $tools[3] 'unverified' ('staging incomplete: ' + $staging) }
+        if (-not $ownReady) { Case $catalog[3] $tools[3] 'unverified' ("staging incomplete for the export category ($exported): " + $staging) }
         else {
             $surf = if ($rep) { $rep.surfaces } else { $null }
             # The own walls have types, so on a tier-Final model some surfaces MUST carry a construction:
@@ -145,7 +174,7 @@ $script:HzProbeModules += [pscustomobject]@{
         }
 
         # ==== 5: WWR per orientation, and the own window raises the window count ================
-        if (-not $windowId -or -not $roomId) { Case $catalog[4] $tools[4] 'unverified' ('staging incomplete: ' + $staging) }
+        if (-not $windowId -or -not $ownReady) { Case $catalog[4] $tools[4] 'unverified' ("staging incomplete for the export category ($exported): " + $staging) }
         else {
             $wwr = if ($rep) { $rep.window_to_wall } else { $null }
             $rows = if ($wwr) { @($wwr.by_orientation) } else { @() }
@@ -154,7 +183,7 @@ $script:HzProbeModules += [pscustomobject]@{
             Case $catalog[4] $tools[4] $(if ($order -eq 'N,E,S,W' -and $gain -ge 1) { 'pass' } else { 'fail' }) "orientations=$order windows_before=$(WindowsOf $before) windows_after=$(WindowsOf $m) unmeasured_wall_surfaces=$(if ($wwr) { $wwr.unmeasured_wall_surfaces })"
         }
 
-        # ==== 6: cleanup, newest first (room, window, walls, types, loose room, level) ==========
+        # ==== 6: cleanup, newest first (space, room, window, walls, types, loose room, level) ===
         $ids = @($created | ForEach-Object { [long]$_ })
         if ($ids.Count -eq 0) { Case $catalog[5] $tools[5] 'unverified' 'nothing was created' }
         else {

@@ -70,13 +70,29 @@ $script:HzProbeModules += [pscustomobject]@{
         function WallType { $w = @(Types 'OST_Walls' | Where-Object { -not ($_.family -match 'Curtain|cortina|Stacked|apilad' -or $_.type -match 'Curtain|cortina') }); @(@($w | Where-Object { $_.type -match 'Generic|Gen.rico' }) + $w) | Select-Object -First 1 }
         function FloorType { $fts = @(Types 'OST_Floors' | Where-Object { $_.family -match '^(Floor|Suelo|Piso|Forjado)$' }); @(@($fts | Where-Object { $_.type -match 'Generic|Gen.rico' }) + $fts) | Select-Object -First 1 }
         New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+        # A LINK SOURCE THAT IS NOT THE HOST. Revit will not load a copy of the host document as
+        # its own link: the link type is added and stays "not loaded" (MEASURED 2026-09-27 in
+        # Revit 2026, three probes). The source is LinkSourceDocument from live-fixtures.json
+        # ({year} replaced; $Ctx.LinkSourceDocument overrides it), copied into the scratch folder.
+        function LinkSource($tag) {
+            $p = [string]$Ctx.LinkSourceDocument
+            if (-not $p) {
+                $fixturesPath = Join-Path $env:USERPROFILE '.horizun\live-fixtures.json'
+                if (Test-Path -LiteralPath $fixturesPath) {
+                    try { $fx = Get-Content -LiteralPath $fixturesPath -Raw | ConvertFrom-Json; if ($fx.LinkSourceDocument) { $p = [string]$fx.LinkSourceDocument } } catch { }
+                }
+            }
+            if ($p) { $p = $p.Replace('{year}', [string]$Ctx.Year) }
+            if (-not $p -or -not (Test-Path -LiteralPath $p)) { return $null }
+            New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+            $dst = Join-Path $Ctx.ScratchRoot ($tag + '_' + ([string]$Ctx.RunId -replace '[^A-Za-z0-9]', '') + '.rvt')
+            Copy-Item -LiteralPath $p -Destination $dst -Force
+            return $dst
+        }
         # ---- acquire_coordinates ------------------------------------------------------
         try {
-            $h = & $Ctx.Call 'horizun_health' @{}
-            $me = @($h.data.open_documents | Where-Object { $_.title -eq $doc }) | Select-Object -First 1
-            if (-not $me -or -not $me.path -or -not (Test-Path -LiteralPath ([string]$me.path))) { foreach ($i in 0..2) { Case $i 'not_covered' ("the write document's path is not readable from health: " + $me.path) }; throw 'HZ_STOP' }
-            $src = Join-Path $Ctx.ScratchRoot ('HZ_ACQ_' + $tag + '.rvt')
-            Copy-Item -LiteralPath ([string]$me.path) -Destination $src -Force
+            $src = LinkSource 'HZ_ACQ'
+            if (-not $src) { foreach ($i in 0..2) { Case $i 'not_covered' 'no LinkSourceDocument in live-fixtures.json (a model of the run''s year that is not a copy of the write document; Revit does not load a copy of the host as its link)' }; throw 'HZ_STOP' }
             $add = & $Ctx.Apply 'horizun_manage_links' @{ operation = 'add'; target_document = $doc; path = $src.Replace([char]92, '/') } ($run + '-ls-add')
             if ($add.stage -ne 'apply' -or $add.answer.isError) { foreach ($i in 0..2) { Case $i 'unverified' ('the link could not be added: ' + (Short $add.answer)) }; throw 'HZ_STOP' }
             $linkType = [long]$add.answer.data.link_type_id; $inst = [long]$add.answer.data.link_instance_id

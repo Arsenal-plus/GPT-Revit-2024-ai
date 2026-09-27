@@ -114,6 +114,31 @@ function Send($obj) {
     $proc.StandardInput.Flush()
 }
 
+# A reply PowerShell's object model refuses although it is valid JSON - a property named
+# "" or two names differing only in case - is still the reply. It is read as a hashtable
+# (PowerShell 6+), exactly those keys are renamed so every later ConvertFrom-Json of the
+# saved file works, and reply_parse_note SAYS so. Dropping the line instead left the caller
+# waiting out -TimeoutSec on an answer it already had (MEASURED 2026-09-27: a structural
+# load with no load case was grouped under "", and a finished call looked hung for 15 min).
+$script:replyParseNote = $null
+function Repair-JsonKeys($node) {
+    if ($node -is [System.Collections.IDictionary]) {
+        $fixed = [ordered]@{}
+        foreach ($k in @($node.Keys)) {
+            $name = [string]$k
+            if ($name -eq '') { $name = '(empty key)' }
+            while ($fixed.Contains($name)) { $name = $name + ' (case duplicate)' }
+            $fixed[$name] = Repair-JsonKeys $node[$k]
+        }
+        return $fixed
+    }
+    if ($node -is [System.Collections.IList] -and -not ($node -is [string])) {
+        $items = @(foreach ($item in $node) { , (Repair-JsonKeys $item) })
+        return , $items
+    }
+    return $node
+}
+
 function ReadReply($seconds) {
     $deadline = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $deadline) {
@@ -134,9 +159,19 @@ function ReadReply($seconds) {
         Write-Verbose ("stdout line: {0} characters" -f $(if ($null -eq $line) { -1 } else { $line.Length }))
         if ($null -eq $line) { return $null }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $o = $null
         try { $o = $line | ConvertFrom-Json } catch {
-            Write-Verbose ("stdout was not JSON: {0}" -f $_.Exception.Message)
-            continue
+            $why = $_.Exception.Message
+            if ($PSVersionTable.PSVersion.Major -ge 6) {
+                try { $o = Repair-JsonKeys ($line | ConvertFrom-Json -AsHashtable) } catch { $o = $null }
+            }
+            if ($null -eq $o) {
+                Write-Verbose ("stdout was not JSON: {0}" -f $why)
+                continue
+            }
+            $script:replyParseNote = "valid JSON that ConvertFrom-Json refused ($why); read as a hashtable, " +
+                "with an empty key renamed '(empty key)' and a key differing only in case suffixed ' (case duplicate)'"
+            Write-Verbose $script:replyParseNote
         }
         # Notifications carry no id. Only a reply to OUR request ends the wait -
         # taking the first line that parses is how a caller ends up reading a
@@ -193,7 +228,8 @@ elseif ($reply) {
     # harness then dies reporting a missing property instead of reporting that the
     # bridge lost Revit. That is the transport hiding the finding.
     $resultNames = @()
-    if ($null -ne $reply.result) { $resultNames = @($reply.result.PSObject.Properties.Name) }
+    if ($reply.result -is [System.Collections.IDictionary]) { $resultNames = @($reply.result.Keys) }
+    elseif ($null -ne $reply.result) { $resultNames = @($reply.result.PSObject.Properties.Name) }
     if ($resultNames -contains 'structuredContent' -and $null -ne $reply.result.structuredContent) {
         $data = $reply.result.structuredContent
     }
@@ -214,6 +250,8 @@ $out = [pscustomobject]@{
     # becomes unexplainable an hour later.
     result        = $data
     raw           = $text
+    # Set only when the reply parsed as a hashtable with renamed keys (see Repair-JsonKeys).
+    reply_parse_note = $script:replyParseNote
 }
 
 if ($Json) {

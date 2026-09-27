@@ -244,7 +244,7 @@ $script:HzProbeModules += [pscustomobject]@{
         # ==== 8: unenclosed room ===========================================================
         if (-not ($phase -and $walls['w'])) { Case $catalog[7] $Q 'not_covered' $why }
         else {
-            $del = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; element_ids = @($walls['w']) } ($run + '-rm-open')
+            $del = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; ids = @([long]$walls['w']) } ($run + '-rm-open')
             if ($del.stage -ne 'apply' -or $del.answer.isError) { Case $catalog[7] $Q 'fail' ('deleting the west wall: ' + (Short $del.answer)) }
             else {
                 [void]$created.Remove([long]$walls['w'])
@@ -269,7 +269,7 @@ $script:HzProbeModules += [pscustomobject]@{
         else {
             $ids = @($created | ForEach-Object { [long]$_ })
             [array]::Reverse($ids)   # inserts, room and space before the walls and the level
-            $del = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; element_ids = $ids } ($run + '-rm-cleanup')
+            $del = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; ids = $ids; id_cap = 500 } ($run + '-rm-cleanup')
             if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case $catalog[8] $DeleteTool 'pass' "$($ids.Count) id(s) deleted" }
             else { Case $catalog[8] $DeleteTool 'fail' ('cleanup: ' + (Short $del.answer)) }
         }

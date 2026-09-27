@@ -151,7 +151,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 $outcome = if ($phases.Count -eq 0) { 'not_covered' } else { 'fail' }
                 Case $names[3] $WP $outcome ('no phase numbered the own room: ' + ($seen -join ' | ') + ' ' + [string]$ph.text)
             } else {
-                $ra = & $Ctx.Apply $WP @{ target_document = $doc; sequence = $held.seq } ($run + '-sq-room')
+                $ra = & $Ctx.Apply $WP @{ target_document = $doc; sequence = $held.seq } ($run + '-sq-apply-room')
                 $row = if (Applied $ra) { @($ra.answer.data.rows) | Select-Object -First 1 } else { $null }
                 if ($row -and $row.confirmed -eq $true -and (ReadsBack $row "${tag}R1") -and $ra.answer.data.verification.verified -eq $true) {
                     Case $names[3] $WP 'pass' ("phase '$($held.phase.name)': room $($held.row.room) via $($held.row.room_from) -> ${tag}R1 re-read")
@@ -180,7 +180,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 if (-not $o -or -not $dd.data.confirmation_token -or @('to_room', 'from_room') -notcontains [string]$o.room_from -or [string]$o.room -ne [string]$held.row.room) {
                     Case $names[4] $WP 'fail' ('door rehearsal (want the own room ' + [string]$held.row.room + ' via to_room/from_room): ' + $(if ($o) { $o | ConvertTo-Json -Compress -Depth 6 } else { [string]$dd.text }))
                 } else {
-                    $da = & $Ctx.Apply $WP @{ target_document = $doc; sequence = $ds } ($run + '-sq-door')
+                    $da = & $Ctx.Apply $WP @{ target_document = $doc; sequence = $ds } ($run + '-sq-apply-door')
                     $row = if (Applied $da) { @($da.answer.data.rows) | Select-Object -First 1 } else { $null }
                     if ($row -and $row.confirmed -eq $true -and (ReadsBack $row "${tag}D1") -and $da.answer.data.verification.verified -eq $true) {
                         Case $names[4] $WP 'pass' ("door $doorId in room $($o.room) via $($o.room_from) -> Mark ${tag}D1 re-read")

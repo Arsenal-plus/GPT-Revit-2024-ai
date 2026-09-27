@@ -106,8 +106,9 @@ function Fake-Apply($tool, $a, $key) {
         return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) }) $false '') }
     }
     if ($tool -eq 'horizun_delete_verified') {
-        if ($suffix -eq 'open') { $script:westGone = $true } else { $script:cleanup = @($a.element_ids) }
-        return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ deleted = @($a.element_ids) }) $false '') }
+        if ($suffix -eq 'open') { $script:westGone = $true } else { $script:cleanup = @($a.ids) }
+        # horizun_delete_verified takes mode='ids' + ids (MEASURED 2026-09-27: element_ids is refused)
+        return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ deleted = @($a.ids) }) $false '') }
     }
     return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{}) $false '') }
 }

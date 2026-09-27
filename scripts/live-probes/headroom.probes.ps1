@@ -2,8 +2,13 @@
 # Stages its OWN two levels 3 m apart far above the model, a 4 x 4 m floor on each at
 # X = 1,140,000 mm (the lower one is the surface the upper one stands clear of), a third floor
 # 10 m away with nothing below it, and its own 3D view (no template, no section box). The
-# floor type comes BY NAME from this Revit's Autodesk template. Everything created is deleted;
-# the document is never saved.
+# floor type comes BY NAME from this Revit's Autodesk template. Two own pipes exercise the
+# curve path: one hung 500 mm under the upper floor over the lower one (sampled along its
+# location curve), one run through the middle of the lone floor's thickness (the ray meets
+# that floor before the pipe and again after it: inside_target, never a clear height to the
+# floor's own far side). Pipe and piping-system types come BY NAME from the document or the
+# year's MEP template; copied MEP types stay in the disposable document and the cleanup case
+# names them. Everything else created is deleted; the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'headroom'
     Catalog = @(
@@ -13,6 +18,8 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'headroom: an own floor with nothing below is not_measured, never passes'; Tool = 'horizun_code_check' }
         @{ Name = 'headroom: a view_id that is not a 3D view is refused by name'; Tool = 'horizun_code_check' }
         @{ Name = 'headroom probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
+        @{ Name = "headroom: an own pipe hung under the upper floor is sampled along its curve and measured down to the lower one"; Tool = 'horizun_code_check' }
+        @{ Name = "headroom: an own pipe run inside the own floor is inside_target, never measured against the floor's far side"; Tool = 'horizun_code_check' }
     )
     Run     = {
         param($Ctx)
@@ -83,7 +90,47 @@ $script:HzProbeModules += [pscustomobject]@{
         $viewId = $null
         $mv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(@{ operation = 'create_3d'; key = 'hdr'; name = "HZ_HDR_3D_$run" }) } ($run + '-hdr-view')
         if (Applied $mv) { $viewId = [long]$mv.answer.data.aliases.hdr; [void]$created.Add($viewId) } else { [void]$why.Add('3D view not created: stage=' + $mv.stage + ' ' + (Short $mv.answer)) }
-        $staging = "levels=$l1,$l2 floors=$floorA,$floorB,$floorC view=$viewId " + ($why -join '; ')
+        # Fine detail through the view's own parameter (VIEW_DETAIL_LEVEL: 3 = Fine), a verified typed
+        # write: a fresh 3D view takes its type's default (Medium in the 2026 fixture, MEASURED
+        # 2026-09-27) and headroom refuses anything below Fine.
+        if ($viewId) {
+            $fine = & $Ctx.Apply 'horizun_write_params_verified' @{ target_document = $doc; writes = @(@{ target_id = $viewId; parameter = 'VIEW_DETAIL_LEVEL'; value = 3 }) } ($run + '-hdr-fine')
+            if ($fine.stage -ne 'apply' -or $fine.answer.isError) { [void]$why.Add('the own 3D view could not be set to Fine: ' + (Short $fine.answer)) }
+        }
+        # ---- two own pipes: hung under B over A, and run through the middle of C's thickness ------
+        $kept = New-Object System.Collections.ArrayList
+        function Bring($category, $candidates, $key) {
+            foreach ($cand in $candidates) { $hit = Named (TypeRows $category) $cand; if ($hit) { return $hit } }
+            $mepTpl = @('English\Systems-Default_Metric.rte', 'English\Plumbing-Default_Metric.rte', 'English\Default-Multi-Discipline_Metric.rte') |
+                ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+            if (-not $mepTpl) { [void]$why.Add("no MEP template under $tplRoot for $category"); return $null }
+            foreach ($cand in $candidates) {
+                $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $mepTpl; category = $category; type_names = @($cand); duplicate_types = 'use_destination' } ($run + '-hdr-' + $key + '-' + ($cand -replace '[^A-Za-z0-9]', ''))
+                $hit = Named (TypeRows $category) $cand
+                if ($hit) { [void]$kept.Add([long]$hit.element_id); return $hit }
+            }
+            [void]$why.Add("no $category type named " + ($candidates -join ' / ') + ' in the document or in ' + (Split-Path $mepTpl -Leaf))
+            return $null
+        }
+        $pipeType = Bring 'OST_PipeCurves' @('Pipe Types: Default', 'Pipe Types: Standard') 'pipetype'
+        $pipeSys = Bring 'OST_PipingSystem' @('Domestic Cold Water', 'Hydronic Supply') 'pipesys'
+        $pipeHung = $null; $pipeIn = $null
+        if ($l1 -and $floorA -and $floorB -and $pipeType -and $pipeSys) {
+            $pipeHung = Create @{ kind = 'pipe'; start = @(($X + 500), ($Y + 2000), ($E + 2500)); end = @(($X + 3500), ($Y + 2000), ($E + 2500)); diameter = 25
+                                  level_id = $l1; type_id = [long]$pipeType.element_id; system_type_id = [long]$pipeSys.element_id } 'pipe-hung'
+        }
+        if ($l2 -and $floorC -and $pipeType -and $pipeSys) {
+            # C's real thickness, read back: the pipe goes through the middle of it.
+            $bb = & $Ctx.Call 'horizun_query_model' @{ element_ids = @($floorC); include_bounding_box = $true; include_links = $false }
+            $box = if ($bb.data) { (@($bb.data.rows) | Select-Object -First 1).bounding_box } else { $null }
+            $thick = if ($box) { [double]@($box.max)[2] - [double]@($box.min)[2] } else { 0 }
+            if ($thick -ge 60) {
+                $mid = ([double]@($box.max)[2] + [double]@($box.min)[2]) / 2
+                $pipeIn = Create @{ kind = 'pipe'; start = @(($XC + 500), ($Y + 2000), $mid); end = @(($XC + 3500), ($Y + 2000), $mid); diameter = 15
+                                    level_id = $l2; type_id = [long]$pipeType.element_id; system_type_id = [long]$pipeSys.element_id } 'pipe-in'
+            } else { [void]$why.Add("floor C's thickness read as $thick mm (under 60 mm, or unread): no pipe fits inside it: " + (Short $bb)) }
+        }
+        $staging = "levels=$l1,$l2 floors=$floorA,$floorB,$floorC view=$viewId pipes=$pipeHung,$pipeIn " + ($why -join '; ')
 
         function Headroom($ids, $direction, $minMm) {
             & $Ctx.Call 'horizun_code_check' @{ target_document = $doc; operation = 'headroom'; max_findings = 50
@@ -143,13 +190,35 @@ $script:HzProbeModules += [pscustomobject]@{
             Case $catalog[4] $tools[4] $(if ($r5.isError -and [string]$r5.text -match 'not a 3D view') { 'pass' } else { 'fail' }) (Short $r5)
         }
 
-        # ==== 6: cleanup, newest first (view, floors, floor type, levels) ==========================
+        # ==== 7: the hung pipe - sampled along its location curve, measured down to A ==============
+        if (-not ($pipeHung -and $viewId)) { Case $catalog[6] $tools[6] 'unverified' ('staging incomplete: ' + $staging) }
+        else {
+            $r7 = Headroom $pipeHung 'down' 1000
+            $hung = RowOf $r7 $pipeHung
+            # The pipe's centre is 2500 mm over A: its underside is a little less, never more.
+            $ok7 = -not $r7.isError -and $hung -and [string]$hung.sampling -eq 'along_location_curve' -and [int]$hung.measured -ge 1 -and
+                   [double]$hung.coverage -eq 1 -and [long]$hung.governing.surface.element_id -eq $floorA -and
+                   $null -ne $hung.min_clear_mm -and [double]$hung.min_clear_mm -gt 2400 -and [double]$hung.min_clear_mm -lt 2500 -and $hung.outcome -eq 'passes'
+            Case $catalog[6] $tools[6] $(if ($ok7) { 'pass' } else { 'fail' }) $(if ($hung) { (Describe $hung) + " sampling=$($hung.sampling)" } else { Short $r7 })
+        }
+
+        # ==== 8: the pipe inside C - inside_target, not a clear height to C's own underside =========
+        if (-not ($pipeIn -and $viewId)) { Case $catalog[7] $tools[7] 'unverified' ('staging incomplete: ' + $staging) }
+        else {
+            $r8 = Headroom $pipeIn 'down' 1000
+            $inRow = RowOf $r8 $pipeIn
+            $ok8 = -not $r8.isError -and $inRow -and $inRow.outcome -eq 'not_measured' -and [int]$inRow.measured -eq 0 -and [int]$inRow.inside_target -ge 1
+            Case $catalog[7] $tools[7] $(if ($ok8) { 'pass' } else { 'fail' }) $(if ($inRow) { (Describe $inRow) + " inside_target=$($inRow.inside_target)" } else { Short $r8 })
+        }
+
+        # ==== 6: cleanup, newest first (pipes, view, floors, floor type, levels) ====================
         $ids = @($created | ForEach-Object { [long]$_ })
         if ($ids.Count -eq 0) { Case $catalog[5] $tools[5] 'unverified' 'nothing was created' }
         else {
             [array]::Reverse($ids)
             $del = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = $ids; id_cap = 500 } ($run + '-hdr-cleanup')
-            if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case $catalog[5] $tools[5] 'pass' ("deleted " + $ids.Count + " created ids") }
+            $keptText = if ($kept.Count) { '; MEP types copied from a template stay in the disposable document: ' + (@($kept) -join ',') } else { '' }
+            if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case $catalog[5] $tools[5] 'pass' ("deleted " + $ids.Count + " created ids" + $keptText) }
             else { Case $catalog[5] $tools[5] 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Short $del.answer)) }
         }
         return $cases

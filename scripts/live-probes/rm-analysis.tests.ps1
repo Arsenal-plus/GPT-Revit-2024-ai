@@ -45,6 +45,10 @@ function New-State {
     $script:loads = { @(Obj @{ id = 900; kind = 'point'; load_case = (Obj @{ id = 50; name = 'DL1'; number = 1 }); nature = 'Dead'; host_id = $null; vector_frame = 'project'; point = (Obj @{ position_mm = @(0, 0, 0); force_kn = @(0, 0, -10) }); unread = @(); coverage = 'complete' }) }
     $script:unmatched = @()
     $script:gaps = { @{ node_gaps_measured = $true; member_ends_beyond_tolerance = 0; member_ends_supported = 0; coverage = (Cov 'complete') } }
+    # The staging script: 'off' (disabled on the machine), 'ok' (analytical 14200 + load 14201), 'noload'.
+    $script:py = 'off'; $script:pyCode = $null
+    $script:ownLoad = { Obj @{ id = 14201; kind = 'point'; load_case = (Obj @{ id = 14199; name = 'HZ_LC_' + $script:runTag; number = 1; assigned = $true }); nature = 'HZ_NAT_' + $script:runTag; host_id = 14200; vector_frame = 'project'
+                               point = (Obj @{ position_mm = @(0, 0, 0); force_kn = @(0, 0, -10) }); unread = @(); coverage = 'complete' } }
 }
 
 $fakeCall = {
@@ -76,7 +80,22 @@ $fakeCall = {
             return Reply (Obj @{ operation = 'system_analysis'; systems = @($r); system_count = 1; systems_beyond_limits = 0
                                  coverage = (Cov $word $rs) }) $false ''
         }
+        'horizun_execute_python' {
+            $script:pyCode = [string]$arguments.code
+            if (-not $arguments.target_document) { return Reply $null $true "'target_document' is required for horizun_execute_python. Nothing ran." }
+            switch ($script:py) {
+                'off' { return Reply (Obj @{ code = 'tool_disabled' }) $true 'horizun_execute_python is DISABLED ON THIS MACHINE' }
+                'noload' { return Reply (Obj @{ output = (Obj @{ am_id = 14200; load_id = $null; associated = $true; error = 'type could not be set for newly created point load' }) }) $false '' }
+                default { return Reply (Obj @{ output = (Obj @{ nature_id = 14198; case_id = 14199; am_id = 14200; load_id = 14201; associated = $true; error = $null }) }) $false '' }
+            }
+        }
         'horizun_query_structure' {
+            if ($arguments.mode -eq 'loads' -and $arguments.element_ids) {
+                $want = @($arguments.element_ids | ForEach-Object { [long]$_ })
+                $rows = @(@(& $script:ownLoad) | Where-Object { $_ -and $want -contains [long]$_.id })
+                return Reply (Obj @{ mode = 'loads'; matched = $rows.Count; returned = $rows.Count; rows = $rows; counts = (Obj @{ point = $rows.Count; line = 0; area = 0 })
+                                     units = (Obj @{ point_force = 'kN'; point_moment = 'kN*m'; line_force = 'kN/m'; area_force = 'kN/m2' }); coverage = (Cov 'complete') }) $false ''
+            }
             if ($arguments.mode -eq 'loads') {
                 $rows = @(& $script:loads)
                 return Reply (Obj @{ mode = 'loads'; matched = $rows.Count; returned = $rows.Count; rows = $rows; counts = (Obj @{ point = $rows.Count; line = 0; area = 0 }); by_load_case = (Obj @{ DL1 = $rows.Count })
@@ -116,6 +135,7 @@ $fakeApply = {
 }
 
 function RunWith($id, [bool]$gate = $false) {
+    $script:runTag = $id.Substring(0, [math]::Min(8, $id.Length))
     $ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; TemplateRoot = $tpl; RunId = $id; WriteGate = $gate; Call = $fakeCall; Apply = $fakeApply }
     $by = @{}; foreach ($c in @(& $module.Run $ctx)) { if ($by.ContainsKey($c.Name)) { $by[$c.Name + '#dup'] = $c } else { $by[$c.Name] = $c } }
     return $by
@@ -132,11 +152,42 @@ try {
     Check 'a pipe id is refused by name' (($by[$n[2]].Outcome -eq 'pass') -and ($by[$n[2]].Detail -match 'not a MechanicalSystem'))
     Check 'own beam and column named without an analytical member are not_covered, saying so' (($by[$n[3]].Outcome -eq 'not_covered') -and ($by[$n[3]].Detail -match 'named without'))
     Check 'node gaps measured with the caller tolerance pass' ($by[$n[4]].Outcome -eq 'pass')
-    Check 'the own point load is not_covered with the reason' (($by[$n[5]].Outcome -eq 'not_covered') -and ($by[$n[5]].Detail -match 'no typed tool creates a PointLoad'))
+    Check 'python off: the own point load is not_covered, naming python and the missing typed kind' (($by[$n[5]].Outcome -eq 'not_covered') -and ($by[$n[5]].Detail -match 'python is disabled') -and ($by[$n[5]].Detail -match 'no typed tool creates one'))
     Check 'the loads read passes on counts, kN and per-row coverage' (($by[$n[6]].Outcome -eq 'pass') -and ($by[$n[6]].Detail -match '1 point'))
     Check 'cleanup deletes the 5 created ids in reverse and the systems went with the runs' (($by[$n[7]].Outcome -eq 'pass') -and ($script:deleted.Count -eq 1) -and (@($script:deleted[0]).Count -eq 5) -and (@($script:deleted[0])[0] -eq 5005))
     Check 'types in the document are used by name - nothing copied' ($script:copies.Count -eq 0)
+    Check 'the column names its coordinate mode (a Z point without one is refused)' ($script:sent['t1-rm-column'].elements[0].coordinate_mode -eq 'absolute')
     Check 'the duct is rectangular with width and height, on its own system type' (($script:sent['t1-rm-duct'].elements[0].width -eq 400) -and ($script:sent['t1-rm-duct'].elements[0].system_type_id -eq 204))
+
+    # ---- python on: the staging script makes an own analytical member and load; the TYPED read judges ----
+    New-State
+    $script:py = 'ok'
+    $bp = RunWith 'tp'
+    Check 'the staging script names the write document and the own beam' (($script:pyCode -match 'ElementId\(5004\)') -and ($script:pyCode -match 'AnalyticalMember.Create') -and ($script:pyCode -match 'AddAssociation'))
+    Check 'python on: the own load read back by host with case, nature and -10 kN passes' (($bp[$n[5]].Outcome -eq 'pass') -and ($bp[$n[5]].Detail -match 'own load 14201 on analytical 14200'))
+    Check 'python on: load, member, case and nature are deleted first, in that order' ((@($script:deleted[0])[0] -eq 14201) -and (@($script:deleted[0])[1] -eq 14200) -and (@($script:deleted[0])[2] -eq 14199) -and (@($script:deleted[0])[3] -eq 14198))
+    Check 'the staging script creates its own nature and case and assigns the case to the load' (($script:pyCode -match "LoadNature.Create\(doc, 'HZ_NAT_tp'\)") -and ($script:pyCode -match "LoadCase.Create\(doc, 'HZ_LC_tp'") -and ($script:pyCode -match 'pl.LoadCaseId = case.Id'))
+    New-State
+    $script:py = 'ok'
+    $script:ownLoad = { Obj @{ id = 14201; kind = 'point'; load_case = (Obj @{ id = 51; name = 'LC1'; number = 1 }); nature = 'Dead'; host_id = 14200; vector_frame = 'project'
+                               point = (Obj @{ position_mm = @(0, 0, 0); force_kn = @(0, 0, -9) }); unread = @(); coverage = 'complete' } }
+    $bw = RunWith 'tw'
+    Check 'a load read back with the wrong force fails, naming it' (($bw[$n[5]].Outcome -eq 'fail') -and ($bw[$n[5]].Detail -match 'force z -9 kN, expected -10'))
+    New-State
+    $script:py = 'ok'
+    $script:ownLoad = { Obj @{ id = 14201; kind = 'point'; load_case = (Obj @{ id = $null; name = $null; number = $null; assigned = $false }); nature = $null; host_id = 14200; vector_frame = 'project'
+                               point = (Obj @{ position_mm = @(0, 0, 0); force_kn = @(0, 0, -10) }); unread = @(); coverage = 'complete' } }
+    $bc = RunWith 'tc'
+    Check 'a load read back with no case, when the script assigned its own, fails naming the case' (($bc[$n[5]].Outcome -eq 'fail') -and ($bc[$n[5]].Detail -match "expected the own 'HZ_LC_tc'"))
+    New-State
+    $script:py = 'ok'
+    $script:ownLoad = { @() }
+    $bm = RunWith 'tm'
+    Check 'a load the script reported but the typed read cannot find fails' (($bm[$n[5]].Outcome -eq 'fail') -and ($bm[$n[5]].Detail -match 'own load 14201 is not among'))
+    New-State
+    $script:py = 'noload'
+    $bn = RunWith 'tn'
+    Check 'a script that made no load is not_covered with its own error, and its member is still deleted' (($bn[$n[5]].Outcome -eq 'not_covered') -and ($bn[$n[5]].Detail -match 'type could not be set') -and (@($script:deleted[0])[0] -eq 14200))
 
     # ---- a system nothing was read from: never complete, never a critical path ----
     New-State

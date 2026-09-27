@@ -5,15 +5,19 @@
 # run's connectors (query_model include_mep) and read BY ID - and an own structural beam and
 # column. Types come BY NAME, from the document or else copied from the year's Autodesk
 # templates with horizun_copy_between_documents; a name found nowhere is not_covered with the
-# copy's own refusal, never "the first type". No typed tool creates a PointLoad
-# (horizun_create_elements has no load kind), so the own-load case is not_covered with that
-# reason; the loads read is still exercised on whatever the document carries, and is
-# not_covered when it carries no load (no row read, no kN conversion ran). Revit 2023+ does
-# not build an analytical member for a physical one by itself: the analytical case passes
-# only when an own element's analytical row was READ (releases and end fields included);
-# named in physical_without_analytical it is not_covered, and an own element the read does
-# not account for fails. The end-classification case is not_covered on a document with no
-# analytical element. Analytical members read for the own ones are deleted with them.
+# copy's own refusal, never "the first type". No typed tool creates an analytical member or
+# a load (horizun_create_elements has neither kind), and Revit 2023+ builds no analytical
+# member for a physical one by itself - so, as the bridge's own fallback rule says, a staging
+# script does it through horizun_execute_python in this disposable document: an analytical
+# member on the own beam's curve, associated to it, and a 10 kN downward point load hosted at
+# its start, in an own load case of an own load nature (a document may carry no load case at
+# all, and a load with none has no case, nature or category to read - MEASURED 2026-09-27 on
+# HZ_WRITE). The script only STAGES; every case judges the TYPED read of what it made (the own
+# load read back by id with its host, its own case and nature, and -10 kN). With Python off on this
+# machine, or the script failing, the own-analytical and own-load cases are not_covered with
+# the script's reason, and the whole-document reads fall back to whatever the document
+# carries. An own element the analytical read does not account for fails. Analytical members
+# and loads are deleted first, newest first, with everything else created.
 # What was created is deleted at the end (and a system Revit made for a run, if it outlived
 # the run). Types COPIED from a template are not deleted: they stay in the disposable document
 # and the cleanup case names them. The document is never saved.
@@ -47,14 +51,15 @@ $script:HzProbeModules += [pscustomobject]@{
         $tools = @($PlanMepTool, $PlanMepTool, $PlanMepTool, $StructTool, $StructTool, $StructTool, $StructTool, $DeleteTool)
         $doc = $Ctx.Document; $run = $Ctx.RunId
         function Short($a) { $t = [string]$a.text; if ($t.Length -gt 400) { $t.Substring(0, 400) } else { $t } }
-        $noLoadKind = 'no typed tool creates a PointLoad: horizun_create_elements has no load kind, and the probes stay on typed tools; the loads read is exercised on the document by the next case'
 
         # ---- staging (write tier only) --------------------------------------------------------
         $created = New-Object System.Collections.ArrayList
         $ownAnalytical = New-Object System.Collections.ArrayList
         $copiedTypes = New-Object System.Collections.ArrayList
         $why = @{}
+        function Why($keys) { $t = @($keys | Where-Object { $why.ContainsKey($_) } | ForEach-Object { $why[$_] }); if ($t.Count) { $t -join ' | ' } else { 'staging incomplete' } }
         $level = $null; $pipe = $null; $duct = $null; $beam = $null; $column = $null; $pipeSystem = $null; $ductSystem = $null
+        $amId = $null; $loadId = $null; $caseName = $null; $natureName = $null
         if (-not $Ctx.WriteGate) {
             function Types($category) {
                 $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 500 }
@@ -132,12 +137,58 @@ $script:HzProbeModules += [pscustomobject]@{
                                     type_id = [long]$beamType.element_id; structural_type = 'Beam' }) 'beam'
             }
             if ($level -and $colType) {
-                $column = Create @(@{ kind = 'structural_column'; point = @(($X + 6000), ($Y + 8000), $E); level_id = $level; type_id = [long]$colType.element_id }) 'column'
+                # A point with Z needs its mode named (MEASURED 2026-09-27: refused without one).
+                $column = Create @(@{ kind = 'structural_column'; point = @(($X + 6000), ($Y + 8000), $E); coordinate_mode = 'absolute'; level_id = $level; type_id = [long]$colType.element_id }) 'column'
             }
             if ($pipe) { $pipeSystem = SystemOf $pipe; if (-not $pipeSystem) { $why['pipesys'] = "the own pipe $pipe carries no single system on its connectors (query_model include_mep)" } }
             if ($duct) { $ductSystem = SystemOf $duct; if (-not $ductSystem) { $why['ductsys'] = "the own duct $duct carries no single system on its connectors (query_model include_mep)" } }
+
+            # Staging script (no typed kind exists): analytical member on the own beam, associated,
+            # and a hosted point load at its start. It reports ids; the typed reads below judge.
+            if ($beam) {
+                $tag = ([string]$run).Substring(0, [math]::Min(8, ([string]$run).Length))
+                $caseName = "HZ_LC_$tag"; $natureName = "HZ_NAT_$tag"
+                $pyA = @"
+from Autodesk.Revit.DB import ElementId, Transaction, XYZ, UnitUtils, UnitTypeId
+from Autodesk.Revit.DB.Structure import (AnalyticalMember, AnalyticalToPhysicalAssociationManager, PointLoad,
+    AnalyticalElementSelector, LoadNature, LoadCase, LoadCaseCategory)
+beam = doc.GetElement(ElementId($beam))
+out = {'am_id': None, 'load_id': None, 'case_id': None, 'nature_id': None, 'associated': None, 'error': None}
+t = Transaction(doc, 'hz probe: analytical member and point load')
+t.Start()
+try:
+    nature = LoadNature.Create(doc, '$natureName')
+    case = LoadCase.Create(doc, '$caseName', nature.Id, LoadCaseCategory.Dead)
+    am = AnalyticalMember.Create(doc, beam.Location.Curve)
+    mgr = AnalyticalToPhysicalAssociationManager.GetAnalyticalToPhysicalAssociationManager(doc)
+    mgr.AddAssociation(am.Id, beam.Id)
+    force = XYZ(0, 0, -UnitUtils.ConvertToInternalUnits(10.0, UnitTypeId.Kilonewtons))
+    pl = PointLoad.Create(doc, am.Id, AnalyticalElementSelector.StartOrBase, force, XYZ.Zero, None)
+    pl.LoadCaseId = case.Id
+    t.Commit()
+    out['nature_id'] = int(str(nature.Id)); out['case_id'] = int(str(case.Id))
+    out['am_id'] = int(str(am.Id)); out['load_id'] = int(str(pl.Id))
+    out['associated'] = str(mgr.GetAssociatedElementId(am.Id)) == str(beam.Id)
+except Exception as e:
+    if t.HasStarted() and not t.HasEnded(): t.RollBack()
+    out['error'] = str(e)
+__output__ = out
+"@
+                $pa = & $Ctx.Call 'horizun_execute_python' @{ code = $pyA; target_document = $doc; idempotency_key = ($run + '-rm-analytical') }
+                $po = if ($pa.data -and $pa.data.output) { $pa.data.output } else { $null }
+                # Nature and case first, so the reversed cleanup deletes load, member, case, nature.
+                if ($po -and $po.nature_id) { [void]$created.Add([long]$po.nature_id) }
+                if ($po -and $po.case_id) { [void]$created.Add([long]$po.case_id) }
+                if ($po -and $po.am_id) { $amId = [long]$po.am_id; [void]$created.Add($amId) }
+                if ($po -and $po.load_id) { $loadId = [long]$po.load_id; [void]$created.Add($loadId) }
+                if (-not $loadId) {
+                    $why['analytical'] = if ($pa.isError -and ([string]$pa.text -match 'DISABLED|tool_disabled|permission_profile=unsafe_code|OFF on a fresh install')) { 'python is disabled on this machine, so no analytical member or load could be staged (no typed tool creates one): ' + (Short $pa) }
+                                         elseif ($pa.isError) { 'the staging script was refused: ' + (Short $pa) }
+                                         else { 'the staging script made no load: ' + $(if ($po -and $po.error) { [string]$po.error } else { Short $pa }) }
+                }
+            }
+            else { $why['analytical'] = 'no own beam to put an analytical member on: ' + (Why @('level', 'beamtype', 'beam')) }
         }
-        function Why($keys) { $t = @($keys | Where-Object { $why.ContainsKey($_) } | ForEach-Object { $why[$_] }); if ($t.Count) { $t -join ' | ' } else { 'staging incomplete' } }
 
         # ==== 1 and 2: system_analysis on the own systems ======================================
         function ReadSystem($index, $what, $runId, $sysId, $keys) {
@@ -206,7 +257,7 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $w.coverage) { $problems += 'no coverage block' }
             if (-not $w.physical_without_analytical) { $problems += 'no physical_without_analytical block' }
             if ($problems.Count) { Case $catalog[4] $tools[4] 'fail' ($problems -join '; ') }
-            elseif ([int]$w.matched -eq 0) { Case $catalog[4] $tools[4] 'not_covered' ("no analytical member or panel in the document (no typed tool creates one): the end classification ran on nothing; physical without analytical: $($w.physical_without_analytical.count) of $($w.physical_without_analytical.checked)") }
+            elseif ([int]$w.matched -eq 0) { Case $catalog[4] $tools[4] 'not_covered' ("no analytical member or panel in the document (" + (Why @('analytical')) + "): the end classification ran on nothing; physical without analytical: $($w.physical_without_analytical.count) of $($w.physical_without_analytical.checked)") }
             else { Case $catalog[4] $tools[4] 'pass' ("$($w.matched) analytical element(s); gaps measured: $($w.node_gaps_measured), ends beyond 5 mm: $($w.member_ends_beyond_tolerance), supported: $($w.member_ends_supported); physical without analytical: $($w.physical_without_analytical.count) of $($w.physical_without_analytical.checked)") }
         }
 
@@ -238,13 +289,33 @@ $script:HzProbeModules += [pscustomobject]@{
                     $said += "$id associated to analytical $($am.kind) $($am.id) (coverage $($am.coverage), releases read)"; $rowsRead++; [void]$ownAnalytical.Add([long]$am.id)
                 }
                 if ($problems.Count) { Case $catalog[3] $tools[3] 'fail' ($problems -join '; ') }
-                elseif ($rowsRead -eq 0) { Case $catalog[3] $tools[3] 'not_covered' ('no own element has an analytical row this run could read (Revit 2023+ builds none by itself and no typed tool creates one), so association, releases and end fields were not exercised: ' + ($said -join '; ')) }
+                elseif ($rowsRead -eq 0) { Case $catalog[3] $tools[3] 'not_covered' ('no own element has an analytical row this run could read (Revit 2023+ builds none by itself; ' + (Why @('analytical')) + '), so association, releases and end fields were not exercised: ' + ($said -join '; ')) }
                 else { Case $catalog[3] $tools[3] 'pass' ($said -join '; ') }
             }
         }
 
         # ==== 6 and 7: loads ====================================================================
-        Case $catalog[5] $tools[5] 'not_covered' $noLoadKind
+        if ($Ctx.WriteGate) { Case $catalog[5] $tools[5] 'not_covered' 'the write tier is closed for this run: no own load' }
+        elseif (-not $loadId) { Case $catalog[5] $tools[5] 'not_covered' (Why @('analytical')) }
+        else {
+            # The own load read BACK by the typed read, by its id: never the script's word.
+            $ol = & $Ctx.Call $StructTool @{ mode = 'loads'; target_document = $doc; element_ids = @($loadId); max_rows = 50 }
+            $mine = if ($ol.data) { @($ol.data.rows | Where-Object { [long]$_.id -eq $loadId }) | Select-Object -First 1 } else { $null }
+            $problems = @()
+            if ($ol.isError -or -not $ol.data) { $problems += 'loads read by id: ' + (Short $ol) }
+            elseif (-not $mine) { $problems += "own load $loadId is not among the $(@($ol.data.rows).Count) row(s) read for it (unmatched_ids: $(@($ol.data.unmatched_ids) -join ','))" }
+            else {
+                if ([string]$mine.kind -ne 'point') { $problems += "kind '$($mine.kind)', expected point" }
+                if ([long]$mine.host_id -ne $amId) { $problems += "host_id $($mine.host_id), expected the own analytical member $amId" }
+                if (-not $mine.load_case -or [string]$mine.load_case.name -ne $caseName -or $mine.load_case.assigned -ne $true) { $problems += "load case '$($mine.load_case.name)' (assigned $($mine.load_case.assigned)), expected the own '$caseName'" }
+                if ([string]$mine.nature -ne $natureName) { $problems += "nature '$($mine.nature)', expected the own '$natureName'" }
+                $fz = if ($mine.point -and $null -ne $mine.point.force_kn) { [double]@($mine.point.force_kn)[2] } else { $null }
+                if ($null -eq $fz -or [math]::Abs($fz + 10.0) -gt 0.01) { $problems += "force z $fz kN, expected -10" }
+                if (-not $mine.vector_frame) { $problems += 'no vector_frame for published force components' }
+            }
+            if ($problems.Count) { Case $catalog[5] $tools[5] 'fail' ($problems -join '; ') }
+            else { Case $catalog[5] $tools[5] 'pass' ("own load $loadId on analytical $amId read back: case '$($mine.load_case.name)', nature '$($mine.nature)', force $(@($mine.point.force_kn) -join ',') kN, frame $($mine.vector_frame)") }
+        }
         $ld = & $Ctx.Call $StructTool @{ mode = 'loads'; target_document = $doc; max_rows = 500 }
         if ($ld.isError -or -not $ld.data) { Case $catalog[6] $tools[6] 'fail' ('loads read: ' + (Short $ld)) }
         else {
@@ -262,7 +333,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $converted = @(@($l.rows) | Where-Object { ($_.point -and $null -ne $_.point.force_kn) -or ($_.line -and $null -ne $_.line.force1_kn_m) -or ($_.area -and $null -ne $_.area.force1_kn_m2) })
             foreach ($r in $converted) { if (-not $r.vector_frame) { $problems += "load $($r.id) publishes force components with no vector_frame" } }
             if ($problems.Count) { Case $catalog[6] $tools[6] 'fail' ($problems -join '; ') }
-            elseif ([int]$l.matched -eq 0) { Case $catalog[6] $tools[6] 'not_covered' 'the document carries no point, line or area load (no typed tool creates one): no load row was read and no kN conversion ran' }
+            elseif ([int]$l.matched -eq 0) { Case $catalog[6] $tools[6] 'not_covered' ('the document carries no point, line or area load (' + (Why @('analytical')) + '): no load row was read and no kN conversion ran') }
             elseif ($converted.Count -eq 0) { Case $catalog[6] $tools[6] 'not_covered' "$($l.matched) load(s), but no row on the page published a converted force: the kN conversion was not exercised" }
             else { Case $catalog[6] $tools[6] 'pass' ("$($counts.point) point, $($counts.line) line, $($counts.area) area load(s) read in kN units; by case: $($l.by_load_case | ConvertTo-Json -Compress)") }
         }
