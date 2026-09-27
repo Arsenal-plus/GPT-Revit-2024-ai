@@ -71,6 +71,8 @@ function Fake-Call($tool, $a) {
             gross_m2_by_surface = [pscustomobject]@{ wall = 52.7481; floor = 18.9; ceiling = 0 }; openings_deduction_m2_total = $deduction }) $false ''
     }
     if ($a.mode -eq 'carbon') {
+        # QuantitiesModeArguments.cs: a key carbon does not read is refused before anything is measured.
+        if ($a.phase -and $script:variant -ne 'carbon-ignores-phase') { return Reply $null $true "'phase' is not read in mode 'carbon': it would be silently ignored, and the reply would read as though it had been honoured. It is read by: room_finishes, takeoff with group_by='room'. Drop it, or use that mode. Nothing was measured." }
         $table = @{}; foreach ($f in $a.carbon_factors) { $table[[string]$f.material] = $f }
         $mats = @(@{ n = 'Brick, Common'; v = 1.234567; m = 2400.0 }, @{ n = 'Gypsum Wall Board'; v = 0.5; m = 500.0 }, @{ n = 'Concrete, Cast-in-Place gray'; v = 2.8; m = $null })
         $rows = @(); $without = @(); $total = 0.0; $counted = 0
@@ -118,12 +120,12 @@ function Outcomes($res) { ($res | ForEach-Object { $_.Outcome }) -join ',' }
 
 "quantities-rooms probes (offline)"
 $res = Run-Probe $true
-Check 'write gate closed: every case not_covered' ((@($res | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq 9) -and $res.Count -eq 9)
+Check 'write gate closed: every case not_covered' ((@($res | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq 10) -and $res.Count -eq 10)
 
 $script:variant = 'good'
 $res = Run-Probe $false
 $bad = @($res | Where-Object { $_.Outcome -ne 'pass' } | ForEach-Object { $_.Name + ' => ' + $_.Outcome + ': ' + $_.Detail })
-Check ('good model: all 9 cases pass' + $(if ($bad.Count) { ' | ' + ($bad -join ' || ') } else { '' })) ($res.Count -eq 9 -and $bad.Count -eq 0)
+Check ('good model: all 10 cases pass' + $(if ($bad.Count) { ' | ' + ($bad -join ' || ') } else { '' })) ($res.Count -eq 10 -and $bad.Count -eq 0)
 Check 'the phase is the one that measured the room (New Construction), never assumed' (([string]$res[0].Detail) -match "phase 'New Construction'")
 Check 'cleanup deletes every created id but the west wall already deleted' ((@($script:cleanup).Count -eq 10) -and (@($script:cleanup) -notcontains (Id 'wall-w')))
 
@@ -134,6 +136,11 @@ Check 'a door missing from the deduction fails the room_finishes case' ($res[0].
 $script:variant = 'bounding-assigned'
 $res = Run-Probe $false
 Check 'a bounding wall assigned to a room at Finish fails the membership case' ($res[4].Outcome -eq 'fail' -and ([string]$res[4].Detail) -match 'bounding walls')
+
+$script:variant = 'carbon-ignores-phase'
+$res = Run-Probe $false
+$refusal = @($res | Where-Object { $_.Name -like 'rooms carbon: a phase*' }) | Select-Object -First 1
+Check 'a carbon call that ignores the phase fails the refusal case' ($refusal -and $refusal.Outcome -eq 'fail')
 
 Remove-Item -LiteralPath $tpl -Recurse -Force -ErrorAction SilentlyContinue
 if ($fails -gt 0) { "FAILED: $fails"; exit 1 } else { 'ALL PASS'; exit 0 }

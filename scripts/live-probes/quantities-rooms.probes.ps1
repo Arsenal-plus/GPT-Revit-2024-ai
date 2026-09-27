@@ -21,6 +21,7 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'rooms takeoff: group_by=room rolls the floor into the room key and the outside wall into (unassigned)'; Tool = 'horizun_quantities' }
         @{ Name = 'rooms room_finishes: a room left unenclosed (one wall deleted) is named not_enclosed, never a zero'; Tool = 'horizun_quantities' }
         @{ Name = 'rooms probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
+        @{ Name = 'rooms carbon: a phase (which carbon does not read) is refused by name, nothing measured'; Tool = 'horizun_quantities' }
     )
     Run     = {
         param($Ctx)
@@ -35,7 +36,8 @@ $script:HzProbeModules += [pscustomobject]@{
             'rooms membership: include_room without phase is refused',
             'rooms takeoff: group_by=room rolls the floor into the room key and the outside wall into (unassigned)',
             'rooms room_finishes: a room left unenclosed (one wall deleted) is named not_enclosed, never a zero',
-            'rooms probes: everything created is deleted')
+            'rooms probes: everything created is deleted',
+            'rooms carbon: a phase (which carbon does not read) is refused by name, nothing measured')
         $Q = 'horizun_quantities'; $QM = 'horizun_query_model'; $DeleteTool = 'horizun_delete_verified'   # never $q/$d: names are case-insensitive
         function ToolOf($i) { if ($i -eq 4 -or $i -eq 5) { $QM } elseif ($i -eq 8) { $DeleteTool } else { $Q } }
         if ($Ctx.WriteGate) {
@@ -251,6 +253,14 @@ $script:HzProbeModules += [pscustomobject]@{
                 else { Case $catalog[7] $Q 'fail' ("state $($nm.state), rows $rowsLeft | " + (Short $u)) }
             }
         }
+
+        # ==== 10: carbon refuses a phase ====================================================
+        # Carbon does not filter by phase; a phase it silently ignored would read as "the carbon
+        # of that phase". Run before the cleanup so the ids are real; the refusal comes first anyway.
+        $cp = & $Ctx.Call $Q @{ mode = 'carbon'; element_ids = @($carbonIds); phase = $(if ($phase) { $phase } else { 'New Construction' })
+                factor_source = "probe ${run}: refusal"; carbon_factors = @(@{ material = "HZ_NO_SUCH_MATERIAL_$run"; factor = 1; per = 'm3' }) }
+        if ($cp.isError -and ([string]$cp.text) -match "'phase' is not read in mode 'carbon'") { Case $catalog[9] $Q 'pass' 'refused by name' }
+        else { Case $catalog[9] $Q 'fail' ('not refused: ' + (Short $cp)) }
 
         # ==== 9: cleanup ===================================================================
         if ($created.Count -eq 0) { Case $catalog[8] $DeleteTool 'not_covered' 'nothing was created' }
