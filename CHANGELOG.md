@@ -3,9 +3,9 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v2.1.1 — 2026-09-27
+## v2.1.2 — 2026-09-27
 
-v2.1.0 was tagged but never released: its hosted whitespace gate stopped it before any package was built (trailing whitespace in the vendored IDS schema, one example and two tests). v2.1.1 is the same product with that hygiene fixed; the vendored schema is kept byte for byte and exempted from the gate.
+v2.1.0 and v2.1.1 were tagged but never released. v2.1.0's hosted whitespace gate stopped it before any package was built (trailing whitespace in the vendored IDS schema, one example and two tests; the schema is kept byte for byte and exempted from the gate). v2.1.1 passed every Revit add-in build for 2023-2027, then its hosted `package` job found no .NET SDK 10.0.400: that job and `public-integrity` relied on whatever SDK the hosted image carried, and `global.json` pins 10.0.400 with roll-forward disabled. Both now install it. The product is the same in all three.
 
 Minor release over 2.0.5 (tool contract: new tools, operations and optional fields; nothing removed). Live matrix at the release candidate: Revit 2023, 2024, 2026 and 2027 with 0 failures; 2025 is measured by the release gate.
 
