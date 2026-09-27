@@ -6,8 +6,11 @@
 # because no project central may ever be synchronized by a probe. Creating that central
 # needs horizun_execute_python, and syncing needs the owner's sync switch; when either
 # is off the case is not_covered with the reason, never forced. Nothing is saved over
-# a fixture; the scratch central and local are left in %TEMP% for inspection.
-# Shapes from the code (DocumentSessionSync.cs), to be held against the first live run.
+# a fixture. The central is closed before its local is opened (one session holding
+# both is not what a user's sync looks like), and the per-run scratch folder is removed
+# at the end - kept, and named in the failing case, only when a case failed.
+# Shapes from the code (DocumentSessionSync.cs, ExecutePythonCommand.cs), to be held
+# against the first live run.
 . (Join-Path $PSScriptRoot 'workshared-fixture.lib.ps1')
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'sync-central'
@@ -37,7 +40,8 @@ $script:HzProbeModules += [pscustomobject]@{
         $w = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $Ctx.Document; dry_run = $true }
         $wc = Code $w
         if ($w.isError -and $wc -eq 'not_workshared') { Case $nNotWs $S 'pass' 'refused before any census' }
-        elseif ($w.isError -and $wc) { Case $nNotWs $S 'not_covered' "the write document refused as $wc (it may be workshared on this run)" }
+        elseif ($w.isError -and -not $wc) { Case $nNotWs $S 'not_covered' ('refused before the operation ran (no detail code; profile, pause or dispatcher): ' + (Short $w)) }
+        elseif ($w.isError) { Case $nNotWs $S 'not_covered' "the write document refused as $wc (it may be workshared on this run)" }
         else { Case $nNotWs $S 'fail' ('not refused: ' + (Short $w)) }
 
         $fixture = Enter-HzWorksharedFixture $Ctx 'sync'
@@ -46,13 +50,14 @@ $script:HzProbeModules += [pscustomobject]@{
             return $cases
         }
         $local = $null
+        $centralClosed = $false
+        $dir = Join-Path ([IO.Path]::GetTempPath()) ('hz-sync-probe-' + $run)
         try {
             $d = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $fixture.Title; dry_run = $true }
             $dc = Code $d
             Case $nDetached $S $(if ($d.isError -and $dc -eq 'detached_copy' -and -not $d.data.confirmation_token) { 'pass' } else { 'fail' }) "code=$dc"
 
             # A central of the harness's own, in its own scratch folder, and a new local of it.
-            $dir = Join-Path ([IO.Path]::GetTempPath()) ('hz-sync-probe-' + $run)
             $py = @"
 import os
 from Autodesk.Revit.DB import SaveAsOptions, WorksharingSaveAsOptions, WorksharingUtils, ModelPathUtils
@@ -67,14 +72,24 @@ doc.SaveAs(central, o)
 WorksharingUtils.CreateNewLocal(ModelPathUtils.ConvertUserVisiblePathToModelPath(central), ModelPathUtils.ConvertUserVisiblePathToModelPath(local))
 __output__ = {'central': central, 'local': local, 'central_title': doc.Title, 'local_exists': os.path.exists(local)}
 "@
-            $p = & $Ctx.Call 'horizun_execute_python' @{ code = $py; idempotency_key = ('sync-central-' + $run) }
+            # The same document gate as every write: the script names the detached copy it acts on.
+            $p = & $Ctx.Call 'horizun_execute_python' @{ code = $py; target_document = $fixture.Title; idempotency_key = ('sync-central-' + $run) }
             $out = if ($p.data -and $p.data.__output__) { $p.data.__output__ } elseif ($p.data -and $p.data.output) { $p.data.output } else { $null }
             if ($p.isError -or -not $out -or -not $out.local_exists) {
-                $why = 'the harness could not create a scratch central (execute_python off or failed): ' + (Short $p)
+                $pc = Code $p
+                $why = if ($p.isError -and ($pc -eq 'tool_disabled' -or [string]$p.text -match 'DISABLED|permission_profile=unsafe_code|OFF on a fresh install')) {
+                    'python disabled on this machine, so the harness cannot create a scratch central: ' + (Short $p)
+                } elseif ($p.isError) {
+                    'python refused: ' + $(if ($pc) { $pc + ' - ' } else { '' }) + (Short $p)
+                } else {
+                    'python ran but did not report a created central and local: ' + (Short $p)
+                }
                 Case $nOwnerOff $S 'not_covered' $why; Case $nReal $S 'not_covered' $why
                 return $cases
             }
             $fixture.Title = [string]$out.central_title   # the detached copy became the central
+            $null = Exit-HzWorksharedFixture $Ctx $fixture 'sync'
+            $centralClosed = $true
             $o = & $Ctx.Call $S @{ operation = 'open'; file_path = ([string]$out.local).Replace([char]92, '/'); expected_version = [string]$Ctx.Year; idempotency_key = ('sync-open-' + $run) }
             if ($o.isError -or -not $o.data.title) {
                 $why = 'the scratch local did not open: ' + (Short $o)
@@ -94,12 +109,22 @@ __output__ = {'central': central, 'local': local, 'central_title': doc.Title, 'l
                 Case $nReal $S 'fail' ('the preview is not a labelled estimate with a token: ' + (Short $pv)); return $cases
             }
             $ap = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $local; relinquish = 'all'; comment = ('hz probe ' + $run); dry_run = $false; confirmation_token = [string]$pv.data.confirmation_token; idempotency_key = ('sync-apply-' + $run) }
-            $ok = (-not $ap.isError) -and $ap.data.sync_verified -eq $true -and [int]$ap.data.ownership.owned_worksets_after -eq 0 -and [int]$ap.data.ownership.owned_elements_after -eq 0
-            Case $nReal $S $(if ($ok) { 'pass' } else { 'fail' }) ('estimate owned_elements=' + $pv.data.owned_elements + ' sample=' + $pv.data.update_status_sample.sample_size + '; apply: ' + (Short $ap))
+            $ok = (-not $ap.isError) -and $ap.data.sync_verified -eq $true -and [int]$ap.data.ownership.owned_worksets_after -eq 0 -and
+                  [int]$ap.data.ownership.owned_elements_after -eq 0 -and $ap.data.has_all_changes_from_central_after -eq $true
+            Case $nReal $S $(if ($ok) { 'pass' } else { 'fail' }) ('estimate owned_elements=' + $pv.data.owned_elements + ' has_all_changes=' +
+                $pv.data.has_all_changes_from_central + ' sample=' + $pv.data.update_status_sample.sample_size + '; apply: central_file_written=' +
+                $ap.data.central_file_written + ' is_modified_after=' + $ap.data.is_modified_after + ' ' + (Short $ap))
         }
         finally {
             if ($local) { $null = Exit-HzWorksharedFixture $Ctx @{ Title = $local; WritePath = $fixture.WritePath } 'sync-local' }
-            $null = Exit-HzWorksharedFixture $Ctx $fixture 'sync'
+            if (-not $centralClosed) { $null = Exit-HzWorksharedFixture $Ctx $fixture 'sync' }
+            if (Test-Path -LiteralPath $dir) {
+                $failed = @($cases | Where-Object { $_.Outcome -eq 'fail' })
+                if ($failed.Count -eq 0) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+                $note = if ($failed.Count -gt 0) { ' | scratch kept for inspection at ' + $dir }
+                        elseif (Test-Path -LiteralPath $dir) { ' | scratch folder could not be removed: ' + $dir } else { $null }
+                if ($note) { foreach ($fc in @($cases | Where-Object { $_.Name -eq $nReal -or $_.Outcome -eq 'fail' })) { $fc.Detail = [string]$fc.Detail + $note } }
+            }
         }
         return $cases
     }
