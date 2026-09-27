@@ -86,6 +86,9 @@ namespace Horizun.Revit.Commands
 
         public string PhaseName => _phase.Name;
 
+        /// <summary>The phase every query of this reader answers for (horizun_export cobie reads openings' To/From room in it).</summary>
+        public Phase Phase => _phase;
+
         /// <summary>The phase the caller named, exactly (case-insensitive). No default.</summary>
         public static RoomMembershipReader Create(Document host, string phaseName, out string problem)
         {

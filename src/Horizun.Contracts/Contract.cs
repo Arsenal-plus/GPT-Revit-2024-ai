@@ -1795,16 +1795,16 @@ namespace Horizun.Contracts
                 Command = "horizun_export",
                 Description =
                     "Export verified deliverables from the active document: combined PDF, DWG/DGN/DWFX view sets, gbXML, family .rfa, configurable " +
-                    "IFC, model/view Navisworks NWC, one or more 3D views to FBX, one-view image or one native schedule " +
-                    "as delimited text/CSV. Dry-run validates paths, exporters, " +
+                    "IFC, model/view Navisworks NWC, one or more 3D views to FBX, one-view image, one native schedule " +
+                    "as delimited text/CSV, or a COBie 2.4 workbook (.xlsx) whose gaps are reported as findings. Dry-run validates paths, exporters, " +
                     "views and overwrite policy without writing; apply requires confirmation and idempotency, then " +
                     "discovers and re-reads the files actually produced instead of echoing the requested path.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""format"", ""output_path""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""dgn"", ""dwfx"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv"", ""dwg_layers"", ""gbxml"", ""rfa""] },
-    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file with an extension matching format (.pdf/.dwg/.dgn/.dwfx/.ifc/.nwc/.fbx/.xml; an image extension; or .csv/.txt); rfa: a folder. Image export may create a family of names, all of which are reported."" },
+    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""dgn"", ""dwfx"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv"", ""dwg_layers"", ""gbxml"", ""rfa"", ""cobie""] },
+    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file with an extension matching format (.pdf/.dwg/.dgn/.dwfx/.ifc/.nwc/.fbx/.xml; an image extension; .csv/.txt; cobie .xlsx); rfa: a folder. Image export may create a family of names, all of which are reported."" },
     ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""PDF, DWG/DGN/DWFX (a file each): one or more printable views/sheets. Image: exactly one. FBX: one or more 3D views. NWC view scope: exactly one."" },
     ""schedule_id"": { ""type"": ""integer"" },
     ""image_pixels"": { ""type"": ""integer"", ""minimum"": 128, ""maximum"": 8192, ""default"": 2048 },
@@ -1867,6 +1867,23 @@ namespace Horizun.Contracts
     ""fbx_stop_on_error"": { ""type"": ""boolean"", ""default"": true },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false },
     ""information_container"": { ""type"": ""object"", ""description"": ""Optional ISO 19650 container (same object as horizun_information_container: fields, field_order, separator, field_patterns, status, revision, title, status_codes, revision_patterns, file_name). Validated BEFORE anything is exported - an invalid one refuses with every problem named. The produced file takes the container's name (directory and extension from output_path) and, after the export is verified, '<file>.container.json' is written beside it with its SHA-256 and read back. status and revision are required. Not accepted for image, nor for PDF with pdf_combine=false (one container is one file); an existing sidecar is never overwritten."" },
+    ""cobie"": { ""type"": ""object"", ""additionalProperties"": false, ""required"": [""created_by"", ""facility"", ""phase"", ""component_categories""], ""description"": ""format cobie only: the caller's mapping for a COBie 2.4 workbook (Facility, Floor, Space, Zone, Type, Component, System). Nothing is defaulted from this machine or an organisation: a required cell with no source stays empty and is a finding (never 'n/a'), duplicate names and broken references are findings, and deliverable_ready is false while one remains - the workbook is still written, then re-read cell by cell. Fields, columns and rules: docs/TOOLS-EXTENDED.md."", ""properties"": {
+      ""created_by"": { ""type"": ""string"", ""description"": ""COBie CreatedBy contact e-mail, written on every row."" },
+      ""created_on"": { ""type"": ""string"", ""description"": ""ISO-8601; default: the export time, UTC."" },
+      ""facility"": { ""type"": ""object"", ""additionalProperties"": false, ""required"": [""name""], ""properties"": {
+        ""name"": { ""type"": ""string"" }, ""category"": { ""type"": ""string"" }, ""project_name"": { ""type"": ""string"" }, ""site_name"": { ""type"": ""string"" },
+        ""phase"": { ""type"": ""string"", ""description"": ""COBie Facility.Phase (the project stage), not a Revit phase."" }, ""description"": { ""type"": ""string"" },
+        ""project_description"": { ""type"": ""string"" }, ""site_description"": { ""type"": ""string"" }, ""currency_unit"": { ""type"": ""string"" }, ""area_measurement"": { ""type"": ""string"" } } },
+      ""phase"": { ""type"": ""string"", ""description"": ""The Revit phase: its rooms or spaces are the Space rows and components are placed in them. No default."" },
+      ""component_categories"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"" }, ""description"": ""OST_ tokens whose instances are Components; their types are the Type rows. No default list."" },
+      ""space_source"": { ""type"": ""string"", ""enum"": [""rooms"", ""spaces""], ""default"": ""rooms"" },
+      ""category_parameter"": { ""type"": ""string"", ""description"": ""Parameter holding the classification written to Category (Floor, Space, Type, System): on the element, else its type."" },
+      ""zone_parameter"": { ""type"": ""string"", ""description"": ""Room/space parameter whose value names its Zone."" }, ""zone_category"": { ""type"": ""string"" },
+      ""component_name_parameter"": { ""type"": ""string"", ""description"": ""e.g. Mark. A missing, empty or shared value falls back to <Type name>-<element id>, reported."" },
+      ""type_fields"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""string"" }, ""description"": ""{Type column: parameter}, e.g. Manufacturer, ModelNumber."" },
+      ""component_fields"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""string"" }, ""description"": ""{Component column: parameter}, e.g. SerialNumber, TagNumber."" },
+      ""project_context_path"": { ""type"": ""string"", ""description"": ""A project-context.json (horizun_project_context): fills project name, site, stage and category_parameter when not given."" },
+      ""max_findings"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 5000, ""default"": 500 } } },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
     ""require_gate"": " + RequireGateSchema + @"
   }, ""additionalProperties"": false

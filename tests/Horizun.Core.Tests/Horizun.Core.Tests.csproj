@@ -649,6 +649,13 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\InformationContainer.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PsetMapping.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\IdsBcf.cs" />
+    <!-- horizun_export format=cobie, the Revit-free half: the dependency-free .xlsx writer and
+         its reader (the round trip the apply re-reads with), the mapping and project-context
+         defaults, and the COBie 2.4 rows and findings built from plain facts. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\XlsxWorkbookWriter.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\XlsxWorkbookReader.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CobieMapping.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CobieRules.cs" />
     <!-- horizun_mep_routing: rule-list edits and velocity sizing, Revit-free. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRoutingRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SlopeRules.cs" />

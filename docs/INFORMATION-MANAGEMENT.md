@@ -549,6 +549,24 @@ ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
 modelo y no escribe nada. El archivo de mapeo es el mismo formato del
 exportador de Revit, separado por **tabuladores**.
 
+## COBie handover
+
+The asset-information side of the handover is `horizun_export` with
+`format: "cobie"`: a COBie 2.4 workbook (`.xlsx`) with the Facility, Floor, Space,
+Zone, Type, Component and System sheets, built from the active model and a `cobie`
+mapping that is the caller's data. Given `cobie.project_context_path`, the
+project-context.json above fills the project name, site, stage and classification
+parameter the arguments left out (an argument always wins; the reply says where each
+value came from). A required cell with no source stays empty and is a finding;
+`deliverable_ready` is false while a blocking finding remains, and the workbook is
+still written and then re-read from disk cell by cell. Arguments, columns, findings
+and what the re-read proves: [TOOLS-EXTENDED.md](TOOLS-EXTENDED.md#horizun_export--cobie-workbook-format-cobie).
+
+**Resumen en español.** La entrega de información de activos es `horizun_export`
+con `format: "cobie"`: un libro COBie 2.4 releído celda por celda; el
+`project-context.json` puede aportar nombre de proyecto, sitio, etapa y parámetro de
+clasificación, y cada hueco queda como hallazgo, nunca inventado.
+
 ## Elicitation
 
 MCP elicitation is the server asking the client to ask its user, in the middle of

@@ -356,6 +356,184 @@ ella; la persistencia se mide releyendo antes y después del commit, por año.
   in `refused`. `overwrite=true` and existing target files refuse. Each file is
   verified by size and by `BasicFileInfo.Extract` reading its saved-in format.
 
+### `horizun_export` — COBie workbook (`format: "cobie"`)
+
+A COBie 2.4 workbook (`.xlsx`) of the active model: the asset-information handover of
+ISO 19650 (see [INFORMATION-MANAGEMENT.md](INFORMATION-MANAGEMENT.md#cobie-handover)).
+`output_path` ends in `.xlsx`; the mapping is the `cobie` object, and it is the
+caller's data: nothing is taken from this machine or from any organisation's
+convention. Every other `horizun_export` argument that belongs to another format is
+refused by name, and so is an unknown `cobie` field, a column a field map cannot
+fill, and a category that is not a model category of the document - every problem
+named at once.
+
+**Arguments (`cobie`)**
+
+| Field | Required | Meaning |
+|---|---|---|
+| `created_by` | yes | The COBie CreatedBy contact e-mail, written on every row; refused when it is not an e-mail address. Never taken from this machine, and project-context v1 has no contact field to take it from. |
+| `created_on` | no | ISO-8601 date or date-time (no offset: read as UTC). Default: the export time, UTC; `created_on_source` says which. Written as `yyyy-MM-ddTHH:mm:ss` text. |
+| `facility.name` | yes | Facility.Name. |
+| `facility.category`, `project_name`, `site_name`, `currency_unit`, `phase` | no | Facility columns the sheet requires: left out, each is an empty cell and a finding. `facility.phase` is COBie's Facility.Phase (the project stage), not a Revit phase. |
+| `facility.description`, `project_description`, `site_description` | no | Written when given. |
+| `facility.area_measurement` | no | Default: the basis Revit computed the areas on, read from the document (`Revit room area, computed at the wall finish`). |
+| `phase` | yes | The **Revit** phase: its rooms (or spaces) are the Space rows, components are placed in them and must be New or Existing in it. No default - a hidden "last phase" would describe a different building. |
+| `component_categories` | yes | `OST_` tokens of model categories whose instances are Components; their types are the Type rows. No default list. |
+| `space_source` | no | `rooms` (default) or `spaces` (MEP spaces). |
+| `category_parameter` | no | The parameter written to Category on Floor, Space, Type and System: on the element, else - when the element has no parameter of that name - on its type. Absent or empty: an empty cell and a finding, never `n/a`. |
+| `zone_parameter`, `zone_category` | no | A room/space parameter whose value names its zone, and the Zone rows' Category (`zone_category` needs `zone_parameter`). Without `zone_parameter` the Zone sheet holds only its header. |
+| `component_name_parameter` | no | e.g. `Mark`. Component.Name comes from it when the value is present and unique among the components (without case and outer spaces); otherwise `<Type name>-<element id>` and an advisory `name_fallback` finding. Without it every component is named `<Type name>-<element id>`. |
+| `type_fields` | no | `{Type column: parameter}` for any Type column except Name, CreatedBy, CreatedOn, Category and Ext* - e.g. `Manufacturer`, `ModelNumber`, `AssetType`, `Description`. Read on the type. |
+| `component_fields` | no | `{Component column: parameter}` for Description, SerialNumber, InstallationDate, WarrantyStartDate, TagNumber, BarCode, AssetIdentifier. Read on the instance, else its type. |
+| `project_context_path` | no | A `project-context.json` (schema_version 1, as `horizun_project_context` writes it), read by the add-in itself. It fills what the arguments left out: `project.name` → facility.project_name, `project.location` → facility.site_name, `project.description` → facility.project_description, `appointment.stage` → facility.phase, `classification.type_parameter` → category_parameter. An argument always wins, `cobie.provenance` says where each value came from, and the file's SHA-256 joins the approval. |
+| `max_findings` | no | How many findings the reply lists (1..5000, default 500); the counts are always complete. |
+
+A mapped parameter is written as text as Revit shows it: `AsString` for text,
+`AsValueString` (the document's units and formatting) for everything else.
+
+**Sheets and columns.** The seven sheets in COBie order, each with its full COBie 2.4
+column set; a column with no source is written empty. **Bold** columns are required
+by this tool - an empty one is a finding.
+
+| Sheet | Rows | Columns |
+|---|---|---|
+| Facility | one | **Name, CreatedBy, CreatedOn, Category, ProjectName, SiteName, LinearUnits, AreaUnits, VolumeUnits, CurrencyUnit, AreaMeasurement**, ExternalSystem, ExternalProjectObject, ExternalProjectIdentifier, ExternalSiteObject, ExternalSiteIdentifier, ExternalFacilityObject, ExternalFacilityIdentifier, Description, ProjectDescription, SiteDescription, **Phase** |
+| Floor | levels marked Building Story, lowest first | **Name, CreatedBy, CreatedOn, Category**, ExtSystem, ExtObject, ExtIdentifier, Description, Elevation, Height |
+| Space | rooms (or MEP spaces) of the phase, placed, area > 0 | **Name, CreatedBy, CreatedOn, Category, FloorName, Description**, ExtSystem, ExtObject, ExtIdentifier, RoomTag, UsableHeight, GrossArea, NetArea |
+| Zone | one row per zone per space | **Name, CreatedBy, CreatedOn, Category, SpaceNames**, ExtSystem, ExtObject, ExtIdentifier, Description |
+| Type | the types of the components in scope | **Name, CreatedBy, CreatedOn, Category, Description**, AssetType, Manufacturer, ModelNumber, WarrantyGuarantorParts, WarrantyDurationParts, WarrantyGuarantorLabor, WarrantyDurationLabor, WarrantyDurationUnit, ExtSystem, ExtObject, ExtIdentifier, ReplacementCost, ExpectedLife, DurationUnit, WarrantyDescription, NominalLength, NominalWidth, NominalHeight, ModelReference, Shape, Size, Color, Finish, Grade, Material, Constituents, Features, AccessibilityPerformance, CodePerformance, SustainabilityPerformance |
+| Component | the instances in scope | **Name, CreatedBy, CreatedOn, TypeName, Space, Description**, ExtSystem, ExtObject, ExtIdentifier, SerialNumber, InstallationDate, WarrantyStartDate, TagNumber, BarCode, AssetIdentifier |
+| System | one row per system per in-scope component | **Name, CreatedBy, CreatedOn, Category, ComponentNames**, ExtSystem, ExtObject, ExtIdentifier, Description |
+
+The required set is identity, classification and the references between sheets.
+Product data (AssetType, manufacturer, model, warranties, cost, expected life,
+nominal sizes) is not required here: the handover's own requirements decide it - map
+it with `type_fields` and judge it with the project's COBie check.
+
+What fills each row:
+- **Facility**: the caller's values. LinearUnits, AreaUnits and VolumeUnits are the
+  document's display units as COBie pick-list names (millimeters, centimeters, meters,
+  feet, inches; square ...; cubic ...). A composite display unit is written in its
+  decimal unit (feet and fractional inches → feet, meters and centimeters → meters),
+  a unit COBie has no name for in SI, and `cobie.units.notes` says which.
+- **Floor**: Name = the level's name; Elevation = `Level.Elevation` (relative to the
+  level type's Elevation Base) in the linear unit. Description and Height stay empty.
+- **Space**: Name = Number; Description = the room's own Name parameter; FloorName =
+  its level; RoomTag = Number; UsableHeight = the unbounded height; NetArea = Revit's
+  area, computed at the document's room boundary location (stated in
+  AreaMeasurement). GrossArea stays empty: Revit computes one area per room, and it is
+  not written twice. A room whose Phase cannot be read is counted
+  (`scope.spaces.phase_unreadable`), never assumed to be in the phase.
+- **Zone**: Name = the zone value, Category = `zone_category`, SpaceNames = the
+  space's Name. Key: Name + Category + SpaceNames.
+- **Type**: Name = `Family: Type`; Description = its Description parameter unless
+  `type_fields` maps Description.
+- **Component**: TypeName = its Type row's Name; Space = the Name of the space(s) it
+  sits in, comma-separated; Description = its type's Description unless
+  `component_fields` maps it. In scope: instances of the categories whose status in
+  the phase is New or Existing (or undefined), not nested in another family, not
+  view-specific; the rest are counted in `cobie.scope.components.excluded`.
+- **System**: MechanicalSystem, PipingSystem and ElectricalSystem. ComponentNames =
+  each in-scope component among the system's elements and its base equipment
+  (`MEPSystem.Elements` does not include the base equipment). A system with no
+  component in scope is not written; `cobie.systems` counts and samples them. Key:
+  Name + Category + ComponentNames.
+- **Ext\***: ExtSystem = the authoring application (e.g. `Autodesk Revit 2026`),
+  ExtObject = the Revit class (Level, Room, FamilySymbol, FamilyInstance,
+  MechanicalSystem, ...), ExtIdentifier = the element's UniqueId, so every row traces
+  back to its element.
+- Rows are sorted by name (ordinal), then element id: the same model gives the same
+  workbook, cell for cell.
+
+**Where a component sits** reuses the product's rules; there is no new geometry:
+- a door or window with `space_source: rooms`: Revit's own To Room and From Room in
+  the phase - the values its door schedules show, and the rule
+  `horizun_write_params_verified` numbers doors by;
+- a door or window with `space_source: spaces`: the space on each side of its host
+  wall, half the wall plus 0.5 ft from the insert at its mid-height - how
+  `horizun_quantities room_finishes` decides what an opening faces;
+- everything else, and an opening those rules find nothing for: `RoomMembershipReader`,
+  the rule of `include_room` and `group_by='room'` (see "Room membership" below).
+
+`cobie.scope.components.space_basis` counts each basis. A component in no space has an
+empty Space cell and a `required_field` finding whose detail is the membership's own
+reason. A component other than a door or window that sits in two or more spaces lists
+them all and gets an advisory `spans_spaces`.
+
+**Findings are reported, never silently fixed.**
+
+| Kind | Blocking | When |
+|---|---|---|
+| `required_field` | yes | a required cell is empty; `detail` says why (argument not given, parameter missing, empty or unreadable, no space found ...) |
+| `duplicate_name` | yes | two Floor, Space, Type or Component rows share a Name, or two Zone or System rows share their key (compared without case and outer spaces); or two different Revit systems share Name + Category, which a COBie reader would merge into one |
+| `broken_reference` | yes | a Space's FloorName names no Floor row (its level is not a Building Story), or a Component's Space names no Space row |
+| `name_fallback` | no | `component_name_parameter` was given and the component's value was missing, empty or shared |
+| `spans_spaces` | no | a component other than a door or window sits in several spaces |
+| `not_in_zone` | no | `zone_parameter` is empty or missing on a space |
+| `parameter_missing` | no | a mapped parameter exists on none of the elements behind a sheet - usually a misspelt name |
+| `empty_scope` | no | no instance of `component_categories` is in scope |
+
+Each finding is `{kind, blocking, sheet, row, column, detail, element_id}`, listed in
+sheet, row and column order; `cobie.findings` has the totals by kind and by sheet.
+
+**`deliverable_ready`** is the workbook's verdict: true only when no blocking finding
+remains (the dry run says `deliverable_ready_if_written`). A workbook with blocking
+findings **is still written** on apply - a COBie with gaps is a deliverable under
+review, not a lie - and `deliverable_ready: false` with `blocking` says why. It is
+this tool's rules, not a COBie QC certification.
+
+**Dry run, token, apply, re-read.**
+- The dry run reads the model, builds every row and finding, and writes nothing. The
+  token binds the destination, which files exist, the `cobie` object, the project
+  context's SHA-256 and a digest of every cell except CreatedOn
+  (`cobie.content_sha256`): a model that moves in a way the workbook would show - a
+  renamed room, a new door, a changed parameter - makes the apply a stale plan.
+- The apply reads the model again and writes the workbook to a temporary file beside
+  the target with the Core writer (`Core/XlsxWorkbookWriter.cs`: System.IO.Compression
+  and XML, no dependency; inline strings, numbers, a bold frozen header row), then puts
+  it in place - replacing a file only with `overwrite: true`; with `overwrite: false` an
+  existing file refuses in the rehearsal, and again if one appears before the move.
+- It then **re-reads the file from disk** (`Core/XlsxWorkbookReader.cs`) and compares
+  sheet names and order, every sheet's row count and every cell - kind and exact text,
+  a number being the text of its `<v>` - with the plan. `files_verified: 1` only when
+  everything matches; otherwise the differing cells are named and success is not
+  claimed. `files[0]` has the path, bytes and SHA-256 of the bytes that were read, and
+  `read_back.cells_sha256` hashes what they hold.
+- What the re-read proves: the file holds exactly the rows that were built and judged.
+  What it does not prove: how Excel or a COBie checker renders or judges it, or that
+  the model's data is right. Checked once offline (2026-09-27): a workbook these rules
+  built from sample facts opened in Excel (no repair log) and LibreOffice, and
+  openpyxl read every COBie cell as planned.
+- Text XML cannot carry as is goes the way Excel writes it (`_xHHHH_`; a literal
+  `_xHHHH_` is escaped as `_x005F_xHHHH_`), and CR as a character reference. Over 2,000
+  components the dry run says `long_run`: send the apply through `horizun_submit_job`.
+
+**Not done**: linked models are not read. There is no Contact sheet (CreatedBy names a
+contact the project's own Contact sheet must hold) and no Assembly, Connection, Spare,
+Resource, Job, Impact, Document, Attribute, Coordinate or Issue sheet.
+`information_container` is refused for cobie.
+
+Tests: `tests/Horizun.Core.Tests/XlsxWorkbookTests.cs` and `CobieWorkbookTests.cs`;
+live probe `scripts/live-probes/cobie-workbook.probes.ps1` (its offline half is
+`cobie-workbook.tests.ps1`), not yet run in Revit.
+
+**Resumen (español).** `horizun_export` con `format: "cobie"` escribe un libro COBie
+2.4 (`.xlsx`) del modelo activo: hojas Facility, Floor, Space, Zone, Type, Component y
+System con el juego de columnas COBie 2.4 de cada una. El mapeo (`cobie`) es dato del
+llamador: `created_by` (e-mail, obligatorio y nunca tomado de la máquina),
+`facility.name`, la fase **de Revit** (`phase`, sin valor por defecto) y
+`component_categories` (tokens `OST_`, sin lista por defecto); el resto es opcional, y
+un `project-context.json` v1 rellena nombre de proyecto, sitio, etapa y
+`category_parameter` cuando no se dan (el argumento siempre gana). Una celda
+obligatoria sin fuente queda **vacía y es un hallazgo** (nunca "n/a"); nombres
+duplicados y referencias rotas también lo son, y `deliverable_ready` es falso mientras
+quede uno bloqueante, pero el libro se escribe igual. Dónde está cada componente usa
+las reglas existentes: To/From Room de Revit para puertas y ventanas, el espacio a
+cada lado del muro anfitrión para espacios MEP, y `RoomMembershipReader` para el resto.
+El ensayo no escribe nada y su token ata cada celda salvo CreatedOn; la aplicación
+escribe con un escritor propio sin dependencias y **relee el archivo del disco**,
+comparando hojas, filas y cada celda con el plan antes de declarar `files_verified: 1`.
+
 ## Groups and worksets
 
 ### `horizun_manage_groups`
