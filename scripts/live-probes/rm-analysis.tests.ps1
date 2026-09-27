@@ -156,8 +156,8 @@ try {
     Check 'the loads read passes on counts, kN and per-row coverage' (($by[$n[6]].Outcome -eq 'pass') -and ($by[$n[6]].Detail -match '1 point'))
     Check 'cleanup deletes the 5 created ids in reverse and the systems went with the runs' (($by[$n[7]].Outcome -eq 'pass') -and ($script:deleted.Count -eq 1) -and (@($script:deleted[0]).Count -eq 5) -and (@($script:deleted[0])[0] -eq 5005))
     Check 'types in the document are used by name - nothing copied' ($script:copies.Count -eq 0)
-    Check 'the column names its coordinate mode (a Z point without one is refused)' ($script:sent['t1-rm-column'].elements[0].coordinate_mode -eq 'absolute')
-    Check 'the duct is rectangular with width and height, on its own system type' (($script:sent['t1-rm-duct'].elements[0].width -eq 400) -and ($script:sent['t1-rm-duct'].elements[0].system_type_id -eq 204))
+    Check 'the column names its coordinate mode (a Z point without one is refused)' ($script:sent['t1-rma-column'].elements[0].coordinate_mode -eq 'absolute')
+    Check 'the duct is rectangular with width and height, on its own system type' (($script:sent['t1-rma-duct'].elements[0].width -eq 400) -and ($script:sent['t1-rma-duct'].elements[0].system_type_id -eq 204))
 
     # ---- python on: the staging script makes an own analytical member and load; the TYPED read judges ----
     New-State
@@ -268,7 +268,7 @@ try {
     $script:typesInDoc['OST_PipeCurves'] = @((TypeRow 299 'Pipe Types' 'Some Other'))
     $b10 = RunWith 't10'
     $copy = @($script:copies | Where-Object { $_.category -eq 'OST_PipeCurves' }) | Select-Object -First 1
-    Check 'the pipe type is copied by name with its category, never the first type' ($copy -and ($copy.type_names[0] -eq 'Pipe Types: Default') -and ($copy.source_path -match 'Systems-Default_Metric.rte$') -and ($script:sent['t10-rm-pipe'].elements[0].type_id -eq 800))
+    Check 'the pipe type is copied by name with its category, never the first type' ($copy -and ($copy.type_names[0] -eq 'Pipe Types: Default') -and ($copy.source_path -match 'Systems-Default_Metric.rte$') -and ($script:sent['t10-rma-pipe'].elements[0].type_id -eq 800))
     Check 'a copied type is not deleted and the cleanup case names it as kept' (($b10[$n[7]].Outcome -eq 'pass') -and ($b10[$n[7]].Detail -match 'stay in the disposable document: 800') -and (@($script:deleted[0]) -notcontains 800))
 
     # ---- a leftover run system is deleted in a second call ----

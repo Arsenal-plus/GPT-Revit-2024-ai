@@ -47,5 +47,30 @@ namespace Horizun.Core.Tests
             }
             Assert.True(hits.Count == 0, "a tool-name variable is overwritten (PowerShell names ignore case): " + string.Join(", ", hits));
         }
+
+        // Every module in one verify-live run shares the run id, so an idempotency key built as
+        // ($run + '-xx-' + name) is unique only while no other module uses the same '-xx-'.
+        // MEASURED 2026-09-27 in the matrix: quantities-rooms and rm-analysis both used '-rm-',
+        // rm-analysis's own level reused quantities-rooms' key, the bridge refused it as a
+        // different operation, and three cases went unmeasured.
+        [Fact]
+        public void No_two_live_probe_modules_share_an_idempotency_key_prefix()
+        {
+            var prefix = new Regex(@"\$run \+ '-([A-Za-z0-9]+)-");
+            string probes = Path.Combine(RepoRoot(), "scripts", "live-probes");
+            var owners = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            foreach (string file in Directory.GetFiles(probes, "*.probes.ps1"))
+            {
+                string module = Path.GetFileName(file);
+                foreach (Match m in prefix.Matches(File.ReadAllText(file)))
+                {
+                    if (!owners.TryGetValue(m.Groups[1].Value, out HashSet<string> set)) owners[m.Groups[1].Value] = set = new HashSet<string>(StringComparer.Ordinal);
+                    set.Add(module);
+                }
+            }
+            Assert.NotEmpty(owners);
+            var shared = owners.Where(kv => kv.Value.Count > 1).Select(kv => "'-" + kv.Key + "-': " + string.Join(" and ", kv.Value.OrderBy(v => v, StringComparer.Ordinal))).ToList();
+            Assert.True(shared.Count == 0, "idempotency key prefixes shared across probe modules: " + string.Join("; ", shared));
+        }
     }
 }

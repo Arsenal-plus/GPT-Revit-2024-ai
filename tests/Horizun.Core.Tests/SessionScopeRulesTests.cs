@@ -20,7 +20,7 @@ namespace Horizun.Core.Tests
             };
             SessionScopeRules.Outcome o = SessionScopeRules.Union(history, null);
             Assert.Equal(2, o.WritesConsidered);
-            Assert.Equal(new List<long> { 1, 2, 3 }, o.Ids);
+            Assert.Equal(new List<long> { 2, 3, 1 }, o.Ids);   // the most recent write first
             Assert.Equal(3, o.TotalIdsFound);
             Assert.False(o.Truncated);
             Assert.Contains("horizun_create_elements", o.Tools);
@@ -38,6 +38,25 @@ namespace Horizun.Core.Tests
             SessionScopeRules.Outcome o = SessionScopeRules.Union(history, DateTime.UtcNow.AddMinutes(-10));
             Assert.Equal(1, o.WritesConsidered);
             Assert.Equal(new List<long> { 2 }, o.Ids);
+        }
+
+        [Fact]
+        public void Beyond_the_cap_the_most_recent_write_is_still_checked()
+        {
+            // A long session fills the cap with old writes; the write just made must be in the set.
+            var old = new long[SessionScopeRules.MaxIds];
+            for (int i = 0; i < old.Length; i++) old[i] = i;
+            var history = new List<SessionScopeRules.WriteEntry>
+            {
+                E(60, "old", added: old),
+                E(1, "just_now", added: new long[] { 999999, 999998 })
+            };
+            SessionScopeRules.Outcome o = SessionScopeRules.Union(history, null);
+            Assert.True(o.Truncated);
+            Assert.Equal(SessionScopeRules.MaxIds, o.Ids.Count);
+            Assert.Equal(999999, o.Ids[0]);
+            Assert.Contains(999998L, o.Ids);
+            Assert.DoesNotContain((long)(SessionScopeRules.MaxIds - 1), o.Ids);
         }
 
         [Fact]

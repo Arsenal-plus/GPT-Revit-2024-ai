@@ -6354,9 +6354,10 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified an
                     $ops = @($e.inputSchema.properties.actions.items.properties.operation.enum)
                     $okAnn = ($ann.readOnlyHint -eq $false -and $ann.destructiveHint -eq $false -and
                               $ann.idempotentHint -eq $true -and $ann.openWorldHint -eq $false)
+                    # Ten since batch 1 added set_view_display (2026-09-27); each one is named, never counted alone.
                     $okSchema = ($e.inputSchema.additionalProperties -eq $false -and
-                                 $ops.Count -eq 9 -and
-                                 ($ops -contains 'set_view_template') -and ($ops -contains 'set_crop') -and
+                                 $ops.Count -eq 10 -and
+                                 ($ops -contains 'set_view_template') -and ($ops -contains 'set_crop') -and ($ops -contains 'set_view_display') -and
                                  -not ($ops -contains 'pack_sheet') -and
                                  $null -ne $e.inputSchema.properties.confirmation_token -and
                                  $null -ne $e.inputSchema.properties.idempotency_key -and

@@ -82,7 +82,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 if ($paths.Count -eq 0) { $why[$key] = 'no template under ' + $tplRoot + ': ' + ($templates -join ', '); return $null }
                 foreach ($tpl in $paths) {
                     foreach ($cand in $candidates) {
-                        $k = $run + '-rm-' + $key + '-' + (((Split-Path $tpl -Leaf) + $cand) -replace '[^A-Za-z0-9]', '')
+                        $k = $run + '-rma-' + $key + '-' + (((Split-Path $tpl -Leaf) + $cand) -replace '[^A-Za-z0-9]', '')
                         $r = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = $category
                                 type_names = @($cand); duplicate_types = 'use_destination' } $k
                         if ($r.stage -eq 'apply' -and -not $r.answer.isError) {
@@ -96,7 +96,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 return $null
             }
             function Create($elements, $key) {
-                $r = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @($elements) } ($run + '-rm-' + $key)
+                $r = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @($elements) } ($run + '-rma-' + $key)
                 if ($r.stage -eq 'apply' -and -not $r.answer.isError -and $r.answer.data) {
                     $row = @($r.answer.data.rows) | Select-Object -First 1
                     if ($row -and $row.element_id) { [void]$created.Add([long]$row.element_id); return [long]$row.element_id }
@@ -174,7 +174,7 @@ except Exception as e:
     out['error'] = str(e)
 __output__ = out
 "@
-                $pa = & $Ctx.Call 'horizun_execute_python' @{ code = $pyA; target_document = $doc; idempotency_key = ($run + '-rm-analytical') }
+                $pa = & $Ctx.Call 'horizun_execute_python' @{ code = $pyA; target_document = $doc; idempotency_key = ($run + '-rma-analytical') }
                 $po = if ($pa.data -and $pa.data.output) { $pa.data.output } else { $null }
                 # Nature and case first, so the reversed cleanup deletes load, member, case, nature.
                 if ($po -and $po.nature_id) { [void]$created.Add([long]$po.nature_id) }
@@ -347,7 +347,7 @@ __output__ = out
             if ($ids.Count -eq 0) { Case $catalog[7] $tools[7] 'not_covered' 'nothing was created' }
             else {
                 [array]::Reverse($ids)
-                $del = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; ids = $ids; id_cap = 500 } ($run + '-rm-cleanup')
+                $del = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; ids = $ids; id_cap = 500 } ($run + '-rma-cleanup')
                 if (-not ($del.stage -eq 'apply' -and -not $del.answer.isError)) { Case $catalog[7] $tools[7] 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Short $del.answer)) }
                 else {
                     $systems = @(@($pipeSystem, $ductSystem) | Where-Object { $_ })
@@ -358,7 +358,7 @@ __output__ = out
                     }
                     if ($left.Count -eq 0) { Case $catalog[7] $tools[7] 'pass' ("deleted $($ids.Count) created ids; the run systems ($($systems -join ',')) went with their runs$kept") }
                     else {
-                        $del2 = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; ids = $left; id_cap = 500 } ($run + '-rm-cleanup-systems')
+                        $del2 = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; ids = $left; id_cap = 500 } ($run + '-rma-cleanup-systems')
                         if ($del2.stage -eq 'apply' -and -not $del2.answer.isError) { Case $catalog[7] $tools[7] 'pass' ("deleted $($ids.Count) created ids, then the $($left.Count) run system(s) Revit had kept: $($left -join ',')$kept") }
                         else { Case $catalog[7] $tools[7] 'fail' ('run systems left in the disposable document: ' + ($left -join ',') + ' - ' + (Short $del2.answer)) }
                     }

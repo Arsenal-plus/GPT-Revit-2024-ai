@@ -1603,7 +1603,9 @@ wrong level or room, or a missing element, needs the picture).
   (or `since_utc`, an ISO-8601 UTC instant), so several writes in a row get checked
   together; `ChangeLedger` now keeps a bounded (500 writes) history per document
   alongside the "last write" entry it always kept. The union is capped at 2000 distinct
-  ids — `scope.truncated` and `scope.truncated_why` say so when it was cut. Passing
+  ids, gathered from the MOST RECENT write backwards, so a cut drops the oldest writes and
+  never the one just made — `scope.truncated` and `scope.truncated_why` say so when it was
+  cut (oldest-first, a 485-write session once left its last write unchecked). Passing
   `element_ids` overrides `scope` entirely, as before.
 - `include_annotation=true` additionally runs the TAG/TEXT-NOTE OVERLAP check
   (`Core/TagOverlapRules.cs` for the pure 2D rectangle geometry, `Core/TagOverlapCheck.cs`

@@ -29,7 +29,7 @@ namespace Horizun.Revit.Core
 
         public sealed class Outcome
         {
-            /// <summary>Distinct ids to check, oldest write first, capped at MaxIds.</summary>
+            /// <summary>Distinct ids to check, MOST RECENT write first, capped at MaxIds.</summary>
             public readonly List<long> Ids = new List<long>();
             public readonly List<string> Tools = new List<string>();
             public int WritesConsidered;
@@ -39,17 +39,22 @@ namespace Horizun.Revit.Core
 
         /// <summary>
         /// Union of added+modified ids across every entry at or after <paramref name="sinceUtc"/>
-        /// (the whole history when null), in the order first seen, capped at MaxIds distinct ids.
-        /// Truncation is reported on the outcome, never silently dropped.
+        /// (the whole history when null), the MOST RECENT write first, capped at MaxIds distinct
+        /// ids - so a cap drops the oldest writes, never the one just made. MEASURED 2026-09-27 in
+        /// the matrix: oldest-first, a session of 485 writes filled the cap before the last one,
+        /// and the duplicate that write had just created was never checked. Truncation is
+        /// reported on the outcome, never silently dropped.
         /// </summary>
         public static Outcome Union(IEnumerable<WriteEntry> history, DateTime? sinceUtc)
         {
             var o = new Outcome();
             var seen = new HashSet<long>();
             var tools = new HashSet<string>(StringComparer.Ordinal);
-            foreach (WriteEntry e in history ?? Enumerable.Empty<WriteEntry>())
+            // Newest first; entries at the same instant keep their recorded order reversed too.
+            List<WriteEntry> ordered = (history ?? Enumerable.Empty<WriteEntry>()).Where(e => e != null)
+                .Select((e, i) => new { e, i }).OrderByDescending(x => x.e.AtUtc).ThenByDescending(x => x.i).Select(x => x.e).ToList();
+            foreach (WriteEntry e in ordered)
             {
-                if (e == null) continue;
                 if (sinceUtc.HasValue && e.AtUtc < sinceUtc.Value) continue;
                 o.WritesConsidered++;
                 if (!string.IsNullOrEmpty(e.Tool)) tools.Add(e.Tool);

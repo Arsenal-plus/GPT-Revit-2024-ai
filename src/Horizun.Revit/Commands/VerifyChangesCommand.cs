@@ -147,7 +147,8 @@ namespace Horizun.Revit.Commands
                 scope["ids_checked"] = union.Ids.Count;
                 scope["truncated"] = union.Truncated;
                 if (union.Truncated)
-                    scope["truncated_why"] = "more than " + SessionScopeRules.MaxIds + " distinct ids were touched across the writes considered; only the first " + SessionScopeRules.MaxIds + " are checked.";
+                    scope["truncated_why"] = "more than " + SessionScopeRules.MaxIds + " distinct ids were touched across the writes considered; the " + SessionScopeRules.MaxIds +
+                                             " of the most recent writes are checked (newest first) and the oldest are not.";
                 if (sinceUtc.HasValue) scope["since_utc"] = sinceUtc.Value.ToString("o");
             }
             else
