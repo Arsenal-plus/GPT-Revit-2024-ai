@@ -24,7 +24,7 @@ function Reply($data, $isError, $text) { @{ isError = $isError; data = $data; te
 $noTemplates = Join-Path ([IO.Path]::GetTempPath()) ('hz-frc-tests-' + [guid]::NewGuid().ToString('N'))
 
 function New-State {
-    $script:nextId = 7000; $script:wallApplies = 0; $script:sent = @{}; $script:deleted = $null; $script:removeTargets = @()
+    $script:nextId = 7000; $script:wallApplies = 0; $script:sent = @{}; $script:deleted = $null; $script:removeTargets = @(); $script:reusedKeys = @()
     $script:noGlazing = $false; $script:w1Restore = @{ restored = $true; inserts_changed = 0; why = $null }; $script:notAtSupport = @()
     $script:nextTypeId = 600; $script:typesRefused = $false; $script:layoutText = 'Fixed Distance'
     $script:noOverlap = $false; $script:w3Restored = $true
@@ -86,6 +86,9 @@ $fakeCall = {
 
 $fakeApply = {
     param($tool, $arguments, $key)
+    # A key reused for a different call is refused by the bridge (MEASURED 2026-09-27: the ceiling
+    # apply reused the staging ceiling's key) - so every Apply key must be new.
+    if ($script:sent.ContainsKey($key)) { $script:reusedKeys += $key }
     $script:sent[$key] = $arguments
     switch ($tool) {
         'horizun_create_elements' {
@@ -132,11 +135,14 @@ $fakeApply = {
                 return @{ stage = 'apply'; answer = (Reply $data $false '') }
             }
             if ($op -eq 'ceiling') {
+                # The REAL shape (MEASURED 2026-09-27): grid 1 lines run at the angle + 90; the cross
+                # layer has grid 1 None and its members on grid 2, whose lines run at 0.
                 $g1 = { param($deg) [pscustomobject]@{ lines = 11; layout = 1; layout_text = 'Fixed Distance'; spacing_mm = 406.4; spacing_problems = @(); direction_deg = $deg; planned_direction_deg = $deg } }
+                $none = [pscustomobject]@{ lines = 0; layout = 0; layout_text = 'None'; spacing_check = 'no grid line to measure' }
                 $pieces = @([pscustomobject]@{ i = 0; role = 'curtain_layer'; id = 9101; plane_deviation_mm = 0.0; footprint_deviation_mm = 0.2; slope_defining_edges = 0
-                                grid = [pscustomobject]@{ grid1 = (& $g1 0.0); grid2 = [pscustomobject]@{ lines = 0; layout = 0; spacing_check = 'no grid line to measure' } } },
+                                grid = [pscustomobject]@{ grid1 = (& $g1 90.0); grid2 = $none } },
                             [pscustomobject]@{ i = 1; role = 'curtain_layer'; id = 9102; plane_deviation_mm = 0.0; footprint_deviation_mm = 0.2; slope_defining_edges = 0
-                                grid = [pscustomobject]@{ grid1 = (& $g1 90.0) } }) +
+                                grid = [pscustomobject]@{ grid1 = $none; grid2 = [pscustomobject]@{ lines = 8; layout = 1; layout_text = 'Fixed Distance'; spacing_mm = 406.4; spacing_problems = @(); direction_deg = 0.0 } } }) +
                           @(2..4 | ForEach-Object { [pscustomobject]@{ i = $_; role = 'curtain_hanger'; id = 9100 + $_; location_deviation_mm = 0.0; base_top_deviation_mm = 0.0; grid = [pscustomobject]@{ vertical_lines = 3; horizontal_lines = 0; layout_vert = 1; layout_vert_text = $script:layoutText; spacing_mm = 406.4; spacing_problems = @(); mullions_by_role = [pscustomobject]@{ vertical_interior = 3; horizontal_border = 2 } } } })
                 return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'ceiling'; transaction_status = 'Committed'; already_applied = $false
                     application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
@@ -182,6 +188,7 @@ try {
     $cases = @(& $module.Run (Ctx 't1'))
     $by = @{}; foreach ($c in $cases) { $by[$c.Name] = $c }
     Check 'every catalogued case is reported exactly once' (($cases.Count -eq $module.Catalog.Count) -and (@($names | Where-Object { -not $by.ContainsKey($_) }).Count -eq 0))
+    Check 'no idempotency key is used twice (the bridge refuses a reused key for a different call)' (@($script:reusedKeys).Count -eq 0)
     foreach ($name in $names) { Check ('the happy path passes: ' + $name) ($by[$name].Outcome -eq 'pass') }
     $mSent = $script:sent['t1-frc-mullions']; $oSent = $script:sent['t1-frc-owntypes']; $sSent = $script:sent['t1-frc-spacing']
     Check 'the stud and track are duplicated from the named rectangular mullion at 41.3 x 92.1 mm, sent in feet' ((@($mSent.actions).Count -eq 2) -and
@@ -190,18 +197,20 @@ try {
     Check 'the core is layout 1 with studs as vertical mullions and tracks as horizontal borders; the layer is one-way' (($oSent.actions[0].source_type_id -eq 501) -and
         ($oSent.actions[0].values.SPACING_LAYOUT_VERT -eq 1) -and ($oSent.actions[0].values.AUTO_MULLION_INTERIOR_VERT -eq 601) -and ($oSent.actions[0].values.AUTO_MULLION_BORDER2_VERT -eq 601) -and
         ($oSent.actions[0].values.AUTO_MULLION_BORDER1_HORIZ -eq 602) -and ($oSent.actions[1].source_type_id -eq 505) -and ($oSent.actions[1].values.SPACING_LAYOUT_1 -eq 1) -and ($oSent.actions[1].values.SPACING_LAYOUT_2 -eq 0))
-    Check 'the spacings are a second call on the NEW types, 406.4 mm sent in feet' ((@($sSent.writes).Count -eq 2) -and ($sSent.writes[0].target_id -eq 603) -and ($sSent.writes[0].parameter -eq 'SPACING_LENGTH_VERT') -and
-        ([math]::Abs($sSent.writes[0].value * 304.8 - 406.4) -lt 1e-9) -and ($sSent.writes[1].target_id -eq 604) -and ($sSent.writes[1].parameter -eq 'SPACING_LENGTH_1'))
+    Check 'the spacings are a second call on the NEW types, 406.4 mm sent in feet (the cross layer on grid 2)' ((@($sSent.writes).Count -eq 3) -and ($sSent.writes[0].target_id -eq 603) -and ($sSent.writes[0].parameter -eq 'SPACING_LENGTH_VERT') -and
+        ([math]::Abs($sSent.writes[0].value * 304.8 - 406.4) -lt 1e-9) -and ($sSent.writes[1].target_id -eq 604) -and ($sSent.writes[1].parameter -eq 'SPACING_LENGTH_1') -and
+        ($sSent.writes[2].target_id -eq 605) -and ($sSent.writes[2].parameter -eq 'SPACING_LENGTH_2'))
     $applySent = $script:sent['t1-frc-apply']
     Check 'the wall apply names the one-door wall, method curtain, the OWN core and the placeholder type' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and
         ($applySent.spec.wall.method -eq 'curtain') -and ($applySent.spec.wall.curtain_type_id -eq 603) -and ($applySent.spec.wall.placeholder_type_id -eq 503))
     Check 'the door is hosted on the staged wall' (($script:sent['t1-frc-door'].elements[0].host_id -eq 7002))
     Check 'the remove names both carriers' ((@($script:removeTargets) -contains 7002) -and (@($script:removeTargets) -contains 7003))
-    $ceilSent = $script:sent['t1-frc-ceiling']
-    Check 'the ceiling apply sends two OWN sloped glazing layers 30 mm apart and the OWN 406.4 mm core type as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
-        (@($ceilSent.spec.ceiling.layers | Where-Object { $_.type_id -ne 604 }).Count -eq 0) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 603))
+    $ceilSent = $script:sent['t1-frc-ceiling-apply']
+    Check 'the ceiling apply sends the OWN grid-1 layer at 0 deg and the OWN grid-2 layer 30 mm above it with no angle, the OWN core as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
+        ($ceilSent.spec.ceiling.layers[0].type_id -eq 604) -and ($ceilSent.spec.ceiling.layers[0].angle_deg -eq 0) -and ($ceilSent.spec.ceiling.layers[1].type_id -eq 605) -and
+        (-not $ceilSent.spec.ceiling.layers[1].ContainsKey('angle_deg')) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 603))
     Check 'cleanup deletes the own types and the recreated carrier, never the deleted one' ((@($script:deleted) -contains 9999) -and -not (@($script:deleted) -contains 7003) -and
-        (@(601..604 | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0) -and (@($script:deleted).Count -eq 13))
+        (@(601..605 | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0) -and (@($script:deleted).Count -eq 14))
     Check 'the manage_curtain case reports the grid angles' ($by[$names[7]].Detail -match 'grid 1 at 0 deg, grid 2 at 90 deg')
     $a3Sent = $script:sent['t1-frc-apply3']
     Check 'the one-door and the two-door walls run on the DEFAULT multi_opening (none sent)' ((-not $applySent.spec.wall.ContainsKey('multi_opening')) -and ($null -ne $a3Sent) -and
@@ -251,7 +260,7 @@ try {
     $tplBy = RunBy (Ctx 't7')
     Check 'a refused type duplicate fails the types case with its reason' (($tplBy[$names[9]].Outcome -eq 'fail') -and ($tplBy[$names[9]].Detail -match 'read-only on the source type'))
     Check 'without own types the wall and the ceiling run on the template types, the spacing never written' (($script:sent['t7-frc-apply'].spec.wall.curtain_type_id -eq 501) -and
-        ($tplBy[$names[1]].Outcome -eq 'pass') -and ($script:sent['t7-frc-ceiling'].spec.ceiling.layers[0].type_id -eq 505) -and ($tplBy[$names[6]].Outcome -eq 'pass') -and -not $script:sent.ContainsKey('t7-frc-spacing'))
+        ($tplBy[$names[1]].Outcome -eq 'pass') -and ($script:sent['t7-frc-ceiling-apply'].spec.ceiling.layers[0].type_id -eq 505) -and ($tplBy[$names[6]].Outcome -eq 'pass') -and -not $script:sent.ContainsKey('t7-frc-spacing'))
 
     # ---- layout 1 re-read as something else: the wall apply fails, and its pieces are still removed ----
     New-State; $script:layoutText = 'Fixed Number'

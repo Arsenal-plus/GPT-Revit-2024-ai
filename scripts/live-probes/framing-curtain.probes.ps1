@@ -129,7 +129,7 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($r.stage -ne 'apply' -or $r.answer.isError -or $rows.Count -ne @($actions).Count -or $bad.Count -gt 0) { return @{ ids = $null; why = "${key}: " + (Short $r.answer) } }
             return @{ ids = @($rows | Sort-Object { [int]$_.index } | ForEach-Object { [long]$_.new_type_id }); why = $null }
         }
-        $coreTypeId = $null; $layerTypeId = $null; $ownCore = $false; $ownLayer = $false
+        $coreTypeId = $null; $layerTypeId = $null; $crossTypeId = $null; $ownCore = $false; $ownLayer = $false
         if ($curtainType) { $coreTypeId = [long]$curtainType.element_id }
         if ($glazingType) { $layerTypeId = [long]$glazingType.element_id }
         $typesNote = @(); $typesFail = $null; $missing = @()
@@ -151,9 +151,13 @@ $script:HzProbeModules += [pscustomobject]@{
                     $roles += 'core'
                 }
                 if ($glazingType) {
-                    # One-way: a ceiling layer carries one direction; the second layer turns 90 degrees.
+                    # One-way layers: the first carries its members on grid 1, the second on grid 2, which
+                    # runs ACROSS grid 1 at the same angle. Not a 90 degree angle: Revit takes -89..89 only
+                    # (MEASURED 2026-09-27: 90 was accepted by Set and refused at the commit).
                     $acts += @{ source_type_id = [long]$glazingType.element_id; new_name = "HZ_FRC layer 406.4 $run"; values = @{ SPACING_LAYOUT_1 = 1; SPACING_LAYOUT_2 = 0; AUTO_MULLION_INTERIOR_GRID1 = $stud } }
                     $roles += 'layer'
+                    $acts += @{ source_type_id = [long]$glazingType.element_id; new_name = "HZ_FRC cross 406.4 $run"; values = @{ SPACING_LAYOUT_1 = 0; SPACING_LAYOUT_2 = 1; AUTO_MULLION_INTERIOR_GRID2 = $stud } }
+                    $roles += 'cross'
                 }
                 $o = NewTypes $acts 'owntypes'
                 if (-not $o.ids) { $typesFail = $o.why }
@@ -162,11 +166,13 @@ $script:HzProbeModules += [pscustomobject]@{
                     $writes = @()
                     if ($own.core) { $writes += @{ target_id = $own.core; parameter = 'SPACING_LENGTH_VERT'; value = (ToFeet 406.4) } }
                     if ($own.layer) { $writes += @{ target_id = $own.layer; parameter = 'SPACING_LENGTH_1'; value = (ToFeet 406.4) } }
+                    if ($own.cross) { $writes += @{ target_id = $own.cross; parameter = 'SPACING_LENGTH_2'; value = (ToFeet 406.4) } }
                     $wp = & $Ctx.Apply $WpTool @{ target_document = $doc; writes = $writes } ($run + '-frc-spacing')
                     if ($wp.stage -ne 'apply' -or $wp.answer.isError -or $wp.answer.data.verification.verified -ne $true) { $typesFail = 'spacing: ' + (Short $wp.answer) }
                     else {
                         if ($own.core) { $coreTypeId = $own.core; $ownCore = $true }
                         if ($own.layer) { $layerTypeId = $own.layer; $ownLayer = $true }
+                        if ($own.cross) { $crossTypeId = $own.cross }
                         $typesNote += "stud $stud and track $track at 41.3 x 92.1 mm; " + (($roles | ForEach-Object { "$_ type $($own[$_]) at layout 1 and 406.4 mm" }) -join ', ')
                     }
                 }
@@ -318,7 +324,7 @@ $script:HzProbeModules += [pscustomobject]@{
                                    profile = @(, @(@($CX, $CY, $CZ), @(($CX + 4800), $CY, $CZ), @(($CX + 4800), ($CY + 3600), $CZ), @($CX, ($CY + 3600), $CZ))) }) 'ceiling'
         }
         $cSpec = @{ ceiling = @{ method = 'curtain'
-            layers = @(@{ type_id = $layerTypeId; offset_mm = 0; angle_deg = 0 }, @{ type_id = $layerTypeId; offset_mm = 30; angle_deg = 90 })
+            layers = @(@{ type_id = $layerTypeId; offset_mm = 0; angle_deg = 0 }, @{ type_id = $(if ($crossTypeId) { $crossTypeId } else { $layerTypeId }); offset_mm = 30 })
             hanger = @{ type_id = $coreTypeId; spacing_mm = 1200; max_length_mm = 3000; attach = 'structure_above' } } }
         $cArgs = @{ operation = 'ceiling'; target_document = $doc; element_ids = @($ceiling); spec = $cSpec }
         $cWhy = "staging incomplete: floor $floor, ceiling $ceiling, sloped glazing type '$layerTypeId', hanger curtain type '$coreTypeId'"
@@ -342,7 +348,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 if ($problems.Count -gt 0) { Case $catalog[5] $T 'fail' ($problems -join '; ') }
                 else { Case $catalog[5] $T 'pass' ('2 layers at ' + ($planes -join ',') + " mm, $(@($cs.hangers).Count) hanger(s) from $($cs.hanger_base_mm) to " + ((@($cs.hangers) | ForEach-Object { $_.top_mm } | Sort-Object -Unique | Select-Object -First 3) -join ',') + ' mm') }
 
-                $ca = & $Ctx.Apply $T $cArgs ($run + '-frc-ceiling')
+                $ca = & $Ctx.Apply $T $cArgs ($run + '-frc-ceiling-apply')
                 $cCommitted = ($ca.stage -eq 'apply' -and -not $ca.answer.isError -and $ca.answer.data.transaction_status -eq 'Committed')
                 $cev = $null
                 if ($ca.answer.data) { $cev = @($ca.answer.data.evidence.sources)[0] }
@@ -365,9 +371,15 @@ $script:HzProbeModules += [pscustomobject]@{
                             (($offHangers | Select-Object -First 3 | ForEach-Object { "id $($_.id) layout $($_.grid.layout_vert) spacing $($_.grid.spacing_mm) lines $($_.grid.vertical_lines) rods $($_.grid.mullions_by_role.vertical_interior)" }) -join '; ') }
                     }
                     if ($ownLayer) {
-                        $offLayers = @($layers | Where-Object { OffOwnGrid @{ layout = $_.grid.grid1.layout; text = $_.grid.grid1.layout_text; spacing = $_.grid.grid1.spacing_mm; problems = $_.grid.grid1.spacing_problems } })
-                        if ($offLayers.Count -gt 0) { $problems += "$($offLayers.Count) layer(s) do not re-read the own 406.4 mm grid 1: " +
-                            (($offLayers | ForEach-Object { "layout $($_.grid.grid1.layout)='$($_.grid.grid1.layout_text)' spacing $($_.grid.grid1.spacing_mm) $(@($_.grid.grid1.spacing_problems) -join '|')" }) -join '; ') }
+                        # Layer 0 carries its members on grid 1, layer 1 (the own cross type) on grid 2.
+                        $offLayers = @()
+                        for ($li = 0; $li -lt $layers.Count; $li++) {
+                            $gk = if ($li -eq 1 -and $crossTypeId) { 'grid2' } else { 'grid1' }
+                            $gr = $layers[$li].grid.$gk
+                            if (OffOwnGrid @{ layout = $gr.layout; text = $gr.layout_text; spacing = $gr.spacing_mm; problems = $gr.spacing_problems }) {
+                                $offLayers += "layer $li $gk layout $($gr.layout)='$($gr.layout_text)' spacing $($gr.spacing_mm) $(@($gr.spacing_problems) -join '|')" }
+                        }
+                        if ($offLayers.Count -gt 0) { $problems += "$($offLayers.Count) layer(s) do not re-read their own 406.4 mm grid: " + ($offLayers -join '; ') }
                     }
                     if ($problems.Count -gt 0) { Case $catalog[6] $T 'fail' ($problems -join '; ') }
                     else {
