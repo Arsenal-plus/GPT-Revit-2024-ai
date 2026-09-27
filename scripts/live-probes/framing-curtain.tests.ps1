@@ -3,13 +3,16 @@
 # replies copy the shapes the code builds - SHAPES FROM THE CODE, TO BE HELD AGAINST THE FIRST
 # LIVE RUN: CurtainWallSummary / CurtainCeilingSummary (plan.sources[].method, pieces[].role,
 # carrier.action / type_id / span, layers[].plane_mm, hangers[].base_mm / top_mm, not_built),
-# VerifyCurtainWalls (evidence.sources[].pieces[].grid.layout_vert, carrier.type_ok /
-# inserts_checked / inserts_changed / deleted / deleted_with_it[_measured]), VerifyRemoved +
-# VerifyCurtainRestores (evidence.carrier_restores[].restored / wall_id / recreated_with_new_id /
-# inserts_changed / not_restored_because), VerifyCurtainCeilings (evidence.hanger_recheck.
-# stations_checked / not_at_support) and ManageCurtainCommand.Read (counts, host_kind,
-# grid1_angle_deg) - where ModelEditRunner places that read result is exactly what the first
-# live run must confirm (the probe looks in data, data.read and data.result).
+# VerifyCurtainWalls (evidence.sources[].pieces[].grid.layout_vert / layout_vert_text /
+# spacing_mm / spacing_problems, carrier.type_ok / inserts_checked / inserts_changed / deleted /
+# deleted_with_it[_measured]), VerifyRemoved + VerifyCurtainRestores (evidence.carrier_restores[].
+# restored / wall_id / recreated_with_new_id / inserts_changed / not_restored_because),
+# VerifyCurtainCeilings (pieces[].grid.grid1.layout / layout_text / spacing_mm / spacing_problems,
+# evidence.hanger_recheck.stations_checked / not_at_support), ManageCurtainCommand.Read (counts,
+# host_kind, grid1_angle_deg; where ModelEditRunner places that read result is exactly what the
+# first live run must confirm - the probe looks in data, data.read and data.result),
+# ManageSystemTypesCommand (rows[].index / new_type_id / type_verified / parameters_verified) and
+# horizun_write_params_verified (verification.verified, the way coordination-bcf-readiness reads it).
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'framing-curtain.probes.ps1')
@@ -23,6 +26,7 @@ $noTemplates = Join-Path ([IO.Path]::GetTempPath()) ('hz-frc-tests-' + [guid]::N
 function New-State {
     $script:nextId = 7000; $script:wallApplies = 0; $script:sent = @{}; $script:deleted = $null; $script:removeTargets = @()
     $script:noGlazing = $false; $script:w1Restore = @{ restored = $true; inserts_changed = 0; why = $null }; $script:notAtSupport = @()
+    $script:nextTypeId = 600; $script:typesRefused = $false; $script:layoutText = 'Fixed Distance'
 }
 
 $fakeCall = {
@@ -36,20 +40,21 @@ $fakeCall = {
             'OST_Roofs' { if ($script:noGlazing) { @() } else { @(@{ element_id = 505; is_element_type = $true; family = 'Sloped Glazing'; type = 'Sloped Glazing' }) } }
             'OST_Floors' { @(@{ element_id = 506; is_element_type = $true; family = 'Floor'; type = 'Generic 300mm' }) }
             'OST_Ceilings' { @(@{ element_id = 507; is_element_type = $true; family = 'Compound Ceiling'; type = '600 x 600mm Grid' }) }
+            'OST_CurtainWallMullions' { @(@{ element_id = 508; is_element_type = $true; family = 'Rectangular Mullion'; type = '50 x 150mm' }) }
             default { @() }
         }
         return Reply ([pscustomobject]@{ rows = @($rows | ForEach-Object { [pscustomobject]$_ }) }) $false ''
     }
     if ($tool -eq 'horizun_framing' -and $arguments.operation -eq 'wall') {
-        $sid = [long]@($arguments.element_ids)[0]
+        $sid = [long]@($arguments.element_ids)[0]; $tid = [long]$arguments.spec.wall.curtain_type_id
         if ($sid -eq 7002) {
             $src = [pscustomobject]@{ source_id = 7002; status = 'planned'; method = 'curtain'; length_mm = 6000.0; height_mm = 3000.0; core_offset_mm = 0.0
                 openings = @([pscustomobject]@{ id = '7004'; start = 2042.5; end = 2957.5; sill = 0.0; head = 2134.0 })
-                pieces = @([pscustomobject]@{ i = 0; role = 'curtain_segment'; type_id = 501 }, [pscustomobject]@{ i = 1; role = 'curtain_segment'; type_id = 501 }, [pscustomobject]@{ i = 2; role = 'curtain_header'; type_id = 501 })
+                pieces = @([pscustomobject]@{ i = 0; role = 'curtain_segment'; type_id = $tid }, [pscustomobject]@{ i = 1; role = 'curtain_segment'; type_id = $tid }, [pscustomobject]@{ i = 2; role = 'curtain_header'; type_id = $tid })
                 skipped = @(); carrier = [pscustomobject]@{ action = 'trim'; original_type_id = 502; type_id = 503; span = @(2042.5, 2957.5); opening_id = '7004' } }
         }
         else {
-            $src = [pscustomobject]@{ source_id = $sid; status = 'planned'; method = 'curtain'; openings = @(); pieces = @([pscustomobject]@{ i = 0; role = 'curtain_segment'; type_id = 501 })
+            $src = [pscustomobject]@{ source_id = $sid; status = 'planned'; method = 'curtain'; openings = @(); pieces = @([pscustomobject]@{ i = 0; role = 'curtain_segment'; type_id = $tid })
                 skipped = @(); carrier = [pscustomobject]@{ action = 'delete'; original_type_id = 502; type_id = $null; span = $null; replaced_by = 'every curtain_segment piece'
                     deleted_with_it = [pscustomobject]@{ count = 0; by_category = [pscustomobject]@{}; ids = @() } } }
         }
@@ -77,6 +82,20 @@ $fakeApply = {
             $script:nextId++
             return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $script:nextId }) }) $false '') }
         }
+        'horizun_manage_system_types' {
+            if ($script:typesRefused) { return @{ stage = 'rehearsal'; answer = (Reply $null $true "parameter 'RECT_MULLION_THICK' is read-only on the source type") } }
+            $rows = @(); $i = 0
+            foreach ($act in @($arguments.actions)) {
+                $script:nextTypeId++
+                $rows += [pscustomobject]@{ index = $i; source_type_id = $act.source_type_id; new_type_id = $script:nextTypeId; name = $act.new_name
+                                            type_verified = $true; source_unchanged = $true; parameters_verified = $true; compound_structure_verified = $null }
+                $i++
+            }
+            return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ transaction_status = 'Committed'; created_verified = $true; rows = $rows }) $false '') }
+        }
+        'horizun_write_params_verified' {
+            return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ transaction_status = 'Committed'; verification = [pscustomobject]@{ verified = $true } }) $false '') }
+        }
         'horizun_framing' {
             $op = $arguments.operation; $sid = [long]@($arguments.element_ids)[0]
             if ($op -eq 'remove') {
@@ -99,10 +118,11 @@ $fakeApply = {
                 return @{ stage = 'apply'; answer = (Reply $data $false '') }
             }
             if ($op -eq 'ceiling') {
+                $g1 = { param($deg) [pscustomobject]@{ lines = 11; layout = 1; layout_text = 'Fixed Distance'; spacing_mm = 406.4; spacing_problems = @(); direction_deg = $deg; planned_direction_deg = $deg } }
                 $pieces = @([pscustomobject]@{ i = 0; role = 'curtain_layer'; id = 9101; plane_deviation_mm = 0.0; footprint_deviation_mm = 0.2; slope_defining_edges = 0
-                                grid = [pscustomobject]@{ grid1 = [pscustomobject]@{ lines = 11; layout = 1; direction_deg = 0.0; planned_direction_deg = 0.0 }; grid2 = [pscustomobject]@{ lines = 4; layout = 1 } } },
+                                grid = [pscustomobject]@{ grid1 = (& $g1 0.0); grid2 = [pscustomobject]@{ lines = 0; layout = 0; spacing_check = 'no grid line to measure' } } },
                             [pscustomobject]@{ i = 1; role = 'curtain_layer'; id = 9102; plane_deviation_mm = 0.0; footprint_deviation_mm = 0.2; slope_defining_edges = 0
-                                grid = [pscustomobject]@{ grid1 = [pscustomobject]@{ lines = 4; layout = 1; direction_deg = 90.0; planned_direction_deg = 90.0 } } }) +
+                                grid = [pscustomobject]@{ grid1 = (& $g1 90.0) } }) +
                           @(2..4 | ForEach-Object { [pscustomobject]@{ i = $_; role = 'curtain_hanger'; id = 9100 + $_; location_deviation_mm = 0.0; base_top_deviation_mm = 0.0; grid = [pscustomobject]@{ vertical_lines = 3 } } })
                 return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'ceiling'; transaction_status = 'Committed'; already_applied = $false
                     application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
@@ -112,7 +132,7 @@ $fakeApply = {
             if ($sid -eq 7002) {
                 $script:wallApplies++
                 $again = $script:wallApplies -gt 1
-                $grid = [pscustomobject]@{ vertical_lines = 5; horizontal_lines = 0; layout_vert = 1; layout_vert_text = 'Fixed Distance'; spacing_mm = 406.4; spacing_problems = @() }
+                $grid = [pscustomobject]@{ vertical_lines = 5; horizontal_lines = 0; layout_vert = 1; layout_vert_text = $script:layoutText; spacing_mm = 406.4; spacing_problems = @() }
                 return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = $again
                     application = [pscustomobject]@{ state = $(if ($again) { 'no_op' } else { 'verified_applied' }) }; postconditions = [pscustomobject]@{ all_verified = $true }
                     evidence = [pscustomobject]@{ sources = @([pscustomobject]@{ source_id = 7002; already_applied = $again
@@ -121,7 +141,8 @@ $fakeApply = {
             }
             return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = $false
                 application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
-                evidence = [pscustomobject]@{ sources = @([pscustomobject]@{ source_id = $sid; already_applied = $false; pieces = @([pscustomobject]@{ i = 0; role = 'curtain_segment'; id = 9011 })
+                evidence = [pscustomobject]@{ sources = @([pscustomobject]@{ source_id = $sid; already_applied = $false
+                    pieces = @([pscustomobject]@{ i = 0; role = 'curtain_segment'; id = 9011; grid = [pscustomobject]@{ vertical_lines = 7; layout_vert = 1; layout_vert_text = 'Fixed Distance'; spacing_mm = 406.4; spacing_problems = @() } })
                     carrier = [pscustomobject]@{ id = $sid; action = 'delete'; deleted = $true; deleted_with_it = @(); deleted_with_it_measured = @(); inserts_checked = 0; inserts_changed = 0 } }) } }) $false '') }
         }
         'horizun_delete_verified' { $script:deleted = $arguments.ids; return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{}) $false '') } }
@@ -139,15 +160,25 @@ try {
     $by = @{}; foreach ($c in $cases) { $by[$c.Name] = $c }
     Check 'every catalogued case is reported exactly once' (($cases.Count -eq $module.Catalog.Count) -and (@($names | Where-Object { -not $by.ContainsKey($_) }).Count -eq 0))
     foreach ($name in $names) { Check ('the happy path passes: ' + $name) ($by[$name].Outcome -eq 'pass') }
+    $mSent = $script:sent['t1-frc-mullions']; $oSent = $script:sent['t1-frc-owntypes']; $sSent = $script:sent['t1-frc-spacing']
+    Check 'the stud and track are duplicated from the named rectangular mullion at 41.3 x 92.1 mm, sent in feet' ((@($mSent.actions).Count -eq 2) -and
+        (@($mSent.actions | Where-Object { $_.source_type_id -ne 508 }).Count -eq 0) -and ([math]::Abs($mSent.actions[0].values.RECT_MULLION_WIDTH1 * 2 * 304.8 - 41.3) -lt 1e-9) -and
+        ([math]::Abs($mSent.actions[0].values.RECT_MULLION_THICK * 304.8 - 92.1) -lt 1e-9))
+    Check 'the core is layout 1 with studs as vertical mullions and tracks as horizontal borders; the layer is one-way' (($oSent.actions[0].source_type_id -eq 501) -and
+        ($oSent.actions[0].values.SPACING_LAYOUT_VERT -eq 1) -and ($oSent.actions[0].values.AUTO_MULLION_INTERIOR_VERT -eq 601) -and ($oSent.actions[0].values.AUTO_MULLION_BORDER2_VERT -eq 601) -and
+        ($oSent.actions[0].values.AUTO_MULLION_BORDER1_HORIZ -eq 602) -and ($oSent.actions[1].source_type_id -eq 505) -and ($oSent.actions[1].values.SPACING_LAYOUT_1 -eq 1) -and ($oSent.actions[1].values.SPACING_LAYOUT_2 -eq 0))
+    Check 'the spacings are a second call on the NEW types, 406.4 mm sent in feet' ((@($sSent.writes).Count -eq 2) -and ($sSent.writes[0].target_id -eq 603) -and ($sSent.writes[0].parameter -eq 'SPACING_LENGTH_VERT') -and
+        ([math]::Abs($sSent.writes[0].value * 304.8 - 406.4) -lt 1e-9) -and ($sSent.writes[1].target_id -eq 604) -and ($sSent.writes[1].parameter -eq 'SPACING_LENGTH_1'))
     $applySent = $script:sent['t1-frc-apply']
-    Check 'the wall apply names the one-door wall, method curtain, the curtain and placeholder types' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and
-        ($applySent.spec.wall.method -eq 'curtain') -and ($applySent.spec.wall.curtain_type_id -eq 501) -and ($applySent.spec.wall.placeholder_type_id -eq 503))
+    Check 'the wall apply names the one-door wall, method curtain, the OWN core and the placeholder type' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and
+        ($applySent.spec.wall.method -eq 'curtain') -and ($applySent.spec.wall.curtain_type_id -eq 603) -and ($applySent.spec.wall.placeholder_type_id -eq 503))
     Check 'the door is hosted on the staged wall' (($script:sent['t1-frc-door'].elements[0].host_id -eq 7002))
     Check 'the remove names both carriers' ((@($script:removeTargets) -contains 7002) -and (@($script:removeTargets) -contains 7003))
     $ceilSent = $script:sent['t1-frc-ceiling']
-    Check 'the ceiling apply sends two sloped glazing layers 30 mm apart and the curtain type as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
-        (@($ceilSent.spec.ceiling.layers | Where-Object { $_.type_id -ne 505 }).Count -eq 0) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 501))
-    Check 'cleanup deletes the recreated carrier and never the deleted one' ((@($script:deleted) -contains 9999) -and -not (@($script:deleted) -contains 7003) -and (@($script:deleted).Count -eq 6))
+    Check 'the ceiling apply sends two OWN sloped glazing layers 30 mm apart and the template curtain type as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
+        (@($ceilSent.spec.ceiling.layers | Where-Object { $_.type_id -ne 604 }).Count -eq 0) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 501))
+    Check 'cleanup deletes the own types and the recreated carrier, never the deleted one' ((@($script:deleted) -contains 9999) -and -not (@($script:deleted) -contains 7003) -and
+        (@(601..604 | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0) -and (@($script:deleted).Count -eq 10))
     Check 'the manage_curtain case reports the grid angles' ($by[$names[7]].Detail -match 'grid 1 at 0 deg, grid 2 at 90 deg')
 
     # ---- a carrier whose restore is refused fails the remove case, and the cleanup ----
@@ -171,6 +202,21 @@ try {
     $bareBy = RunBy (Ctx 't5')
     Check 'without a sloped glazing type the ceiling cases are not_covered with the reason' (($bareBy[$names[5]].Outcome -eq 'not_covered') -and ($bareBy[$names[5]].Detail -match "sloped glazing type ''") -and ($bareBy[$names[6]].Outcome -eq 'not_covered'))
     Check 'without a layer the manage_curtain read is not_covered and the cleanup still passes' (($bareBy[$names[7]].Outcome -eq 'not_covered') -and ($bareBy[$names[8]].Outcome -eq 'pass'))
+    Check 'without a sloped glazing source the types case is not_covered naming it, and the wall still runs on the own core' (($bareBy[$names[9]].Outcome -eq 'not_covered') -and
+        ($bareBy[$names[9]].Detail -match 'Sloped Glazing') -and ($script:sent['t5-frc-apply'].spec.wall.curtain_type_id -eq 603) -and ($bareBy[$names[1]].Outcome -eq 'pass'))
+
+    # ---- the type duplicate refused: the types case fails, the framing runs on the template types ----
+    New-State; $script:typesRefused = $true
+    $tplBy = RunBy (Ctx 't7')
+    Check 'a refused type duplicate fails the types case with its reason' (($tplBy[$names[9]].Outcome -eq 'fail') -and ($tplBy[$names[9]].Detail -match 'read-only on the source type'))
+    Check 'without own types the wall and the ceiling run on the template types, the spacing never written' (($script:sent['t7-frc-apply'].spec.wall.curtain_type_id -eq 501) -and
+        ($tplBy[$names[1]].Outcome -eq 'pass') -and ($script:sent['t7-frc-ceiling'].spec.ceiling.layers[0].type_id -eq 505) -and ($tplBy[$names[6]].Outcome -eq 'pass') -and -not $script:sent.ContainsKey('t7-frc-spacing'))
+
+    # ---- layout 1 re-read as something else: the wall apply fails, and its pieces are still removed ----
+    New-State; $script:layoutText = 'Fixed Number'
+    $numBy = RunBy (Ctx 't8')
+    Check 'layout 1 re-read as anything but Fixed Distance fails the wall apply, naming the text' (($numBy[$names[1]].Outcome -eq 'fail') -and ($numBy[$names[1]].Detail -match "='Fixed Number'"))
+    Check 'a committed apply that failed a check is still removed; the idempotent case is not_covered' ((@($script:removeTargets) -contains 7002) -and ($numBy[$names[2]].Outcome -eq 'not_covered'))
 
     # ---- a closed write tier ----
     New-State
@@ -179,6 +225,7 @@ try {
     Check 'a closed write tier reports every case not_covered' ((@($shut | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq $module.Catalog.Count))
     Check 'a closed write tier names each case''s own tool' ((@($shut | Where-Object { $_.Name -like 'framing curtain probes:*' -and $_.Tool -eq 'horizun_delete_verified' }).Count -eq 1) -and
         (@($shut | Where-Object { $_.Name -like 'manage_curtain*' -and $_.Tool -eq 'horizun_manage_curtain' }).Count -eq 1) -and
+        (@($shut | Where-Object { $_.Name -like 'framing curtain types:*' -and $_.Tool -eq 'horizun_manage_system_types' }).Count -eq 1) -and
         (@($shut | Where-Object { $_.Name -like 'framing curtain wall*' -and $_.Tool -ne 'horizun_framing' }).Count -eq 0))
 }
 finally {
