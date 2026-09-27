@@ -48,6 +48,10 @@ namespace Horizun.Core.Tests
             { "CaptureViewOptions.cs", new[] { "horizun_capture_view" } },
             // partial class LinkScheduleCommand: operation=write and operation=status_view
             { "LinkScheduleWrite.cs", new[] { "horizun_link_schedule" } },
+            // partial class ManageLinksCommand
+            { "ManageLinksCoordinates.cs", new[] { "horizun_manage_links" } },
+            { "ManageLinksIfc.cs", new[] { "horizun_manage_links" } },
+            { "ManageLinksPointCloud.cs", new[] { "horizun_manage_links" } },
             { "LinkScheduleStatusView.cs", new[] { "horizun_link_schedule" } },
             // partial class FramingCommand: operation=wall/remove (the verified write)
             { "FramingApply.cs", new[] { "horizun_framing" } },
