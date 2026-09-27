@@ -101,7 +101,7 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>Three link points to shared coordinates two ways; the largest disagreement, in mm.</summary>
-        private static void SameSite(Document host, RevitLinkInstance inst, Document linkDoc, FederationLinkFact f)
+        internal static void SameSite(Document host, RevitLinkInstance inst, Document linkDoc, FederationLinkFact f)
         {
             try
             {

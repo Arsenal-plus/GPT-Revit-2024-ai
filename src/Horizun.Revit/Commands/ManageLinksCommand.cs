@@ -42,7 +42,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class ManageLinksCommand : ICommand
+    public sealed partial class ManageLinksCommand : ICommand
     {
         public string Name => "horizun_manage_links";
         public string Description =>
@@ -63,12 +63,21 @@ namespace Horizun.Revit.Commands
                 if (readDoc == null) return CommandResult.Fail("No document is open.");
                 return List(readDoc);
             }
-            if (operation == "add") return Add(app, doc0 => doc0, request);
+            if (operation == "add")
+            {
+                string kind = LinkSurveyRules.AddKind(request.Value<string>("kind"), request.Value<string>("path"), out string kindError);
+                if (kindError != null) return CommandResult.Fail(kindError);
+                if (kind == "point_cloud") return AddPointCloud(app, request);
+                if (kind == "ifc") return AddIfc(app, request);
+                return Add(app, doc0 => doc0, request);
+            }
+            if (operation == "acquire_coordinates") return AcquireCoordinates(app, request);
+            if (operation == "scan_deviation") return ScanDeviation(app, request);
             if (operation == "add_instance") return AddInstance(app, request);
             if (operation == "change_path") return ChangePath(app, request);
             if (operation != "unload" && operation != "reload" && operation != "pin" && operation != "unpin")
                 return CommandResult.Fail("operation '" + operation + "' is not one this command understands. " +
-                    "Known: list, unload, reload, pin, unpin, add, add_instance, change_path.");
+                    "Known: list, unload, reload, pin, unpin, add, add_instance, change_path, acquire_coordinates, scan_deviation.");
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
