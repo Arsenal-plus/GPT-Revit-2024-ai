@@ -2,10 +2,12 @@
 # 'curtain') and horizun_manage_curtain's read of a sloped glazing roof. Everything stands on
 # the module's own level at X = 1,170,000 mm, far from the real model: two own Basic walls (one
 # with ONE door - the trimmed-placeholder case - and one with none - the deleted-carrier case)
-# and an own ceiling under an own floor (the hangers must reach THAT floor). Types are STAGED BY
-# NAME from the year's English\DefaultMetric.rte with horizun_copy_between_documents, never "the
-# first one": a Curtain Wall type, two Basic walls, a door, the Sloped Glazing roof type, a floor
-# and a compound ceiling.
+# and an own ceiling under an own floor (the hangers must reach THAT floor). Types are taken BY
+# NAME, never "the first one": the document's own type of that name when it has one, else copied
+# from the year's English\DefaultMetric.rte with horizun_copy_between_documents - the source of
+# each is reported in case 'types' - and the own framing types SET what matters (layouts,
+# Automatically Embed off) instead of inheriting it: a Curtain Wall type, two Basic walls, a door,
+# the Sloped Glazing roof type, a floor and a compound ceiling.
 # From those sources the probe makes its OWN framing types, the way a framing detail is modelled:
 # two rectangular mullions of 41.3 x 92.1 mm (a stud and a track), a curtain wall core with a
 # 406.4 mm Fixed Distance vertical grid, studs as interior/border vertical mullions and tracks as
@@ -90,8 +92,9 @@ $script:HzProbeModules += [pscustomobject]@{
             @(Types $category | Where-Object { [string]$_.type -eq $typeName -and [string]$_.family -eq $familyName }) | Select-Object -First 1
         }
         # The first of $typeNames the document has; else each copied from the template in turn.
+        $typeSource = @{}
         function Bring($category, $typeNames, $familyName, $key) {
-            foreach ($tn in @($typeNames)) { $have = FindType $category $tn $familyName; if ($have) { return $have } }
+            foreach ($tn in @($typeNames)) { $have = FindType $category $tn $familyName; if ($have) { $typeSource[$key] = "document '$tn'"; return $have } }
             $tpl = Join-Path $tplRoot 'English\DefaultMetric.rte'
             if (-not (Test-Path -LiteralPath $tpl)) { return $null }
             $k = 0
@@ -100,7 +103,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = $category
                         type_names = @($familyName + ': ' + $tn); duplicate_types = 'use_destination' } ($run + '-frc-' + $key + $k)
                 $have = FindType $category $tn $familyName
-                if ($have) { return $have }
+                if ($have) { $typeSource[$key] = "template '$tn'"; return $have }
             }
             return $null
         }
@@ -130,6 +133,7 @@ $script:HzProbeModules += [pscustomobject]@{
         if ($curtainType) { $coreTypeId = [long]$curtainType.element_id }
         if ($glazingType) { $layerTypeId = [long]$glazingType.element_id }
         $typesNote = @(); $typesFail = $null; $missing = @()
+        $typesNote += 'sources: ' + (($typeSource.Keys | Sort-Object | ForEach-Object { "$_ = $($typeSource[$_])" }) -join ', ')
         if (-not $mullionType) { $missing += 'a Rectangular Mullion type' }
         if (-not $curtainType) { $missing += 'a Curtain Wall type' }
         if (-not $glazingType) { $missing += 'the Sloped Glazing type' }
@@ -142,7 +146,7 @@ $script:HzProbeModules += [pscustomobject]@{
             else {
                 $stud = $m.ids[0]; $track = $m.ids[1]; $acts = @(); $roles = @()
                 if ($curtainType) {
-                    $acts += @{ source_type_id = [long]$curtainType.element_id; new_name = "HZ_FRC core 406.4 $run"; values = @{ SPACING_LAYOUT_VERT = 1; SPACING_LAYOUT_HORIZ = 0
+                    $acts += @{ source_type_id = [long]$curtainType.element_id; new_name = "HZ_FRC core 406.4 $run"; values = @{ SPACING_LAYOUT_VERT = 1; SPACING_LAYOUT_HORIZ = 0; ALLOW_AUTO_EMBED = 0
                         AUTO_MULLION_INTERIOR_VERT = $stud; AUTO_MULLION_BORDER1_VERT = $stud; AUTO_MULLION_BORDER2_VERT = $stud; AUTO_MULLION_BORDER1_HORIZ = $track; AUTO_MULLION_BORDER2_HORIZ = $track } }
                     $roles += 'core'
                 }
@@ -304,11 +308,11 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         $cSpec = @{ ceiling = @{ method = 'curtain'
             layers = @(@{ type_id = $layerTypeId; offset_mm = 0; angle_deg = 0 }, @{ type_id = $layerTypeId; offset_mm = 30; angle_deg = 90 })
-            hanger = @{ type_id = [long]$curtainType.element_id; spacing_mm = 1200; max_length_mm = 3000; attach = 'structure_above' } } }
+            hanger = @{ type_id = $coreTypeId; spacing_mm = 1200; max_length_mm = 3000; attach = 'structure_above' } } }
         $cArgs = @{ operation = 'ceiling'; target_document = $doc; element_ids = @($ceiling); spec = $cSpec }
-        $cWhy = "staging incomplete: floor $floor, ceiling $ceiling, sloped glazing type '$layerTypeId', curtain type '$($curtainType.element_id)'"
+        $cWhy = "staging incomplete: floor $floor, ceiling $ceiling, sloped glazing type '$layerTypeId', hanger curtain type '$coreTypeId'"
         $cCommitted = $false; $layerId = $null
-        if (-not ($floor -and $ceiling -and $layerTypeId -and $curtainType)) { Case $catalog[5] $T 'not_covered' $cWhy; Case $catalog[6] $T 'not_covered' $cWhy }
+        if (-not ($floor -and $ceiling -and $layerTypeId -and $coreTypeId)) { Case $catalog[5] $T 'not_covered' $cWhy; Case $catalog[6] $T 'not_covered' $cWhy }
         else {
             $cd = & $Ctx.Call $T ($cArgs + @{ dry_run = $true })
             $cs = $null
@@ -340,6 +344,15 @@ $script:HzProbeModules += [pscustomobject]@{
                     if ($layers.Count -ne 2) { $problems += "$($layers.Count) layer(s) re-read, expected 2" }
                     if (@($recheck.not_at_support).Count -ne 0) { $problems += "$(@($recheck.not_at_support).Count) hanger(s) not at the support" }
                     if ([int]$recheck.stations_checked -le 0) { $problems += 'no hanger station was re-cast' }
+                    # The hangers are the own 406.4 mm core type: its grid places the rods, one interior stud per line.
+                    $hangerRows = @($cev.pieces | Where-Object { $_.role -eq 'curtain_hanger' })
+                    if ($ownCore) {
+                        if ($hangerRows.Count -eq 0) { $problems += 'no hanger wall re-read' }
+                        $offHangers = @($hangerRows | Where-Object { (OffOwnGrid @{ layout = $_.grid.layout_vert; text = $_.grid.layout_vert_text; spacing = $_.grid.spacing_mm; problems = $_.grid.spacing_problems }) -or
+                                                                     [int]$_.grid.mullions_by_role.vertical_interior -ne [int]$_.grid.vertical_lines })
+                        if ($offHangers.Count -gt 0) { $problems += "$($offHangers.Count) hanger wall(s) do not re-read the own 406.4 mm rod grid, one rod per line: " +
+                            (($offHangers | Select-Object -First 3 | ForEach-Object { "id $($_.id) layout $($_.grid.layout_vert) spacing $($_.grid.spacing_mm) lines $($_.grid.vertical_lines) rods $($_.grid.mullions_by_role.vertical_interior)" }) -join '; ') }
+                    }
                     if ($ownLayer) {
                         $offLayers = @($layers | Where-Object { OffOwnGrid @{ layout = $_.grid.grid1.layout; text = $_.grid.grid1.layout_text; spacing = $_.grid.grid1.spacing_mm; problems = $_.grid.grid1.spacing_problems } })
                         if ($offLayers.Count -gt 0) { $problems += "$($offLayers.Count) layer(s) do not re-read the own 406.4 mm grid 1: " +

@@ -137,7 +137,7 @@ $fakeApply = {
                                 grid = [pscustomobject]@{ grid1 = (& $g1 0.0); grid2 = [pscustomobject]@{ lines = 0; layout = 0; spacing_check = 'no grid line to measure' } } },
                             [pscustomobject]@{ i = 1; role = 'curtain_layer'; id = 9102; plane_deviation_mm = 0.0; footprint_deviation_mm = 0.2; slope_defining_edges = 0
                                 grid = [pscustomobject]@{ grid1 = (& $g1 90.0) } }) +
-                          @(2..4 | ForEach-Object { [pscustomobject]@{ i = $_; role = 'curtain_hanger'; id = 9100 + $_; location_deviation_mm = 0.0; base_top_deviation_mm = 0.0; grid = [pscustomobject]@{ vertical_lines = 3 } } })
+                          @(2..4 | ForEach-Object { [pscustomobject]@{ i = $_; role = 'curtain_hanger'; id = 9100 + $_; location_deviation_mm = 0.0; base_top_deviation_mm = 0.0; grid = [pscustomobject]@{ vertical_lines = 3; horizontal_lines = 0; layout_vert = 1; layout_vert_text = $script:layoutText; spacing_mm = 406.4; spacing_problems = @(); mullions_by_role = [pscustomobject]@{ vertical_interior = 3; horizontal_border = 2 } } } })
                 return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'ceiling'; transaction_status = 'Committed'; already_applied = $false
                     application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
                     evidence = [pscustomobject]@{ hanger_recheck = [pscustomobject]@{ stations_checked = 9; not_at_support = $script:notAtSupport; max_gap_mm = 0.1 }
@@ -198,8 +198,8 @@ try {
     Check 'the door is hosted on the staged wall' (($script:sent['t1-frc-door'].elements[0].host_id -eq 7002))
     Check 'the remove names both carriers' ((@($script:removeTargets) -contains 7002) -and (@($script:removeTargets) -contains 7003))
     $ceilSent = $script:sent['t1-frc-ceiling']
-    Check 'the ceiling apply sends two OWN sloped glazing layers 30 mm apart and the template curtain type as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
-        (@($ceilSent.spec.ceiling.layers | Where-Object { $_.type_id -ne 604 }).Count -eq 0) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 501))
+    Check 'the ceiling apply sends two OWN sloped glazing layers 30 mm apart and the OWN 406.4 mm core type as hanger' (($ceilSent.element_ids[0] -eq 7006) -and (@($ceilSent.spec.ceiling.layers).Count -eq 2) -and
+        (@($ceilSent.spec.ceiling.layers | Where-Object { $_.type_id -ne 604 }).Count -eq 0) -and ($ceilSent.spec.ceiling.layers[1].offset_mm - $ceilSent.spec.ceiling.layers[0].offset_mm -eq 30) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 603))
     Check 'cleanup deletes the own types and the recreated carrier, never the deleted one' ((@($script:deleted) -contains 9999) -and -not (@($script:deleted) -contains 7003) -and
         (@(601..604 | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0) -and (@($script:deleted).Count -eq 13))
     Check 'the manage_curtain case reports the grid angles' ($by[$names[7]].Detail -match 'grid 1 at 0 deg, grid 2 at 90 deg')
