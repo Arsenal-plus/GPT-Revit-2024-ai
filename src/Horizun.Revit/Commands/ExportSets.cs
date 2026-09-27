@@ -330,20 +330,7 @@ namespace Horizun.Revit.Commands
                     tx.Start();
                     try
                     {
-                        EnergyAnalysisDetailModel current = EnergyAnalysisDetailModel.GetMainEnergyAnalysisDetailModel(doc);
-                        if (current != null) doc.Delete(current.Id);
-#if REVIT2027
-                        // 2027 deprecates the options overload: the model follows the document's
-                        // energy settings, set here to rooms/spaces - inside the same rolled-back
-                        // transaction, so the setting is not left changed either.
-                        EnergyDataSettings.GetEnergyDataSettings(doc).AnalysisType = AnalysisMode.RoomsOrSpaces;
-                        EnergyAnalysisDetailModel.Create(doc);
-#else
-                        EnergyAnalysisDetailModel.Create(doc, new EnergyAnalysisDetailModelOptions
-                        {
-                            EnergyModelType = EnergyModelType.SpatialElement, Tier = EnergyAnalysisDetailModelTier.SecondLevelBoundaries
-                        });
-#endif
+                        EnergyModelBuild.CreateSpatial(doc);
                         var options = new GBXMLExportOptions();
 #if REVIT2023 || REVIT2024 || REVIT2025
                         // Deprecated in 2026 and gone in 2027, where the export follows the

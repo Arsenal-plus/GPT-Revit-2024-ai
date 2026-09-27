@@ -43,7 +43,7 @@ namespace Horizun.Server.Tests
                     JObject entry = Entry(Tool);
                     Assert.True(entry != null, Tool + " must be advertised under permission_profile=" + profile);
                     var ops = ((JArray)entry["inputSchema"]["properties"]["operation"]["enum"]).Select(t => (string)t).ToArray();
-                    Assert.Equal(new[] { "check", "travel_distance" }, ops);
+                    Assert.Equal(new[] { "check", "travel_distance", "energy_readiness" }, ops);
                 });
         }
 

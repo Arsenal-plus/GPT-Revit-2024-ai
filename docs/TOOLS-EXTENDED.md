@@ -2127,3 +2127,26 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+### horizun_code_check - operation=energy_readiness
+
+Read-only in effect: Revit's energy analytical model is built from rooms/spaces
+(SpatialElement, second-level boundaries - the same build `horizun_export
+format=gbxml` uses) inside a transaction that is always rolled back.
+
+```json
+{ "operation": "energy_readiness", "max_findings": 200 }
+```
+
+The reply has `spaces` (rooms and MEP spaces placed but not enclosed - zero area,
+which Revit reports alike for not-enclosed and redundant ones - and enclosed ones
+the energy model did not turn into an analytical space, matched by
+CADObjectUniqueId, or reported unavailable when nothing resolves), `surfaces`
+(analytical surfaces by gbXML type and those whose `GetConstruction()` is null;
+SurfaceAir and Shade are not asked; in Revit 2023 constructions are reported not
+measurable, because the API exists from 2024) and `window_to_wall` (window and door
+area over gross exterior-wall area in four 90-degree sectors centred on N/E/S/W,
+azimuth from the wall's outward normal after `TransformModel` applies true north,
+or project north when it throws - `energy_model.azimuth_basis` says which; a sector
+with no wall has `wwr: null`). The counts are measurements; nothing is called
+compliant.

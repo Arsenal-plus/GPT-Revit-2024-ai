@@ -4930,11 +4930,11 @@ namespace Horizun.Contracts
                 Description =
                     "Evaluate a declarative requirement set over the active model: parameter assertions and geometric measures " +
                     "(doors, ramps, stairs, 2R+T, space illuminance, exits per level, travel_distance_m). Examples: standards/co-*.json. " +
-                    "operation=travel_distance routes egress per room with Revit's path of travel; create_paths: dry run, token, re-read.",
+                    "operation=travel_distance routes egress per room with Revit's path of travel; create_paths: dry run, token, re-read. energy_readiness: read-only energy-model gaps, WWR by orientation.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""check"", ""travel_distance""], ""default"": ""check"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""check"", ""travel_distance"", ""energy_readiness""], ""default"": ""check"" },
     ""target_document"": { ""type"": ""string"" },
     ""requirement_set"": { ""type"": ""object"", ""description"": ""Inline set, or give requirement_set_path."" },
     ""requirement_set_path"": { ""type"": ""string"" },
