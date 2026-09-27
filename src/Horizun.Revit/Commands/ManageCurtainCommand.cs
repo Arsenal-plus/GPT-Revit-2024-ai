@@ -33,7 +33,7 @@ namespace Horizun.Revit.Commands
             string op = r.Value<string>("operation").ToLowerInvariant();
             Element host = ModelEditRunner.Need<Element>(doc, r, "element_id");
             int gridIndex = r.Value<int?>("grid_index") ?? 0;
-            CurtainGrid grid = GridOf(host, gridIndex);
+            CurtainGrid grid = GridOf(host, gridIndex, op == "read");
             var edit = new ArchModelEdit();
             if (op == "read") { edit.ReadResult = Read(doc, host, grid, gridIndex, scale); return edit; }
             edit.Planned.Add(ModelEditRunner.Planned(host, PlannedAction.Modify, r));
@@ -50,7 +50,7 @@ namespace Horizun.Revit.Commands
             return edit;
         }
 
-        private static CurtainGrid GridOf(Element host, int index)
+        private static CurtainGrid GridOf(Element host, int index, bool reading = false)
         {
             if (host is Wall wall)
             {
@@ -66,8 +66,20 @@ namespace Horizun.Revit.Commands
                 if (index < 0 || index >= grids.Count) throw new ArgumentException("grid_index must be 0.." + (grids.Count - 1) + " for this curtain system.");
                 return grids[index];
             }
+            // A sloped glazing roof carries its grids like a curtain system (FootPrintRoof.CurtainGrids,
+            // RevitAPI.xml 2023 and 2026). Read only: the writes are verified on walls and systems.
+            if (host is FootPrintRoof roof && reading)
+            {
+                var grids = new List<CurtainGrid>();
+                CurtainGridSet set = roof.CurtainGrids;
+                if (set != null) foreach (CurtainGrid g in set) grids.Add(g);
+                if (grids.Count == 0) throw new ArgumentException("element_id " + Rid.Value(host.Id) + " is a roof without curtain grids (not a sloped glazing roof).");
+                if (index < 0 || index >= grids.Count) throw new ArgumentException("grid_index must be 0.." + (grids.Count - 1) + " for this sloped glazing roof.");
+                return grids[index];
+            }
             throw new UnsupportedCapability("element_id " + Rid.Value(host.Id) + " is a " + host.GetType().Name +
-                "; horizun_manage_curtain edits curtain walls and curtain systems only.", FallbackSignal.ReasonUnsupportedKind);
+                (host is FootPrintRoof ? "; horizun_manage_curtain reads a sloped glazing roof's grids (operation=read) but edits" : "; horizun_manage_curtain edits") +
+                " curtain walls and curtain systems only.", FallbackSignal.ReasonUnsupportedKind);
         }
 
         /// <summary>The grid is re-found from the host on every read: a CurtainGrid object does not survive regeneration safely.</summary>
@@ -123,9 +135,16 @@ namespace Horizun.Revit.Commands
                 ["u_lines"] = Lines(uIds), ["v_lines"] = Lines(vIds), ["mullions"] = mRows, ["panels"] = pRows,
                 ["counts"] = new JObject { ["u_lines"] = uIds.Count, ["v_lines"] = vIds.Count, ["mullions"] = mullions.Count, ["panels"] = pIds.Count },
                 ["truncated"] = uIds.Count > ListCap || vIds.Count > ListCap || mullions.Count > ListCap || pIds.Count > ListCap,
-                ["offset_means"] = host is Wall ? "v line: distance along the wall's location line from its start; u line: height above the wall base" : "not computed for a curtain system"
+                ["offset_means"] = host is Wall ? "v line: distance along the wall's location line from its start; u line: height above the wall base" : "not computed for a curtain system or a sloped glazing roof"
             };
             if (host is Wall w && BaseZ(w).HasValue) result["base_z"] = Math.Round(BaseZ(w).Value / scale, 4);
+            if (!(host is Wall))
+            {
+                // A curtain system's or sloped glazing roof's grid directions, in degrees; a grid that
+                // does not publish them is named, never reported as 0.
+                try { result["grid1_angle_deg"] = Math.Round(grid.Grid1Angle * 180 / Math.PI, 4); result["grid2_angle_deg"] = Math.Round(grid.Grid2Angle * 180 / Math.PI, 4); }
+                catch (Autodesk.Revit.Exceptions.ApplicationException ex) { result["grid_angles"] = "unreadable: " + ex.Message; }
+            }
             return result;
         }
 

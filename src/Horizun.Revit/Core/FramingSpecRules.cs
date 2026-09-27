@@ -72,6 +72,8 @@ namespace Horizun.Revit.Core
         public double? HeaderDepthMm { get; set; }
         public double? SillDepthMm { get; set; }
         public List<BlockingRow> Blocking { get; set; } = new List<BlockingRow>();
+        /// <summary>Set when spec.wall.method = 'curtain' (CurtainFramingRules.cs); every member field above is then unused.</summary>
+        public CurtainWallFramingSpec Curtain { get; set; }
 
         /// <summary>Every type the plan can name, so the command resolves and checks each once.</summary>
         public IEnumerable<long> TypeIds()
@@ -134,6 +136,8 @@ namespace Horizun.Revit.Core
         public double? MainDepthMm { get; set; }
         public double? CrossDepthMm { get; set; }
         public double? PerimeterDepthMm { get; set; }
+        /// <summary>Set when spec.ceiling.method = 'curtain' (CurtainFramingRules.cs); every member field above is then unused.</summary>
+        public CurtainCeilingFramingSpec Curtain { get; set; }
 
         public IEnumerable<long> TypeIds()
         {
@@ -161,7 +165,7 @@ namespace Horizun.Revit.Core
             };
     }
 
-    public static class FramingSpecRules
+    public static partial class FramingSpecRules
     {
         public const double MinSpacingMm = 10, MaxSpacingMm = 20000, MaxLengthMm = 100000;
         public const int MaxBlockingRows = 20;
@@ -172,7 +176,8 @@ namespace Horizun.Revit.Core
             JObject w = r.Root(spec, "wall");
             errors = r.Errors;
             if (w == null) return null;
-            r.Known(w, "spec.wall", "layer", "stud", "track", "openings", "blocking");
+            if (IsCurtain(w, r, "spec.wall")) return ParseWallCurtain(w, r);
+            r.Known(w, "spec.wall", "method", "layer", "stud", "track", "openings", "blocking");
             var result = new WallFramingSpec();
 
             JToken layer = w["layer"];
@@ -254,7 +259,8 @@ namespace Horizun.Revit.Core
             JObject c = r.Root(spec, "ceiling");
             errors = r.Errors;
             if (c == null) return null;
-            r.Known(c, "spec.ceiling", "main", "cross", "perimeter", "hanger", "drop_mm");
+            if (IsCurtain(c, r, "spec.ceiling")) return ParseCeilingCurtain(c, r);
+            r.Known(c, "spec.ceiling", "method", "main", "cross", "perimeter", "hanger", "drop_mm");
             var result = new CeilingFramingSpec();
 
             JObject main = r.Obj(c, "main", "spec.ceiling", true);

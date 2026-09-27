@@ -7,7 +7,8 @@
 // the spec hash(es) and plan signature(s) they were built from, and each member's
 // id, type and axis. element_ids narrows to those sources; without it every marked
 // member of the document is listed. A marker whose source no longer exists is
-// reported as orphaned, not hidden - remove can still take it.
+// reported as orphaned, not hidden - remove can still take it. A curtain-method
+// source adds its carrier's record (action, original type and line): what remove restores.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -66,7 +67,7 @@ namespace Horizun.Revit.Commands
                 foreach (IGrouping<string, KeyValuePair<Element, FramingMark>> r in g.Where(p => p.Value.Role != FramingMarker.WorkPlaneRole)
                                                                                      .GroupBy(p => p.Value.Role).OrderBy(r => r.Key, StringComparer.Ordinal))
                     counts[r.Key] = r.Count();
-                bySource.Add(new JObject
+                var sourceRow = new JObject
                 {
                     ["source_id"] = g.Key,
                     ["source_exists"] = source != null,
@@ -77,7 +78,11 @@ namespace Horizun.Revit.Commands
                     ["count_by_role"] = counts,
                     ["work_plane_count"] = g.Count(p => p.Value.Role == FramingMarker.WorkPlaneRole),
                     ["members"] = members
-                });
+                };
+                // A curtain-method source also carries its carrier's record: what remove will restore.
+                JObject curtain = CurtainReadRow(doc, g.Select(p => p.Key));
+                if (curtain != null) sourceRow["curtain"] = curtain;
+                bySource.Add(sourceRow);
             }
             // A work plane the tool created for a line-based member carries the marker too, but it
             // is not a member: counted apart so member_count compares with the apply's plan.

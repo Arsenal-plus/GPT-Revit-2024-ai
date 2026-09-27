@@ -2028,6 +2028,112 @@ matches, and nothing is written. The apply sends the token and an `idempotency_k
 }
 ```
 
+### The curtain method (`method: "curtain"`)
+
+Some teams model light-gauge framing with curtain elements instead of one family instance per
+member: the partition **core** is a Curtain Wall whose type does the layout (vertical grid at the
+stud spacing, interior vertical mullions = studs, border mullions = tracks, panel = infill), and a
+suspended ceiling is a stack of **flat Sloped Glazing roofs** (one per layer: mains, furring, the
+perimeter angle as the border mullion) plus vertical curtain walls whose mullions are the hanger
+rods. `spec.wall.method = "curtain"` / `spec.ceiling.method = "curtain"` builds exactly that from
+the caller's own types - type ids only; no type name, spacing or profile is compiled. The default
+`method` is `"members"` (everything above).
+
+**Wall.** Input: straight Basic walls - typically the core carrier `horizun_split_multilayer_walls`
+leaves, or a single-layer wall.
+
+```json
+{ "operation": "wall", "element_ids": [412345],
+  "spec": { "wall": { "method": "curtain",
+    "curtain_type_id": 1001, "header_type_id": 1002, "sill_type_id": 1002,
+    "placeholder_type_id": 1003, "multi_opening": "keep_carrier", "min_segment_mm": 50 } } }
+```
+
+Here type 1001 is a Curtain Wall type with a Fixed Distance vertical grid of 406.4 mm, a
+41.3 x 92.1 mm rectangular mullion as the interior vertical mullion (the studs) and the track
+profile as the border mullions; 1002 is the type for the pieces above and below openings
+(`header_type_id` / `sill_type_id` default to `curtain_type_id`); 1003 is a thin Basic wall type.
+
+- The pieces run on the carrier's **core centreline** (the thickest layer's centre when the type
+  has no core) in the carrier's direction: segments cover the length minus each opening's span, a
+  header sits above every opening (head -> wall top), a sill below every window (base -> sill). A
+  piece shorter or lower than `min_segment_mm` is named in `skipped`, never dropped silently.
+- **The carrier** keeps its identity and its inserts (no public API re-hosts a door): with ONE
+  opening it is trimmed to that opening's span and takes `placeholder_type_id`; with NONE it is
+  deleted after the pieces exist (`replaced_by`); with SEVERAL, the default `keep_carrier` keeps it
+  full length with the placeholder type, so every door and window keeps its id, tags and data, and
+  the pieces are still split around every opening - they **overlap the kept carrier**, which the
+  plan and the verified result say in `carrier.overlap` (the result also lists `overlapped_by`, the
+  piece ids) and the plan's warnings repeat. `multi_opening: "refuse"` refuses such a wall instead
+  and names the reason (split it at the openings first). What deleting a carrier takes along (tags,
+  dimensions, hosted families) is measured in a rolled-back transaction, listed in
+  `carrier.deleted_with_it`, bound by the token and counted as deletes in `plan_resolved`.
+  A kept or trimmed carrier's location line is set to the wall centreline before its type changes,
+  so the thinner placeholder stays centred where the carrier was and its doors do not move;
+  `carrier.placeholder_offset_from_pieces_mm` says how far that plane is from the pieces' core
+  centreline. Refused by name: a carrier with an embedded wall (a storefront), and a wall whose
+  every piece would be empty or below `min_segment_mm`. `header_type_id` and `sill_type_id` are
+  Curtain Wall types other than the placeholder. What changing a kept or trimmed carrier deletes or
+  un-hosts among the elements that depend on it (`Element.GetDependentElements`: hosted and
+  face-based families on the length a trim removes or on faces a thinner type moves, sweeps,
+  reveals) is rehearsed in a rolled-back transaction, listed in `carrier.change_takes`, bound by
+  the token and re-read after the commit (`carrier_change_as_measured`).
+- **Verification:** every piece by marker - type, line within 1 mm of the plan, base and top; its
+  vertical grid (Fixed Distance: every interior spacing within 1 mm and no edge bay wider than one
+  spacing; other layouts: count and first/last line); mullion types per role against the type's
+  automatic mullions; the carrier's type, line and location line (wall centreline) as planned,
+  its inserts unchanged in type, position and host (against their state before the apply; a
+  re-apply compares with their state at that call); no piece embedded in the carrier
+  (`pieces_not_embedded`: a type with Automatically Embed on can cut a piece into the carrier,
+  which rolls the apply back - the plan warns when a type has it on); the delete cascade exactly
+  as measured.
+- **Remove** restores the carrier from the record every piece carries: a trimmed or kept carrier
+  gets its original type, line and location-line reference back, its inserts left as they were
+  when the remove was planned (an edit made to a door since the apply stays); a deleted one is
+  created again - a NEW id, named - with its type, line, level, base offset, top constraint,
+  location-line reference, flip and structural flag (its mark, comments, phase and workset are not
+  restored, nor are the elements its delete took, listed in `deleted_with_carrier_not_restored`;
+  the plan says so). A carrier changed
+  after the apply is not overwritten: its restore is refused by name and only the pieces go.
+  `operation=read` shows each curtain source's carrier record.
+
+**Ceiling.** Input: Ceilings.
+
+```json
+{ "operation": "ceiling", "element_ids": [523456],
+  "spec": { "ceiling": { "method": "curtain",
+    "layers": [ { "type_id": 2001, "offset_mm": 0, "angle_deg": 0 },
+                { "type_id": 2002, "offset_mm": 27, "angle_deg": 90 } ],
+    "hanger": { "type_id": 2003, "spacing_mm": 1200, "max_length_mm": 1500, "attach": "structure_above" } } } }
+```
+
+Here 2001 and 2002 are Sloped Glazing roof types (the furring layer on the ceiling, the main layer
+27 mm above it) and 2003 a Curtain Wall type whose vertical grid places the rods.
+
+- Each layer is a flat footprint roof of its type over the ceiling's own sketch (every edge
+  `DefinesSlope = false`), its plane at the ceiling's top face + `offset_mm`, its grid 1 angle set
+  when `angle_deg` is given (`CURTAINGRID_ANGLE_1`, probed in a rolled-back transaction while
+  planning: layer 0 with hangers refuses by name when a roof of its type cannot take it; any other
+  layer skips it, named in the warnings and `angle_skipped`). Openings the ceiling hosts, and shafts, are not cut from the layers (named in the plan);
+  the hanger lines avoid them. Up to 6 layers.
+- Hangers (optional; they need the first layer's `angle_deg`): vertical curtain walls along lines
+  parallel to the first layer's grid at `spacing_mm`, clipped to the boundary, from the top layer's
+  plane up to the first floor, structural framing or roof above (host or link). Three rays per line
+  (both ends and the middle): a line with no support within `max_length_mm`, or whose support is
+  not level along it (rods differing by more than 1 mm), is named in `not_built` and never built.
+- **Verification:** each layer's type, plane (base level + offset, 1 mm), footprint against the
+  ceiling sketch both ways (1 mm), no slope-defining edge, grid 1 direction against `angle_deg`
+  (0.1 deg) and each Fixed Distance grid's spacing; each hanger's line, base and top, its own grid
+  and mullions, and after the commit a ray up from under its top at every station must meet the
+  support within 1 mm.
+- Measured live, not assumed: which direction Revit measures `CURTAINGRID_ANGLE_1` from on a flat
+  roof, and the numeric value of the Fixed Distance layout. Until the probe
+  (`scripts/live-probes/framing-curtain.probes.ps1`) confirms them, a disagreement fails the
+  postcondition and rolls the edit back rather than reporting a wrong grid.
+
+`horizun_manage_curtain operation=read` also reads a sloped glazing roof's grids (`grid_index`),
+with the grid 1 / grid 2 angles, so a layer can be inspected line by line.
+
 ### Spec fields and defaults
 
 - **wall.layer**: `"core"` (default) puts the studs on the core's structural layer, else

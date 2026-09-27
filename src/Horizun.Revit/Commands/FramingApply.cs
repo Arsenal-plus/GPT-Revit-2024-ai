@@ -63,6 +63,10 @@ namespace Horizun.Revit.Commands
         /// <summary>Type key -> symbol, and role|type key -> how it places (shared across the call's sources).</summary>
         public Dictionary<string, FamilySymbol> Symbols;
         public Dictionary<string, FramingPlacementKind> Kinds;
+        /// <summary>The curtain method's plan (FramingCurtain.cs); null for the member method.</summary>
+        public CurtainSourceState Curtain;
+        /// <summary>spec.ceiling.method = 'curtain' (FramingCurtainCeiling.cs); null otherwise.</summary>
+        public CurtainCeilingState CurtainCeiling;
     }
 
     public sealed partial class FramingCommand
@@ -102,6 +106,7 @@ namespace Horizun.Revit.Commands
             List<FramingSourcePlan> plans;
             List<KeyValuePair<Element, FramingMark>> toRemove = null, foreignCopies = null;
             List<long> cascade = null;
+            List<CurtainRestore> restores = null;
             var skipped = new List<string>();
             string signature;
             try
@@ -112,18 +117,22 @@ namespace Horizun.Revit.Commands
                     if (ids == null || ids.Count == 0) throw new ArgumentException("remove needs element_ids: the walls or ceilings whose framing goes.");
                     toRemove = FramingMarker.Find(doc, ids);
                     foreignCopies = FramingMarker.FindForeign(doc, ids);
+                    // The curtain method's carriers come back (FramingCurtainRemove.cs); read before the cascade's rolled-back delete.
+                    restores = PlanCurtainRestores(doc, toRemove);
                     cascade = MeasureRemoveCascade(doc, toRemove);
                     plans = new List<FramingSourcePlan>();
                     // The token binds the named members AND the cascade Revit measured for them: a
                     // token that binds only the named ids would still authorise an unbounded dependent
                     // cascade (the rule DeleteCommand keeps for horizun_delete_verified).
                     signature = string.Join(",", toRemove.Select(p => Rid.Value(p.Key.Id).ToString(CultureInfo.InvariantCulture)))
-                                + "|cascade:" + string.Join(",", cascade.Select(id => id.ToString(CultureInfo.InvariantCulture)));
+                                + "|cascade:" + string.Join(",", cascade.Select(id => id.ToString(CultureInfo.InvariantCulture))) + CurtainRestoreKey(restores);
                 }
                 else
                 {
-                    plans = op == "ceiling" ? PlanCeilings(doc, request, ceilingSpec, specHash, skipped) : PlanWalls(doc, request, wallSpec, specHash, skipped);
-                    signature = string.Join(",", plans.Select(p => Rid.Value(p.Source.Id).ToString(CultureInfo.InvariantCulture) + ":" + p.Signature));
+                    plans = op == "ceiling" ? (ceilingSpec.Curtain != null ? PlanCurtainCeilings(doc, request, ceilingSpec.Curtain, specHash, skipped) : PlanCeilings(doc, request, ceilingSpec, specHash, skipped))
+                          : wallSpec.Curtain != null ? PlanCurtainWalls(doc, request, wallSpec.Curtain, specHash, skipped)
+                          : PlanWalls(doc, request, wallSpec, specHash, skipped);
+                    signature = string.Join(",", plans.Select(p => Rid.Value(p.Source.Id).ToString(CultureInfo.InvariantCulture) + ":" + p.Signature)) + CurtainCascadeKey(plans);
                 }
             }
             catch (Exception ex)
@@ -139,9 +148,10 @@ namespace Horizun.Revit.Commands
             };
             foreach (FramingSourcePlan p in plans)
             {
-                PlannedElement pe = ModelEditRunner.Planned(p.Source, PlannedAction.Modify, request);
+                PlannedElement pe = ModelEditRunner.Planned(p.Source, CurtainSourceAction(p), request);
                 pe.ProposedValues["plan_signature"] = p.Signature;
                 resolved.Elements.Add(pe);
+                foreach (PlannedElement dependent in CurtainCascadeRows(doc, p, request)) resolved.Elements.Add(dependent);
             }
             if (toRemove != null)
                 foreach (KeyValuePair<Element, FramingMark> p in toRemove)
@@ -152,9 +162,12 @@ namespace Horizun.Revit.Commands
                     Element dependent = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
                     if (dependent != null) resolved.Elements.Add(ModelEditRunner.Planned(dependent, PlannedAction.Delete, request));
                 }
+            if (restores != null)
+                foreach (PlannedElement row in CurtainRestoreRows(doc, restores, request)) resolved.Elements.Add(row);
             string hash = DocumentGate.PlanHash(request, HashScope) + "|" + FramingPlanSignature.Of(new[] { new FramingMember { Role = op, TypeKey = signature } });
 
-            JObject summary = op == "remove" ? RemoveSummary(doc, toRemove, cascade, foreignCopies) : op == "ceiling" ? CeilingSummary(plans) : WallSummary(plans);
+            JObject summary = op == "remove" ? RemoveSummary(doc, toRemove, cascade, foreignCopies) : op == "ceiling" ? (ceilingSpec.Curtain != null ? CurtainCeilingSummary(plans) : CeilingSummary(plans)) : wallSpec.Curtain != null ? CurtainWallSummary(doc, plans) : WallSummary(plans);
+            if (restores != null && restores.Count > 0) summary["carrier_restores"] = CurtainRestoreSummary(restores);
             if (skipped.Count > 0) summary["skipped"] = new JArray(skipped.ToArray());
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             if (dryRun)
@@ -181,8 +194,9 @@ namespace Horizun.Revit.Commands
             List<long> removedIds = toRemove?.Select(p => Rid.Value(p.Key.Id)).ToList();
             var cascadedNow = new List<long>();
             Func<Document, PostconditionCheck> verify = op == "remove"
-                ? (Func<Document, PostconditionCheck>)(d => VerifyRemoved(d, removedIds, SourceIds(request), cascade, cascadedNow, foreignCopies.Count, evidence))
-                : op == "ceiling" ? (Func<Document, PostconditionCheck>)(d => VerifyCeilings(d, plans, evidence))
+                ? (Func<Document, PostconditionCheck>)(d => VerifyRemoved(d, removedIds, SourceIds(request), cascade, cascadedNow, foreignCopies.Count, evidence, restores))
+                : op == "ceiling" ? (Func<Document, PostconditionCheck>)(d => ceilingSpec.Curtain != null ? VerifyCurtainCeilings(d, plans, evidence) : VerifyCeilings(d, plans, evidence))
+                : wallSpec.Curtain != null ? (Func<Document, PostconditionCheck>)(d => VerifyCurtainWalls(d, plans, evidence))
                 : d => VerifyWalls(d, plans, evidence);
             PostconditionCheck check;
             using (var group = new TransactionGroup(doc, txName))
@@ -204,10 +218,11 @@ namespace Horizun.Revit.Commands
                                 var named = new HashSet<long>(removedIds);
                                 cascadedNow.Clear();
                                 cascadedNow.AddRange(doc.Delete(toRemove.Select(p => p.Key.Id).ToList()).Select(Rid.Value).Where(id => !named.Contains(id)).OrderBy(id => id));
+                                RestoreCarriers(doc, restores);
                             }
                             else if (op != "remove") foreach (FramingSourcePlan p in plans.Where(x => !x.AlreadyApplied)) PlaceSource(doc, p);
                             doc.Regenerate();
-                            if (op == "wall" && UnjoinFromSources(doc, plans, evidence) > 0) doc.Regenerate();
+                            if (op == "wall" && wallSpec.Curtain == null && UnjoinFromSources(doc, plans, evidence) > 0) doc.Regenerate();
                             Guard.Commit(tx, txName);
                         }
                         catch { said = recorder.Said(); throw; }
@@ -407,6 +422,8 @@ namespace Horizun.Revit.Commands
 
         private static void PlaceSource(Document doc, FramingSourcePlan p)
         {
+            if (p.Curtain != null) { PlaceCurtainSource(doc, p); return; }
+            if (p.CurtainCeiling != null) { PlaceCurtainCeilingSource(doc, p); return; }
             string sourceUid = p.Source.UniqueId;
             long sid = Rid.Value(p.Source.Id);
             Level level = p.Wall?.Level ?? p.Ceiling?.Level;
@@ -718,9 +735,13 @@ namespace Horizun.Revit.Commands
         /// valid object, so reading its Id after the commit throws instead of answering "gone".
         /// </summary>
         private static PostconditionCheck VerifyRemoved(Document doc, List<long> removedIds, HashSet<long> sources, List<long> cascadeMeasured,
-                                                        List<long> cascadedNow, int foreignKept, JObject evidence)
+                                                        List<long> cascadedNow, int foreignKept, JObject evidence, List<CurtainRestore> restores = null)
         {
-            var check = new PostconditionCheck("members_absent", "markers_absent", "cascade_absent", "cascade_as_measured");
+            // The curtain method's carriers this remove restored are re-read too (FramingCurtainRemove.cs).
+            bool restoring = restores != null && restores.Any(r => r.Refusal == null);
+            var check = restoring
+                ? new PostconditionCheck("members_absent", "markers_absent", "cascade_absent", "cascade_as_measured", "carrier_restored", "carrier_inserts_restored")
+                : new PostconditionCheck("members_absent", "markers_absent", "cascade_absent", "cascade_as_measured");
             int still = removedIds.Count(id => doc.GetElement(Rid.Make(id)) != null);
             int marked = FramingMarker.Find(doc, sources).Count;
             check.Compare("members_absent", 0, still);
@@ -736,6 +757,11 @@ namespace Horizun.Revit.Commands
             evidence["cascade_measured_in_rehearsal"] = new JArray(cascadeMeasured);
             evidence["foreign_copies_kept"] = foreignKept;
             evidence["sources"] = new JArray(sources.OrderBy(s => s));
+            if (restores != null && restores.Count > 0)
+            {
+                VerifyCurtainRestores(doc, restores, out int restoreProblems, out int insertProblems, evidence);
+                if (restoring) { check.Compare("carrier_restored", 0, restoreProblems); check.Compare("carrier_inserts_restored", 0, insertProblems); }
+            }
             return check;
         }
 

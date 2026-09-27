@@ -1605,7 +1605,8 @@ namespace Horizun.Contracts
                     "Light-gauge/drywall framing built from a caller spec (prompt framing-from-detail reads a detail image into it). " +
                     "wall: studs, tracks, kings, jacks, headers, sills, cripples, blocking in a Basic wall's layer; openings never crossed. " +
                     "ceiling: mains, cross, perimeter, hangers to the structure above. dry_run -> confirmation_token -> apply, " +
-                    "re-read; read/remove by marker. Spec: docs/TOOLS-EXTENDED.md.",
+                    "re-read; read/remove by marker. method 'curtain': the caller's Curtain Wall / Sloped Glazing types " +
+                    "instead of members; remove restores the carrier. Spec: docs/TOOLS-EXTENDED.md.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
