@@ -8,21 +8,38 @@
 // from and hands ownership back to the server. So everything that CAN be decided
 // before the call is decided here, in code a test can hold:
 //
-//   * who may ask: the machine owner's grant, and the workshared read-only policy;
-//   * what the document must be: workshared, and not a detached copy;
-//   * what the preview is: an ESTIMATE - ownership counts plus a SAMPLE of
-//     per-element update statuses, because WorksharingUtils.GetModelUpdatesStatus
-//     answers per (Document, ElementId) and there is no document-level
-//     "current with central" in the API;
-//   * what "it worked" means for each relinquish choice, measured afterwards.
+//   * who may ask: the machine owner's grant - for the typed operation AND for a
+//     Python script that calls SynchronizeWithCentral - and the workshared
+//     read-only policy;
+//   * what the document must be: workshared, not a detached copy, and not in a
+//     state SynchronizeWithCentral documents as a precondition failure;
+//   * what the preview is: an ESTIMATE. Document.HasAllChangesFromCentral() asks
+//     the central whether this local is up to date; ownership (GetCheckoutStatus)
+//     and the SAMPLED per-element GetModelUpdatesStatus are the local session's
+//     CACHED view, which cannot see what others pushed since the last reload;
+//   * what "it worked" means for each relinquish choice, measured afterwards by
+//     UniqueId - the API documents that an ElementId may change across a sync
+//     (Element.UniqueId remarks), so ids are display values only.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Horizun.Revit.Core
 {
     public enum SyncRelinquish { All, KeepBorrowed, None }
+
+    /// <summary>How a SynchronizeWithCentral that threw is reported.</summary>
+    public enum SyncFailureKind
+    {
+        /// <summary>A documented precondition: thrown before anything was read or written.</summary>
+        NotStarted,
+        /// <summary>The central was locked and the give-up callback made Revit cancel.</summary>
+        CentralLocked,
+        /// <summary>Anything else: the local may already have been saved or reloaded.</summary>
+        Unknown
+    }
 
     public sealed class SyncRefusal
     {
@@ -31,12 +48,15 @@ namespace Horizun.Revit.Core
         public string Message { get; }
     }
 
-    /// <summary>Tri-state: true = held, false = measured and did not hold, null = could not be measured.</summary>
+    /// <summary>
+    /// Tri-state: true = held, false = measured and did not hold, null = could not be measured.
+    /// Element keys are UniqueIds.
+    /// </summary>
     public sealed class SyncVerdict
     {
         public bool? Verified;
-        public readonly List<long> UnexpectedlyOwned = new List<long>();
-        public readonly List<long> UnexpectedlyReleased = new List<long>();
+        public readonly List<string> UnexpectedlyOwned = new List<string>();
+        public readonly List<string> UnexpectedlyReleased = new List<string>();
         public readonly List<string> Problems = new List<string>();
     }
 
@@ -48,17 +68,30 @@ namespace Horizun.Revit.Core
         public const int SpreadSampleSize = 150;
         public const int OwnedSampleSize = 50;
 
+        /// <summary>The English label of the Advanced-options row behind force_read_only_on_workshared (RibbonText.CentralTitle).</summary>
+        public const string ProtectSharedModelsLabel = "Protect shared models";
+
         /// <summary>
-        /// What the confirmation token is bound to. The token binds the ESTIMATE, not only
-        /// the request: if ownership, IsModified or the sampled statuses move between the
-        /// preview and the apply, the plan the person approved is no longer the one that
-        /// would run, and the apply is refused.
+        /// The REQUEST: hashed into the token's plan hash, so a different request is refused
+        /// as a different request.
         /// </summary>
-        public static readonly string[] EstimateFields =
+        public static readonly string[] RequestFields = { "document", "comment", "relinquish", "compact" };
+
+        /// <summary>
+        /// The MODEL as the preview measured it: bound as the token's element fingerprint, so
+        /// a model that moved between preview and apply is refused as a stale plan, with the
+        /// fields that moved named (DescribeEstimateDrift).
+        /// </summary>
+        public static readonly string[] ModelFields =
         {
-            "document", "comment", "relinquish", "compact", "owned_worksets", "owned_elements",
-            "borrowed_elements", "is_modified", "sample_status_counts"
+            "owned_worksets", "owned_elements", "borrowed_elements", "is_modified",
+            "has_all_changes_from_central", "sample_status_counts"
         };
+
+        /// <summary>Everything the confirmation token binds: the request and the estimate.</summary>
+        public static readonly string[] EstimateFields = RequestFields.Concat(ModelFields).ToArray();
+
+        private static readonly Regex PythonSyncCall = new Regex(@"\bSynchronizeWithCentral\s*\(", RegexOptions.Compiled);
 
         public static bool TryParseRelinquish(string value, out SyncRelinquish choice)
         {
@@ -76,15 +109,21 @@ namespace Horizun.Revit.Core
             return choice == SyncRelinquish.All ? "all" : choice == SyncRelinquish.KeepBorrowed ? "keep_borrowed" : "none";
         }
 
+        private const string OwnerSwitch =
+            "Only the machine owner enables it, inside Revit: Horizun Hub tab > Advanced options > Synchronize with central.";
+
         /// <summary>
         /// Where the owner turns it on. Said in every refusal, because a refusal that does
-        /// not say who can change it invites the caller to look for a way around it.
+        /// not say who can change it invites the caller to look for a way around it. The
+        /// profile is named too: under the default safe_write every document-session call is
+        /// refused, so the owner's grant alone does not make the typed operation reachable.
         /// </summary>
         public static string HowOwnerEnables(string settingsPath)
         {
-            return "Only the machine owner enables it, inside Revit: Horizun Hub tab > Advanced options > " +
-                   "Synchronize with central. The choice is stored in " + (settingsPath ?? "settings.json") +
-                   ", which no MCP call writes; do not edit it on the owner's behalf.";
+            return OwnerSwitch + " The same menu's \"What may the assistant do?\" must also allow opening and " +
+                   "closing documents (permission_profile=full_write): under the default safe_write " +
+                   "horizun_document_session is not offered at all. Both choices are stored in " +
+                   (settingsPath ?? "settings.json") + ", which no MCP call writes; do not edit it on the owner's behalf.";
         }
 
         /// <summary>The document's shape. null = it has a central this call could synchronize with.</summary>
@@ -108,9 +147,33 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Who allowed it. The workshared read-only policy wins over the grant: an owner
-        /// who said "look only at shared models" has said no to this as well, and the two
-        /// switches must never be read as "the newer one wins".
+        /// SynchronizeWithCentral's documented InvalidOperationException preconditions that can
+        /// be read before the call. transactionOpen is Document.IsModifiable: true only inside an
+        /// open transaction, which the call refuses ("has an open editing transaction"). An
+        /// unreadable value is left to the call itself, whose precondition throw is classified
+        /// NotStarted. null = none applies.
+        /// </summary>
+        public static SyncRefusal PreconditionRefusal(bool? isReadOnly, bool? transactionOpen, bool? hasCentralPath)
+        {
+            if (isReadOnly == true)
+                return new SyncRefusal("document_read_only",
+                    "is read-only right now (Document.IsReadOnly; Revit may be processing failures), so " +
+                    "SynchronizeWithCentral would refuse it. Nothing ran.");
+            if (transactionOpen == true)
+                return new SyncRefusal("transaction_open",
+                    "has an open transaction (Document.IsModifiable is true), which SynchronizeWithCentral refuses. " +
+                    "Nothing ran.");
+            if (hasCentralPath == false)
+                return new SyncRefusal("no_central_path",
+                    "reports no central model path (GetWorksharingCentralModelPath): there is nothing to " +
+                    "synchronize with. Nothing ran.");
+            return null;
+        }
+
+        /// <summary>
+        /// Who allowed it. The workshared read-only policy wins over the grant: an owner who
+        /// protected shared models has said no to this as well, and the two switches must
+        /// never be read as "the newer one wins".
         /// </summary>
         public static SyncRefusal AuthorisationRefusal(bool ownerEnabled, bool forceReadOnlyOnWorkshared,
                                                        string settingsPath)
@@ -119,7 +182,8 @@ namespace Horizun.Revit.Core
                 return new SyncRefusal("force_read_only_on_workshared",
                     "This machine protects shared models (force_read_only_on_workshared=true): the assistant may " +
                     "only look at them, and a synchronize with central is a write to the central. Nothing ran. " +
-                    "The owner removes that protection in Revit: Horizun Hub tab > Advanced options.");
+                    "The owner removes that protection in Revit: Horizun Hub tab > Advanced options > " +
+                    ProtectSharedModelsLabel + ".");
             if (!ownerEnabled)
                 return new SyncRefusal("sync_not_authorised",
                     "Synchronize with central is OFF on this machine, which is the default: it publishes into a " +
@@ -128,12 +192,33 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// A deterministic sample of element ids: an even spread over the whole sorted id
-        /// range (so an estimate is not only the oldest or newest elements) plus the first
-        /// owned elements (where not-yet-in-central changes live). Deterministic so the
-        /// preview and the apply sample the same ids and the token can bind their statuses.
+        /// The owner's switch covers horizun_execute_python as well: a script that calls
+        /// SynchronizeWithCentral while the switch is OFF is refused before it runs. The same
+        /// honest ceiling as ReadOnlyPythonGuard: a scan of the MASKED source (comments and
+        /// strings blanked), not a sandbox. RelinquishOwnership is not a synchronize and has
+        /// its own typed tool (horizun_relinquish_all), so it is not covered here.
+        /// null = run it.
         /// </summary>
-        public static List<long> Sample(IEnumerable<long> allIds, IEnumerable<long> ownedIds, int spread, int owned)
+        public static string PythonSyncRefusal(string maskedCode, bool ownerEnabled)
+        {
+            if (ownerEnabled || string.IsNullOrEmpty(maskedCode) || !PythonSyncCall.IsMatch(maskedCode)) return null;
+            return "horizun_execute_python REFUSES to run this script: it calls Document.SynchronizeWithCentral(), " +
+                   "and Synchronize with central is OFF on this machine - the owner's switch covers scripts as well " +
+                   "as horizun_document_session. Nothing ran. " + OwnerSwitch + " This is a static scan of the " +
+                   "masked source text, not a sandbox: a call built with getattr()/string concatenation is not caught.";
+        }
+
+        /// <summary>
+        /// A deterministic sample of element ids: an even spread over the whole sorted id
+        /// range, plus up to `owned` of this local's likely changes - the BORROWED elements
+        /// first, then the NEWEST owned ids. Every element of an owned workset reads as owned
+        /// (a non-borrowed element's owner is its workset's owner), so the lowest owned ids
+        /// are usually old elements already in central, while new NotYetInCentral elements
+        /// take the highest ids. Deterministic so the preview and the apply sample the same
+        /// elements and the token can bind their statuses.
+        /// </summary>
+        public static List<long> Sample(IEnumerable<long> allIds, IEnumerable<long> borrowedIds,
+                                        IEnumerable<long> ownedIds, int spread, int owned)
         {
             var sorted = (allIds ?? Enumerable.Empty<long>()).Distinct().OrderBy(x => x).ToList();
             var picked = new SortedSet<long>();
@@ -144,9 +229,18 @@ namespace Horizun.Revit.Core
                     for (int i = 0; i < spread; i++)
                         picked.Add(sorted[(int)((long)i * sorted.Count / spread)]);
             }
+            int added = 0;
             if (owned > 0)
-                foreach (long id in (ownedIds ?? Enumerable.Empty<long>()).Distinct().OrderBy(x => x).Take(owned))
-                    picked.Add(id);
+            {
+                IEnumerable<long> candidates =
+                    (borrowedIds ?? Enumerable.Empty<long>()).Distinct().OrderByDescending(x => x)
+                    .Concat((ownedIds ?? Enumerable.Empty<long>()).Distinct().OrderByDescending(x => x));
+                foreach (long id in candidates)
+                {
+                    if (added >= owned) break;
+                    if (picked.Add(id)) added++;
+                }
+            }
             return picked.ToList();
         }
 
@@ -163,7 +257,26 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Did the ownership left behind match the relinquish choice? Measured, per choice:
+        /// Which estimate fields moved between the preview and now, from each side's canonical
+        /// text per ModelFields. null when nothing is known to have moved.
+        /// </summary>
+        public static string DescribeEstimateDrift(IDictionary<string, string> approved, IDictionary<string, string> now)
+        {
+            if (approved == null || now == null) return null;
+            var moved = new List<string>();
+            foreach (string field in ModelFields)
+            {
+                approved.TryGetValue(field, out string a);
+                now.TryGetValue(field, out string b);
+                if (!string.Equals(a, b, StringComparison.Ordinal))
+                    moved.Add(field + " " + (a ?? "null") + " -> " + (b ?? "null"));
+            }
+            return moved.Count == 0 ? null : string.Join("; ", moved) + ".";
+        }
+
+        /// <summary>
+        /// Did the ownership left behind match the relinquish choice? Keyed by UniqueId.
+        /// Measured, per choice:
         ///   all           no workset and no element left owned by this user;
         ///   keep_borrowed no workset owned, and exactly the elements borrowed before
         ///                 (still existing) still owned;
@@ -172,12 +285,12 @@ namespace Horizun.Revit.Core
         /// An unreadable count or element is UNMEASURED (null), never a pass.
         /// </summary>
         public static SyncVerdict VerifyOwnership(SyncRelinquish choice,
-            int? ownedWorksetsBefore, ICollection<long> ownedElementsBefore, ICollection<long> borrowedBefore,
-            int? ownedWorksetsAfter, ICollection<long> ownedElementsAfter, int unreadableAfter,
-            Func<long, bool> stillExists)
+            int? ownedWorksetsBefore, ICollection<string> ownedElementsBefore, ICollection<string> borrowedBefore,
+            int? ownedWorksetsAfter, ICollection<string> ownedElementsAfter, int unreadableAfter,
+            Func<string, bool> stillExists)
         {
             var v = new SyncVerdict();
-            Func<long, bool> exists = stillExists ?? (_ => true);
+            Func<string, bool> exists = stillExists ?? (_ => true);
             bool unmeasured = false;
 
             if (ownedWorksetsAfter == null) { unmeasured = true; v.Problems.Add("owned workset count after the sync could not be read"); }
@@ -187,15 +300,15 @@ namespace Horizun.Revit.Core
             if (choice == SyncRelinquish.None && ownedWorksetsBefore == null)
             { unmeasured = true; v.Problems.Add("owned workset count before the sync was not read"); }
 
-            IEnumerable<long> expectedSource =
-                choice == SyncRelinquish.All ? Enumerable.Empty<long>()
-                : choice == SyncRelinquish.KeepBorrowed ? (borrowedBefore ?? new long[0])
-                : (ownedElementsBefore ?? new long[0]);
-            var expected = new HashSet<long>(expectedSource.Where(exists));
-            var actual = new HashSet<long>(ownedElementsAfter ?? new long[0]);
+            IEnumerable<string> expectedSource =
+                choice == SyncRelinquish.All ? Enumerable.Empty<string>()
+                : choice == SyncRelinquish.KeepBorrowed ? (borrowedBefore ?? new string[0])
+                : (ownedElementsBefore ?? new string[0]);
+            var expected = new HashSet<string>(expectedSource.Where(exists), StringComparer.Ordinal);
+            var actual = new HashSet<string>(ownedElementsAfter ?? new string[0], StringComparer.Ordinal);
 
-            v.UnexpectedlyOwned.AddRange(actual.Where(id => !expected.Contains(id)).OrderBy(x => x));
-            v.UnexpectedlyReleased.AddRange(expected.Where(id => !actual.Contains(id)).OrderBy(x => x));
+            v.UnexpectedlyOwned.AddRange(actual.Where(id => !expected.Contains(id)).OrderBy(x => x, StringComparer.Ordinal));
+            v.UnexpectedlyReleased.AddRange(expected.Where(id => !actual.Contains(id)).OrderBy(x => x, StringComparer.Ordinal));
 
             bool worksetsHeld = ownedWorksetsAfter != null && expectedWorksets != null && ownedWorksetsAfter == expectedWorksets;
             if (ownedWorksetsAfter != null && expectedWorksets != null && !worksetsHeld)
@@ -216,25 +329,78 @@ namespace Horizun.Revit.Core
         /// After a sync every sampled element that still exists must read CurrentWithCentral:
         /// its local changes went up and the central's came down. An element that no longer
         /// exists (deleted in central, reloaded) is not a failure; an unreadable one is
-        /// unmeasured. Keys are element ids; a null value means the element is gone.
+        /// unmeasured. Keys are UniqueIds; a null value means the element is gone.
         /// </summary>
-        public static SyncVerdict VerifyUpdates(IDictionary<long, string> after)
+        public static SyncVerdict VerifyUpdates(IDictionary<string, string> after)
         {
             var v = new SyncVerdict();
             bool unmeasured = false;
-            foreach (var kv in (after ?? new Dictionary<long, string>()).OrderBy(k => k.Key))
+            foreach (var kv in (after ?? new Dictionary<string, string>()).OrderBy(k => k.Key, StringComparer.Ordinal))
             {
                 if (kv.Value == null) continue;
                 if (kv.Value == Unreadable) { unmeasured = true; continue; }
                 if (!string.Equals(kv.Value, CurrentWithCentral, StringComparison.Ordinal))
                 {
                     v.UnexpectedlyOwned.Add(kv.Key);
-                    v.Problems.Add("element " + kv.Key + " reads " + kv.Value + " after the sync");
+                    v.Problems.Add("sampled element " + kv.Key + " reads " + kv.Value + " after the sync");
                 }
             }
             if (unmeasured) v.Problems.Add("some sampled elements did not report an update status");
             v.Verified = v.UnexpectedlyOwned.Count > 0 ? false : (unmeasured ? (bool?)null : true);
             return v;
+        }
+
+        /// <summary>
+        /// sync_verified. true only when the call RETURNED, the ownership and the sample held,
+        /// the document reads HasAllChangesFromCentral()==true, and at least one witness says a
+        /// save really happened: IsModified false after SaveLocalAfter, or a file-based
+        /// central's write time advanced (the API saves to central even with no changes).
+        /// false when the call threw or anything measured contradicts it; null when unmeasured.
+        /// </summary>
+        public static bool? OverallVerdict(bool callThrew, bool? ownership, bool? updates, bool? hasAllChangesAfter,
+                                           bool? modifiedAfter, bool? centralWriteAdvanced, List<string> problems)
+        {
+            if (callThrew)
+            {
+                problems?.Add("SynchronizeWithCentral threw, so nothing measured afterwards is read as success");
+                return false;
+            }
+            if (hasAllChangesAfter == false)
+                problems?.Add("HasAllChangesFromCentral() reads false after the sync (another user may have synchronized since)");
+            else if (hasAllChangesAfter == null)
+                problems?.Add("HasAllChangesFromCentral() could not be read after the sync");
+            bool witnessed = modifiedAfter == false || centralWriteAdvanced == true;
+            bool contradicted = modifiedAfter == true && centralWriteAdvanced == false;
+            if (contradicted)
+                problems?.Add("no save witnessed: IsModified is still true and the central file's write time did not advance");
+            else if (!witnessed)
+                problems?.Add("no save witnessed: IsModified after = " + (modifiedAfter?.ToString() ?? "unreadable") +
+                              ", central file write time " + (centralWriteAdvanced == null ? "not measurable (not a file, or unreadable)" : "did not advance"));
+            if (ownership == false || updates == false || hasAllChangesAfter == false || contradicted) return false;
+            return ownership == true && updates == true && hasAllChangesAfter == true && witnessed ? true : (bool?)null;
+        }
+
+        /// <summary>
+        /// From the thrown type's FULL name. The documented InvalidOperationException and
+        /// ArgumentException(Null) cases are preconditions (read-only, open transaction, edit
+        /// mode, no central, local not owned or read-only, ...) thrown before anything is read
+        /// or written. A locked central under the give-up callback is Revit cancelling. Every
+        /// other family - communication, access, CentralModelException, cancellation, server
+        /// errors - can arrive after the local was saved or reloaded, so it stays unknown.
+        /// </summary>
+        public static SyncFailureKind ClassifyFailure(string exceptionFullName)
+        {
+            switch (exceptionFullName)
+            {
+                case "Autodesk.Revit.Exceptions.InvalidOperationException":
+                case "Autodesk.Revit.Exceptions.ArgumentException":
+                case "Autodesk.Revit.Exceptions.ArgumentNullException":
+                    return SyncFailureKind.NotStarted;
+                case "Autodesk.Revit.Exceptions.CentralModelContentionException":
+                    return SyncFailureKind.CentralLocked;
+                default:
+                    return SyncFailureKind.Unknown;
+            }
         }
     }
 }

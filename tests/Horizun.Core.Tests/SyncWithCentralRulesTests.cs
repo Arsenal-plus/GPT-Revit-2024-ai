@@ -7,6 +7,8 @@ namespace Horizun.Core.Tests
 {
     public class SyncWithCentralRulesTests
     {
+        private static string[] U(params string[] uids) => uids;
+
         [Theory]
         [InlineData(null, SyncRelinquish.All)]
         [InlineData("all", SyncRelinquish.All)]
@@ -48,113 +50,197 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Documented_preconditions_refuse_before_the_call_and_unknowns_are_left_to_it()
+        {
+            Assert.Equal("document_read_only", SyncWithCentralRules.PreconditionRefusal(true, false, true).Code);
+            // IsModifiable is TRUE inside an open transaction: that is what the call refuses.
+            Assert.Equal("transaction_open", SyncWithCentralRules.PreconditionRefusal(false, true, true).Code);
+            Assert.Equal("no_central_path", SyncWithCentralRules.PreconditionRefusal(false, false, false).Code);
+            Assert.Null(SyncWithCentralRules.PreconditionRefusal(false, false, true));
+            Assert.Null(SyncWithCentralRules.PreconditionRefusal(null, null, null));
+        }
+
+        [Fact]
         public void Off_by_default_and_the_refusal_names_how_the_owner_enables_it()
         {
             var r = SyncWithCentralRules.AuthorisationRefusal(false, false, @"C:\x\settings.json");
             Assert.Equal("sync_not_authorised", r.Code);
             Assert.Contains("Advanced options > Synchronize with central", r.Message);
+            Assert.Contains("full_write", r.Message);
             Assert.Contains(@"C:\x\settings.json", r.Message);
         }
 
         [Fact]
-        public void The_workshared_read_only_policy_wins_over_the_grant()
+        public void The_workshared_read_only_policy_wins_over_the_grant_and_names_its_real_label()
         {
-            Assert.Equal("force_read_only_on_workshared",
-                SyncWithCentralRules.AuthorisationRefusal(true, true, "s").Code);
+            var r = SyncWithCentralRules.AuthorisationRefusal(true, true, "s");
+            Assert.Equal("force_read_only_on_workshared", r.Code);
+            Assert.Contains("Advanced options > " + SyncWithCentralRules.ProtectSharedModelsLabel, r.Message);
             Assert.Null(SyncWithCentralRules.AuthorisationRefusal(true, false, "s"));
         }
 
         [Fact]
-        public void The_sample_is_deterministic_spread_plus_owned()
+        public void A_python_sync_is_refused_while_the_owner_switch_is_off()
         {
-            var all = Enumerable.Range(1, 1000).Select(i => (long)i).ToList();
-            var owned = new long[] { 999, 5, 7 };
-            var a = SyncWithCentralRules.Sample(all, owned, 10, 2);
-            var b = SyncWithCentralRules.Sample(all.AsEnumerable().Reverse(), owned, 10, 2);
-            Assert.Equal(a, b);
-            Assert.Contains(1L, a);
-            Assert.Contains(5L, a);
-            Assert.Contains(7L, a);
-            Assert.DoesNotContain(999L, a); // only the first `owned` owned ids, in id order
-            Assert.True(a.Count <= 12);
+            string code = "doc.SynchronizeWithCentral(t, o)";
+            Assert.Contains("OFF on this machine", SyncWithCentralRules.PythonSyncRefusal(code, false));
+            Assert.Null(SyncWithCentralRules.PythonSyncRefusal(code, true));
+            Assert.Null(SyncWithCentralRules.PythonSyncRefusal("WorksharingUtils.RelinquishOwnership(doc, r, t)", false));
+            Assert.Null(SyncWithCentralRules.PythonSyncRefusal("x = 1  #                                ", false));
         }
 
         [Fact]
-        public void The_estimate_binds_ownership_modified_and_sampled_statuses()
+        public void The_sample_is_deterministic_spread_plus_borrowed_then_newest_owned()
         {
-            var f = SyncWithCentralRules.EstimateFields;
-            foreach (string field in new[] { "document", "relinquish", "owned_worksets", "owned_elements",
-                                             "borrowed_elements", "is_modified", "sample_status_counts" })
-                Assert.Contains(field, f);
+            var all = Enumerable.Range(1, 1000).Select(i => (long)i).ToList();
+            var borrowed = new long[] { 5 };
+            var owned = new long[] { 3, 5, 7, 998, 999 };
+            var a = SyncWithCentralRules.Sample(all, borrowed, owned, 10, 3);
+            var b = SyncWithCentralRules.Sample(all.AsEnumerable().Reverse(), borrowed, owned.AsEnumerable().Reverse(), 10, 3);
+            Assert.Equal(a, b);
+            Assert.Contains(1L, a);     // the spread
+            Assert.Contains(5L, a);     // borrowed first
+            Assert.Contains(999L, a);   // then the newest owned
+            Assert.Contains(998L, a);
+            Assert.DoesNotContain(3L, a); // the oldest owned are not where a local's changes live
+            Assert.True(a.Count <= 13);
+        }
+
+        [Fact]
+        public void The_token_binds_the_request_as_plan_and_the_estimate_as_model_fingerprint()
+        {
+            Assert.Equal(new[] { "document", "comment", "relinquish", "compact" }, SyncWithCentralRules.RequestFields);
+            foreach (string field in new[] { "owned_worksets", "owned_elements", "borrowed_elements", "is_modified",
+                                             "has_all_changes_from_central", "sample_status_counts" })
+            {
+                Assert.Contains(field, SyncWithCentralRules.ModelFields);
+                Assert.Contains(field, SyncWithCentralRules.EstimateFields);
+            }
+            Assert.Empty(SyncWithCentralRules.RequestFields.Intersect(SyncWithCentralRules.ModelFields));
+        }
+
+        [Fact]
+        public void Estimate_drift_names_the_fields_that_moved()
+        {
+            var approved = new Dictionary<string, string> { ["owned_elements"] = "10", ["is_modified"] = "false" };
+            var now = new Dictionary<string, string> { ["owned_elements"] = "12", ["is_modified"] = "false" };
+            string d = SyncWithCentralRules.DescribeEstimateDrift(approved, now);
+            Assert.Contains("owned_elements 10 -> 12", d);
+            Assert.DoesNotContain("is_modified", d);
+            Assert.Null(SyncWithCentralRules.DescribeEstimateDrift(approved, approved));
+            Assert.Null(SyncWithCentralRules.DescribeEstimateDrift(null, now));
         }
 
         [Fact]
         public void Relinquish_all_holds_only_when_nothing_is_left_owned()
         {
-            var ok = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 2, new long[] { 1, 2 }, new long[] { 2 },
-                0, new long[0], 0, _ => true);
+            var ok = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 2, U("a", "b"), U("b"),
+                0, U(), 0, _ => true);
             Assert.True(ok.Verified);
 
-            var bad = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 2, new long[] { 1, 2 }, new long[] { 2 },
-                0, new long[] { 2 }, 0, _ => true);
+            var bad = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 2, U("a", "b"), U("b"),
+                0, U("b"), 0, _ => true);
             Assert.False(bad.Verified);
-            Assert.Equal(new long[] { 2 }, bad.UnexpectedlyOwned);
+            Assert.Equal(U("b"), bad.UnexpectedlyOwned);
         }
 
         [Fact]
         public void Keep_borrowed_keeps_exactly_the_borrowed_that_still_exist()
         {
-            var ok = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.KeepBorrowed, 1, new long[] { 1, 2, 3 },
-                new long[] { 2, 3 }, 0, new long[] { 2 }, 0, id => id != 3);
+            var ok = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.KeepBorrowed, 1, U("a", "b", "c"),
+                U("b", "c"), 0, U("b"), 0, uid => uid != "c");
             Assert.True(ok.Verified);
 
-            var released = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.KeepBorrowed, 1, new long[] { 1, 2 },
-                new long[] { 2 }, 0, new long[0], 0, _ => true);
+            var released = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.KeepBorrowed, 1, U("a", "b"),
+                U("b"), 0, U(), 0, _ => true);
             Assert.False(released.Verified);
-            Assert.Equal(new long[] { 2 }, released.UnexpectedlyReleased);
+            Assert.Equal(U("b"), released.UnexpectedlyReleased);
 
-            var worksetKept = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.KeepBorrowed, 1, new long[] { 2 },
-                new long[] { 2 }, 1, new long[] { 2 }, 0, _ => true);
+            var worksetKept = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.KeepBorrowed, 1, U("b"),
+                U("b"), 1, U("b"), 0, _ => true);
             Assert.False(worksetKept.Verified);
+        }
+
+        [Fact]
+        public void A_renumbered_element_is_the_same_element_because_keys_are_unique_ids()
+        {
+            // The borrowed element had id 1000 before and 2000 after; its UniqueId did not move,
+            // so a wrongly released borrowed element is caught instead of dropping out of "expected".
+            var released = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.KeepBorrowed, 0, U("uid-new"),
+                U("uid-new"), 0, U(), 0, uid => uid == "uid-new");
+            Assert.False(released.Verified);
+            Assert.Equal(U("uid-new"), released.UnexpectedlyReleased);
         }
 
         [Fact]
         public void None_keeps_worksets_and_owned_elements()
         {
-            var ok = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.None, 3, new long[] { 1, 2 }, new long[] { 2 },
-                3, new long[] { 1, 2 }, 0, _ => true);
+            var ok = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.None, 3, U("a", "b"), U("b"),
+                3, U("a", "b"), 0, _ => true);
             Assert.True(ok.Verified);
-            var lost = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.None, 3, new long[] { 1, 2 }, new long[] { 2 },
-                0, new long[] { 1, 2 }, 0, _ => true);
+            var lost = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.None, 3, U("a", "b"), U("b"),
+                0, U("a", "b"), 0, _ => true);
             Assert.False(lost.Verified);
         }
 
         [Fact]
         public void Unreadable_ownership_is_unmeasured_not_a_pass()
         {
-            var v = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 1, new long[0], new long[0],
-                null, new long[0], 0, _ => true);
+            var v = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 1, U(), U(), null, U(), 0, _ => true);
             Assert.Null(v.Verified);
-            var w = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 1, new long[0], new long[0],
-                0, new long[0], 4, _ => true);
+            var w = SyncWithCentralRules.VerifyOwnership(SyncRelinquish.All, 1, U(), U(), 0, U(), 4, _ => true);
             Assert.Null(w.Verified);
         }
 
         [Fact]
         public void After_a_sync_every_sampled_present_element_is_current()
         {
-            var ok = SyncWithCentralRules.VerifyUpdates(new Dictionary<long, string>
-            { [1] = "CurrentWithCentral", [2] = null });
+            var ok = SyncWithCentralRules.VerifyUpdates(new Dictionary<string, string>
+            { ["a"] = "CurrentWithCentral", ["b"] = null });
             Assert.True(ok.Verified);
 
-            var stale = SyncWithCentralRules.VerifyUpdates(new Dictionary<long, string>
-            { [1] = "CurrentWithCentral", [2] = "NotYetInCentral" });
+            var stale = SyncWithCentralRules.VerifyUpdates(new Dictionary<string, string>
+            { ["a"] = "CurrentWithCentral", ["b"] = "NotYetInCentral" });
             Assert.False(stale.Verified);
-            Assert.Equal(new long[] { 2 }, stale.UnexpectedlyOwned);
+            Assert.Equal(U("b"), stale.UnexpectedlyOwned);
 
-            var unread = SyncWithCentralRules.VerifyUpdates(new Dictionary<long, string>
-            { [1] = "CurrentWithCentral", [2] = SyncWithCentralRules.Unreadable });
+            var unread = SyncWithCentralRules.VerifyUpdates(new Dictionary<string, string>
+            { ["a"] = "CurrentWithCentral", ["b"] = SyncWithCentralRules.Unreadable });
             Assert.Null(unread.Verified);
+        }
+
+        [Fact]
+        public void A_sync_that_threw_is_never_verified_whatever_the_re_read_says()
+        {
+            var problems = new List<string>();
+            Assert.False(SyncWithCentralRules.OverallVerdict(true, true, true, true, false, true, problems));
+            Assert.NotEmpty(problems);
+        }
+
+        [Fact]
+        public void Verified_needs_the_document_current_with_central_and_a_witnessed_save()
+        {
+            Assert.True(SyncWithCentralRules.OverallVerdict(false, true, true, true, false, null, new List<string>()));
+            Assert.True(SyncWithCentralRules.OverallVerdict(false, true, true, true, true, true, new List<string>()));
+            Assert.False(SyncWithCentralRules.OverallVerdict(false, true, true, false, false, true, new List<string>()));
+            Assert.Null(SyncWithCentralRules.OverallVerdict(false, true, true, null, false, true, new List<string>()));
+            // Neither witness measurable: unmeasured, never a pass.
+            Assert.Null(SyncWithCentralRules.OverallVerdict(false, true, true, true, null, null, new List<string>()));
+            // Both witnesses measured and both negative: contradicted.
+            Assert.False(SyncWithCentralRules.OverallVerdict(false, true, true, true, true, false, new List<string>()));
+            Assert.False(SyncWithCentralRules.OverallVerdict(false, false, true, true, false, true, new List<string>()));
+        }
+
+        [Theory]
+        [InlineData("Autodesk.Revit.Exceptions.InvalidOperationException", SyncFailureKind.NotStarted)]
+        [InlineData("Autodesk.Revit.Exceptions.ArgumentNullException", SyncFailureKind.NotStarted)]
+        [InlineData("Autodesk.Revit.Exceptions.CentralModelContentionException", SyncFailureKind.CentralLocked)]
+        [InlineData("Autodesk.Revit.Exceptions.CentralFileCommunicationException", SyncFailureKind.Unknown)]
+        [InlineData("Autodesk.Revit.Exceptions.CentralModelException", SyncFailureKind.Unknown)]
+        [InlineData("System.InvalidOperationException", SyncFailureKind.Unknown)]
+        public void Thrown_syncs_are_classified_by_exception_family(string type, SyncFailureKind expected)
+        {
+            Assert.Equal(expected, SyncWithCentralRules.ClassifyFailure(type));
         }
 
         [Fact]

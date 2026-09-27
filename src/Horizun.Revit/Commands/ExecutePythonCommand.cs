@@ -439,6 +439,23 @@ namespace Horizun.Revit.Commands
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
 
+            // The owner's Synchronize-with-central switch covers scripts as well as
+            // horizun_document_session: a sync the owner did not authorise is refused here,
+            // before preflight or run, whatever read_only says. Best-effort text scan - see
+            // SyncWithCentralRules.PythonSyncRefusal for its honest ceiling.
+            if (code.IndexOf("SynchronizeWithCentral", StringComparison.Ordinal) >= 0)
+            {
+                bool syncGranted;
+                try { syncGranted = Horizun.Revit.Core.Settings.SyncWithCentralOwnerEnabled; } catch { syncGranted = false; }
+                string syncRefusal = SyncWithCentralRules.PythonSyncRefusal(
+                    PythonTokenMask.Mask(GetEngine(), code) ?? PythonSourceMask.StripCommentsAndStrings(code), syncGranted);
+                if (syncRefusal != null)
+                    return CommandResult.FailWithDetail(syncRefusal, new JObject
+                    {
+                        ["code"] = "sync_not_authorised", ["write_started"] = false, ["changes_applied"] = false
+                    });
+            }
+
             // ---- preflight: validate everything checkable, execute NOTHING. ----
             //
             // Runs AFTER the same gate as the real run, so a preflight that passes has

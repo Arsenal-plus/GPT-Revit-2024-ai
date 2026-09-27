@@ -45,6 +45,8 @@ namespace Horizun.Server.Tests
             var sync = ((JArray)Contract.Find("horizun_document_session").InputSchema["oneOf"])
                 .Single(v => (string)v["properties"]["operation"]["const"] == "sync_with_central");
             Assert.Contains("target_document", sync["required"].Select(t => (string)t));
+            // A sync previews when dry_run is omitted; the shared base property says false.
+            Assert.True((bool)sync["properties"]["dry_run"]["default"]);
             Assert.Equal(new[] { "all", "keep_borrowed", "none" },
                 sync["properties"]["relinquish"]["enum"].Select(t => (string)t).ToArray());
             Assert.Null(ToolInputRules.ValidateSession(new JObject

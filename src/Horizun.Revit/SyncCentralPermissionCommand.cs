@@ -44,13 +44,15 @@ namespace Horizun.Revit
                     MainInstruction = enabling
                         ? RibbonText.T(es, "¿Permitir que el asistente sincronice con el central?", "Allow the assistant to synchronize with central?")
                         : RibbonText.T(es, "El asistente dejará de poder sincronizar con el central.", "The assistant will no longer be able to synchronize with central."),
+                    // The protection and the profile are named by their own row titles, so the
+                    // owner can find the controls this text talks about.
                     MainContent = enabling
                         ? RibbonText.T(es,
-                            "Sincronizar publica los cambios de tu local en el archivo central que usa todo el equipo y devuelve lo que pidas de tus subproyectos y elementos prestados. No hay ensayo ni deshacer: el asistente te mostrará una ESTIMACIÓN y necesitará confirmarla. Nunca sincroniza copias desvinculadas, ni modelos protegidos con «modelos compartidos: solo consulta». Queda activo hasta que lo apagues aquí.",
-                            "Synchronizing publishes your local's changes into the central file the whole team uses and gives back what you choose of your worksets and borrowed elements. There is no rehearsal and no undo: the assistant shows an ESTIMATE and must confirm it. It never synchronizes detached copies, nor models under \"shared models: look only\". It stays on until you turn it off here.")
+                            "Sincronizar publica los cambios de tu local en el archivo central que usa todo el equipo y devuelve lo que pidas de tus subproyectos y elementos prestados. No hay ensayo ni deshacer: el asistente te mostrará una ESTIMACIÓN y necesitará confirmarla. Nunca sincroniza copias desvinculadas, ni modelos bajo «" + RibbonText.CentralTitle(true) + "». Para la operación tipada, «" + RibbonText.ModeTitle(true) + "» debe permitir abrir y cerrar documentos (full_write). Queda activo hasta que lo apagues aquí.",
+                            "Synchronizing publishes your local's changes into the central file the whole team uses and gives back what you choose of your worksets and borrowed elements. There is no rehearsal and no undo: the assistant shows an ESTIMATE and must confirm it. It never synchronizes detached copies, nor models under \"" + RibbonText.CentralTitle(false) + "\". For the typed operation, \"" + RibbonText.ModeTitle(false) + "\" must allow opening and closing documents (full_write). It stays on until you turn it off here.")
                         : RibbonText.T(es,
-                            "Cualquier sincronización pedida por el asistente se rechazará. Tu propio «Sincronizar con el central» de Revit no cambia.",
-                            "Any synchronize the assistant asks for will be refused. Revit's own Synchronize with Central is unchanged."),
+                            "Cualquier sincronización que pida el asistente se rechazará, también la de un script de Python que llame a SynchronizeWithCentral (el script se revisa por su texto; no es un aislamiento). Tu propio «Sincronizar con el central» de Revit no cambia.",
+                            "Any synchronize the assistant asks for will be refused, including a Python script that calls SynchronizeWithCentral (the script is checked by its text; it is not a sandbox). Revit's own Synchronize with Central is unchanged."),
                     CommonButtons = TaskDialogCommonButtons.Cancel
                 };
                 dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,

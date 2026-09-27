@@ -4393,7 +4393,7 @@ namespace Horizun.Contracts
                     "Saving reports bytes/mtime/format re-read from " +
                     "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
                     "so audit_ran only ever describes the open. sync_with_central is OFF until the machine owner enables it " +
-                    "in Revit (Advanced options); its preview is an ESTIMATE and its token binds that estimate.",
+                    "in Revit (Advanced options); an omitted dry_run is an ESTIMATE whose token the apply needs.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""operation""],
@@ -7308,6 +7308,8 @@ namespace Horizun.Contracts
                     }
                 props["operation"] = new JObject { ["const"] = operation };
                 if (operation == "open") props["dry_run"] = new JObject { ["const"] = false };
+                // A sync previews when dry_run is omitted (DocumentSessionSync.cs), unlike the shared default.
+                if (operation == "sync_with_central") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
                 var required = new JArray("operation");
                 if (operation == "save_as") required.Add("save_as_path");
                 if (operation == "open") required.Add("expected_version");
