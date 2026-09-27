@@ -102,13 +102,16 @@ namespace Horizun.Revit.Commands
             };
             edit.Verify = d =>
             {
-                var check = new PostconditionCheck("point_cloud_type", "point_cloud_instance", "instance_type", "engine");
+                // The engine is NOT compared with the extension: RevitAPI documents EngineIdentifier as the engine
+                // that handles the cloud ("The built-in engine provides \"pcg\" here"), a value never measured for
+                // .rcp/.rcs. What Revit reports is published; the check is only that it reports one.
+                var check = new PostconditionCheck("point_cloud_type", "point_cloud_instance", "instance_type", "engine_reported");
                 var t = d.GetElement(typeId) as PointCloudType;
                 var i = d.GetElement(instId) as PointCloudInstance;
                 check.Compare("point_cloud_type", true, t != null);
                 check.Compare("point_cloud_instance", true, i != null);
                 check.Compare("instance_type", Rid.Value(typeId), i == null ? -1 : Rid.Value(i.GetTypeId()));
-                check.Compare("engine", engine, t == null ? null : (Safe(() => t.EngineIdentifier) ?? "").ToLowerInvariant());
+                check.Compare("engine_reported", true, t != null && !string.IsNullOrWhiteSpace(Safe(() => t.EngineIdentifier)));
                 return check;
             };
             edit.Result = d =>
@@ -119,6 +122,7 @@ namespace Horizun.Revit.Commands
                     ["kind"] = "point_cloud",
                     ["link_type_id"] = Rid.Value(typeId),
                     ["link_instance_id"] = Rid.Value(instId),
+                    ["engine_requested"] = engine,
                     ["engine"] = t == null ? null : Safe(() => t.EngineIdentifier),
                     ["found_status"] = t == null ? null : Safe(() => t.FoundStatus.ToString()),
                     ["path"] = path,
@@ -162,7 +166,6 @@ namespace Horizun.Revit.Commands
             double tol = request.Value<double?>("tolerance_mm") ?? LinkSurveyRules.DefaultToleranceMm;
             if (!(tol > 0) || tol > 1000) return CommandResult.Fail("tolerance_mm must be > 0 and <= 1000.");
             double bandMm = LinkSurveyRules.BandMm(tol);
-            double avg = LinkSurveyRules.AverageDistanceMm / 304.8;
             Transform tr;
             try { tr = pc.GetTotalTransform(); } catch { tr = Transform.Identity; }
 
@@ -195,7 +198,7 @@ namespace Horizun.Revit.Commands
                 int index = 0;
                 foreach (PlanarFace f in faces.Take(LinkSurveyRules.MaxFacesPerElement))
                 {
-                    JObject fv = MeasureFace(pc, tr, f, faces, bandMm, avg, tol);
+                    JObject fv = MeasureFace(pc, tr, f, faces, bandMm, tol);
                     fv.AddFirst(new JProperty("face", index++));
                     fv["normal"] = new JArray(Math.Round(f.FaceNormal.X, 4), Math.Round(f.FaceNormal.Y, 4), Math.Round(f.FaceNormal.Z, 4));
                     fv["area_m2"] = Math.Round(f.Area * 0.09290304, 3);
@@ -226,6 +229,7 @@ namespace Horizun.Revit.Commands
                 ["cloud_found_status"] = found,
                 ["min_coverage_share"] = LinkSurveyRules.MinCoverageShare,
                 ["average_distance_mm"] = LinkSurveyRules.AverageDistanceMm,
+                ["cap_share"] = LinkSurveyRules.CapShare,
                 ["max_points_per_face"] = LinkSurveyRules.MaxPointsPerFace,
                 ["min_points_per_face"] = LinkSurveyRules.MinPointsPerFace,
                 ["summary"] = new JObject
@@ -241,10 +245,11 @@ namespace Horizun.Revit.Commands
                     ["faces_beyond_limit"] = beyondTotal
                 },
                 ["elements"] = rows,
-                ["note"] = "A face is judged on the 95th percentile of |distance|. Points farther than band_mm outside a face " +
+                ["note"] = "A face is judged on the 95th percentile of |distance|, sampled at its own average_distance_mm (coarser " +
+                           "on a large face, so a fully scanned face stays under cap_share of the cap). Points farther than band_mm outside a face " +
                            "(or than band_inward_mm inside it, below half the element's thickness) are never sampled, so a " +
                            "deviation beyond them cannot be seen. A face with fewer than min_points_per_face points, or under " +
-                           "min_coverage_share of the points its area should return, is not_measured, never ok; so are faces " +
+                           "min_coverage_share of its coverage cells, is not_measured, never ok; so are faces " +
                            "that were not sampled, and an element with any of them is at best partially_measured."
             };
             // Read-only: declared, so a plan step reads "nothing written" instead of an undeclared (uncertain) child.
@@ -253,7 +258,7 @@ namespace Horizun.Revit.Commands
         }
 
         private static JObject MeasureFace(PointCloudInstance pc, Transform tr, PlanarFace f, List<PlanarFace> all, double bandMm,
-                                           double avg, double tolMm)
+                                           double tolMm)
         {
             XYZ n = f.FaceNormal.Normalize();
             double? thicknessFt = ThicknessBehind(f, all);
@@ -279,11 +284,14 @@ namespace Horizun.Revit.Commands
                 if ((centroid - a).DotProduct(m) < 0) m = m.Negate();
                 planes.Add(Plane.CreateByNormalAndOrigin(m, a));
             }
+            // The spacing is the face's own: coarse enough on a large face that a fully scanned face stays under
+            // the cap, so what comes back is the whole face at that spacing, never a subset the cap chose.
+            double spacingMm = LinkSurveyRules.FaceAverageDistanceMm(f.Area * 0.09290304);
             List<XYZ> raw;
             try
             {
                 PointCloudFilter filter = PointCloudFilterFactory.CreateMultiPlaneFilter(planes);
-                PointCollection pts = pc.GetPoints(filter, avg, LinkSurveyRules.MaxPointsPerFace);
+                PointCollection pts = pc.GetPoints(filter, spacingMm / 304.8, LinkSurveyRules.MaxPointsPerFace);
                 raw = new List<XYZ>();
                 foreach (CloudPoint cp in pts) raw.Add(new XYZ(cp.X, cp.Y, cp.Z));
             }
@@ -305,15 +313,25 @@ namespace Horizun.Revit.Commands
                 };
             List<XYZ> use = frame == "instance_transform" ? moved : raw;
             var signed = new List<double>();
+            var uvs = new List<double[]>();
             foreach (XYZ p in use)
             {
                 if (!Inside(planes, p)) continue;
-                if (f.Project(p) == null) continue; // inside the UV rectangle but outside the face's own boundary
+                IntersectionResult ir = f.Project(p);
+                if (ir == null) continue; // inside the UV rectangle but outside the face's own boundary
                 signed.Add((p - corners[0]).DotProduct(n) * 304.8);
+                if (ir.UVPoint != null) uvs.Add(new[] { ir.UVPoint.U, ir.UVPoint.V });
             }
-            double expected = LinkSurveyRules.ExpectedPoints(f.Area * 0.09290304, LinkSurveyRules.AverageDistanceMm,
-                                                             LinkSurveyRules.MaxPointsPerFace);
-            JObject v = LinkSurveyRules.FaceVerdict(signed, tolMm, LinkSurveyRules.MinPointsPerFace, expected);
+            // Coverage is where the points are on the face, not how many: a grid over the face's UV rectangle,
+            // cells counted when their centre is on the face. Skipped below min points (judged too_few_points first).
+            double uExt = bb.Max.U - bb.Min.U, vExt = bb.Max.V - bb.Min.V, spacingFt = spacingMm / 304.8;
+            int nu = LinkSurveyRules.CoverageCells(uExt, spacingFt), nv = LinkSurveyRules.CoverageCells(vExt, spacingFt);
+            double? coverage = signed.Count < LinkSurveyRules.MinPointsPerFace ? (double?)null
+                : LinkSurveyRules.CoverageShare(uvs, bb.Min.U, bb.Min.V, uExt, vExt, nu, nv,
+                      (i, j) => OnFace(f, new UV(bb.Min.U + (i + 0.5) * uExt / nu, bb.Min.V + (j + 0.5) * vExt / nv)));
+            JObject v = LinkSurveyRules.FaceVerdict(signed, tolMm, LinkSurveyRules.MinPointsPerFace, coverage);
+            v["average_distance_mm"] = Math.Round(spacingMm, 1);
+            v["coverage_grid"] = nu + "x" + nv;
             v["points_returned"] = raw.Count;
             v["point_frame"] = raw.Count == 0 ? null : frame;
             v["band_inward_mm"] = Math.Round(inwardMm, 1);
@@ -336,6 +354,11 @@ namespace Horizun.Revit.Commands
                 if (d > 1e-6 && (!best.HasValue || d < best.Value)) best = d;
             }
             return best;
+        }
+
+        private static bool OnFace(Face f, UV uv)
+        {
+            try { return f.IsInside(uv); } catch { return false; }
         }
 
         private static bool Inside(List<Plane> planes, XYZ p)

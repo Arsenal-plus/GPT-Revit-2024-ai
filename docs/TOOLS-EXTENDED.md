@@ -2124,7 +2124,9 @@ transaction: the dry run is a real rehearsal with rollback. Refused by name when
 `PointCloudEngineRegistry.GetSupportedEngines()` lacks the engine
 (`point_cloud_engine_unavailable`) or the path is already linked (compared with each
 `PointCloudType.GetPath()`: a point cloud is not an ExternalFileReference). Verified: type and
-instance re-read, instance of that type, engine identifier.
+instance re-read, instance of that type, and an engine identifier Revit reports (published as
+`engine` beside `engine_requested`; not compared with the extension: RevitAPI documents the
+built-in engine's identifier as "pcg", and the value for .rcp/.rcs is still to be measured).
 
 **add kind=ifc**. The importer's own Link branch, aimed at the host:
 `Application.OpenIFCDocument(path, IFCImportOptions{Action=Open, Intent=Reference})`
@@ -2136,23 +2138,32 @@ document OpenIFCDocument returns, never into the host.) The dry run is a measure
 the intermediate's state on disk (absent, or size and last write), so an `.ifc.RVT` that
 appears or changes before the apply refuses as a changed plan. Failures are named by step:
 `ifc_importer_unavailable` only when `Revit.IFC.Import` is neither loaded, nor beside
-RevitAPI.dll, nor in an ApplicationPlugins IFC bundle (`importer_looked_in` says where);
+RevitAPI.dll, nor in an ApplicationPlugins IFC bundle built for the running year (its path names the
+year; `importer_looked_in` says where) - refused by the dry run already, before a token;
 `ifc_import_failed` (importer present, Revit refused the file); `intermediate_save_failed`;
 `link_failed` (host transaction rolled back). None touches the host model, and each
 reports `intermediate_before` / `intermediate_after` / `disk_changed`. Verified: type
 Loaded, instance present and of that type, the linked model holds DirectShape elements
 (`linked_direct_shapes` > 0, what a Reference import builds) and does not link to itself.
+Instance type, DirectShapes and self-link are read before the commit, so a link failing them
+is rolled back (`link_failed`); only an unreadable linked document leaves them to the re-read.
 
 **scan_deviation** (read-only): `link_instance_id` names the `PointCloudInstance`,
 `element_ids` (<= 200) the walls, floors and columns, `tolerance_mm` (default 10). For
 each planar face (<= 60 per element) a convex slab - two planes at +/- band around the
 face (band = max(3 x tolerance, 30 mm)) and four around its UV rectangle - is the
-multi-plane filter for `GetPoints(filter, averageDistance = 20 mm, maxPoints = 5000)`.
+multi-plane filter for `GetPoints(filter, averageDistance, maxPoints = 5000)`, averageDistance
+being the face's own (`average_distance_mm`): 20 mm, coarsened on a large face to
+sqrt(area / (0.8 x 5000)) so a fully scanned face stays under the cap and what returns is the
+whole face, never a subset the cap chose.
 Points that project inside the face give signed distances; a face is `ok` when the 95th
 percentile of |distance| is within tolerance, else `deviates`, and `not_measured` with
-fewer than 20 points (`too_few_points`) or under `min_coverage_share` (0.1) of the points
-its area should return at 20 mm, capped at 5000 (`low_coverage`, `coverage_share`
-published) - never `ok`. The slab reaches `band_mm` outward but only
+fewer than 20 points (`too_few_points`), or when its points occupy under `min_coverage_share`
+(0.5) of the cells of a grid over the face (cells of 4 spacings, at most 24 per axis, counted
+when their centre lies on the face; `low_coverage`, with `coverage_share` and `coverage_grid`
+published; `coverage_undetermined` when no cell centre lies on it) - never `ok`. Coverage is
+measured where the points are, not by counting them: a large face seen in one corner returns
+as many points as a small face seen whole. The slab reaches `band_mm` outward but only
 `band_inward_mm` = min(band, 0.4 x the thickness behind the face, from the element's
 nearest antiparallel face) inward, so the element's own opposite face is never taken for
 this face's deviation. Non-planar faces and faces beyond 60 per element count as

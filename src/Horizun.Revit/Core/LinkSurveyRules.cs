@@ -6,7 +6,7 @@
 //
 // WHY THE FACE RULE IS STRICT. A scan does not see every face: the top of a wall
 // under a slab, the side of a column against a wall. A face that gathered too few
-// points - in number, or for its area - was not measured, and reporting it "ok"
+// points, or points covering too little of it, was not measured, and reporting it "ok"
 // would turn a hole in the scan into a pass. So the face is not_measured, the
 // element that has one (sampled or not: non-planar faces and faces beyond the
 // per-element limit count too) is at best partially_measured, and only elements
@@ -25,13 +25,70 @@ namespace Horizun.Revit.Core
         public const int MinPointsPerFace = 20;
         /// <summary>Upper bound of points requested from Revit per face (GetPoints numPoints).</summary>
         public const int MaxPointsPerFace = 5000;
-        /// <summary>Requested average spacing between returned points (GetPoints averageDistance), mm.</summary>
+        /// <summary>Finest average spacing requested between returned points (GetPoints averageDistance), mm.</summary>
         public const double AverageDistanceMm = 20;
         /// <summary>
-        /// A face whose points are fewer than this share of what a fully scanned face returns at the
-        /// requested spacing is not_measured (low_coverage). A stated rule, not a measured one.
+        /// A face whose accepted points occupy fewer than this share of its coverage cells (CoverageShare)
+        /// is not_measured (low_coverage). A stated rule, not a measured one.
         /// </summary>
-        public const double MinCoverageShare = 0.1;
+        public const double MinCoverageShare = 0.5;
+        /// <summary>
+        /// Share of MaxPointsPerFace a FULLY scanned face may return at its own spacing. Below 1 so the cap
+        /// never truncates a complete face: a capped answer is a subset Revit picks (RevitAPI GetPoints: the
+        /// results "may not be consistent if the same call is made again") and says nothing about coverage.
+        /// </summary>
+        public const double CapShare = 0.8;
+        /// <summary>Side of a coverage cell in the face's own point spacings: a fully scanned cell holds about 16 points.</summary>
+        public const double CellSpacings = 4;
+        /// <summary>Upper bound of coverage cells along each of the face's two UV axes.</summary>
+        public const int MaxCellsPerAxis = 24;
+
+        /// <summary>
+        /// The spacing requested for ONE face, mm: AverageDistanceMm, coarsened on a large face so that a fully
+        /// scanned face returns at most CapShare x MaxPointsPerFace points and the cap never decides what is seen.
+        /// </summary>
+        public static double FaceAverageDistanceMm(double areaM2)
+            => !(areaM2 > 0) ? AverageDistanceMm
+             : Math.Max(AverageDistanceMm, 1000 * Math.Sqrt(areaM2 / (CapShare * MaxPointsPerFace)));
+
+        /// <summary>Coverage cells along one UV axis: sides of CellSpacings spacings, at least 1, at most MaxCellsPerAxis.</summary>
+        public static int CoverageCells(double extent, double spacing)
+        {
+            if (!(extent > 0) || !(spacing > 0)) return 1;
+            double n = Math.Ceiling(extent / (CellSpacings * spacing) - 1e-9);
+            return (int)Math.Max(1, Math.Min(MaxCellsPerAxis, n));
+        }
+
+        /// <summary>
+        /// How much of a face the scan saw, measured in SPACE, not by counting: the grid of nu x nv equal cells
+        /// tiling the face's UV rectangle [u0, u0+uExtent] x [v0, v0+vExtent]; a cell counts when its centre lies
+        /// on the face (cellOnFace; null = every cell) and is occupied when an accepted point falls in it. The
+        /// answer is occupied / on-face cells - a large face seen in one corner returns as many points as a small
+        /// face seen whole, and only the cells tell them apart. Null when no cell centre lies on the face: the
+        /// coverage cannot be measured then, and the face is not judged.
+        /// </summary>
+        public static double? CoverageShare(IEnumerable<double[]> pointsUv, double u0, double v0, double uExtent, double vExtent,
+                                            int nu, int nv, Func<int, int, bool> cellOnFace)
+        {
+            if (nu < 1 || nv < 1 || !(uExtent > 0) || !(vExtent > 0)) return null;
+            var on = new bool[nu, nv];
+            int onFace = 0;
+            for (int i = 0; i < nu; i++)
+                for (int j = 0; j < nv; j++)
+                    if (cellOnFace == null || cellOnFace(i, j)) { on[i, j] = true; onFace++; }
+            if (onFace == 0) return null;
+            var hit = new bool[nu, nv];
+            int occupied = 0;
+            foreach (double[] p in pointsUv ?? Enumerable.Empty<double[]>())
+            {
+                if (p == null || p.Length < 2) continue;
+                // Points on the rectangle's far edge (or a rounding outside it) belong to the edge cell.
+                int i = Math.Min(nu - 1, Math.Max(0, (int)Math.Floor((p[0] - u0) / uExtent * nu)));
+                int j = Math.Min(nv - 1, Math.Max(0, (int)Math.Floor((p[1] - v0) / vExtent * nv)));
+                if (on[i, j] && !hit[i, j]) { hit[i, j] = true; occupied++; }
+            }
+            return occupied / (double)onFace;
+        }
         /// <summary>Share of the element's thickness behind a face that the sampled slab may reach inward.</summary>
         public const double InwardShareOfThickness = 0.4;
         public const double DefaultToleranceMm = 10;
@@ -132,15 +189,23 @@ namespace Horizun.Revit.Core
             return null;
         }
 
+        /// <summary>The distribution of face-to-point distances (signed, mm) and the face's state, on the point count alone.</summary>
+        public static JObject FaceVerdict(IList<double> signedMm, double toleranceMm, int minPoints)
+            => Judge(signedMm, toleranceMm, minPoints, false, null);
+
         /// <summary>
-        /// The distribution of face-to-point distances (signed, mm) and the face's state. expectedPoints
-        /// (from ExpectedPoints) adds the coverage rule: a face judged on a patch of itself is not measured.
+        /// The same with the coverage rule - what scan_deviation uses: coverageShare (CoverageShare's answer)
+        /// under MinCoverageShare is low_coverage and an unmeasurable one (null) is coverage_undetermined, both
+        /// not_measured: a face judged on a patch of itself is not measured.
         /// </summary>
-        public static JObject FaceVerdict(IList<double> signedMm, double toleranceMm, int minPoints, double expectedPoints = 0)
+        public static JObject FaceVerdict(IList<double> signedMm, double toleranceMm, int minPoints, double? coverageShare)
+            => Judge(signedMm, toleranceMm, minPoints, true, coverageShare);
+
+        private static JObject Judge(IList<double> signedMm, double toleranceMm, int minPoints, bool withCoverage, double? coverageShare)
         {
             int n = signedMm?.Count ?? 0;
             var o = new JObject { ["points"] = n };
-            if (expectedPoints > 0) o["coverage_share"] = Math.Round(Math.Min(1, n / expectedPoints), 4);
+            if (withCoverage && coverageShare.HasValue) o["coverage_share"] = Math.Round(coverageShare.Value, 4);
             if (n < minPoints)
             {
                 o["state"] = "not_measured";
@@ -148,12 +213,19 @@ namespace Horizun.Revit.Core
                 o["note"] = n + " point(s) near the face, " + minPoints + " needed: the scan did not see it well enough to judge.";
                 return o;
             }
-            if (expectedPoints > 0 && n < MinCoverageShare * expectedPoints)
+            if (withCoverage && !coverageShare.HasValue)
+            {
+                o["state"] = "not_measured";
+                o["reason"] = "coverage_undetermined";
+                o["note"] = "no cell of the coverage grid lies on the face, so how much of it the scan saw cannot be measured.";
+                return o;
+            }
+            if (withCoverage && coverageShare.Value < MinCoverageShare)
             {
                 o["state"] = "not_measured";
                 o["reason"] = "low_coverage";
-                o["note"] = n + " point(s) where a fully scanned face returns about " + Math.Round(expectedPoints) +
-                            ": under " + MinCoverageShare + " of it, the face was seen in patches and is not judged.";
+                o["note"] = "points in " + Math.Round(coverageShare.Value, 3) + " of the face's cells, " + MinCoverageShare +
+                            " needed: the scan saw the face in patches and it is not judged.";
                 return o;
             }
             var abs = signedMm.Select(Math.Abs).OrderBy(x => x).ToList();

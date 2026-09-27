@@ -114,19 +114,59 @@ namespace Horizun.Core.Tests
         [Fact]
         public void A_face_seen_in_a_patch_is_not_measured_for_low_coverage()
         {
-            // 10 m2 at 20 mm spacing is 25,000 points, capped by the 5,000 requested.
-            double expected = LinkSurveyRules.ExpectedPoints(10, LinkSurveyRules.AverageDistanceMm, LinkSurveyRules.MaxPointsPerFace);
-            Assert.Equal(LinkSurveyRules.MaxPointsPerFace, expected);
-            var patch = Enumerable.Repeat(1.0, 20).ToList();
-            JObject v = LinkSurveyRules.FaceVerdict(patch, 10, LinkSurveyRules.MinPointsPerFace, expected);
+            // 10 m2 (4 m x 2.5 m): the face's own spacing keeps a fully scanned face under the cap - 50 mm, 4,000 points.
+            double spacing = LinkSurveyRules.FaceAverageDistanceMm(10);
+            Assert.Equal(50, spacing, 6);
+            Assert.True(LinkSurveyRules.ExpectedPoints(10, spacing, LinkSurveyRules.MaxPointsPerFace) < LinkSurveyRules.MaxPointsPerFace);
+            Assert.Equal(LinkSurveyRules.AverageDistanceMm, LinkSurveyRules.FaceAverageDistanceMm(0.5), 6);
+            double s = spacing / 1000, u = 4, v = 2.5;                       // metres stand in for the UV units
+            int nu = LinkSurveyRules.CoverageCells(u, s), nv = LinkSurveyRules.CoverageCells(v, s);
+            Assert.Equal(20, nu);
+            Assert.Equal(13, nv);
+            // 600 points in a 0.6 m strip of the face (15 % of it): the old count rule (600 of 5,000 capped) called it ok.
+            List<double[]> strip = Grid(0.6, 2.5, s);
+            Assert.Equal(600, strip.Count);
+            double? share = LinkSurveyRules.CoverageShare(strip, 0, 0, u, v, nu, nv, null);
+            Assert.Equal(0.15, share.Value, 6);
+            JObject patch = LinkSurveyRules.FaceVerdict(Enumerable.Repeat(1.0, strip.Count).ToList(), 10, LinkSurveyRules.MinPointsPerFace, share);
+            Assert.Equal("not_measured", (string)patch["state"]);
+            Assert.Equal("low_coverage", (string)patch["reason"]);
+            Assert.Equal(0.15, (double)patch["coverage_share"], 6);
+            // About as many points spread over the whole face: seen, and judged.
+            List<double[]> spread = Grid(u, v, 0.13);
+            double? whole = LinkSurveyRules.CoverageShare(spread, 0, 0, u, v, nu, nv, null);
+            Assert.Equal(1.0, whole.Value, 6);
+            Assert.Equal("ok", (string)LinkSurveyRules.FaceVerdict(Enumerable.Repeat(1.0, spread.Count).ToList(), 10,
+                                                                    LinkSurveyRules.MinPointsPerFace, whole)["state"]);
+        }
+
+        [Fact]
+        public void Coverage_counts_only_cells_on_the_face_and_is_undetermined_without_any()
+        {
+            // An L-shaped face in a 2 x 2 rectangle: the top-right cell is off the face and its points do not count.
+            System.Func<int, int, bool> lShape = (i, j) => !(i == 1 && j == 1);
+            var pts = new List<double[]> { new[] { 0.5, 0.5 }, new[] { 1.5, 0.5 }, new[] { 1.5, 1.5 } };
+            Assert.Equal(2.0 / 3, LinkSurveyRules.CoverageShare(pts, 0, 0, 2, 2, 2, 2, lShape).Value, 6);
+            // A point on the far edge belongs to the edge cell.
+            Assert.Equal(1.0, LinkSurveyRules.CoverageShare(new List<double[]> { new[] { 2.0, 2.0 } }, 0, 0, 2, 2, 1, 1, null).Value, 6);
+            Assert.Null(LinkSurveyRules.CoverageShare(pts, 0, 0, 2, 2, 2, 2, (i, j) => false));
+            JObject v = LinkSurveyRules.FaceVerdict(Enumerable.Repeat(0.0, 50).ToList(), 10, 20, null);
             Assert.Equal("not_measured", (string)v["state"]);
-            Assert.Equal("low_coverage", (string)v["reason"]);
-            Assert.Equal(0.004, (double)v["coverage_share"], 6);
-            var covered = Enumerable.Repeat(1.0, 600).ToList();
-            Assert.Equal("ok", (string)LinkSurveyRules.FaceVerdict(covered, 10, LinkSurveyRules.MinPointsPerFace, expected)["state"]);
-            // A small face needs only its share: 0.02 m2 expects 50 points; 20 of them are enough.
-            double small = LinkSurveyRules.ExpectedPoints(0.02, LinkSurveyRules.AverageDistanceMm, LinkSurveyRules.MaxPointsPerFace);
-            Assert.Equal("ok", (string)LinkSurveyRules.FaceVerdict(patch, 10, LinkSurveyRules.MinPointsPerFace, small)["state"]);
+            Assert.Equal("coverage_undetermined", (string)v["reason"]);
+            // Too few points is said first, whatever the coverage.
+            Assert.Equal("too_few_points", (string)LinkSurveyRules.FaceVerdict(new List<double> { 1 }, 10, 20, 1.0)["reason"]);
+            // A strip keeps at least one cell across and at most MaxCellsPerAxis along.
+            Assert.Equal(1, LinkSurveyRules.CoverageCells(0.01, 0.02));
+            Assert.Equal(LinkSurveyRules.MaxCellsPerAxis, LinkSurveyRules.CoverageCells(1000, 0.02));
+        }
+
+        /// <summary>Points on a regular grid from the origin to (u1, v1), half a step in from each edge.</summary>
+        private static List<double[]> Grid(double u1, double v1, double step)
+        {
+            var list = new List<double[]>();
+            for (int i = 0; (i + 0.5) * step < u1; i++)
+                for (int j = 0; (j + 0.5) * step < v1; j++) list.Add(new[] { (i + 0.5) * step, (j + 0.5) * step });
+            return list;
         }
 
         [Fact]

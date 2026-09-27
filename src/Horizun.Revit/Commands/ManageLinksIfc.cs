@@ -66,6 +66,9 @@ namespace Horizun.Revit.Commands
             var hashed = (JObject)request.DeepClone();
             hashed["intermediate_on_disk"] = onDiskBefore;
             string hash = DocumentGate.PlanHash(hashed, "operation", "path", "kind", "intermediate_on_disk");
+            // A missing importer is refused by name here, before a token is issued - not discovered by the apply.
+            if (IfcImporterAssembly(Safe(() => app.Application.VersionNumber), out _) == null)
+                return IfcFailure(app, "import", "no IFC importer assembly for this Revit was found", path, rvtPath, onDiskBefore);
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             if (dryRun)
             {
@@ -128,6 +131,12 @@ namespace Horizun.Revit.Commands
                     type = doc.GetElement(r.ElementId) as RevitLinkType;
                     if (type == null) throw new InvalidOperationException("no link type could be read after CreateFromIFC");
                     instance = RevitLinkInstance.Create(doc, type.Id);
+                    // What the re-read judges is read here first, so a link that would not verify is rolled back
+                    // instead of left in the model. The load itself is CreateFromIFC's success code; a linked
+                    // document not readable inside the transaction leaves its content to the re-read after the commit.
+                    string wouldFail = IfcLinkProblem(type, instance, rvtPath);
+                    if (wouldFail != null)
+                        throw new InvalidOperationException("the new link would not verify (" + wouldFail + "), so it was not kept");
                     Guard.Commit(tx, "Horizun: link IFC");
                 }
                 catch (Exception ex)
@@ -177,12 +186,29 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(added);
         }
 
+        /// <summary>
+        /// Why a new IFC link would not verify, read inside its transaction, or null: an instance not of the new
+        /// type, a linked model read with no DirectShape, or one that links to itself. An unreadable linked
+        /// document is no reason here - the re-read after the commit judges it.
+        /// </summary>
+        private static string IfcLinkProblem(RevitLinkType type, RevitLinkInstance inst, string rvtPath)
+        {
+            if (inst == null || inst.GetTypeId() != type.Id) return "the instance is not of the new type";
+            Document linked = null;
+            try { linked = inst.GetLinkDocument(); } catch { }
+            if (linked == null) return null;
+            int? shapes = null;
+            try { shapes = new FilteredElementCollector(linked).OfClass(typeof(DirectShape)).GetElementCount(); } catch { }
+            if (shapes == 0) return "the linked model holds no DirectShape";
+            return LinkTypeAt(linked, rvtPath) != null ? "the linked model links to itself" : null;
+        }
+
         /// <summary>A refusal named by the step that failed. The host model was not written; the disk may have been.</summary>
         private static CommandResult IfcFailure(UIApplication app, string stage, string message, string path, string rvtPath,
                                                 string onDiskBefore)
         {
             string version = Safe(() => app.Application.VersionNumber);
-            string importer = IfcImporterAssembly(out string lookedIn);
+            string importer = IfcImporterAssembly(version, out string lookedIn);
             string reason = stage == "import" ? (importer == null ? "ifc_importer_unavailable" : "ifc_import_failed")
                           : stage == "save_intermediate" ? "intermediate_save_failed" : "link_failed";
             string onDiskAfter = FileState(rvtPath);
@@ -230,7 +256,7 @@ namespace Horizun.Revit.Commands
         /// Where the IFC importer assembly is, or null. It ships beside RevitAPI.dll; the open-source
         /// IFC add-in, when installed, replaces it from an ApplicationPlugins bundle.
         /// </summary>
-        private static string IfcImporterAssembly(out string lookedIn)
+        private static string IfcImporterAssembly(string version, out string lookedIn)
         {
             var looked = new List<string> { "loaded assemblies" };
             try
@@ -248,11 +274,15 @@ namespace Horizun.Revit.Commands
                 if (System.IO.File.Exists(beside)) { lookedIn = string.Join("; ", looked); return beside; }
                 string plugins = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                                                         "Autodesk", "ApplicationPlugins");
-                looked.Add(System.IO.Path.Combine(plugins, "*IFC*"));
+                looked.Add(System.IO.Path.Combine(plugins, "*IFC*") + " (a copy for Revit " + version + ")");
                 if (System.IO.Directory.Exists(plugins))
                     foreach (string d in System.IO.Directory.GetDirectories(plugins, "*IFC*"))
                     {
-                        string hit = System.IO.Directory.GetFiles(d, "Revit.IFC.Import.dll", System.IO.SearchOption.AllDirectories).FirstOrDefault();
+                        // Only a copy built for THIS Revit counts: a bundle keeps one folder per year it targets, so the
+                        // importer's path below ApplicationPlugins names the year; another year's importer does not load here.
+                        string hit = System.IO.Directory.GetFiles(d, "Revit.IFC.Import.dll", System.IO.SearchOption.AllDirectories)
+                            .FirstOrDefault(p => !string.IsNullOrEmpty(version) && System.Text.RegularExpressions.Regex.IsMatch(
+                                p.Substring(plugins.Length), "(^|[^0-9])" + System.Text.RegularExpressions.Regex.Escape(version) + "([^0-9]|$)"));
                         if (hit != null) { lookedIn = string.Join("; ", looked); return hit; }
                     }
             }
