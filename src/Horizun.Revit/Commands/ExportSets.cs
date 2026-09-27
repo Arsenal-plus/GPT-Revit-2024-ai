@@ -419,10 +419,15 @@ namespace Horizun.Revit.Commands
                         stage = "export";
                         var options = new GBXMLExportOptions();
 #if REVIT2023 || REVIT2024 || REVIT2025
-                        // Explicit where it is the documented default anyway. 2026 defaults it
-                        // to AnalysisMode and 2027 removes it: both then follow the energy
-                        // settings, which CreateSpatial set to rooms/spaces above.
-                        options.ExportEnergyModelType = ExportEnergyModelType.SpatialElement;
+                        // AnalysisMode, 2026's default: the export follows the energy settings,
+                        // which CreateSpatial set to rooms/spaces above. NOT SpatialElement, the
+                        // documented default here: MEASURED 2026-09-27 in Revit 2024 on the
+                        // SpatialElement/Final model Create had just made main, with the settings
+                        // on RoomsOrSpaces SpatialElement is refused as "not compatible" while
+                        // AnalysisMode writes the space with its constructions; with the settings
+                        // on building elements SpatialElement is accepted but writes NO
+                        // construction. 2027 removes the property.
+                        options.ExportEnergyModelType = ExportEnergyModelType.AnalysisMode;
 #endif
                         accepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output), options);
                     }

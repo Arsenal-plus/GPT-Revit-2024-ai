@@ -338,8 +338,10 @@ ella; la persistencia se mide releyendo antes y después del commit, por año.
   the file is written) — no empty campus is written. The export needs a main
   energy analysis model: one is built from rooms/spaces (SpatialElement, tier Final -
   Revit's default, the only tier that computes constructions), with the energy settings' analysis mode set to
-  `RoomsOrSpaces` in every year — 2027 builds the model from that mode, and 2026's
-  `GBXMLExportOptions` default the model type to `AnalysisMode`, which follows it —
+  `RoomsOrSpaces` in every year — 2027 builds the model from that mode, and the
+  export's model type is `AnalysisMode`, which follows it (2026's default; set
+  explicitly in 2023–2025, where the documented default `SpatialElement` was
+  measured refused as "not compatible" on that very model) —
   inside a transaction that is **rolled back** after the file is on disk, so the
   model, its energy settings and any energy model it had are left as they were.
   The written XML is re-read and its `Campus`/`Space`/`Zone`/`Surface`/`Opening`
