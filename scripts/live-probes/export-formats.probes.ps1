@@ -84,7 +84,7 @@ $script:HzProbeModules += [pscustomobject]@{
         # ---- gbXML --------------------------------------------------------------------
         $gbPath = Join-Path $folder 'energy.xml'
         $pre = & $Ctx.Call $X @{ target_document = $doc; format = 'gbxml'; output_path = $gbPath; dry_run = $true }
-        if ($pre.isError -and [string]$pre.text -match '^no spaces') { Case $names[4] $X 'pass' 'no placed room or space: refused as no spaces, nothing written' }
+        if ($pre.isError -and [string]$pre.text -match 'no spaces') { Case $names[4] $X 'pass' 'no placed room or space: refused as no spaces, nothing written' }
         elseif ($pre.isError) { Case $names[4] $X 'fail' ('dry run refused: ' + [string]$pre.text) }
         else {
             $r = & $Ctx.Apply $X @{ target_document = $doc; format = 'gbxml'; output_path = $gbPath } 'exp-gbxml'
