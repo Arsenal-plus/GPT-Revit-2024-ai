@@ -183,6 +183,11 @@ and run `install.ps1` again.
 
 - **`horizun_health` first, always.** The commands act on the *active* document,
   and health is what tells you which one that is.
+- **tools/list schemas are abridged, never incomplete.** Every argument, kind and
+  operation is there, but per-variant text is folded to keep the list small. The exact
+  schema of one tool or one variant is the resource
+  `horizun://contract/tools/{tool}` / `horizun://contract/tools/{tool}/{variant}`,
+  and a call that breaks the contract names the failing path and that URI.
 - **Understand the objective before the first write, and say it back.** A model is
   somebody's deliverable. Before the first typed write of a task you must know
   three things: WHAT outcome is wanted in the model, WHICH elements it applies to,
@@ -436,6 +441,11 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
 
 - **`horizun_health` primero, siempre.** Los comandos actúan sobre el documento
   *activo*, y health es lo que te dice cuál es.
+- **Los esquemas de tools/list están abreviados, nunca incompletos.** Están todos los
+  argumentos, tipos y operaciones, pero el texto de cada variante se pliega para que la
+  lista sea corta. El esquema exacto de una herramienta o de una variante es el recurso
+  `horizun://contract/tools/{tool}` / `horizun://contract/tools/{tool}/{variant}`,
+  y una llamada que rompe el contrato nombra la ruta que falla y esa URI.
 - **Entiende el objetivo antes de la primera escritura, y devuélvelo dicho.** Un
   modelo es el entregable de alguien. Antes de la primera escritura tipada de una
   tarea tienes que saber tres cosas: QUÉ resultado se quiere en el modelo, A QUÉ
