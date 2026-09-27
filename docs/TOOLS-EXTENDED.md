@@ -2090,3 +2090,60 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+## horizun_manage_links: acquire_coordinates, point clouds, IFC links, scan_deviation
+
+**acquire_coordinates** (`link_instance_id` required: a loaded `RevitLinkInstance` or a
+LINKED CAD `ImportInstance`). `Document.AcquireCoordinates` runs inside a transaction, so
+the dry run is a REAL rehearsal: it acquires, re-reads and rolls back, and the reply
+carries the rollback status. The token binds the host's shared position at the project
+base point and the source instance. After the commit the checklist re-reads:
+
+- RVT link: `link_same_site_delta_mm`, measured with the very method
+  `horizun_federation_check` uses for `same_site` (three link points taken to shared
+  coordinates through the link and through the host), must be <= 1 mm;
+- CAD link: `cad_wcs_delta_mm` - three import points must sit at the DWG's own
+  coordinates in the host's shared system (the WCS rule RevitAPI documents);
+- `host_shared_position_changed` must be true.
+
+The reply publishes `project_position_before` / `project_position_after` in mm and
+degrees - the units `horizun_manage_units operation=base_points project_position` takes,
+so a caller can restore. Refused by name before Revit is asked: a type placed more than
+once (RevitAPI lists "Cannot acquire coordinates from a model placed multiple times"; the
+instance ids are named), a link that already shares the host's site (delta <= 1 mm), an
+unloaded link. The API always overwrites the host's geolocation with the link's, unlike
+the UI; the warning says so. `publish_coordinates` is a later step.
+
+**add kind=point_cloud** (`.rcp` / `.rcs`; `kind` defaults from the extension).
+`PointCloudType.Create` + `PointCloudInstance.Create` with the identity transform, inside a
+transaction: the dry run is a real rehearsal with rollback. Refused by name when
+`PointCloudEngineRegistry.GetSupportedEngines()` lacks the engine
+(`point_cloud_engine_unavailable`) or the path is already linked. Verified: type and
+instance re-read, instance of that type, engine identifier.
+
+**add kind=ifc**. `Application.OpenIFCDocument(path, IFCImportOptions{Action=Link})`
+produces the intermediate `<file>.ifc.RVT` (saved there when the importer returned an
+unsaved document), then `RevitLinkType.CreateFromIFC` + `RevitLinkInstance.Create` link it.
+The dry run is a measured preview (the importer writes a file outside any transaction) and
+says whether an existing intermediate will be regenerated. A missing or failing importer is
+refused by name, `ifc_importer_unavailable`, with the Revit version, before anything is
+linked. Verified like `add`: type Loaded, instance present and of that type; `linked_by`
+says whether the importer or `CreateFromIFC` created the type.
+
+**scan_deviation** (read-only): `link_instance_id` names the `PointCloudInstance`,
+`element_ids` (<= 200) the walls, floors and columns, `tolerance_mm` (default 10). For
+each planar face (<= 60 per element) a convex slab - two planes at +/- band around the
+face (band = max(3 x tolerance, 30 mm)) and four around its UV rectangle - is the
+multi-plane filter for `GetPoints(filter, averageDistance = 20 mm, maxPoints = 5000)`.
+Points that project inside the face give signed distances; a face is `ok` when the 95th
+percentile of |distance| is within tolerance, else `deviates`, and `not_measured` with
+fewer than 20 points - never `ok`. Non-planar faces are counted not_measured. The point
+frame (raw or through the instance's total transform) is taken per face from where the
+points actually fall inside the filter; a face where neither frame holds is
+`not_measured`, `point_frame_undetermined`. Elements: `ok` only when every face is ok,
+`partially_measured`, `not_measured` or `deviates`; the verdict passes only when every
+element is ok. Deviations beyond the band are not visible, and the reply says so.
+
+Live probes: `scripts/live-probes/links-survey.probes.ps1`. Point-cloud and IFC cases read
+`PointCloudPath` and `IfcLinkSource` from `%USERPROFILE%\.horizun\live-fixtures.json`
+and are `not_covered`, named, without them.
