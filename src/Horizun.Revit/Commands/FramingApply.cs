@@ -348,8 +348,6 @@ namespace Horizun.Revit.Commands
                     if (m.TypeKey == null || !symbols.TryGetValue(m.TypeKey, out FamilySymbol sym)) throw new ArgumentException(m.Role + " has no type in the spec.");
                     string why = ClassifyType(sym, FramingRoles.IsVertical(m.Role), m.Role, out FramingPlacementKind kind);
                     if (why != null) throw new ArgumentException(why);
-                    if (kind == FramingPlacementKind.LineBased && WorkPlaneView(doc) == null)
-                        throw new ArgumentException(m.Role + ": a line-based member needs a model view (a non-template 3-D view or plan) to create its work plane in; the document has none.");
                     kinds[key] = kind;
                 }
                 FramedWall frame = fw;
@@ -409,7 +407,6 @@ namespace Horizun.Revit.Commands
 
         private static void PlaceSource(Document doc, FramingSourcePlan p)
         {
-            View planeView = null;
             string sourceUid = p.Source.UniqueId;
             long sid = Rid.Value(p.Source.Id);
             Level level = p.Wall?.Level ?? p.Ceiling?.Level;
@@ -418,8 +415,15 @@ namespace Horizun.Revit.Commands
                 FramingMember m = p.Members[i];
                 FamilySymbol sym = p.Symbols[m.TypeKey];
                 FramingPlacementKind kind = p.Kinds[m.Role + "|" + m.TypeKey];
-                if (kind == FramingPlacementKind.LineBased && planeView == null) planeView = WorkPlaneView(doc);
-                FamilyInstance fi = PlaceMember(doc, sym, kind, p.Axis(m), level, p.Span?.Invoke(m) ?? p.PlaneSpan, planeView, out ReferencePlane plane);
+                FamilyInstance fi;
+                Element plane;
+                try { fi = PlaceMember(doc, sym, kind, p.Axis(m), level, p.Span?.Invoke(m) ?? p.PlaneSpan, null, out plane); }
+                catch (Exception ex) when (ex is InvalidOperationException || ex is Autodesk.Revit.Exceptions.ApplicationException || ex is ArgumentException)
+                {
+                    // Name the member Revit refused: role, index, type, placement and both ends.
+                    Line ax = p.Axis(m);
+                    throw new InvalidOperationException(m.Role + " " + i + " (" + kind + ", type " + Rid.Value(sym.Id) + ", " + Fmt(ax.GetEndPoint(0)) + " -> " + Fmt(ax.GetEndPoint(1)) + " mm): " + ex.Message, ex);
+                }
                 if (fi == null) throw new InvalidOperationException(m.Role + " " + i + ": Revit returned no instance.");
                 var mark = new FramingMark { SourceId = sid, SourceUniqueId = sourceUid, Role = m.Role, Index = i, SpecHash = p.SpecHash, PlanSignature = p.Signature, Operation = p.Operation };
                 FramingMarker.Write(fi, mark);
@@ -479,7 +483,44 @@ namespace Horizun.Revit.Commands
         internal static XYZ[] MemberEnds(Document doc, Element e, out string method)
         {
             method = null;
-            if (e?.Location is LocationCurve lc && lc.Curve != null) { method = "location_curve"; return new[] { lc.Curve.GetEndPoint(0), lc.Curve.GetEndPoint(1) }; }
+            if (e?.Location is LocationCurve lc && lc.Curve != null)
+            {
+                XYZ c0 = lc.Curve.GetEndPoint(0), c1 = lc.Curve.GetEndPoint(1);
+                // A line-based family on a level keeps its location curve ON the level plane and
+                // carries its height as an offset (MEASURED 2026-09-26, Revit 2026: curve Z = level
+                // elevation, offset 2498.2 mm, bounding box centred at the planned height) - the
+                // same rule as a wall's location line. Its real axis is the curve plus that offset.
+                if (e is FamilyInstance lb && lb.Symbol?.Family?.FamilyPlacementType == FamilyPlacementType.CurveBased)
+                {
+                    Parameter off = lb.get_Parameter(BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM) ?? lb.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+                    if (off != null && off.StorageType == StorageType.Double && Math.Abs(off.AsDouble()) > 1e-9)
+                    {
+                        // The curve lies on its level (the level comes as Host, and LevelId may be
+                        // invalid), or, when no level resolves, the solid says the offset is real:
+                        // the bounding box centre is nearer curve + offset than the curve itself.
+                        Level onLevel = lb.Host as Level ?? doc.GetElement(lb.LevelId) as Level;
+                        bool onPlane = onLevel != null && Math.Abs(c0.Z - onLevel.ProjectElevation) < 1e-6 && Math.Abs(c1.Z - onLevel.ProjectElevation) < 1e-6;
+                        bool solidSays = false;
+                        if (!onPlane)
+                        {
+                            BoundingBoxXYZ bb = lb.get_BoundingBox(null);
+                            if (bb != null)
+                            {
+                                double mid = (bb.Min.Z + bb.Max.Z) / 2;
+                                solidSays = Math.Abs(c0.Z + off.AsDouble() - mid) + 1e-6 < Math.Abs(c0.Z - mid);
+                            }
+                        }
+                        if (onPlane || solidSays)
+                        {
+                            XYZ up = new XYZ(0, 0, off.AsDouble());
+                            method = "location_curve_plus_level_offset";
+                            return new[] { c0 + up, c1 + up };
+                        }
+                    }
+                }
+                method = "location_curve";
+                return new[] { c0, c1 };
+            }
             // A vertical column reports a point; its ends are its base and top constraints.
             if (e is FamilyInstance fi && fi.Location is LocationPoint lp)
             {
@@ -492,6 +533,25 @@ namespace Horizun.Revit.Commands
                 return new[] { new XYZ(lp.Point.X, lp.Point.Y, z0), new XYZ(lp.Point.X, lp.Point.Y, z1) };
             }
             return null;
+        }
+
+        /// <summary>
+        /// How a line-based member's height is carried, read back: its location curve's Z, the
+        /// offset parameters it exposes and its bounding box. Evidence for a height that did not
+        /// match the plan, never a verdict of its own.
+        /// </summary>
+        internal static JObject HeightRead(Element e, double plannedZmm)
+        {
+            var o = new JObject { ["element_id"] = Rid.Value(e.Id), ["planned_z_mm"] = Math.Round(plannedZmm, 2) };
+            if (e.Location is LocationCurve lc && lc.Curve != null) o["curve_z_mm"] = Math.Round(lc.Curve.GetEndPoint(0).Z * 304.8, 2);
+            foreach (BuiltInParameter bip in new[] { BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM, BuiltInParameter.INSTANCE_ELEVATION_PARAM, BuiltInParameter.INSTANCE_OFFSET_POS_PARAM })
+            {
+                Parameter p = e.get_Parameter(bip);
+                if (p != null && p.StorageType == StorageType.Double) o[bip.ToString()] = Math.Round(p.AsDouble() * 304.8, 2) + (p.IsReadOnly ? " (read-only)" : "");
+            }
+            BoundingBoxXYZ bb = e.get_BoundingBox(null);
+            if (bb != null) o["bbox_z_mm"] = new JArray(Math.Round(bb.Min.Z * 304.8, 2), Math.Round(bb.Max.Z * 304.8, 2));
+            return o;
         }
 
         /// <summary>A member's solid in the wall frame, mm {xmin, xmax, ymin, ymax}, from its edges; null when it has none.</summary>
@@ -546,6 +606,8 @@ namespace Horizun.Revit.Commands
                                                "inside_wall_length", "section_along_wall", "beam_settings", "inserts_untouched", "source_unjoined");
             int planned = 0, found = 0, wrongType = 0, unreadable = 0, crossings = 0, insertsChanged = 0, joined = 0, solidRead = 0, declaredRead = 0, misoriented = 0, beamOff = 0;
             double maxDev = 0, maxExcess = 0, maxBeyondLength = 0;
+            JObject worstLayer = null;
+            var heightReads = new JArray();
             var plannedRoles = new JObject();
             var foundRoles = new JObject();
             var perSource = new JArray();
@@ -577,6 +639,8 @@ namespace Horizun.Revit.Commands
                     XYZ a = axis.GetEndPoint(0), b = axis.GetEndPoint(1);
                     double dev = Math.Min(Math.Max(ends[0].DistanceTo(a), ends[1].DistanceTo(b)), Math.Max(ends[0].DistanceTo(b), ends[1].DistanceTo(a))) * 304.8;
                     srcDev = Math.Max(srcDev, dev);
+                    if (dev > EndpointToleranceMm && p.Kinds[m.Role + "|" + m.TypeKey] == FramingPlacementKind.LineBased && heightReads.Count < 3)
+                        heightReads.Add(HeightRead(e, a.Z * 304.8));
                     double[] f0 = fw.ToFrame(ends[0]), f1 = fw.ToFrame(ends[1]);
                     // The section as Revit BUILT it: the member's solid in the wall frame. Only a
                     // member with no solid falls back to its axis and the declared width (counted).
@@ -586,7 +650,11 @@ namespace Horizun.Revit.Commands
                     if (sx != null)
                     {
                         solidRead++; xLo = sx[0]; xHi = sx[1];
-                        maxExcess = Math.Max(maxExcess, Math.Max(0, Math.Max(Math.Abs(sx[2]), Math.Abs(sx[3])) - fw.LayerWidthMm / 2));
+                        double excess = Math.Max(0, Math.Max(Math.Abs(sx[2]), Math.Abs(sx[3])) - fw.LayerWidthMm / 2);
+                        if (excess > maxExcess + 1e-9 && excess > EndpointToleranceMm)
+                            worstLayer = new JObject { ["member_id"] = Rid.Value(e.Id), ["role"] = m.Role, ["index"] = i, ["excess_mm"] = Math.Round(excess, 2),
+                                                       ["solid_y_mm"] = new JArray(Math.Round(sx[2], 2), Math.Round(sx[3], 2)), ["layer_mm"] = Math.Round(fw.LayerWidthMm, 2) };
+                        maxExcess = Math.Max(maxExcess, excess);
                     }
                     else
                     {
@@ -636,6 +704,8 @@ namespace Horizun.Revit.Commands
             check.Compare("section_along_wall", 0, misoriented);
             check.Compare("beam_settings", 0, beamOff);
             evidence["section_read"] = new JObject { ["solid"] = solidRead, ["axis_and_declared_width"] = declaredRead };
+            if (worstLayer != null) evidence["worst_inside_layer"] = worstLayer;
+            if (heightReads.Count > 0) evidence["line_based_height"] = heightReads;
             check.Compare("inserts_untouched", 0, insertsChanged);
             check.Compare("source_unjoined", 0, joined);
             evidence["sources"] = perSource;

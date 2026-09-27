@@ -1897,8 +1897,8 @@ is compiled in.
 |---|---|---|
 | `wall` | yes | studs, tracks, kings, jacks, headers, sills, cripples and blocking inside one layer of each straight Basic wall in `element_ids` (or visible in `view_id`, where curtain, stacked and curved walls are listed in `plan.skipped` with their reason instead of refusing the call; named in `element_ids` they refuse) |
 | `ceiling` | yes | mains, cross (furring) channels, perimeter track and hangers for each Ceiling in `element_ids` (or visible in `view_id`, where sloped, multi-region and sketchless ceilings are listed in `plan.skipped` with their reason; named in `element_ids` they refuse), the hangers ray-cast to the structure above |
-| `read` | no | what a previous apply produced, per source, found by the marker on each member (`member_count` counts members; the reference planes created for line-based members are counted apart in `work_plane_count`) |
-| `remove` | yes | deletes the members (and their work planes) a previous apply produced for `element_ids`, verified |
+| `read` | no | what a previous apply produced, per source, found by the marker on each member (`member_count` counts members; `work_plane_count` counts work planes, which this build no longer creates) |
+| `remove` | yes | deletes the members (and any work planes an earlier build created) a previous apply produced for `element_ids`, verified |
 
 Every write rehearses first (`dry_run` defaults to true) and returns a
 `confirmation_token` that binds the operation, the sources, the spec and the RESOLVED
@@ -2018,12 +2018,21 @@ orientation is refused by name before anything is written:
   face, instead of being cut back or extended by Revit to meet a column or another beam.
 - **Structural Columns** place as a column (`StructuralType.Column`) on a VERTICAL axis only:
   studs, kings, jacks, cripples, hangers.
-- **Line-based Generic Model** takes both, on a reference plane through the member's axis
-  that the tool creates, marks (`work_plane`) and removes with the members.
+- **Line-based Generic Model** places HORIZONTAL members only, on the source's level
+  (`NewFamilyInstance(Curve, FamilySymbol, Level, StructuralType)`), with the height put back
+  from the axis. A vertical member of this kind is refused by name: standing a line on a
+  created reference plane or sketch plane was refused by Revit for every member ("does not
+  coincide with the input face", at 0.000 mm off the plane; MEASURED 2026-09-26 in Revit
+  2026) because that overload hosts on a FACE of an element. Studs, kings, jacks, cripples
+  and hangers therefore need a Structural Columns type.
 
 The Revit API documents no orientation rule for `NewFamilyInstance(Curve, FamilySymbol,
 Level, StructuralType)`, so the tool relies on none: which placements Revit commits and
 whether the committed axis keeps the planned ends is what `framing.probes.ps1` measures.
+MEASURED 2026-09-26 in Revit 2026 (10/10): a line-based member's location curve stays on
+its level and its height is the `Offset from Host` parameter, so the re-read adds it
+(`endpoint_read: location_curve_plus_level_offset`); a column placed on a vertical line
+reports a location curve (its real axis), not a point with base and top constraints.
 
 ### Verification, markers and idempotence
 

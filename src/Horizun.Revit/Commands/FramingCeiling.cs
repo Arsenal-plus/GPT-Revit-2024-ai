@@ -205,8 +205,6 @@ namespace Horizun.Revit.Commands
                     if (m.TypeKey == null || !symbols.TryGetValue(m.TypeKey, out FamilySymbol sym)) throw new ArgumentException(m.Role + " has no type in the spec.");
                     string why = ClassifyType(sym, m.Role == FramingRoles.Hanger, m.Role, out FramingPlacementKind kind);
                     if (why != null) throw new ArgumentException(why);
-                    if (kind == FramingPlacementKind.LineBased && WorkPlaneView(doc) == null)
-                        throw new ArgumentException(key.Split('|')[0] + ": a line-based member needs a model view (a non-template 3-D view or plan) to create its work plane in; the document has none.");
                     kinds[key] = kind;
                 }
                 p.Axis = m => Line.CreateBound(new XYZ(m.X0 / MmPerFt, m.Y0 / MmPerFt, m.Z0 / MmPerFt), new XYZ(m.X1 / MmPerFt, m.Y1 / MmPerFt, m.Z1 / MmPerFt));
@@ -341,6 +339,7 @@ namespace Horizun.Revit.Commands
             var hangerTops = new List<HangerTop>();
             int planned = 0, found = 0, wrongType = 0, unreadable = 0, beamOff = 0;
             double maxDev = 0, maxOutside = 0;
+            var heightReads = new JArray();
             var plannedRoles = new JObject();
             var foundRoles = new JObject();
             var perSource = new JArray();
@@ -369,7 +368,10 @@ namespace Horizun.Revit.Commands
                         hangerTops.Add(new HangerTop { Id = Rid.Value(e.Id), Top = ends[0].Z >= ends[1].Z ? ends[0] : ends[1], LengthMm = ends[0].DistanceTo(ends[1]) * MmPerFt, Phase = SourcePhase(doc, p.Source) });
                     Line axis = p.Axis(m);
                     XYZ a = axis.GetEndPoint(0), b = axis.GetEndPoint(1);
-                    srcDev = Math.Max(srcDev, Math.Min(Math.Max(ends[0].DistanceTo(a), ends[1].DistanceTo(b)), Math.Max(ends[0].DistanceTo(b), ends[1].DistanceTo(a))) * MmPerFt);
+                    double dev = Math.Min(Math.Max(ends[0].DistanceTo(a), ends[1].DistanceTo(b)), Math.Max(ends[0].DistanceTo(b), ends[1].DistanceTo(a))) * MmPerFt;
+                    srcDev = Math.Max(srcDev, dev);
+                    if (dev > EndpointToleranceMm && p.Kinds[m.Role + "|" + m.TypeKey] == FramingPlacementKind.LineBased && heightReads.Count < 3)
+                        heightReads.Add(HeightRead(e, a.Z * MmPerFt));
                     foreach (XYZ end in ends)
                         srcOut = Math.Max(srcOut, CeilingFramingRules.DistanceOutside(p.Ceiling.LoopsMm, end.X * MmPerFt, end.Y * MmPerFt));
                 }
@@ -401,6 +403,7 @@ namespace Horizun.Revit.Commands
                 ["max_gap_mm"] = hangerTops.Count == 0 || double.IsInfinity(maxGap) ? JValue.CreateNull() : (JToken)Math.Round(maxGap, 3)
             };
             evidence["sources"] = perSource;
+            if (heightReads.Count > 0) evidence["line_based_height"] = heightReads;
             return check;
         }
 

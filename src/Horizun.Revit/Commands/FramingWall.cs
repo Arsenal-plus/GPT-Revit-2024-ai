@@ -37,10 +37,13 @@
 //     category is refused by name before anything is written.
 //   * Structural Columns  -> StructuralType.Column on a VERTICAL line only (studs,
 //     kings, jacks, cripples, hangers).
-//   * line-based Generic Model (FamilyPlacementType.CurveBased) -> both, placed by
-//     NewFamilyInstance(Reference, Line, FamilySymbol) on a reference plane through
-//     the member's axis, which the tool creates, marks (role work_plane) and
-//     removes with the members.
+//   * line-based Generic Model (FamilyPlacementType.CurveBased) -> HORIZONTAL members
+//     only, placed on the source's level with NewFamilyInstance(Curve, FamilySymbol,
+//     Level, StructuralType) and the height put back from the axis. Hosting the line
+//     on a created reference plane or sketch plane (the route that would let it stand
+//     vertical) was refused by Revit for every member, "does not coincide with the
+//     input face", at 0.000 mm off the plane (MEASURED 2026-09-26, Revit 2026): the
+//     overload wants a FACE of an element, and a created plane has none.
 // Anything else is refused by name. Which placements Revit really commits, and
 // whether a column/beam's location curve keeps the planned endpoints, is what
 // framing.probes.ps1 measures.
@@ -337,11 +340,17 @@ namespace Horizun.Revit.Commands
             }
             if (cat == (long)BuiltInCategory.OST_GenericModel && symbol.Family?.FamilyPlacementType == FamilyPlacementType.CurveBased)
             {
+                // A line stands vertical only on a work plane, and Revit hosts a line on a FACE of
+                // an element: a created reference plane or sketch plane has none, and every member
+                // was refused "does not coincide with the input face" at 0.000 mm off the plane
+                // (MEASURED 2026-09-26, Revit 2026). Refused here, before anything is written.
+                if (vertical) return role + ": '" + name + "' is a line-based Generic Model, which Revit places on a level line, not standing " +
+                                     "vertical on a created work plane; a vertical " + role + " needs a Structural Columns type.";
                 kind = FramingPlacementKind.LineBased;
                 return null;
             }
             return role + ": '" + name + "' (" + (symbol.Category?.Name ?? "no category") + ", " + (symbol.Family?.FamilyPlacementType.ToString() ?? "?") +
-                   ") cannot carry a framing member: use Structural Framing (horizontal), Structural Columns (vertical) or a line-based Generic Model (both).";
+                   ") cannot carry a framing member: use Structural Framing or a line-based Generic Model (horizontal) and Structural Columns (vertical).";
         }
 
         /// <summary>A type's published section width (stud flange along the wall), millimetres, or null.</summary>
@@ -361,7 +370,7 @@ namespace Horizun.Revit.Commands
         /// normal for a ceiling); that plane is returned so it can be marked and removed.
         /// </summary>
         internal static FamilyInstance PlaceMember(Document doc, FamilySymbol symbol, FramingPlacementKind kind, Line axis, Level level,
-            XYZ planeSpan, View planeView, out ReferencePlane workPlane)
+            XYZ planeSpan, View planeView, out Element workPlane)
         {
             workPlane = null;
             if (!symbol.IsActive) symbol.Activate();
@@ -405,24 +414,27 @@ namespace Horizun.Revit.Commands
                 }
                 default:
                 {
-                    XYZ a = axis.GetEndPoint(0), b = axis.GetEndPoint(1);
-                    workPlane = doc.Create.NewReferencePlane2(a, b, a + planeSpan, planeView);
-                    return doc.Create.NewFamilyInstance(workPlane.GetReference(), axis, symbol);
+                    // The documented route for a line-based family: a curve and a reference level
+                    // (NewFamilyInstance(Curve, FamilySymbol, Level, StructuralType)). Only horizontal
+                    // members reach here (ClassifyType refuses a vertical one). Revit may keep the line
+                    // on the level and carry the height as an offset, so the height is put back from
+                    // the axis and the post-commit re-read judges both ends.
+                    FamilyInstance lineBased = doc.Create.NewFamilyInstance(axis, symbol, level, StructuralType.NonStructural);
+                    doc.Regenerate();
+                    if (lineBased.Location is LocationCurve lc && lc.Curve != null)
+                    {
+                        double dz = axis.GetEndPoint(0).Z - lc.Curve.GetEndPoint(0).Z;
+                        if (Math.Abs(dz) > 1e-6)
+                        {
+                            Parameter off = lineBased.get_Parameter(BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM);
+                            if (off == null || off.IsReadOnly) off = lineBased.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+                            if (off != null && !off.IsReadOnly && off.StorageType == StorageType.Double) off.Set(off.AsDouble() + dz);
+                            else ElementTransformUtils.MoveElement(doc, lineBased.Id, new XYZ(0, 0, dz));
+                        }
+                    }
+                    return lineBased;
                 }
             }
-        }
-
-        /// <summary>
-        /// A MODEL view a reference plane can be created in: a non-template 3-D view, else a
-        /// non-template plan, else null. Never a drafting view, sheet or legend: RevitAPI.xml says
-        /// NewReferencePlane2 makes the plane view-specific there, and a view-specific plane
-        /// cannot host a model line-based instance. Null is refused while planning.
-        /// </summary>
-        internal static View WorkPlaneView(Document doc)
-        {
-            View3D v = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>().FirstOrDefault(x => !x.IsTemplate);
-            if (v != null) return v;
-            return new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>().FirstOrDefault(x => !x.IsTemplate);
         }
     }
 }

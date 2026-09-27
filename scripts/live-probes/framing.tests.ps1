@@ -4,8 +4,9 @@
 # (plan.sources[].count_by_role, z_mm, top_face_mm, members[].to, no_support_above;
 # evidence.sources[] with hanger_supports keyed 'host:<id>'; postconditions.properties[]
 # with property/matches; already_applied, evidence.removed_ids, member_count). Those
-# shapes are the code's, not yet measured live: the first live run must compare them
-# (and a reply captured from it should replace each fake below).
+# shapes were written from the code and then held against Revit 2026 on 2026-09-26: the
+# live run passed 10/10 reading exactly these fields (endpoint_read also carries
+# location_curve_plus_level_offset for line-based members, MEASURED the same day).
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'framing.probes.ps1')
@@ -19,6 +20,8 @@ $fakeData = Join-Path ([IO.Path]::GetTempPath()) ('hz-framing-tests-' + [guid]::
 $tplDir = Join-Path $fakeData 'Autodesk\RVT 2026\Family Templates\English'
 New-Item -ItemType Directory -Force -Path $tplDir | Out-Null
 Set-Content -LiteralPath (Join-Path $tplDir 'Metric Generic Model line based.rft') -Value ''
+Set-Content -LiteralPath (Join-Path $tplDir 'Metric Structural Column.rft') -Value ''
+Set-Content -LiteralPath (Join-Path $tplDir 'Metric Structural Framing - Beams and Braces.rft') -Value ''
 $realProgramData = $env:ProgramData
 $env:ProgramData = $fakeData
 
@@ -111,7 +114,12 @@ $fakeApply = {
     param($tool, $arguments, $key)
     $script:sent[$key] = $arguments
     switch ($tool) {
-        'horizun_create_family' { return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ loaded_family = [pscustomobject]@{ symbol_ids = @(6001) } }) $false '') } }
+        'horizun_create_family' {
+            # The REAL shape (MEASURED 2026-09-26): loaded_family.symbol_ids. The line-based member
+            # is 6001, the stud column 6002, the authored beam 6003.
+            $sym = if ($key -like '*-fr-studcol') { 6002 } elseif ($key -like '*-fr-beamfam') { 6003 } else { 6001 }
+            return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ loaded_family = [pscustomobject]@{ symbol_ids = @($sym) } }) $false '') }
+        }
         'horizun_create_elements' {
             $script:nextId++
             $kind = @($arguments.elements)[0].kind
@@ -127,7 +135,7 @@ $fakeApply = {
                     evidence = [pscustomobject]@{ removed_ids = @(1..30 | ForEach-Object { 8000 + $_ }); cascaded_ids = @(); cascade_measured_in_rehearsal = @(); foreign_copies_kept = 0 } }) $false '') }
             }
             if ($arguments.operation -eq 'ceiling') { return @{ stage = 'apply'; answer = (& $script:ceilingApply $arguments) } }
-            if ($arguments.spec.wall.stud.type_id -eq 409) {
+            if ($key -like '*-fr-struct') {
                 return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = $false
                     application = [pscustomobject]@{ state = 'verified_applied'; fully_applied = $true }; postconditions = [pscustomobject]@{ all_verified = $true }
                     evidence = [pscustomobject]@{ endpoint_read = $script:structReads; source_joins_undone = 3; sources = @([pscustomobject]@{ source_id = [long]@($arguments.element_ids)[0]
@@ -154,7 +162,7 @@ try {
     Check 'the second apply is already_applied' ($by[$n[2]].Outcome -eq 'pass')
     Check 'read and remove pass' (($by[$n[3]].Outcome -eq 'pass') -and ($by[$n[4]].Outcome -eq 'pass'))
     $applySent = $script:sent['t1-fr-apply']   # not $sent: that IS $script:sent here
-    Check 'the apply names the wall and the authored member type everywhere' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and ($applySent.spec.wall.stud.type_id -eq 6001) -and ($applySent.spec.wall.track.bottom_type_id -eq 6001))
+    Check 'the apply names the wall and the authored member type everywhere' (($applySent.operation -eq 'wall') -and ($applySent.element_ids[0] -eq 7002) -and ($applySent.spec.wall.stud.type_id -eq 6002) -and ($applySent.spec.wall.track.bottom_type_id -eq 6001))
     $hosted = @($script:sent.Values | Where-Object { $_.elements -and @($_.elements)[0].kind -eq 'family_instance' -and @($_.elements)[0].host_id -eq 7002 }).Count
     Check 'the door and the window are hosted on the staged wall' ($hosted -eq 2)
 
@@ -162,8 +170,8 @@ try {
     Check 'the ceiling apply passes with the hangers on the staged floor' (($by[$n[6]].Outcome -eq 'pass') -and ($by[$n[6]].Detail -match '3 hangers on floor 7005'))
     Check 'the ceiling with nothing above passes on no_support_above' (($by[$n[7]].Outcome -eq 'pass') -and ($by[$n[7]].Detail -match '^2 station'))
     $ceilSent = $script:sent['t1-fr-ceiling']
-    Check 'the ceiling apply names ceiling A and the authored member in every role' (($ceilSent.operation -eq 'ceiling') -and ($ceilSent.element_ids[0] -eq 7006) -and
-        (@('main', 'cross', 'perimeter', 'hanger' | Where-Object { $ceilSent.spec.ceiling.$_.type_id -ne 6001 }).Count -eq 0))
+    Check 'the ceiling apply names ceiling A, the line-based member for mains/cross/perimeter and the stud column for hangers' (($ceilSent.operation -eq 'ceiling') -and ($ceilSent.element_ids[0] -eq 7006) -and
+        (@('main', 'cross', 'perimeter' | Where-Object { $ceilSent.spec.ceiling.$_.type_id -ne 6001 }).Count -eq 0) -and ($ceilSent.spec.ceiling.hanger.type_id -eq 6002))
     function Box($item) {
         $pts = @(@($item.profile)[0]); $xs = @($pts | ForEach-Object { $_[0] }); $ys = @($pts | ForEach-Object { $_[1] })
         @{ x0 = ($xs | Measure-Object -Minimum).Minimum; x1 = ($xs | Measure-Object -Maximum).Maximum; y0 = ($ys | Measure-Object -Minimum).Minimum; y1 = ($ys | Measure-Object -Maximum).Maximum; z = $pts[0][2] }
@@ -171,21 +179,21 @@ try {
     $fl = Box $script:sent['t1-fr-floor'].elements[0]; $ca = Box $script:sent['t1-fr-ceiling-a'].elements[0]; $cb = Box $script:sent['t1-fr-ceiling-b'].elements[0]
     Check 'the floor covers ceiling A from above and misses ceiling B' (($fl.z -gt $ca.z) -and ($fl.x0 -le $ca.x0) -and ($fl.x1 -ge $ca.x1) -and ($fl.y0 -le $ca.y0) -and ($fl.y1 -ge $ca.y1) -and ($cb.x0 -gt $fl.x1) -and ($ca.z -eq $cb.z))
     Check 'the compound ceiling type is preferred' (($script:sent['t1-fr-ceiling-a'].elements[0].type_id -eq 406) -and ($script:sent['t1-fr-ceiling-b'].elements[0].type_id -eq 406))
-    Check 'cleanup removes the ceiling framing first, then the seven staged elements' (($by[$n[8]].Outcome -eq 'pass') -and ($script:deleted.Count -eq 7) -and
+    Check 'cleanup removes the ceiling framing first, then the eight staged elements (the 45-degree wall included)' (($by[$n[8]].Outcome -eq 'pass') -and ($script:deleted.Count -eq 8) -and
         (@($script:removeTargets) -contains 7006) -and ($by[$n[8]].Detail -match '^ceiling framing removed'))
-    Check 'without structural types the structural case is not_covered, naming both categories' (($by[$n[9]].Outcome -eq 'not_covered') -and ($by[$n[9]].Detail -match 'structural framing type') -and ($by[$n[9]].Detail -match 'structural column type'))
+    Check 'without structural types in the document the structural case stages its own column and beam and passes' (($by[$n[9]].Outcome -eq 'pass') -and ($by[$n[9]].Detail -match '6002/6003'))
 
     # ---- structural types present: column studs and beam tracks on the 45-degree wall ----
     New-State; $script:structuralTypes = $true
     $structBy = RunBy ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $fakeData 'scratch'); RunId = 't1s'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply })
     $diagSent = $script:sent['t1s-fr-diag-wall'].elements[0]; $structSent = $script:sent['t1s-fr-struct']
-    Check 'the structural case passes on column_constraints and location_curve re-reads' (($structBy[$n[9]].Outcome -eq 'pass') -and ($structBy[$n[9]].Detail -match 'column_constraints'))
+    Check 'the structural case passes on its re-reads' (($structBy[$n[9]].Outcome -eq 'pass') -and ($structBy[$n[9]].Detail -match 'location_curve'))
     Check 'the structural wall runs at 45 degrees and is framed with the column and beam types' (([math]::Abs(($diagSent.end[0] - $diagSent.start[0]) - ($diagSent.end[1] - $diagSent.start[1])) -lt 0.1) -and
-        ($structSent.spec.wall.stud.type_id -eq 409) -and ($structSent.spec.wall.track.bottom_type_id -eq 408))
+        ($structSent.spec.wall.stud.type_id -eq 6002) -and ($structSent.spec.wall.track.bottom_type_id -eq 408))
     Check 'the structural framing is removed and its wall deleted at cleanup' ((@($script:removeTargets) -contains [long]$structSent.element_ids[0]) -and ($script:deleted.Count -eq 8) -and ($structBy[$n[8]].Outcome -eq 'pass'))
-    New-State; $script:structReads = @('location_curve')
+    New-State; $script:structReads = @('column_constraints')
     $noColBy = RunBy ([pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $fakeData 'scratch'); RunId = 't1t'; WriteGate = $false; Call = $fakeCall; Apply = $fakeApply })
-    Check 'a structural apply whose studs were not read as columns fails' (($noColBy[$n[9]].Outcome -eq 'fail') -and ($noColBy[$n[9]].Detail -match 'column constraints'))
+    Check 'a structural apply whose tracks were not read from a location curve fails' (($noColBy[$n[9]].Outcome -eq 'fail') -and ($noColBy[$n[9]].Detail -match 'location curve'))
     $script:structuralTypes = $false; $script:structReads = @('column_constraints', 'location_curve')
 
     # ---- a stud through an opening is a fail, not a pass ----

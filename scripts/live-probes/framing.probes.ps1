@@ -64,9 +64,27 @@ $script:HzProbeModules += [pscustomobject]@{
 
         # ---- staging: own level, own compound wall with a door and a window, own member family ----
         $E = 98000.0; $X = 860000.0; $Y = 0.0
-        $wallType = Types 'OST_Walls' | Where-Object { [string]$_.family -match '(?i)basic|b.sico' } | Select-Object -First 1
-        $doorType = Types 'OST_Doors' | Select-Object -First 1
-        $windowType = Types 'OST_Windows' | Select-Object -First 1
+        # A wall whose core is a stud layer, by name from the year's template when the fixture
+        # lacks it; else the fixture's first Basic wall.
+        $wallType = $null
+        # STAGED BY NAME, NEVER "THE FIRST ONE": an MEP fixture carries no door or window
+        # (MEASURED 2026-09-26 on HZ_WRITE: door and window came back empty), so the year's own
+        # Autodesk template supplies them through the typed copy, as wallsplit-hosted does.
+        $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
+        function Bring($category, $typeName, $familyName, $key, $templates) {
+            $have = @(Types $category | Where-Object { [string]$_.type -eq $typeName -and [string]$_.family -eq $familyName }) | Select-Object -First 1
+            if ($have) { return $have }
+            $tpl = @($templates | ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }) | Select-Object -First 1
+            if (-not $tpl) { return $null }
+            $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl.Replace([char]92, '/'); category = $category
+                    type_names = @($familyName + ': ' + $typeName); duplicate_types = 'use_destination' } ($run + '-fr-' + $key)
+            return @(Types $category | Where-Object { [string]$_.type -eq $typeName -and [string]$_.family -eq $familyName }) | Select-Object -First 1
+        }
+        $archTemplates = @('English\DefaultMetric.rte', 'English\Default-Multi-Discipline_Metric.rte')
+        $wallType = Bring 'OST_Walls' 'Exterior - Brick on Mtl. Stud' 'Basic Wall' 'walltype' $archTemplates
+        if (-not $wallType) { $wallType = Types 'OST_Walls' | Where-Object { [string]$_.family -match '(?i)basic|b.sico' } | Select-Object -First 1 }
+        $doorType = Bring 'OST_Doors' '0915 x 2134mm' 'M_Single-Flush' 'doortype' $archTemplates
+        $windowType = Bring 'OST_Windows' '0915 x 1220mm' 'M_Fixed' 'wintype' $archTemplates
         $member = $null
         $rftRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Ctx.Year)
         $rft = $null
@@ -83,6 +101,25 @@ $script:HzProbeModules += [pscustomobject]@{
                 if ($fam.answer.data.loaded_family.family_id) { [void]$created.Add([long]$fam.answer.data.loaded_family.family_id) }   # the authored family goes at cleanup too
             }
         }
+        # VERTICAL MEMBERS ARE STRUCTURAL COLUMNS (MEASURED 2026-09-26: Revit refuses to stand a
+        # line-based family on a created plane, so the tool refuses a vertical line-based member).
+        # A 41.3 x 92.1 mm column is authored on the year's structural-column template: the
+        # Autodesk concrete column (300 x 450) does not fit inside a stud layer (inside_layer
+        # failed by 148.8 mm, measured the same day).
+        $studColumn = $null
+        $colRft = if (Test-Path -LiteralPath $rftRoot) { @(Get-ChildItem -LiteralPath $rftRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue) |
+                  Where-Object { $_.BaseName -match '(?i)^metric structural column$' } | Sort-Object FullName | Select-Object -First 1 } else { $null }
+        if ($colRft) {
+            $cfam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $colRft.FullName
+                    output_path = (Join-Path $Ctx.ScratchRoot ('HZ_STUDCOL_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa'))
+                    units = 'mm'; overwrite = $true; load_into_project = $true; types = @(@{ name = 'HZ_STUDCOL_92'; values = @{} })
+                    forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 1000
+                                 profile = @(, @(@(-20.65, -46.05, 0), @(20.65, -46.05, 0), @(20.65, 46.05, 0), @(-20.65, 46.05, 0))) }) } ($run + '-fr-studcol')
+            if ($cfam.stage -eq 'apply' -and -not $cfam.answer.isError -and $cfam.answer.data.loaded_family) {
+                $studColumn = [long]@($cfam.answer.data.loaded_family.symbol_ids)[0]
+                if ($cfam.answer.data.loaded_family.family_id) { [void]$created.Add([long]$cfam.answer.data.loaded_family.family_id) }
+            }
+        }
         $level = Create @(@{ kind = 'level'; name = "HZ_FR_$run"; elevation = $E }) 'level'
         $wall = $null; $door = $null; $window = $null
         if ($level -and $wallType) { $wall = Create @(@{ kind = 'wall'; start = @($X, $Y, $E); end = @(($X + 6000), $Y, $E); level_id = $level; type_id = $wallType.element_id; height = 3000 }) 'wall' }
@@ -90,13 +127,13 @@ $script:HzProbeModules += [pscustomobject]@{
         if ($wall -and $windowType) { $window = Create @(@{ kind = 'family_instance'; type_id = $windowType.element_id; host_id = $wall; point = @(($X + 4200), $Y, ($E + 900)); coordinate_mode = 'absolute'; level_id = $level }) 'window' }
 
         $spec = @{ wall = @{ layer = 'core'
-            stud = @{ type_id = $member; spacing_mm = 406.4; start = 'wall_start'; double_at_ends = $false; width_mm = 41.3 }
+            stud = @{ type_id = $studColumn; spacing_mm = 406.4; start = 'wall_start'; double_at_ends = $false; width_mm = 41.3 }
             track = @{ bottom_type_id = $member; top_same_as_bottom = $true; thickness_mm = 0.9 }
             openings = @{ king_studs = 1; jack_studs = $true; header_type_id = $member; sill_type_id = $member; cripple_spacing_mm = 406.4
                           header_depth_mm = 40; sill_depth_mm = 40 } } }
         $wallArgs = @{ operation = 'wall'; target_document = $doc; element_ids = @($wall); spec = $spec }
-        $ready = $wall -and $door -and $window -and $member
-        $why = "staging incomplete: wall $wall, door $door, window $window, member type $member (template found: $([bool]$rft))"
+        $ready = $wall -and $door -and $window -and $member -and $studColumn
+        $why = "staging incomplete: wall $wall, door $door, window $window, member type $member, stud column $studColumn (templates found: $([bool]$rft)/$([bool]$colRft))"
 
         # ==== 1: rehearsal ===============================================================
         $planned = 0
@@ -178,13 +215,13 @@ $script:HzProbeModules += [pscustomobject]@{
             main = @{ type_id = $member; spacing_mm = 1200; direction = 'short'; depth_mm = 38 }
             cross = @{ type_id = $member; spacing_mm = 400; depth_mm = 22 }
             perimeter = @{ type_id = $member; depth_mm = 22 }
-            hanger = @{ type_id = $member; spacing_mm = 1200; max_length_mm = 3000 }
+            hanger = @{ type_id = $studColumn; spacing_mm = 1200; max_length_mm = 3000 }
             drop_mm = 22 } }
         function CeilingArgs($id) { @{ operation = 'ceiling'; target_document = $doc; element_ids = @($id); spec = $ceilingSpec } }
         function Roles($counts) { ($counts.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ',' }
         $cWhy = "staging incomplete: floor $floor, ceiling $ceilingA, member type $member (floor type found: $([bool]$floorType))"
         $cPlanned = 0; $hangers = 0; $cCommitted = $false
-        if (-not ($floor -and $ceilingA -and $member)) { Case $catalog[5] $T 'not_covered' $cWhy; Case $catalog[6] $T 'not_covered' $cWhy }
+        if (-not ($floor -and $ceilingA -and $member -and $studColumn)) { Case $catalog[5] $T 'not_covered' $cWhy; Case $catalog[6] $T 'not_covered' $cWhy }
         else {
             $cd = & $Ctx.Call $T ((CeilingArgs $ceilingA) + @{ dry_run = $true })
             $cs = $null
@@ -231,7 +268,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 }
             }
         }
-        if (-not ($ceilingB -and $member)) { Case $catalog[7] $T 'not_covered' "staging incomplete: ceiling $ceilingB, member type $member" }
+        if (-not ($ceilingB -and $member -and $studColumn)) { Case $catalog[7] $T 'not_covered' "staging incomplete: ceiling $ceilingB, member type $member" }
         else {
             $nd = & $Ctx.Call $T ((CeilingArgs $ceilingB) + @{ dry_run = $true })
             $ns = $null
@@ -248,17 +285,36 @@ $script:HzProbeModules += [pscustomobject]@{
         # Generic Model cases never exercise. The tool re-reads each column from its base and
         # top constraints and each beam from its curve; the 45-degree wall means an axis or a
         # section read in the wrong frame cannot pass by accident.
-        $beamType = Types 'OST_StructuralFraming' | Where-Object { [string]$_.family -match '(?i)HSS' } | Select-Object -First 1
-        if (-not $beamType) { $beamType = Types 'OST_StructuralFraming' | Select-Object -First 1 }
-        $columnType = Types 'OST_StructuralColumns' | Where-Object { [string]$_.family -match '(?i)rectangular' } | Select-Object -First 1
-        if (-not $columnType) { $columnType = Types 'OST_StructuralColumns' | Select-Object -First 1 }
+        # STAGED, NEVER ASSUMED (MEASURED 2026-09-26: HZ_WRITE carries neither category). The
+        # studs are the probe's own 41.3 x 92.1 column (placed on a vertical line, so its height
+        # is the line's); the beam family is authored from the year's own structural-framing
+        # template, as verify-live's write tier does.
+        $columnType = if ($studColumn) { [pscustomobject]@{ element_id = $studColumn; family = 'HZ_STUDCOL' } } else { $null }
+        $beamType = Types 'OST_StructuralFraming' | Where-Object { [string]$_.family -match '(?i)HSS|HZ_FRB' } | Select-Object -First 1
+        if (-not $beamType -and (Test-Path -LiteralPath $rftRoot)) {
+            $beamRft = @(Get-ChildItem -LiteralPath $rftRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue) |
+                       Where-Object { $_.BaseName -match '(?i)structural framing.*beam' } | Sort-Object FullName | Select-Object -First 1
+            if ($beamRft) {
+                $bfam = & $Ctx.Apply 'horizun_create_family' @{ target_document = $doc; template_path = $beamRft.FullName
+                        output_path = (Join-Path $Ctx.ScratchRoot ('HZ_FRB_' + (([string]$run) -replace '[^A-Za-z0-9]', '') + '.rfa'))
+                        units = 'mm'; overwrite = $true; load_into_project = $true; types = @(@{ name = 'HZ_FRB' }) } ($run + '-fr-beamfam')
+                if ($bfam.stage -eq 'apply' -and -not $bfam.answer.isError -and $bfam.answer.data.loaded_family) {
+                    $beamType = [pscustomobject]@{ element_id = [long]@($bfam.answer.data.loaded_family.symbol_ids)[0]; family = 'HZ_FRB' }
+                    if ($bfam.answer.data.loaded_family.family_id) { [void]$created.Add([long]$bfam.answer.data.loaded_family.family_id) }
+                }
+            }
+        }
         $diag = $null; $structFramed = $false
-        if ($level -and $wallType -and $beamType -and $columnType) { $diag = Create @(@{ kind = 'wall'; start = @($X, ($Y - 60000), $E); end = @(($X + 4242.6), ($Y - 60000 + 4242.6), $E); level_id = $level; type_id = $wallType.element_id; height = 3000 }) 'diag-wall' }
+        # A layer wide enough for the authored beam: its template section is 203.2 mm wide and the
+        # stud wall's layer 152.4 mm (inside_layer failed by 25.4 mm, MEASURED 2026-09-26).
+        $diagType = Bring 'OST_Walls' 'Generic - 300mm' 'Basic Wall' 'diagtype' $archTemplates
+        if (-not $diagType) { $diagType = $wallType }
+        if ($level -and $diagType -and $beamType -and $columnType) { $diag = Create @(@{ kind = 'wall'; start = @($X, ($Y - 60000), $E); end = @(($X + 4242.6), ($Y - 60000 + 4242.6), $E); level_id = $level; type_id = $diagType.element_id; height = 3000 }) 'diag-wall' }
         if (-not $diag) { Case $catalog[9] $T 'not_covered' "staging incomplete: structural framing type '$($beamType.element_id)', structural column type '$($columnType.element_id)', 45-degree wall '$diag' (the document must carry both categories' types)" }
         else {
             $sArgs = @{ operation = 'wall'; target_document = $doc; element_ids = @($diag); spec = @{ wall = @{
-                stud = @{ type_id = [long]$columnType.element_id; spacing_mm = 1200; start = 'wall_start'; double_at_ends = $false }
-                track = @{ bottom_type_id = [long]$beamType.element_id; top_same_as_bottom = $true } } } }
+                stud = @{ type_id = [long]$columnType.element_id; spacing_mm = 1200; start = 'wall_start'; double_at_ends = $false; width_mm = 41.3 }
+                track = @{ bottom_type_id = [long]$beamType.element_id; top_same_as_bottom = $true; thickness_mm = 0.9 } } } }
             $sa = & $Ctx.Apply $T $sArgs ($run + '-fr-struct')
             $structFramed = ($sa.stage -eq 'apply' -and -not $sa.answer.isError)
             $sev = $null; $reads = @()
@@ -268,8 +324,11 @@ $script:HzProbeModules += [pscustomobject]@{
             else {
                 if ([string]$sa.answer.data.application.state -ne 'verified_applied') { $problems += "application.state '$($sa.answer.data.application.state)', expected verified_applied" }
                 if ([double]$sev.max_endpoint_deviation_mm -gt 1.0) { $problems += "endpoint deviation $($sev.max_endpoint_deviation_mm) mm" }
-                if ($reads -notcontains 'column_constraints') { $problems += 'no stud was re-read from its column constraints' }
-                if ($reads -notcontains 'location_curve') { $problems += 'no track was re-read from its location curve' }
+                # A column placed on a vertical LINE reports a location curve, its real axis, not a
+                # point with base/top constraints (MEASURED 2026-09-26, Revit 2026): both reads are
+                # accepted for studs; what must exist is a read, and all_verified judged it.
+                if ($reads.Count -eq 0) { $problems += 'no member was re-read' }
+                if ($reads -notcontains 'location_curve' -and $reads -notcontains 'location_curve_plus_level_offset') { $problems += 'no track was re-read from its location curve' }
             }
             if ($problems.Count -gt 0) { Case $catalog[9] $T 'fail' ($problems -join '; ') }
             else { Case $catalog[9] $T 'pass' ("$($sev.found) members re-read on a 45-degree wall with types $($columnType.element_id)/$($beamType.element_id), max endpoint deviation $($sev.max_endpoint_deviation_mm) mm, read by " + ($reads -join ',') + '; section_along_wall and beam_settings inside all_verified') }
@@ -295,7 +354,7 @@ $script:HzProbeModules += [pscustomobject]@{
         else {
             $delOk = $true
             if ($ids.Count -gt 0) {
-                $del = & $Ctx.Apply $DeleteTool @{ target_document = $doc; ids = $ids } ($run + '-fr-cleanup')
+                $del = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; ids = $ids } ($run + '-fr-cleanup')
                 $delOk = ($del.stage -eq 'apply' -and -not $del.answer.isError)
                 if ($delOk) { $notes += "$($ids.Count) staged element(s) deleted" } else { $notes += 'cleanup: ' + (Short $del.answer) }
             }
