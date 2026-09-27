@@ -40,7 +40,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public class QuantitiesCommand : ICommand
+    public partial class QuantitiesCommand : ICommand
     {
         public string Name => "horizun_quantities";
 
@@ -93,13 +93,15 @@ namespace Horizun.Revit.Commands
             string mode = request.Value<string>("mode");
             if (string.IsNullOrWhiteSpace(mode)) mode = "volume";
             if (mode == "takeoff") return ExecuteTakeoff(doc, request, detail, top);
+            if (mode == "room_finishes") return ExecuteRoomFinishes(doc, request, top);
+            if (mode == "carbon") return ExecuteCarbon(doc, request, top);
             if (mode != "volume")
-                return CommandResult.Fail("mode must be 'volume' (the three-source reconciliation, the default) or 'takeoff'. Nothing was measured.");
-            foreach (string takeoffOnly in new[] { "quantities", "classification_parameter", "include_links" })
+                return CommandResult.Fail("mode must be 'volume' (the three-source reconciliation, the default), 'takeoff', 'room_finishes' or 'carbon'. Nothing was measured.");
+            foreach (string takeoffOnly in new[] { "quantities", "classification_parameter", "include_links", "phase", "level", "carbon_factors", "factor_source" })
                 if (request[takeoffOnly] != null)
-                    return CommandResult.Fail("'" + takeoffOnly + "' is only read in mode 'takeoff'; in mode 'volume' it would be " +
+                    return CommandResult.Fail("'" + takeoffOnly + "' is not read in mode 'volume': it would be " +
                                               "silently ignored, and you would read the volume reconciliation as though your " +
-                                              "quantities had been measured. Pass mode: 'takeoff', or drop the key. Nothing was measured.");
+                                              "quantities had been measured. Pass the mode that reads it (takeoff, room_finishes, carbon), or drop the key. Nothing was measured.");
 
             // ---- Resolve the element set. ----
             var elements = new List<Element>();
