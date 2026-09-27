@@ -12,8 +12,9 @@
 //
 // THE LAYERS. Document.Create.NewFootPrintRoof over the sketch curves moved down to the
 // level, every footprint edge DefinesSlope = false, ROOF_LEVEL_OFFSET_PARAM = plane -
-// level, and CURTAINGRID_ANGLE_1 = angle_deg when given (a roof that exposes no
-// settable grid 1 angle refuses by name: the hangers are planned parallel to it).
+// level, and CURTAINGRID_ANGLE_1 = angle_deg when given (probed while planning, in a
+// rolled-back transaction: a type whose roofs cannot take it refuses by name for layer 0
+// with hangers - they are planned parallel to it - and skips the angle, named, elsewhere).
 // Openings the ceiling hosts, and shafts, are NOT cut from the layers (the footprint is
 // the ceiling's own sketch); the plan says so and the hanger lines avoid them.
 //
@@ -120,6 +121,7 @@ namespace Horizun.Revit.Commands
             if (plans.Count == 0)
                 throw new ArgumentException("view " + request.Value<long?>("view_id") + " shows no ceiling this operation can frame (" + skipped.Count +
                                             " skipped: " + string.Join("; ", skipped.Take(5)) + ").");
+            ProbeLayerAngles(doc, plans, spec);
             CastCurtainHangers(doc, plans, spec.HangerMaxLengthMm);
             int total = 0;
             foreach (FramingSourcePlan p in plans)
@@ -130,6 +132,50 @@ namespace Horizun.Revit.Commands
                 ClaimExisting(doc, p);
             }
             return plans;
+        }
+
+        /// <summary>
+        /// Whether a roof of each angled layer's type takes its grid 1 angle, found in a rolled-back
+        /// transaction on the first ceiling so the rehearsal knows before a token exists. Layer 0 with
+        /// hangers refuses by name (the hangers run parallel to its grid); any other layer skips its
+        /// angle - named in the plan's warnings, bound by the token (Y0 = -1), read as angle_skipped.
+        /// </summary>
+        private static void ProbeLayerAngles(Document doc, List<FramingSourcePlan> plans, CurtainCeilingFramingSpec spec)
+        {
+            if (!spec.Layers.Any(l => l.AngleDeg.HasValue)) return;
+            FramingSourcePlan first = plans[0];
+            var unsettable = new List<int>();
+            using (var tx = new Transaction(doc, "Horizun: framing layer angle probe (rolled back)"))
+            {
+                if (tx.Start() != TransactionStatus.Started) throw new ArgumentException("the layers' grid 1 angle could not be probed (no transaction could start).");
+                try
+                {
+                    for (int i = 0; i < spec.Layers.Count; i++)
+                    {
+                        if (!spec.Layers[i].AngleDeg.HasValue) continue;
+                        FramingMember m = first.Members[i];
+                        // Placed without its angle (PlaceLayerRoof would refuse), then the angle is tried.
+                        FootPrintRoof roof = PlaceLayerRoof(doc, first.CurtainCeiling, first.Ceiling.Level, new FramingMember { Role = m.Role, TypeKey = m.TypeKey, Source = m.Source, Z0 = m.Z0, Z1 = m.Z1 }, i);
+                        Parameter angle = roof.get_Parameter(BuiltInParameter.CURTAINGRID_ANGLE_1);
+                        if (angle == null || angle.IsReadOnly || angle.StorageType != StorageType.Double || !angle.Set(spec.Layers[i].AngleDeg.Value * Math.PI / 180)) unsettable.Add(i);
+                    }
+                }
+                catch (Exception ex) when (ex is InvalidOperationException || ex is Autodesk.Revit.Exceptions.ApplicationException)
+                { throw new ArgumentException("probing the layers in a rolled-back transaction: " + ex.Message, ex); }
+                finally { if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack(); }
+            }
+            foreach (int i in unsettable)
+            {
+                string why = "layer " + i + " (type " + spec.Layers[i].TypeId + "): a roof of this type takes no grid 1 angle (CURTAINGRID_ANGLE_1 absent, read-only or refused)";
+                if (i == 0 && spec.HangerTypeId.HasValue)
+                    throw new ArgumentException(why + "; the hanger lines run parallel to layer 0's grid, so its angle must be settable - use a type whose grid 1 layout is not None, or leave the hangers out.");
+                foreach (FramingSourcePlan p in plans)
+                {
+                    FramingMember m = p.Members[i];
+                    p.Members[i] = new FramingMember { Role = m.Role, TypeKey = m.TypeKey, Source = m.Source, X0 = 0, Y0 = -1, Z0 = m.Z0, Z1 = m.Z1 };
+                    p.Warnings.Add(why + ": angle_deg " + spec.Layers[i].AngleDeg.Value.ToString(CultureInfo.InvariantCulture) + " is skipped and the grid keeps the type's own orientation");
+                }
+            }
         }
 
         /// <summary>Each hanger line's rods to the structure above; lines with no level support leave the plan, named.</summary>
@@ -467,7 +513,7 @@ namespace Horizun.Revit.Commands
                     ["layers"] = new JArray(indexed.Where(x => x.m.Role == CurtainFramingRoles.Layer).Select(x => new JObject
                     {
                         ["i"] = x.i, ["type_id"] = long.Parse(x.m.TypeKey, CultureInfo.InvariantCulture), ["plane_mm"] = x.m.Z0,
-                        ["angle_deg"] = x.m.Y0 > 0.5 ? (JToken)x.m.X0 : null
+                        ["angle_deg"] = x.m.Y0 > 0.5 ? (JToken)x.m.X0 : null, ["angle_skipped"] = x.m.Y0 < -0.5 ? (JToken)true : null
                     })),
                     ["hanger_base_mm"] = hangers ? (JToken)st.HangerBaseMm : null,
                     ["hanger_direction_deg"] = hangers ? (JToken)Math.Round(st.HangerAngleRad * 180 / Math.PI, 3) : null,
