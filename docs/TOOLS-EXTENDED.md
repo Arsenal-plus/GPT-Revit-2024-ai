@@ -2149,3 +2149,45 @@ Volume, area and mass per material, multiplied by **your** factor table. Nothing
   `horizun_power_bi_push`. `kgco2e` sums **only** counted readings; `materials_without_factor`,
   `materials_without_density`, `unreadable_volumes` and `elements_without_materials` name the rest.
   Host document only; linked models are not read.
+
+### Room membership: `horizun_query_model` include_room and takeoff group_by='room'
+
+`horizun_query_model` with `include_room: true, phase: "<name>"` adds `room` to every row
+(`state` assigned | unassigned | unlocatable, `room` and `space` as `{id, number, name, level}`,
+the sampling `basis` and the `sample_point` in the query's coordinate units) and a
+`room_membership` block with the counts. `horizun_quantities` mode `takeoff` with
+`group_by: "room", phase: "<name>"` adds `room` to every row and a `by_room` rollup beside
+`by_code`, keyed by room id, with the keys `(unassigned)` and `(unlocatable)` for the rest.
+Both refuse `phase` without the option that reads it, and query_model refuses include_room
+with `group_by` or `response_mode: "summary"` (there are no rows to carry it).
+
+The two rules, written:
+
+1. **The phase is mandatory.** Rooms and spaces exist per phase. There is no default: the
+   last phase would silently answer for a different building. It is the HOST's phase.
+2. **A linked element is placed in the HOST's rooms.** Its sample point goes through its
+   own `RevitLinkInstance.GetTotalTransform()` and the host answers
+   `Document.GetRoomAtPoint(point, phase)` / `GetSpaceAtPoint(point, phase)`. Whether the
+   link is room-bounding does not change that query; it only shapes the host's rooms (a
+   host room that needs the link's walls to close is not enclosed without them and holds
+   nothing, so those elements come back unassigned). Rooms INSIDE a linked model are not
+   read.
+
+Sampling, one point per element:
+
+| Element | Sample | Why |
+|---|---|---|
+| point-based (LocationPoint) | the point, lifted 1 mm | an element standing on its level is not lost on the room's bottom boundary |
+| curve-based (LocationCurve) | the curve's midpoint | |
+| wall | its largest solid's centroid, used only when a vertical line through it proves it lies inside the wall | a curved wall's centroid can fall outside it, into the room it bounds; that wall is unlocatable, not guessed |
+| floor | a point ON its top face (one triangle's centroid), lifted 1 mm | a floor's body sits below the room it carries |
+
+Consequences, by design: a room-bounding wall's centroid lies outside every room computed
+at the wall finish, so **a wall that separates rooms is unassigned** (it belongs to none).
+`room_membership.room_boundary_location` reports the document's room computation; when it
+is not `Finish`, a `boundary_warning` says that a bounding wall's centroid can sit ON a
+room boundary. Doors and windows sit inside their host wall, so their location point is
+unassigned too; their sides are read with From/To room by `room_finishes`. An element with
+no sample (a curtain wall, a ceiling, an element without location) is `unlocatable`, never
+counted as unassigned. A floor whose top face lies below its room's base (a structural slab
+under a finish floor) is unassigned.

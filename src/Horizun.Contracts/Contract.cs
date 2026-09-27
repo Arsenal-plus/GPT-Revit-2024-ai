@@ -1308,6 +1308,8 @@ namespace Horizun.Contracts
       ""default"": false,
       ""description"": ""Attach the CAD provenance record an element carries (v1, v2 or v3), as stored: drawing, rules, placement, as-built geometry and - from v3 - the reading and the drawing entities it used. Null when the element carries none.""
     },
+    ""include_room"": { ""type"": ""boolean"", ""description"": ""Room/space of each row in phase (required); misses are unassigned. Rules: TOOLS-EXTENDED."" },
+    ""phase"": { ""type"": ""string"", ""description"": ""include_room: the phase name (no default)."" },
     ""include_orientation"": {
       ""type"": ""boolean"",
       ""default"": false,
@@ -4673,7 +4675,8 @@ namespace Horizun.Contracts
     ""code_parameter"": { ""type"": ""string"", ""description"": ""Parameter carrying each element's budget/classification code (instance first, then type). Supplied per call - no organisation's parameter is compiled in. Adds 'code' per row and a by_code rollup whose sums state how many elements they cover."" },
     ""only_disagreements"": { ""type"": ""boolean"", ""default"": false,
                               ""description"": ""List only the elements whose sources disagree. Totals still cover everything."" },
-    ""phase"": { ""type"": ""string"", ""description"": ""room_finishes (required): the phase name. No default: rooms and door sides are per phase."" },
+    ""phase"": { ""type"": ""string"", ""description"": ""room_finishes, group_by=room (required): the phase name. No default: rooms and door sides are per phase."" },
+    ""group_by"": { ""enum"": [""room""], ""description"": ""takeoff: add a by_room rollup in phase; misses are (unassigned)."" },
     ""level"": { ""type"": ""string"", ""description"": ""room_finishes: only rooms/spaces on this level (name)."" },
     ""carbon_factors"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""object"", ""required"": [""factor"", ""per""],
       ""properties"": { ""material"": { ""type"": ""string"" }, ""material_class"": { ""type"": ""string"" }, ""factor"": { ""type"": ""number"" }, ""per"": { ""enum"": [""m3"", ""kg""] } } },
