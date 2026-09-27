@@ -2090,3 +2090,167 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+## Sketch edits (`edit_sketch`) and the FIEBDC-3 budget export (`export_bc3`)
+
+### `horizun_transform_elements` operation=`edit_sketch`
+
+Changes the boundary of ONE Floor, Ceiling or Opening **without recreating it**. The edit
+happens inside the element's own `SketchEditScope`, so the element keeps its ElementId and
+its UniqueId, and everything that refers to it - hosted instances, tags, schedules,
+parameter values - stays attached, where delete-and-recreate would orphan all of it.
+
+Two modes, one per call. The operation is sent **alone** (like `realign_wall_sketch`): a
+`SketchEditScope` cannot nest inside the single transaction the other operations share.
+
+- **Replace a loop**: `loop` (the new points `[x,y,z]` in the request's `units`) and
+  `loop_index` (which loop it replaces; the dry run lists them in `loops_before_mm`). A
+  closing point that repeats the first is dropped. The new loop is checked before Revit
+  sees it: at least three vertices, no edge shorter than 1 mm, no two non-adjacent edges
+  that touch or cross, some enclosed area.
+- **Move a vertex**: `start` (the vertex as it is now, matched within 0.5 mm) and `end`
+  (where it goes). Both curves that meet at the vertex must be lines: moving the end of an
+  arc would redefine the arc, which is not guessed - replace the loop instead.
+
+```json
+{ "operations": [ { "operation": "edit_sketch", "element_ids": [412233], "loop_index": 0,
+    "loop": [[0,0,3000],[5000,0,3000],[5000,4000,3000],[0,4000,3000]] } ], "units": "mm" }
+
+{ "operations": [ { "operation": "edit_sketch", "element_ids": [412233],
+    "start": [0,4000,3000], "end": [1000,4000,3000] } ], "units": "mm" }
+```
+
+Points must lie **on the sketch plane** (within 1 mm). They are refused, never projected, so
+a wrong elevation is never silently flattened; the refusal names a point of the plane as
+`(x, y, z) mm` in invariant-culture numbers, so a caller can re-send on it.
+
+`dry_run` (the default) is a **real rehearsal**: the edit is made inside the scope, Revit
+validates the whole sketch, and the scope is Cancelled. The plan reports `mode`,
+`loop_index`, `vertex_index`, `loops_before_mm` and `loops_expected_mm` (sketch-plane
+`(u, v)` in mm from the plane origin), `sketch_area_before_m2`, `expected_area_m2`,
+`area_parameter_before_m2`, `area_check` (`will_verify` | `not_applicable`) and
+`rehearsal_ok` / `rehearsal_error`. The confirmation token binds the element, the edit and
+the units; none is usable while the rehearsal fails.
+
+After the commit the model is re-read, and the row is `verified` only when:
+
+- the same id still carries the same UniqueId (`unique_id_kept`);
+- the committed sketch's loops match the expected loops (`loops_verified`; cyclic, either
+  direction, loop order free, 0.5 mm);
+- the element's Area parameter equals the area the new sketch encloses within
+  max(0.0005 m2, 0.1 %) (`area_check: verified`) - **but only where the Area equalled the
+  old sketch's own area before the edit**. A sloped or shape-edited floor, or one a shaft
+  or an opening cuts, reports an Area the sketch alone does not predict: there
+  `area_check` is `not_applicable`, named with `area_note`, never counted as a pass, and
+  the loops carry the verification.
+
+Refused by name: a **FootPrintRoof** (the public API exposes no `SketchId` on any roof in
+2023-2027; edit its footprint in Revit), a wall (`realign_wall_sketch` covers the
+stranded-profile case), anything else. A group member, a part or an element borrowed by
+somebody else answers `IsSketchEditingSupported = false` and is refused before anything
+changes. The edit is not recorded by `horizun_undo`; use Revit's own undo in the session.
+
+### `horizun_budget_compare` operation=`export_bc3`
+
+Host-resident: no Revit API, the server writes the file. It turns a `horizun_quantities`
+`mode='takeoff'` reply (`model_rows`, or `model_rows_path` to a saved reply) and **the
+caller's own APU table** into a FIEBDC-3 (`.bc3`) budget. The quantity per code is chosen by
+the same rules `operation=compare` uses (`mapping`: the code field, units, declared
+conversions only, partial coverage refused unless opted into), so an exported line and a
+compared line never disagree about what the model measured.
+
+```json
+{ "operation": "export_bc3", "model_rows_path": "C:\\work\\takeoff.json",
+  "mapping": {},
+  "apu": [ { "code": "E05.01", "unit": "m2", "unit_price": 100, "description": "Floor slab" },
+           { "code": "E07.02", "unit": "m",  "unit_price": 25.5 } ],
+  "bc3_path": "C:\\work\\budget.bc3" }
+```
+
+- `mapping`: the object `operation=compare` takes (`code_field`, `quantity_field`,
+  `unit_conversions`); `{}` keeps its defaults.
+- `apu`: `[{code, unit, unit_price, description?}]` - a finite price >= 0, one price per
+  code. Nothing is compiled in: prices are always the caller's.
+- `bc3_path`: absolute, ending in `.bc3`, in an existing folder; an existing file is never
+  overwritten. Writing a file needs a profile that allows external side effects.
+
+**All or nothing.** A takeoff code the APU does not price is refused - a price is never
+invented - and so is a code whose quantity could not be established (the comparison's
+reason is quoted). The refusal names every such code and nothing is written: a `.bc3`
+missing lines is a smaller budget wearing the project's name. APU codes the takeoff does not
+carry are listed in `apu_codes_unused`; elements without a classification code are counted
+in `not_exported.unclassified_elements`, never priced.
+
+What is written for a takeoff with one code (FIEBDC-3/2020, character set ANSI =
+windows-1252, CRLF line ends):
+
+```
+~V||FIEBDC-3/2020\26092026|Horizun Revit MCP||ANSI||2|
+~C|HZ_TAKEOFF##||Horizun takeoff|2000|26092026|0|
+~C|E05.01|m2|Floor slab|100|26092026|0|
+~D|HZ_TAKEOFF##|E05.01\1\20\|
+~M|HZ_TAKEOFF##\E05.01|1\|20|\id 1234\12\\\\\id 1301\8\\\\|
+```
+
+- `~C`: one concept per code (unit, APU description as the summary, unit price, date, type
+  0) plus the **root `HZ_TAKEOFF##`** - `##` is how FIEBDC marks the root concept, which is
+  why codes may carry neither `#` (reserved for chapters and the root) nor whitespace. The
+  root's price is the budget total.
+- `~D`: the root's decomposition - every code with factor 1 and its quantity as the yield.
+- `~M`: one measurement record per code, `<root>\<code>`, its position, its total, and one
+  line per **element**: `TYPE\COMMENT\UNITS\LENGTH\WIDTH\HEIGHT\` with the comment
+  `id <element id>` (or `link <instance> id <element id>` for a linked element) and the
+  element's quantity in the APU's unit as UNITS. The lines sum to the total, which equals
+  the `~D` yield.
+- **Precision**: every number is written rounded to 6 decimals with `.` as the decimal
+  separator (invariant culture). The root total is computed from the WRITTEN quantities and
+  prices, so the file's own arithmetic closes; the `~M` lines may differ from their total by
+  at most 1e-6 per line, which the verifier allows and names rather than hides.
+
+**Why some text is refused, not escaped.** FIEBDC-3 has no escape for its own separators:
+`~` starts a record, `|` a field, `\` a subfield - a description carrying one becomes extra
+records or fields in every reader. windows-1252 has no byte for most of Unicode (math
+symbols, CJK, emoji). Control characters are refused too: a line break inside a field
+splits the record for many readers. Rewriting any of these silently would produce a budget
+line nobody wrote, so the export refuses, naming the field and the character (`U+XXXX`),
+before a byte is written.
+
+**Verified from disk.** The bytes go to a temporary file beside the target, are READ BACK,
+decoded as windows-1252 and held to the budget: `~V` first (FIEBDC-3/2020, ANSI); every
+`~C` exactly once (unit, summary, price) and the root at the total; the `~D` yields equal
+the takeoff quantities with factor 1; one `~M` per code whose total equals the yield and
+the sum of its lines, one line per element with its comment and value. Only then is the
+file moved into place and its SHA-256 re-read against the verified bytes. The reply carries
+`verified`, `file_path`, `bytes`, `sha256`, `records` (`V`, `C`, `D`, `M` counts),
+`root_code`, `total_amount` and per code `lines[]` (`unit`, `unit_price`, `quantity`,
+`amount`, `elements`, `quantity_name`, `conversion_factor`, `coverage`).
+
+### Live probes
+
+`scripts/live-probes/sketch-edits.probes.ps1` stages its own level, floor, ceiling and
+footprint roof at X = 1,170,000 mm, types by name from the year's `DefaultMetric.rte`
+(names to be confirmed by the first live run). It rehearses a floor loop twice (the second
+rehearsal must still read the original boundary), replaces it (24 -> 20 m2), moves one
+corner (-2 m2), turns the ceiling into an L (12 -> 9 m2) and expects the roof refused by
+name. Each apply is held to the area the probe computed, to `unique_id_kept`, and to an
+independent `horizun_query_model` read of the same id. Everything staged is deleted with
+`horizun_delete_verified mode='ids'`. `export_bc3` needs no Revit: its writer, reader and
+verifier are covered by `tests/Horizun.Core.Tests/Bc3RulesTests.cs` and
+`tests/Horizun.Server.Tests/BudgetBc3ExportTests.cs`.
+
+### Resumen (español)
+
+`edit_sketch` cambia el contorno de UN suelo, techo o hueco sin recrearlo: se conserva el
+id, el UniqueId y todo lo alojado. Reemplaza un lazo (`loop` + `loop_index`) o mueve un
+vértice (`start` -> `end`, solo entre líneas), siempre solo en su llamada. Los puntos deben
+estar sobre el plano del sketch (1 mm): se rechazan, no se proyectan. El dry run edita de
+verdad y cancela el scope. Tras el commit se relee: mismo UniqueId, lazos iguales a lo
+pedido, y el área del elemento igual al área del nuevo sketch cuando antes coincidía; si
+no coincidía (pendiente, forma editada, un corte) el chequeo de área queda
+`not_applicable`, nombrado. Un FootPrintRoof se rechaza por nombre (no tiene SketchId).
+
+`export_bc3` escribe un FIEBDC-3/2020 ANSI desde el takeoff y la tabla APU del usuario: todo
+o nada (un código sin precio se rechaza, nunca se inventa), raíz `HZ_TAKEOFF##`, un `~M` por
+código con una línea por elemento, números a 6 decimales con punto. Los separadores
+`~ | \`, los caracteres de control y lo que windows-1252 no representa se rechazan en vez
+de escaparse. El archivo se verifica releyéndolo del disco antes de moverlo a su sitio.
