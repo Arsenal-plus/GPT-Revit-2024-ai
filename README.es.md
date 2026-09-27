@@ -458,7 +458,7 @@ herramientas MCP adicionales de primer nivel.
 
 Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
-registra **1586 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+registra **1589 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
 entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
 por lo que esa cifra no se utiliza como número de herramientas.
 
