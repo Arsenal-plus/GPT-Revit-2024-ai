@@ -115,7 +115,8 @@ namespace Horizun.Revit.Core
             Row("horizun_fix_planimetry", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "FixPlanimetryCommand.cs", C + "FixPlanimetryDisplay.cs")),
             Row("horizun_transform_elements", VerificationMechanism.PostconditionChecklist, E("operations_verified", "postconditions", "application"), F(C + "TransformElementsCommand.cs"),
                 "TransformElementsCommand.cs Verify: move/rotate/mirror/pin/change_type/set_curve/wall_join compare per element with booleans (guarded: an element that does not re-read fails, an empty target list never passes); only the tag and array operations carry a PostconditionCheck.",
-                "TransformElementsCommand.cs VerifyArray: a radial copy's position is checked, not whether its axes turned."),
+                "TransformElementsCommand.cs VerifyArray: a radial copy's position is checked, not whether its axes turned.",
+                "TransformElementsCommand.EditSketch.cs: edit_sketch re-reads the loops, the UniqueId and every hosted instance/opening/tag that depended on the element (rolled back if one is lost); the Area parameter is held to the new sketch only when it matched the old one, else named not_applicable."),
             Row("horizun_manage_curtain", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"), F(C + "ManageCurtainCommand.cs", C + "ModelEditRunner.cs"),
                 "ManageCurtainCommand.cs OnCurve: a mullion belongs to a grid line by geometry (within 1 mm); Revit keeps no link between them."),
             Row("horizun_slab_shape", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"), F(C + "SlabShapeCommand.cs", C + "ModelEditRunner.cs"),
@@ -256,7 +257,7 @@ namespace Horizun.Revit.Core
             Row("horizun_capture_view", VerificationMechanism.FileArtifactReread, E("sha256", "bytes"), F(C + "CaptureViewCommand.cs")),
             Row("horizun_verify_changes", VerificationMechanism.FileArtifactReread, E("image", "spatial_check", "baseline_png", "artifacts_verified"), F(C + "VerifyChangesCommand.cs", C + "VerifyChangesSnapshot.cs")),
             Row("horizun_excel_write_rows", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "ExcelWriteRows.cs")),
-            Row("horizun_budget_compare", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "BudgetCompare.cs")),
+            Row("horizun_budget_compare", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "BudgetCompare.cs", S + "BudgetBc3Export.cs")),
             Row("horizun_project_context", VerificationMechanism.FileArtifactReread, E("written", "verification"), F(S + "ProjectContext.cs")),
             Row("horizun_information_container", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "InformationContainerTool.cs")),
 

@@ -88,7 +88,9 @@
     <!-- The budget comparison and the rules it runs, so the Excel destination can be
          proved against a disposable workbook and the Power BI one in dry_run only. -->
     <Compile Include="..\..\src\Horizun.Server\BudgetCompare.cs" Link="BudgetCompare.cs" />
+    <Compile Include="..\..\src\Horizun.Server\BudgetBc3Export.cs" Link="BudgetBc3Export.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BudgetComparisonRules.cs" Link="BudgetComparisonRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Bc3Rules.cs" Link="Bc3Rules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\InformationContainer.cs" Link="InformationContainer.cs" />
     <Compile Include="..\..\src\Horizun.Server\InformationContainerTool.cs" Link="InformationContainerTool.cs" />
     <Compile Include="..\..\src\Horizun.Server\InformationContainerTool.Register.cs" Link="InformationContainerTool.Register.cs" />
