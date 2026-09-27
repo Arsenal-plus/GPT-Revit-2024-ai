@@ -2189,6 +2189,48 @@ eye -> target:
 - `key` aliases the FIRST view of a fan. `view_scale` is refused: a perspective has
   no drawing scale. `view_family_type_id` must be a 3D view type.
 
+## horizun_manage_views: `set_sun_study` (a view's sun: still, single-day, multi-day)
+
+`set_sun_study` writes the `SunAndShadowSettings` of an existing view (`view_id`, or
+`view_key` for a view created earlier in the batch):
+
+```json
+{ "operation": "set_sun_study", "view_id": 123456,
+  "sun": { "type": "single_day", "start": "2026-06-21T07:00:00-05:00",
+           "end": "2026-06-21T18:00:00-05:00" } }
+```
+
+- `sun.type`: `still` (one instant: `start`), `single_day` (start and end, at most
+  24 h apart) or `multi_day` (start and end). Revit's `Lighting` type is not offered.
+- **Instants carry their offset** (`Z` or `+hh:mm`). One without it is refused in the
+  rehearsal: Revit rejects an unspecified kind, and picking a time zone for the
+  caller would move the sun by hours. Each instant is sent as the UTC it names; Revit
+  shows it in the site's own time zone.
+- An `end` on a `still` sun is refused (Revit would store and ignore it). A study
+  clears `SunriseToSunset` when it is on, because Revit ignores the given times while
+  it is set; the row says so (`sunrise_to_sunset_cleared`).
+- **`sun.lat` / `sun.lon` (degrees, both or neither) move the PROJECT site**, not the
+  view: `SunAndShadowSettings.Latitude/Longitude` are read-only (MEASURED 2026-09-26 by
+  reflection over the 2023 RevitAPI.dll: `CanWrite=False`), so the only writable place
+  is the `SiteLocation` of the project location the settings use. Every view's sun
+  moves, and Revit re-derives the place name, time zone and weather station from the
+  coordinates. The rehearsal says so (`location_scope: "project_site"`,
+  `location_side_effects`).
+- **The rehearsal** (`plan[i].sun`) shows `requested` (type, `start_utc`, `end_utc`,
+  site degrees), `location_scope` and, for an existing view, `current` (the settings'
+  type, instants, `sunrise_to_sunset`, `shares_settings`, and the site's degrees, time
+  zone and place name). `shares_settings: true` means other views share these settings
+  and change with them. The token binds the current type, instants and site
+  coordinates: a change made between rehearsal and apply refuses it as stale.
+- **After the commit** `rows[i].sun` carries `before`, `reread` (same fields as
+  `current`) and `checks`: the type, each instant within 1 minute of the one sent, and,
+  when moved, the site's latitude/longitude within 1e-7 rad. The settings' own
+  `settings_latitude_raw`/`settings_longitude_raw` are reported and NOT judged: their
+  unit is not documented. A sun that does not re-read fails the action.
+- Not measured live yet: whether a view template that controls the view's graphic
+  display options overrides a sun written here; `before`/`reread` expose the
+  per-view element either way.
+
 ## horizun_write_params_verified: `sequence` (values numbered in spatial order)
 
 `sequence` is a third source for the batch, beside `writes` and `tabular_source` (give
