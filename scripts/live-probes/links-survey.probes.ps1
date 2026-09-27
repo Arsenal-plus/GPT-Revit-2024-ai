@@ -4,15 +4,19 @@
 # acquire: links a scratch COPY of the write document into itself, MOVES that instance
 # 10 m so its site differs from the host's, rehearses acquire_coordinates (the dry run
 # is a real rehearsal with rollback: federation_check must still call the link
-# incoherent afterwards), applies it (federation_check must now call it coherent),
-# places the type a second time and records REVIT's answer for the named instance, then
+# incoherent afterwards), places the type a second time and records REVIT's answer for
+# the named instance WHILE THE SITES STILL DIFFER (once acquired, the tool's own "already
+# shares the host's coordinates" refusal answers first and Revit is never asked), removes
+# that placement, applies it (federation_check must now call it coherent), then
 # RESTORES the host's shared position with horizun_manage_units base_points from the
 # dry run's own project_position_before - whenever the apply RAN, even when it answered
 # an error: a committed-but-unverified acquire moved the site as surely as a verified one.
 # Never saved.
 #
 # point cloud: PointCloudPath (a small .rcp/.rcs) from
-# %USERPROFILE%\.horizun\live-fixtures.json. A wall far from any scan must come back with
+# %USERPROFILE%\.horizun\live-fixtures.json. Wall and floor types are resolved by family
+# (a basic wall, a floor; Generic first), never the document's default: a curtain or
+# stacked default would measure panels, not one solid. A wall far from any scan must come back with
 # EVERY face not_measured for too_few_points (not for an unreadable cloud or frame); with
 # PointCloudFloor (a floor the scan covers, see docs/live-fixtures.example.json) a floor
 # staged there must have its top face MEASURED: points >= min_points_per_face, a
@@ -57,6 +61,14 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($r.stage -ne 'apply' -or $r.answer.isError) { throw ('HZ_STAGE ' + $key + ': ' + (Short $r.answer)) }
             $id = [long]@($r.answer.data.rows)[0].element_id; [void]$created.Insert(0, $id); $id
         }
+        function Types($category) {
+            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 500 }
+            if (-not $q.data) { return @() }
+            @($q.data.rows | Where-Object { $_.is_element_type })
+        }
+        # By family, a Generic type first - never the document's default type.
+        function WallType { $w = @(Types 'OST_Walls' | Where-Object { -not ($_.family -match 'Curtain|cortina|Stacked|apilad' -or $_.type -match 'Curtain|cortina') }); @(@($w | Where-Object { $_.type -match 'Generic|Gen.rico' }) + $w) | Select-Object -First 1 }
+        function FloorType { $fts = @(Types 'OST_Floors' | Where-Object { $_.family -match '^(Floor|Suelo|Piso|Forjado)$' }); @(@($fts | Where-Object { $_.type -match 'Generic|Gen.rico' }) + $fts) | Select-Object -First 1 }
         New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
         # ---- acquire_coordinates ------------------------------------------------------
         try {
@@ -77,23 +89,29 @@ $script:HzProbeModules += [pscustomobject]@{
             $afterDry = Site $inst
             Case 0 $(if (-not $dry.isError -and $restore -and $afterDry.state -eq 'incoherent') { 'pass' } else { 'fail' }) ('dry isError=' + $dry.isError + ' rehearsal=' + ($dry.data.rehearsal | ConvertTo-Json -Compress -Depth 4) + ' site after dry run=' + $afterDry.state + ' delta=' + $afterDry.max_delta_mm)
 
-            $ap = & $Ctx.Apply 'horizun_manage_links' @{ operation = 'acquire_coordinates'; target_document = $doc; link_instance_id = $inst } ($run + '-ls-acq')
-            $applyRan = ($ap.stage -eq 'apply')
-            $r = Res $ap.answer.data
-            $afterApply = Site $inst
-            Case 1 $(if ($applyRan -and -not $ap.answer.isError -and $r.same_site -eq $true -and $afterApply.state -eq 'coherent') { 'pass' } else { 'fail' }) ('apply stage=' + $ap.stage + ' isError=' + $ap.answer.isError + ' same_site=' + $r.same_site + ' delta_after=' + $r.same_site_delta_mm_after + ' federation=' + $afterApply.state + ' ' + (Short $ap.answer))
-
+            # Placed twice, asked WHILE THE SITE STILL DIFFERS: once acquired, the tool's own "already shares the
+            # host's coordinates" refusal answers first and Revit is never asked. The instance is named, so the tool
+            # does not pre-refuse the type placed twice: the rehearsal asks Revit, and either answer is Revit's; the
+            # tool's own old pre-refusal text would mean a stale add-in.
             $second = & $Ctx.Apply 'horizun_manage_links' @{ operation = 'add_instance'; target_document = $doc; link_type_id = $linkType } ($run + '-ls-add2')
             if ($second.stage -ne 'apply' -or $second.answer.isError) { Case 2 'unverified' ('a second placement could not be made: ' + (Short $second.answer)) }
             else {
-                # The instance is named, so the tool no longer pre-refuses: the rehearsal asks Revit. Either answer is
-                # Revit's and is recorded; the tool's own old pre-refusal text would mean a stale add-in.
+                $inst2 = [long]$second.answer.data.link_instance_id
                 $twice = & $Ctx.Call 'horizun_manage_links' @{ operation = 'acquire_coordinates'; target_document = $doc; link_instance_id = $inst }
                 $t = [string]$twice.text
                 if ($twice.isError -and $t -match 'multiple times' -and $t -notmatch 'is placed \d+ times') { Case 2 'pass' ('Revit refused the named instance: ' + (Short $twice)) }
                 elseif (-not $twice.isError) { Case 2 'pass' ('Revit accepted the named instance of a type placed twice (rehearsed, rolled back): ' + ($twice.data.rehearsal | ConvertTo-Json -Compress -Depth 4)) }
                 else { Case 2 'fail' ('not Revit''s answer: ' + (Short $twice)) }
+                # The second placement goes before the apply: Revit refuses to acquire from a model placed twice.
+                $rm = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = @($inst2); id_cap = 5 } ($run + '-ls-rm2')
+                if ($rm.stage -ne 'apply' -or $rm.answer.isError) { Case 1 'unverified' ('the second placement ' + $inst2 + ' could not be removed before the apply: ' + (Short $rm.answer)); throw 'HZ_STOP' }
             }
+
+            $ap = & $Ctx.Apply 'horizun_manage_links' @{ operation = 'acquire_coordinates'; target_document = $doc; link_instance_id = $inst } ($run + '-ls-acq')
+            $applyRan = ($ap.stage -eq 'apply')
+            $r = Res $ap.answer.data
+            $afterApply = Site $inst
+            Case 1 $(if ($applyRan -and -not $ap.answer.isError -and $r.same_site -eq $true -and $afterApply.state -eq 'coherent') { 'pass' } else { 'fail' }) ('apply stage=' + $ap.stage + ' isError=' + $ap.answer.isError + ' same_site=' + $r.same_site + ' delta_after=' + $r.same_site_delta_mm_after + ' federation=' + $afterApply.state + ' ' + (Short $ap.answer))
         }
         catch { if ([string]$_ -ne 'HZ_STOP') { foreach ($i in 0..2) { if (-not (Done $i)) { Case $i 'unverified' ('probe error: ' + $_) } } } }
 
@@ -117,7 +135,9 @@ $script:HzProbeModules += [pscustomobject]@{
                 # A wall far from any scan (X = 1,170,000 mm, this branch's slot): every face not_measured for too_few_points.
                 try {
                     $levelId = Stage @(@{ kind = 'level'; name = "HZ_LS_$tag"; elevation = 0 }) '-ls-level'
-                    $wallId = Stage @(@{ kind = 'wall'; start = @(1170000, 0, 0); end = @(1174000, 0, 0); level_id = $levelId; height = 2500 }) '-ls-wall'
+                    $wt = WallType
+                    if (-not $wt) { Case 4 'not_covered' 'no basic wall type (a wall family other than curtain or stacked) in the write document'; throw 'HZ_SKIP' }
+                    $wallId = Stage @(@{ kind = 'wall'; start = @(1170000, 0, 0); end = @(1174000, 0, 0); level_id = $levelId; type_id = [long]$wt.element_id; height = 2500 }) '-ls-wall'
                     $sc = & $Ctx.Call 'horizun_manage_links' @{ operation = 'scan_deviation'; link_instance_id = [long]$pcInst; element_ids = @($wallId); tolerance_mm = 10 }
                     $faces = @($sc.data.elements | ForEach-Object { $_.faces } | Where-Object { $_ })
                     $other = @($faces | Where-Object { $_.state -ne 'not_measured' -or $_.reason -ne 'too_few_points' })
@@ -131,7 +151,9 @@ $script:HzProbeModules += [pscustomobject]@{
                     try {
                         $z = [double]$pf.z; $x0 = [double]$pf.min_xy[0]; $y0 = [double]$pf.min_xy[1]; $x1 = [double]$pf.max_xy[0]; $y1 = [double]$pf.max_xy[1]
                         $fl = Stage @(@{ kind = 'level'; name = "HZ_LSF_$tag"; elevation = $z }) '-ls-flevel'
-                        $floorId = Stage @(@{ kind = 'floor'; level_id = $fl; profile = @(,@(@($x0, $y0, $z), @($x1, $y0, $z), @($x1, $y1, $z), @($x0, $y1, $z))) }) '-ls-floor'
+                        $ft = FloorType
+                        if (-not $ft) { Case 5 'not_covered' 'no floor type of the Floor family in the write document'; throw 'HZ_SKIP' }
+                        $floorId = Stage @(@{ kind = 'floor'; level_id = $fl; type_id = [long]$ft.element_id; profile = @(,@(@($x0, $y0, $z), @($x1, $y0, $z), @($x1, $y1, $z), @($x0, $y1, $z))) }) '-ls-floor'
                         $sf = & $Ctx.Call 'horizun_manage_links' @{ operation = 'scan_deviation'; link_instance_id = [long]$pcInst; element_ids = @($floorId); tolerance_mm = 10 }
                         $top = @($sf.data.elements | ForEach-Object { $_.faces } | Where-Object { $_ -and @($_.normal).Count -eq 3 -and [double]$_.normal[2] -gt 0.99 }) | Select-Object -First 1
                         $min = [int]$sf.data.min_points_per_face
@@ -191,6 +213,8 @@ $script:HzProbeModules += [pscustomobject]@{
         if ($ids.Count -eq 0 -and -not $applyRan) { Case 7 'not_covered' 'nothing was staged' }
         elseif ($problems.Count -eq 0) { Case 7 'pass' ('restored=' + [bool]$applyRan + ' deleted ' + ($ids -join ',')) }
         else { Case 7 'fail' ($problems -join ' | ') }
-        return $out.ToArray()
+        # Recorded out of order (the placed-twice case runs before the apply): returned in catalog order.
+        $order = @($names | ForEach-Object { $_.Name })
+        return @($out.ToArray() | Sort-Object { [array]::IndexOf($order, $_.Name) })
     }
 }

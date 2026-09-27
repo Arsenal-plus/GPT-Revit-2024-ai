@@ -25,21 +25,29 @@ function New-Fake([string]$mode, [bool]$withFixtures, [bool]$importerOnDisk = $t
     $fx = if ($withFixtures) { @{ PointCloudPath = $pc; IfcLinkSource = $ifc; PointCloudFloor = @{ min_xy = @(0, 0); max_xy = @(4000, 4000); z = 0 } } } else { @{} }
     ($fx | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $root '.horizun\live-fixtures.json') -Encoding ascii
     $env:USERPROFILE = $root
-    $s = @{ Mode = $mode; Next = 500; Deleted = @(); Restored = $null; Acquired = $false; Instances = 1; Src = $src; Kinds = @{}; Exported = $null }
+    $s = @{ Mode = $mode; Next = 500; Deleted = @(); Restored = $null; Acquired = $false; Instances = 1; Src = $src; Kinds = @{}; Exported = $null; InstancesAtApply = $null; TwiceAsked = $null; TypeOf = @{} }
     $reply = { param($data, $isError = $false, $text = 'fake') [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $before = [pscustomobject]@{ east_west = 1.5; north_south = 2.5; elevation = 0; angle_to_true_north = 12 }
     $call = {
         param($tool, $a)
         switch ($tool) {
             'horizun_health' { return & $reply ([pscustomobject]@{ open_documents = @([pscustomobject]@{ title = 'HZ_WRITE'; path = $s.Src }) }) }
+            'horizun_query_model' {
+                $rows = if ([string]@($a.categories)[0] -eq 'OST_Walls') { @([pscustomobject]@{ element_id = 70; is_element_type = $true; family = 'Curtain Wall'; type = 'Curtain Wall 1' }, [pscustomobject]@{ element_id = 72; is_element_type = $true; family = 'Basic Wall'; type = 'Exterior - Brick' }, [pscustomobject]@{ element_id = 71; is_element_type = $true; family = 'Basic Wall'; type = 'Generic - 200mm' }) } else { @([pscustomobject]@{ element_id = 80; is_element_type = $true; family = 'Floor'; type = 'Generic 150mm' }) }
+                if ($s.Mode -eq 'no-types') { $rows = @() }
+                return & $reply ([pscustomobject]@{ rows = $rows })
+            }
             'horizun_federation_check' {
                 $st = if ($s.Acquired -or $s.Mode -eq 'rollback-broken') { 'coherent' } else { 'incoherent' }
                 return & $reply ([pscustomobject]@{ site = @([pscustomobject]@{ instance_id = 901; state = $st; max_delta_mm = 10000 }) })
             }
             'horizun_manage_links' {
                 if ($a.operation -eq 'acquire_coordinates') {
+                    if ($s.Instances -gt 1) { $s.TwiceAsked = $(if ($s.Acquired) { 'after-acquire' } else { 'off-site' }) }
+                    # The tool's own refusal once the link shares the host's site (LinkSurveyRules.AcquireRefusal): Revit is never asked.
+                    if ($s.Acquired) { return & $reply $null $true 'instance 901 already shares the host''s coordinates (same_site delta 0 mm <= 1 mm); acquiring would change nothing and Revit refuses it. Nothing was written.' }
                     if ($s.Instances -gt 1) {
-                        if ($s.Mode -eq 'twice-accepted') { return & $reply ([pscustomobject]@{ dry_run = $true; rehearsal = [pscustomobject]@{ rolled_back = $true } }) }
+                        if ($s.Mode -eq 'twice-accepted') { return & $reply ([pscustomobject]@{ dry_run = $true; rehearsal = [pscustomobject]@{ applied_and_verified = $true; rollback_status = 'RolledBack'; error = $null; postconditions = [pscustomobject]@{ all_verified = $true } } }) }
                         if ($s.Mode -eq 'stale-addin') { return & $reply $null $true 'the link type of instance 901 is placed 2 times (901, 902). Revit refuses to acquire coordinates from a model placed multiple times' }
                         return & $reply $null $true 'The rehearsal failed: Cannot acquire coordinates from a model placed multiple times.'
                     }
@@ -48,7 +56,7 @@ function New-Fake([string]$mode, [bool]$withFixtures, [bool]$importerOnDisk = $t
                 if ($a.operation -eq 'scan_deviation') {
                     $id = [long]@($a.element_ids)[0]
                     if ($s.Kinds[$id] -eq 'floor') {
-                        $topFace = [pscustomobject]@{ face = 0; normal = @(0, 0, 1); points = 800; state = 'ok'; p95_abs_mm = 4.2; point_frame = 'identity'; coverage_share = 0.16 }
+                        $topFace = [pscustomobject]@{ face = 0; normal = @(0, 0, 1); points = 800; state = 'ok'; p95_abs_mm = 4.2; point_frame = 'identity'; coverage_share = 0.93; average_distance_mm = 50; coverage_grid = '20x20' }
                         $bottom = [pscustomobject]@{ face = 1; normal = @(0, 0, -1); points = 0; state = 'not_measured'; reason = 'too_few_points' }
                         return & $reply ([pscustomobject]@{ verdict = 'not_decidable'; min_points_per_face = 20; elements = @([pscustomobject]@{ element_id = $id; state = 'partially_measured'; faces = @($topFace, $bottom) }) })
                     }
@@ -66,6 +74,9 @@ function New-Fake([string]$mode, [bool]$withFixtures, [bool]$importerOnDisk = $t
         switch ($tool) {
             'horizun_manage_links' {
                 if ($a.operation -eq 'acquire_coordinates') {
+                    $s.InstancesAtApply = $s.Instances
+                    # Revit refuses to acquire from a model placed twice: the rehearsal fails and no token is issued.
+                    if ($s.Instances -gt 1) { return @{ stage = 'dry_run'; answer = [pscustomobject]@{ isError = $true; data = $null; text = 'The rehearsal failed: Cannot acquire coordinates from a model placed multiple times.' } } }
                     $s.Acquired = $true
                     if ($s.Mode -eq 'apply-error') { return @{ stage = 'apply'; answer = [pscustomobject]@{ isError = $true; data = $null; text = 'The group assimilated but the re-read did not hold; state is uncertain.' } } }
                     return & $ok ([pscustomobject]@{ result = [pscustomobject]@{ same_site = $true; same_site_delta_mm_after = 0.0 } })
@@ -83,8 +94,12 @@ function New-Fake([string]$mode, [bool]$withFixtures, [bool]$importerOnDisk = $t
             'horizun_export' { $s.Exported = $a.output_path; Set-Content -LiteralPath $a.output_path -Value 'ISO-10303-21;' -Encoding ascii; return & $ok ([pscustomobject]@{ output_path = $a.output_path }) }
             'horizun_transform_elements' { return & $ok ([pscustomobject]@{ ok = $true }) }
             'horizun_manage_units' { $s.Restored = $a.project_position; return & $ok ([pscustomobject]@{ ok = $true }) }
-            'horizun_delete_verified' { $s.Deleted = @($a.ids); return & $ok ([pscustomobject]@{ ok = $true }) }
-            'horizun_create_elements' { $id = $s.Next; $s.Next++; $s.Kinds[[long]$id] = [string]@($a.elements)[0].kind; return & $ok ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) }) }
+            'horizun_delete_verified' {
+                if ($s.Mode -eq 'rm2-fails' -and @($a.ids) -contains 902) { return @{ stage = 'apply'; answer = [pscustomobject]@{ isError = $true; data = $null; text = 'refused: 902 could not be deleted' } } }
+                if (@($a.ids) -contains 902) { $s.Instances = 1 }
+                $s.Deleted = @($s.Deleted) + @($a.ids); return & $ok ([pscustomobject]@{ ok = $true })
+            }
+            'horizun_create_elements' { $id = $s.Next; $s.Next++; $s.Kinds[[long]$id] = [string]@($a.elements)[0].kind; $s.TypeOf[[long]$id] = @($a.elements)[0].type_id; return & $ok ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) }) }
         }
     }.GetNewClosure()
     return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = (Join-Path $root 'scratch'); RunId = 't1'; WriteGate = $false; RevitRoot = $revitRoot; Call = $call; Apply = $apply } }
@@ -98,6 +113,14 @@ try {
     Check ((@(900, 950, 960, 500, 501, 502, 503) | Where-Object { $h.State.Deleted -notcontains $_ }).Count -eq 0) ('link types, point cloud type, levels, wall and floor deleted: ' + ($h.State.Deleted -join ','))
     Check ($r[2].Detail -match 'Revit refused') 'a type placed twice is answered by Revit for the named instance'
     Check ($r[5].Detail -match 'points=800' -and $r[5].Detail -match 'frame=identity') 'the floor''s top face is measured, with its points and frame'
+    Check ($h.State.TwiceAsked -eq 'off-site') 'the placed-twice question is asked while the site still differs, so Revit answers it'
+    Check ($h.State.InstancesAtApply -eq 1) 'the apply runs after the second placement is removed'
+    Check ([long]$h.State.TypeOf[[long]501] -eq 71 -and [long]$h.State.TypeOf[[long]503] -eq 80) 'wall and floor staged with a Generic basic wall and a floor type, not the default or a curtain wall'
+
+    $h = New-Fake 'rm2-fails' $false; $r = @(& $module.Run $h.Ctx)
+    Check ($r[1].Outcome -eq 'unverified' -and $r[1].Detail -match 'could not be removed' -and $r[2].Outcome -eq 'pass' -and $null -eq $h.State.InstancesAtApply) 'a second placement that cannot be removed stops before the apply'
+    $h = New-Fake 'no-types' $true; $r = @(& $module.Run $h.Ctx)
+    Check ($r[4].Outcome -eq 'not_covered' -and $r[4].Detail -match 'basic wall type' -and $r[5].Outcome -eq 'not_covered' -and $r[5].Detail -match 'floor type') 'without a basic wall or a floor type the scan cases are not_covered, named'
 
     $h = New-Fake 'ok' $false; $r = @(& $module.Run $h.Ctx)
     Check (($r[3].Outcome -eq 'not_covered') -and ($r[3].Detail -match 'PointCloudPath') -and ($r[5].Detail -match 'PointCloudPath')) 'missing point cloud fixture is not_covered naming its key'
