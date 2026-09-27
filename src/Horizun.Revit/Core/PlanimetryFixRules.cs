@@ -7,7 +7,7 @@
 // hand that guesses is worse than no hand. Every decision that is arithmetic
 // rather than API lives here, where it is an ordinary unit test:
 //
-//   * THE OPERATION CATALOG is closed. Nine operations, each with a closed field
+//   * THE OPERATION CATALOG is closed. Ten operations, each with a closed field
 //     set, a named target field, and the finding entity kinds it may address. An
 //     operation outside the catalog is a capability gap (the standard fallback
 //     contract applies); a FIELD outside an operation's set is the caller's typo
@@ -141,6 +141,14 @@ namespace Horizun.Revit.Core
                 RequiredFields = new[] { "view_id", "crop" },
                 EntityKinds = new[] { "view", "dimension", "tag", "text_note", "detail_2d", "annotation" },
                 Geometric = true
+            },
+            new PlanimetryFixOperation
+            {
+                Name = "set_view_display", TargetField = "view_id",
+                Fields = new[] { "view_id", "detail_level", "discipline" },
+                // At least one of detail_level/discipline - enforced by RequiredFieldError.
+                RequiredFields = new[] { "view_id" },
+                EntityKinds = new[] { "view" }
             }
         };
 
@@ -276,6 +284,9 @@ namespace Horizun.Revit.Core
             if (op.Name == "rename_sheet" && !has("new_number") && !has("new_name"))
                 return "operation 'rename_sheet' requires new_number, new_name or both - a rename that names " +
                        "nothing renames nothing.";
+            if (op.Name == "set_view_display" && !has("detail_level") && !has("discipline"))
+                return "operation 'set_view_display' requires detail_level, discipline or both - a display " +
+                       "change that names nothing changes nothing.";
             return null;
         }
 
@@ -309,6 +320,32 @@ namespace Horizun.Revit.Core
             if (bad != null)
                 return "'" + field + "' contains " + bad + ", which Revit refuses in element names.";
             return null;
+        }
+
+        /// <summary>
+        /// The ViewDetailLevel names a view may be SET to - the same spelling the audit
+        /// reports (View.DetailLevel.ToString()). `Undefined` is what Revit reports for a
+        /// view without detail level; it is a reading, never a target.
+        /// </summary>
+        public static readonly string[] DetailLevels = { "Coarse", "Medium", "Fine" };
+
+        /// <summary>The ViewDiscipline names, as the audit reports them (View.Discipline.ToString()).</summary>
+        public static readonly string[] Disciplines =
+            { "Architectural", "Structural", "Mechanical", "Electrical", "Plumbing", "Coordination" };
+
+        /// <summary>
+        /// Null when `value` is one of `allowed` EXACTLY; otherwise the refusal. Case is not
+        /// forgiven: the value is compared against the audit's own spelling at re-read, and a
+        /// request that only matches case-insensitively would verify against a string the
+        /// caller never sent.
+        /// </summary>
+        public static string EnumNameError(string field, JToken token, string[] allowed)
+        {
+            if (token == null || token.Type == JTokenType.Null) return null;
+            if (token.Type != JTokenType.String) return "'" + field + "' must be a string.";
+            string value = token.Value<string>();
+            if (allowed.Contains(value, StringComparer.Ordinal)) return null;
+            return "'" + field + "' = '" + value + "' is not one of: " + string.Join(", ", allowed) + ".";
         }
 
         /// <summary>Revit accepts view scales 1..24000.</summary>

@@ -38,7 +38,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class FixPlanimetryCommand : ICommand
+    public sealed partial class FixPlanimetryCommand : ICommand
     {
         public string Name => "horizun_fix_planimetry";
         public string Description =>
@@ -591,6 +591,7 @@ namespace Horizun.Revit.Commands
             // Final values, resolved.
             public ElementId TemplateId; public string TemplateName;
             public int Scale;
+            public string DetailLevel; public string Discipline;     // set_view_display, null = not requested
             public string NewName; public string NewNumber;
             public ElementId TitleBlockTypeId; public string TitleBlockTypeName;
             public double PxFeet, PyFeet;
@@ -638,6 +639,7 @@ namespace Horizun.Revit.Commands
                 {
                     case "set_view_template": o["template_id"] = Rid.Value(TemplateId); o["template"] = TemplateName; break;
                     case "set_view_scale": o["scale"] = Scale; break;
+                    case "set_view_display": o["detail_level"] = DetailLevel; o["discipline"] = Discipline; break;
                     case "rename_view": o["new_name"] = NewName; break;
                     case "rename_sheet":
                         o["new_number"] = NewNumber == null ? (JToken)JValue.CreateNull() : NewNumber;
@@ -741,6 +743,7 @@ namespace Horizun.Revit.Commands
                     case "move_schedule": PlanMoveSchedule(doc, a, cited, toFeet, snapBefore, plan); break;
                     case "clear_element_override": PlanClearOverride(doc, a, cited, plan); break;
                     case "set_crop": PlanSetCrop(doc, a, cited, toFeet, plan); break;
+                    case "set_view_display": PlanSetDisplay(doc, a, cited, plan); break;
                     default: throw new InvalidOperationException("operation escaped the catalog");
                 }
 
@@ -1207,6 +1210,7 @@ namespace Horizun.Revit.Commands
                     view.Name = plan.NewName;
                     return;
                 }
+                case "set_view_display": ApplyDisplay(doc, plan); return;
                 case "rename_sheet":
                 {
                     var sheet = (ViewSheet)doc.GetElement(plan.TargetId);
@@ -1443,6 +1447,7 @@ namespace Horizun.Revit.Commands
                     case "move_schedule": check = VerifyScheduleMove(doc, plan, toleranceFeet, row); break;
                     case "clear_element_override": check = VerifyOverrideCleared(doc, plan); break;
                     case "set_crop": check = VerifyCrop(doc, plan, toleranceFeet); break;
+                    case "set_view_display": check = VerifyDisplay(doc, plan); break;
                     default:
                         check = new PostconditionCheck("operation");
                         check.Unreadable("operation", plan.Op.Name, "operation escaped the catalog");

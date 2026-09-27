@@ -1776,6 +1776,38 @@ this and still goes through `View.CropBox`.
   Revit is free to start or wind the loop however it likes. A rectangle's crop
   still compares as a bounding box, unchanged.
 
+## horizun_fix_planimetry: `set_view_display` (detail level and discipline)
+
+`set_view_display` sets `View.DetailLevel` and/or `View.Discipline` of ONE view,
+citing a finding about that view - in practice a requirement-set rule of
+`horizun_audit_planimetry` with `entity: "view"` and `field: "detail_level"` or
+`"discipline"` (the same property names `horizun_model_scan`'s `view_profile`
+judges as `expected_detail_level` / `expected_discipline`). No universal check
+maps to it, so a universal finding cannot cite it.
+
+```json
+{ "operation": "set_view_display", "finding": { "...": "copied verbatim" },
+  "view_id": 12345, "detail_level": "Fine", "discipline": "Architectural" }
+```
+
+- **Values are the audit's own spelling, exactly.** `detail_level` is `Coarse`,
+  `Medium` or `Fine` (`Undefined` is a reading, never a target); `discipline` is
+  `Architectural`, `Structural`, `Mechanical`, `Electrical`, `Plumbing` or
+  `Coordination`. Case is not forgiven, because the re-read compares strings.
+- **At least one of the two**, otherwise the action names nothing and is refused.
+- **Refused BY NAME before any transaction** when the view's template controls
+  the parameter (`GetTemplateParameterIds` minus
+  `GetNonControlledTemplateParameterIds` contains `VIEW_DETAIL_LEVEL` /
+  `VIEW_DISCIPLINE`): the assignment would be overwritten by the template. The
+  remedies are `set_view_template` or an edit of the template itself. Also refused
+  on a template, a sheet or a schedule, when `HasDetailLevel` /
+  `HasViewDiscipline` is false, and when `CanModifyDetailLevel` /
+  `CanModifyViewDiscipline` is false.
+- **Re-read after the commit:** the requested value(s) must read back, and the
+  property NOT requested must read back exactly as it was before
+  (`detail_level_unchanged` / `discipline_unchanged`). The audit then re-runs and
+  reports the cited finding as resolved or persistent.
+
 ## horizun_deliver_ifc: telling an empty parameter apart from a dropped mapping
 
 `model_comparison` (inside the `pset_mapping` gate's evidence) merges a

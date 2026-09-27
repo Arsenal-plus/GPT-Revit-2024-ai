@@ -3039,9 +3039,10 @@ namespace Horizun.Contracts
                 Command = "horizun_fix_planimetry",
                 Description =
                     "Turn findings from horizun_audit_planimetry into TYPED, rehearsed, confirmed, atomic and " +
-                    "re-read corrections. Nine operations, closed: set_view_template (explicit template " +
+                    "re-read corrections. Ten operations, closed: set_view_template (explicit template " +
                     "ElementId, validated as a compatible ViewTemplate, ViewTemplateId re-read), set_view_scale " +
-                    "(explicit 1..24000, refused for views that take no scale), rename_view and rename_sheet " +
+                    "(explicit 1..24000, refused for views that take no scale), set_view_display (detail level/discipline, " +
+                    "refused when the view's template controls them), rename_view and rename_sheet " +
                     "(explicit final name/number, duplicates refused before the transaction, both re-read), " +
                     "place_title_block (explicit sheet and title-block FamilySymbol, placeholders and wrong " +
                     "categories refused, symbol activated safely, instance/family/type/sheet re-read, never a " +
@@ -3089,7 +3090,7 @@ namespace Horizun.Contracts
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": {
       ""type"": ""object"", ""required"": [""operation"", ""finding""],
       ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""set_view_template"", ""set_view_scale"", ""rename_view"", ""rename_sheet"", ""place_title_block"", ""move_viewport"", ""move_schedule"", ""clear_element_override"", ""set_crop""] },
+        ""operation"": { ""type"": ""string"", ""enum"": [""set_view_template"", ""set_view_scale"", ""rename_view"", ""rename_sheet"", ""place_title_block"", ""move_viewport"", ""move_schedule"", ""clear_element_override"", ""set_crop"", ""set_view_display""] },
         ""finding"": { ""type"": ""object"", ""required"": [""rule_id"", ""requirement_set"", ""requirement_set_version"", ""element_ids"", ""observed""], ""properties"": {
           ""rule_id"": { ""type"": ""string"", ""minLength"": 1 },
           ""requirement_set"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""The set id the finding cites: horizun-universal-planimetry or the inline set's id."" },
@@ -3104,6 +3105,8 @@ namespace Horizun.Contracts
         ""view_id"": { ""type"": ""integer"", ""description"": ""set_view_template / set_view_scale / rename_view / set_crop: the view to change. clear_element_override: the view whose element override is cleared."" },
         ""template_id"": { ""type"": ""integer"", ""description"": ""set_view_template: the ViewTemplate's ElementId. Never resolved from a name."" },
         ""scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000 },
+        ""detail_level"": { ""type"": ""string"", ""enum"": [""Coarse"", ""Medium"", ""Fine""] },
+        ""discipline"": { ""type"": ""string"", ""description"": ""ViewDiscipline name, e.g. Architectural."" },
         ""new_name"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""rename_view / rename_sheet: the explicit final name."" },
         ""new_number"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""rename_sheet: the explicit final sheet number."" },
         ""sheet_id"": { ""type"": ""integer"", ""description"": ""rename_sheet / place_title_block: the sheet."" },
