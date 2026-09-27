@@ -75,8 +75,13 @@ namespace Horizun.Revit.Commands
             return row;
         }
 
-        /// <summary>Every file of one extension in the folder, stamped as Snapshot does.</summary>
-        private static Dictionary<string, ExportFileStamp> SnapshotExtension(string folder, string extension)
+        /// <summary>
+        /// Every file of one extension in the folder, stamped by size and time; only the files named
+        /// like <paramref name="target"/> (its stem and stem-/stem_ companions) are also hashed.
+        /// Hashing the whole folder around every exporter call would cost views x folder bytes on
+        /// Revit's UI thread; a file outside the name family that changes still shows by its stamp.
+        /// </summary>
+        private static Dictionary<string, ExportFileStamp> SnapshotExtension(string folder, string extension, string format, string target)
         {
             var result = new Dictionary<string, ExportFileStamp>(StringComparer.OrdinalIgnoreCase);
             string[] found;
@@ -88,7 +93,9 @@ namespace Horizun.Revit.Commands
                 try
                 {
                     var f = new FileInfo(file);
-                    stamp.Size = f.Length; stamp.Mtime = f.LastWriteTimeUtc.Ticks; stamp.Hash = FileHash(file); stamp.Readable = true;
+                    stamp.Size = f.Length; stamp.Mtime = f.LastWriteTimeUtc.Ticks;
+                    if (MatchesOutput(format, target, file)) stamp.Hash = FileHash(file);
+                    stamp.Readable = true;
                 }
                 catch { /* Existed stays true; the rest stays unmeasured. */ }
                 result[file] = stamp;
@@ -188,34 +195,43 @@ namespace Horizun.Revit.Commands
             var files = new JArray();
             var failed = new List<string>();
             int verified = 0;
+            string acadWanted = format == "dwg" ? request.Value<string>("acad_version") : null;
             for (int i = 0; i < views.Count; i++)
             {
                 // One exporter call per view, and a snapshot around EACH call: whatever
                 // changed during call i belongs to view i, however the names overlap.
-                Dictionary<string, ExportFileStamp> before = SnapshotExtension(folder, extension);
+                Dictionary<string, ExportFileStamp> before = SnapshotExtension(folder, extension, format, targets[i]);
                 bool accepted = false; string error = null;
                 try { accepted = ExportOneView(doc, format, folder, stems[i], views[i], dwgOptions); }
                 catch (Exception ex) { error = ex.Message; }
-                Dictionary<string, ExportFileStamp> after = SnapshotExtension(folder, extension);
+                Dictionary<string, ExportFileStamp> after = SnapshotExtension(folder, extension, format, targets[i]);
                 (List<string> produced, List<string> unmeasured) = ExportFileDiff.Diff(before, after);
                 bool mainProduced = produced.Contains(targets[i], StringComparer.OrdinalIgnoreCase);
                 JObject main = mainProduced ? FileEvidence(format, targets[i]) : null;
-                bool xrefsExpected = format == "dwg" && xrefs == ExportFormatRules.XrefsLinked && views[i] is ViewSheet;
+                // Companions: unmerged, Revit writes a sheet's views AND a view's visible links as
+                // separate files named <stem>-... beside the target - DWG with dwg_xrefs=linked, DGN
+                // always (DGNExportOptions.MergedViews defaults to false). Any view type can carry
+                // link companions, so the NAME FAMILY decides, not the view type.
+                bool companionsExpected = (format == "dwg" && xrefs == ExportFormatRules.XrefsLinked) || format == "dgn";
                 var others = new JArray(produced.Where(p => !p.Equals(targets[i], StringComparison.OrdinalIgnoreCase)).Select(p =>
                 {
                     JObject evidence = FileEvidence(format, p);
-                    evidence["role"] = xrefsExpected ? "xref" : "unexpected";
+                    evidence["role"] = companionsExpected && MatchesOutput(format, targets[i], p) ? "xref" : "unexpected";
+                    CheckAcadVersion(evidence, acadWanted);
                     return evidence;
                 }));
-                bool ok = main != null && main.Value<bool>("header_verified") &&
-                          others.All(o => o.Value<bool>("header_verified") && o.Value<string>("role") == "xref");
+                CheckAcadVersion(main, acadWanted);
+                // A file of this view's name family that the call left empty or unreadable is not a
+                // verified file either; one untouched since before the call is not this call's.
+                List<string> ownUnmeasured = unmeasured.Where(p => MatchesOutput(format, targets[i], p) && !Untouched(before, after, p)).ToList();
+                bool ok = main != null && Held(main) && others.All(o => Held((JObject)o) && o.Value<string>("role") == "xref") && ownUnmeasured.Count == 0;
                 var row = new JObject
                 {
                     ["view_id"] = Rid.Value(views[i].Id), ["view_name"] = SafePlanName(views[i]), ["file"] = targets[i],
                     ["api_accepted"] = accepted, ["verified"] = ok, ["main"] = main, ["other_files"] = others
                 };
                 if (error != null) row["error"] = error;
-                if (unmeasured.Count > 0) row["unmeasured_files"] = new JArray(unmeasured);
+                if (ownUnmeasured.Count > 0) row["unmeasured_files"] = new JArray(ownUnmeasured);
                 if (ok) verified++; else failed.Add(targets[i]);
                 files.Add(row);
             }
@@ -224,7 +240,8 @@ namespace Horizun.Revit.Commands
                 ["format"] = format, ["file_naming"] = naming, ["dwg_xrefs"] = format == "dwg" ? xrefs : null,
                 ["files_planned"] = targets.Length, ["files_verified"] = verified, ["files"] = files,
                 ["means"] = "verified = the planned file was written or changed by its own exporter call, is non-empty and its first bytes " +
-                            "are the format's signature; DWG xrefs of a sheet exported with dwg_xrefs=linked are checked the same way."
+                            "are the format's signature (with acad_version, that DWG version); companion files the call wrote beside it - a " +
+                            "sheet's views and a view's links, for DWG linked and for DGN - must be named <stem>-... and pass the same check."
             };
             if (gateDecision.Requested) result["prevention"] = gateDecision.Prevention;
             if (verified != targets.Length)
@@ -235,6 +252,23 @@ namespace Horizun.Revit.Commands
             }
             return CommandResult.Ok(result);
         }
+
+        private static bool Held(JObject evidence) =>
+            evidence.Value<bool>("header_verified") && evidence.Value<bool?>("acad_version_verified") != false;
+
+        /// <summary>With acad_version requested, the DWG signature read back must be that version.</summary>
+        private static void CheckAcadVersion(JObject evidence, string wanted)
+        {
+            if (evidence == null || string.IsNullOrEmpty(wanted)) return;
+            string header = evidence.Value<string>("header");
+            string got = header == null ? null : ExportPresetRules.DwgVersionOf(System.Text.Encoding.ASCII.GetBytes(header));
+            evidence["acad_version_read"] = got;
+            evidence["acad_version_verified"] = got == wanted;
+        }
+
+        private static bool Untouched(Dictionary<string, ExportFileStamp> before, Dictionary<string, ExportFileStamp> after, string path) =>
+            before.TryGetValue(path, out ExportFileStamp old) && after.TryGetValue(path, out ExportFileStamp now) && old != null && now != null &&
+            old.Existed && old.Readable == now.Readable && old.Size == now.Size && old.Mtime == now.Mtime;
 
         private static bool ExportOneView(Document doc, string format, string folder, string stem, View view, DWGExportOptions dwgOptions)
         {
@@ -265,13 +299,22 @@ namespace Horizun.Revit.Commands
         }
 
         // ---- D3: gbXML ------------------------------------------------------------
-        private static int CountPlaced(Document doc, BuiltInCategory category)
+        private static int CountPlaced(Document doc, BuiltInCategory category, ElementId phase)
         {
             int count = 0;
             foreach (Element e in new FilteredElementCollector(doc).OfCategory(category).WhereElementIsNotElementType())
-                if (e is SpatialElement spatial && spatial.Location != null && spatial.Area > 1e-9) count++;
+                if (e is SpatialElement spatial && spatial.Location != null && spatial.Area > 1e-9 && EnergyModelBuild.InPhase(spatial, phase)) count++;
             return count;
         }
+
+        private static CommandResult NoAnalyticalSpaces(string scope, int rooms, int spaces) =>
+            CommandResult.FailWithDetail("no spaces: Revit's energy model built from the " + scope + " holds no analytical space, so a gbXML " +
+                "export would be an empty campus. Nothing was written; the transaction that held the model is rolled back.",
+                new JObject
+                {
+                    ["no_spaces"] = true, ["energy_scope"] = scope, ["analytical_spaces"] = 0, ["placed_rooms"] = rooms, ["placed_spaces"] = spaces,
+                    ["external_files_may_exist"] = false
+                });
 
         private CommandResult ExecuteGbXml(UIApplication app, GateResult gate, Document doc, JObject request, string output)
         {
@@ -282,11 +325,17 @@ namespace Horizun.Revit.Commands
             string folder = System.IO.Path.GetDirectoryName(output);
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
                 return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly.");
-            int rooms = CountPlaced(doc, BuiltInCategory.OST_Rooms), spaces = CountPlaced(doc, BuiltInCategory.OST_MEPSpaces);
+            // Counted in the energy settings' scope - their export category and phase - which is
+            // what the model is built from; the built model's own analytical spaces are counted
+            // again on apply, before anything is written.
+            EnergyModelBuild.Scope(doc, out BuiltInCategory? exportCategory, out ElementId energyPhase);
+            string scope = EnergyModelBuild.ScopeText(doc, exportCategory, energyPhase);
+            int rooms = exportCategory == BuiltInCategory.OST_MEPSpaces ? 0 : CountPlaced(doc, BuiltInCategory.OST_Rooms, energyPhase);
+            int spaces = exportCategory == BuiltInCategory.OST_Rooms ? 0 : CountPlaced(doc, BuiltInCategory.OST_MEPSpaces, energyPhase);
             if (rooms + spaces == 0)
-                return CommandResult.FailWithDetail("no spaces: the document has no placed, bounded room or space, so a gbXML export " +
+                return CommandResult.FailWithDetail("no spaces: the document has no placed, bounded " + scope + ", so a gbXML export " +
                     "would be an empty campus. Nothing was written.",
-                    new JObject { ["no_spaces"] = true, ["placed_rooms"] = 0, ["placed_spaces"] = 0 });
+                    new JObject { ["no_spaces"] = true, ["energy_scope"] = scope, ["placed_rooms"] = 0, ["placed_spaces"] = 0 });
             bool overwrite = request.Value<bool?>("overwrite") == true;
             var existing = new List<string> { output }.Where(File.Exists).ToList();
             if (!overwrite && existing.Count > 0)
@@ -304,8 +353,10 @@ namespace Horizun.Revit.Commands
                 {
                     ["dry_run"] = true, ["format"] = "gbxml", ["output_path"] = output, ["planned_files"] = new JArray(output),
                     ["placed_rooms"] = rooms, ["placed_spaces"] = spaces, ["main_energy_model_present"] = mainModel,
-                    ["energy_model"] = "built from rooms/spaces (SpatialElement, second-level boundaries) inside a transaction that is " +
-                                       "ROLLED BACK after the file is written: the model is left as it was, including any energy model it had.",
+                    ["energy_scope"] = scope,
+                    ["energy_model"] = "built from " + EnergyModelBuild.Description + " inside a transaction that is ROLLED BACK after the " +
+                                       "file is written: the model is left as it was, including any energy model it had. A model that holds " +
+                                       "no analytical space is refused as no spaces before anything is written.",
                     ["overwrite"] = overwrite, ["note"] = "Nothing was exported and no file was created."
                 };
                 if (gateDecision.Requested) plan["prevention"] = gateDecision.Prevention;
@@ -319,8 +370,10 @@ namespace Horizun.Revit.Commands
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
 
-            Dictionary<string, ExportFileStamp> before = SnapshotExtension(folder, ".xml");
-            bool accepted;
+            Dictionary<string, ExportFileStamp> before = SnapshotExtension(folder, ".xml", "gbxml", output);
+            bool accepted = false;
+            int analyticalSpaces = -1;
+            string stage = "build";
             try
             {
                 // RevitAPI.xml: the gbXML export "should be called from a transaction" and
@@ -333,7 +386,12 @@ namespace Horizun.Revit.Commands
                     tx.Start();
                     try
                     {
-                        EnergyModelBuild.CreateSpatial(doc);
+                        EnergyAnalysisDetailModel model = EnergyModelBuild.CreateSpatial(doc);
+                        // An empty campus is refused BEFORE anything is written: the built model's
+                        // own analytical spaces are counted, not the placed rooms.
+                        analyticalSpaces = model == null ? 0 : model.GetAnalyticalSpaces().Count;
+                        if (analyticalSpaces == 0) return NoAnalyticalSpaces(scope, rooms, spaces);
+                        stage = "export";
                         var options = new GBXMLExportOptions();
 #if REVIT2023 || REVIT2024 || REVIT2025
                         // Explicit where it is the documented default anyway. 2026 defaults it
@@ -348,15 +406,19 @@ namespace Horizun.Revit.Commands
             }
             catch (Exception ex)
             {
+                if (stage == "build")
+                    return CommandResult.FailWithDetail("Revit could not build its energy model from the " + scope + " (" + ex.Message + "); RevitAPI.xml: " +
+                        "Create throws when there are no valid spatial elements or spatial bounding elements. Nothing was written.",
+                        new JObject { ["energy_scope"] = scope, ["external_files_may_exist"] = false, ["planned_files"] = new JArray(output) });
                 return CommandResult.FailWithDetail("Revit gbXML export failed: " + ex.Message,
                     new JObject { ["external_files_may_exist"] = true, ["rollback_available"] = false, ["planned_files"] = new JArray(output) });
             }
-            Dictionary<string, ExportFileStamp> after = SnapshotExtension(folder, ".xml");
+            Dictionary<string, ExportFileStamp> after = SnapshotExtension(folder, ".xml", "gbxml", output);
             (List<string> produced, List<string> unmeasured) = ExportFileDiff.Diff(before, after);
             var result = new JObject
             {
                 ["format"] = "gbxml", ["api_accepted"] = accepted, ["requested_output_path"] = output,
-                ["placed_rooms"] = rooms, ["placed_spaces"] = spaces, ["files_verified"] = 0
+                ["placed_rooms"] = rooms, ["placed_spaces"] = spaces, ["energy_scope"] = scope, ["analytical_spaces"] = analyticalSpaces, ["files_verified"] = 0
             };
             if (unmeasured.Count > 0) result["unmeasured_files"] = new JArray(unmeasured);
             if (!produced.Contains(output, StringComparer.OrdinalIgnoreCase))
@@ -410,6 +472,7 @@ namespace Horizun.Revit.Commands
 
             var families = new List<Family>();
             var refusedRows = new JArray();
+            var resolvedTypes = new JArray();
             if (ids != null)
             {
                 foreach (JToken token in ids)
@@ -418,6 +481,19 @@ namespace Horizun.Revit.Commands
                     Element e = token.Type == JTokenType.Integer && long.TryParse(token.ToString(), out raw) && Rid.CanRepresent(raw)
                         ? doc.GetElement(Rid.Make(raw)) : null;
                     if (e is Family f) { if (!families.Any(x => x.Id == f.Id)) families.Add(f); continue; }
+                    // A loadable family's TYPE id (what most query tools return) names its family:
+                    // resolved, deduplicated and stated in the reply - never refused as a system type.
+                    Family owner = null;
+                    if (e is FamilySymbol symbol) { try { owner = symbol.Family; } catch { } }
+                    if (owner != null)
+                    {
+                        resolvedTypes.Add(new JObject
+                        {
+                            ["type_id"] = token.DeepClone(), ["type"] = SafePlanName(e), ["family_id"] = Rid.Value(owner.Id), ["family"] = SafePlanName(owner)
+                        });
+                        if (!families.Any(x => x.Id == owner.Id)) families.Add(owner);
+                        continue;
+                    }
                     refusedRows.Add(new JObject
                     {
                         ["id"] = token.DeepClone(), ["name"] = e == null ? null : SafePlanName(e),
@@ -475,7 +551,8 @@ namespace Horizun.Revit.Commands
                 var plan = new JObject
                 {
                     ["dry_run"] = true, ["format"] = "rfa", ["output_folder"] = output, ["planned_files"] = new JArray(targets),
-                    ["families"] = familyRows, ["refused"] = refusedRows, ["note"] = "Nothing was exported and no file was created."
+                    ["families"] = familyRows, ["refused"] = refusedRows, ["resolved_from_type_ids"] = resolvedTypes,
+                    ["note"] = "Nothing was exported and no file was created."
                 };
                 if (gateDecision.Requested) plan["prevention"] = gateDecision.Prevention;
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
@@ -529,7 +606,7 @@ namespace Horizun.Revit.Commands
             var result = new JObject
             {
                 ["format"] = "rfa", ["output_folder"] = output, ["files_planned"] = targets.Length, ["files_verified"] = verified,
-                ["files"] = files, ["refused"] = refusedRows,
+                ["files"] = files, ["refused"] = refusedRows, ["resolved_from_type_ids"] = resolvedTypes,
                 ["means"] = "verified = the .rfa exists, is non-empty and BasicFileInfo.Extract reads its saved-in Revit format back."
             };
             if (gateDecision.Requested) result["prevention"] = gateDecision.Prevention;

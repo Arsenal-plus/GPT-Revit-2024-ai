@@ -76,6 +76,6 @@ Check 'the rfa case exports the family first by NAME, not by position' ($by[$cat
 Check 'the probe deletes the views it duplicated' ($ctx.State.applies.Contains('exp-cleanup'))
 
 $by = Run-Module (New-Ctx $false $false)
-Check 'no rooms: gbxml passes as a no-spaces refusal' ($by[$catalog[4]].Outcome -eq 'pass' -and $by[$catalog[4]].Detail -match 'no spaces')
+Check 'no rooms: gbxml is unverified (not covered), never pass' ($by[$catalog[4]].Outcome -eq 'unverified' -and $by[$catalog[4]].Detail -match 'no spaces')
 
 if ($fails) { "export-formats probe tests: $fails FAILED"; exit 1 } else { 'export-formats probe tests: ALL PASS'; exit 0 }
