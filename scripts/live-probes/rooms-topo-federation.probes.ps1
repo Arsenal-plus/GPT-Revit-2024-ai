@@ -6,6 +6,11 @@
 # linked into itself (the original is never touched), so every level of the link has
 # a host twin by name and height: the rule must answer `matches` for that instance.
 # The link type is deleted afterwards; the document is never saved.
+#
+# rooms/spaces all_enclosed: the own level gets its own floor plan (Revit places a room in
+# a circuit, and finds a level's space regions, only through a plan view of that level).
+# Whether Room Bounding walls of a LINKED model close a host region is NOT measured here -
+# that needs a linked model whose own walls enclose one; the case records the reply's words.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'rooms-topo-federation'
     Catalog = @(
@@ -17,11 +22,12 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'rooms all_enclosed: min_area_m2 = 10 skips the small circuit (skipped_min_area)'; Tool = 'horizun_create_elements' }
         @{ Name = 'rooms all_enclosed: apply creates two rooms, verified'; Tool = 'horizun_create_elements' }
         @{ Name = 'rooms all_enclosed: a second call finds every circuit filled and plans nothing'; Tool = 'horizun_create_elements' }
-        @{ Name = 'spaces all_enclosed: the rehearsal lists the same circuits'; Tool = 'horizun_create_elements' }
+        @{ Name = 'spaces all_enclosed: the rehearsal lists as many NewSpaces2 regions as room circuits'; Tool = 'horizun_create_elements' }
         @{ Name = 'rooms all_enclosed: link-bounded circuits are declared not proven'; Tool = 'horizun_create_elements' }
         @{ Name = 'toposolid: six points on an own level, top re-read (2024+) or refused by name (2023)'; Tool = 'horizun_create_elements' }
         @{ Name = 'toposolid: a LandXML TIN in shared coordinates, placed through the project position (2024+) or refused by name (2023)'; Tool = 'horizun_create_elements' }
         @{ Name = 'rooms-topo probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
+        @{ Name = 'spaces all_enclosed: apply creates a verified space in each region; a second call plans nothing'; Tool = 'horizun_create_elements' }
     )
     Run     = {
         param($Ctx)
@@ -144,6 +150,13 @@ $script:HzProbeModules += [pscustomobject]@{
             $lv = @(Rows (& $Ctx.Apply $CE @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'level'; name = ('HZ_RT_' + $run); elevation = $E }) } ($run + '-rt-level')))
             $level = if ($lv.Count) { [long]$lv[0].element_id } else { $null }
             if ($level) { $created.Add($level) }
+            # NewRoom(Room, PlanCircuit) throws for a level without a view, and NewSpaces2 finds space
+            # regions through one: the level gets its own floor plan, deleted with the rest.
+            $planId = $null
+            if ($level) {
+                $pv = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(@{ operation = 'create_floor_plan'; level_id = [long]$level; name = ('HZ_RT_PLAN_' + $run); key = 'rtplan' }) } ($run + '-rt-plan')
+                if ($pv.stage -eq 'apply' -and -not $pv.answer.isError -and $pv.answer.data.aliases.rtplan) { $planId = [long]$pv.answer.data.aliases.rtplan; $created.Add($planId) }
+            }
             $walls = @()
             if ($level -and $wallType) {
                 $segs = @(@(0, 0, 8000, 0), @(8000, 0, 8000, 4000), @(8000, 4000, 0, 4000), @(0, 4000, 0, 0), @(6000, 0, 6000, 4000))
@@ -154,9 +167,9 @@ $script:HzProbeModules += [pscustomobject]@{
             $ph = & $Ctx.Call 'horizun_manage_phases' @{ operation = 'list'; target_document = $doc }
             $phase = @($ph.data.phases | Where-Object { $_ }) | Select-Object -Last 1
             $phaseId = if ($phase) { [long]$phase.id } else { $null }
-            if (-not ($level -and $walls.Count -eq 5 -and $phaseId)) {
-                $why = "staging incomplete: level {0}, walls {1}/5 ('Basic Wall: Generic - 200mm' {2}), last phase {3}" -f $level, $walls.Count, $(if ($wallType) { 'found' } else { 'not found' }), $phaseId
-                for ($i = 4; $i -le 9; $i++) { Case $i 'unverified' $why }
+            if (-not ($level -and $planId -and $walls.Count -eq 5 -and $phaseId)) {
+                $why = "staging incomplete: level {0}, floor plan {4}, walls {1}/5 ('Basic Wall: Generic - 200mm' {2}), last phase {3}" -f $level, $walls.Count, $(if ($wallType) { 'found' } else { 'not found' }), $phaseId, $planId
+                foreach ($i in @(4, 5, 6, 7, 8, 9, 13)) { Case $i 'unverified' $why }
             }
             else {
                 $roomEntry = @{ kind = 'room'; placement = 'all_enclosed'; level_id = $level; phase_id = $phaseId }
@@ -178,24 +191,36 @@ $script:HzProbeModules += [pscustomobject]@{
                 Case 7 $(if ($ok) { 'pass' } else { 'fail' }) ('requested {0}; actions {1}' -f $again.data.requested, (($ac | ForEach-Object { $_.action }) -join ','))
                 $sp = & $Ctx.Call $CE @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'space'; placement = 'all_enclosed'; level_id = $level; phase_id = $phaseId }) }
                 $spc = @(Circ $sp)
-                $at = { param($c) (@($c.point_inside) | ForEach-Object { [math]::Round([double]$_, 0) }) -join ',' }
-                $roomPts = @($circ | ForEach-Object { & $at $_ } | Sort-Object); $spacePts = @($spc | ForEach-Object { & $at $_ } | Sort-Object)
-                $ok = -not $sp.isError -and $spacePts.Count -ge 2 -and (($roomPts -join ';') -eq ($spacePts -join ';'))
-                Case 8 $(if ($ok) { 'pass' } else { 'fail' }) ('rooms ' + ($roomPts -join ';') + ' | spaces ' + ($spacePts -join ';'))
+                # Space regions come from NewSpaces2 (bounded by space separators, not room separators);
+                # with no separator staged they must be as many as the room circuits. Areas are recorded.
+                $spCreate = @($spc | Where-Object { $_.action -eq 'create' })
+                $areas = { param($list) (@($list | ForEach-Object { [math]::Round([double]$_.area_m2, 1) } | Sort-Object) -join ';') }
+                $ok = -not $sp.isError -and $spCreate.Count -ge 2 -and $spCreate.Count -eq $circ.Count
+                Case 8 $(if ($ok) { 'pass' } else { 'fail' }) ('room circuits m2 ' + (& $areas $circ) + ' | space regions m2 ' + (& $areas $spc) + ' ' + (Short $sp))
                 $lb = [string]$blk.link_bounding
-                Case 9 $(if ($lb -match '^not_proven') { 'not_covered' } else { 'fail' }) ('declared by the reply, measured by nobody yet: ' + $lb)
+                Case 9 $(if ($lb -match '^not_proven') { 'not_covered' } else { 'fail' }) ('declared by the reply and NOT measured by this probe (it needs a linked model whose own walls enclose a region): ' + $lb)
+                $spEntry = @{ kind = 'space'; placement = 'all_enclosed'; level_id = $level; phase_id = $phaseId }
+                $spApp = & $Ctx.Apply $CE @{ target_document = $doc; units = 'mm'; elements = @($spEntry) } ($run + '-rt-spaces')
+                $spaces = @(Rows $spApp)
+                foreach ($spEl in $spaces) { $created.Add([long]$spEl.element_id) }
+                $spAgain = & $Ctx.Call $CE @{ target_document = $doc; units = 'mm'; elements = @($spEntry) }
+                $sa = @(Circ $spAgain)
+                $spBlk = @($spAgain.data.enclosed | Where-Object { $_ }) | Select-Object -First 1
+                $ok = $spaces.Count -ge 2 -and $spaces.Count -eq $spCreate.Count -and -not $spAgain.isError -and [int]$spAgain.data.requested -eq 0 -and
+                      @($sa | Where-Object { $_.action -eq 'skipped_has_space' }).Count -eq $spaces.Count
+                Case 13 $(if ($ok) { 'pass' } else { 'fail' }) ('{0} spaces: {1} | second call: requested {2}, actions {3}, revit_said {4}' -f $spaces.Count, (Short $spApp.answer), $spAgain.data.requested, (($sa | ForEach-Object { $_.action }) -join ','), $spBlk.revit_said)
             }
 
             if ([int]$Ctx.Year -le 2023) {
                 $t23 = & $Ctx.Call $CE @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'toposolid'; level_id = $(if ($level) { $level } else { 1 }); type_id = 1; points = @(@(0, 0, 1000), @(1000, 0, 1000), @(0, 1000, 2000)) }) }
                 $said = ([string]$t23.text) + ' ' + ($t23.data | ConvertTo-Json -Compress -Depth 6)
-                Case 10 $(if ($said -match 'toposolid_not_in_revit_2023') { 'pass' } else { 'fail' }) (Short $t23)
+                Case 10 $(if ($said -match 'toposolid_not_in_revit_2023') { 'pass' } else { 'fail' }) $(if ($said -match 'toposolid_not_in_revit_2023[^"]{0,160}') { $Matches[0] } else { Short $t23 })
                 New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
                 $lx = Join-Path $Ctx.ScratchRoot ('HZ_RT_TIN_' + ($run -replace '[^A-Za-z0-9]', '') + '.xml')
                 Write-TinFile $lx @(@(0, 0, 1000), @(1000, 0, 1000), @(1000, 1000, 2000), @(0, 1000, 1500), @(500, 500, 2500)) ([pscustomobject]@{ angle_degrees = 0; east_west_m = 0; north_south_m = 0; elevation_m = 0 })
                 $l23 = & $Ctx.Call $CE @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'toposolid'; level_id = $(if ($level) { $level } else { 1 }); type_id = 1; landxml_path = $lx }) }
                 $said = ([string]$l23.text) + ' ' + ($l23.data | ConvertTo-Json -Compress -Depth 6)
-                Case 11 $(if ($said -match 'toposolid_not_in_revit_2023') { 'pass' } else { 'fail' }) (Short $l23)
+                Case 11 $(if ($said -match 'toposolid_not_in_revit_2023') { 'pass' } else { 'fail' }) $(if ($said -match 'toposolid_not_in_revit_2023[^"]{0,160}') { $Matches[0] } else { Short $l23 })
             }
             else {
                 $tl = @(Rows (& $Ctx.Apply $CE @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'level'; name = ('HZ_RT_TOPO_' + $run); elevation = 500 }) } ($run + '-rt-topolevel')))
@@ -248,7 +273,7 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         catch {
             $err = 'probe error: ' + [string]$_
-            for ($i = 4; $i -le 11; $i++) { $nm = $names[$i].Name; if (-not @($out | Where-Object { $_.Name -eq $nm }).Count) { Case $i 'unverified' $err } }
+            foreach ($i in @(4, 5, 6, 7, 8, 9, 10, 11, 13)) { $nm = $names[$i].Name; if (-not @($out | Where-Object { $_.Name -eq $nm }).Count) { Case $i 'unverified' $err } }
         }
         finally {
             if ($lx -and (Test-Path -LiteralPath $lx)) { Remove-Item -LiteralPath $lx -Force -ErrorAction SilentlyContinue }

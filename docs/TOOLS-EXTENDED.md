@@ -1477,7 +1477,9 @@ does not matter), with the host's levels. Per link: `matches`, `differs` or
 level at that height under another name; names compare ordinally, so a case
 change counts) or `no_host_level`. Host levels the link does not carry are listed
 in `host_levels_not_in_link` and not judged. Any `differs` fails the verdict; any
-`not_read` makes it `not_decidable`.
+`not_read` makes it `not_decidable`, and so does a host with no link instance: zero links
+compared (`summary.links_compared`) is never a pass. `levels_match: false` (like
+`same_site: false`) asks for nothing, so alone it is refused as declaring nothing.
 
 ### Resumen (español)
 
@@ -2106,22 +2108,41 @@ when the document carries neither category.
 
 An entry `{kind: room|space, placement: "all_enclosed", level_id, phase_id,
 min_area_m2?}` (no `point`, no `name`/`number`) is expanded on every call into one
-row per closed circuit of Revit's `PlanTopology(level, phase)` that does not
-already hold a room (`PlanCircuit.IsRoomLocated`) or a space (`GetSpaceAtPoint`
-in that phase) and is not under `min_area_m2` (shafts, chases). The phase is
-required, never guessed. The reply's `enclosed` block lists EVERY circuit seen
-with `area_m2`, `sides`, `point_inside` (Revit's own interior point: PlanCircuit
-exposes no centroid) and `action` (`create`, `skipped_has_room|space`,
-`skipped_min_area`). Rooms are placed with `NewRoom(Phase)` + `NewRoom(Room,
-PlanCircuit)` in the circuit re-read at apply time (a wall moved since the
-rehearsal refuses as `enclosed_circuit_gone` or as a stale token); spaces with
-`NewSpace(Level, Phase, UV)` at the circuit's interior point - per circuit rather
-than `NewRooms2`/`NewSpaces2`, which fill every circuit and could honour
-`min_area_m2` only by creating and deleting. After the commit each row re-reads
-`area_positive`, `boundary_closed` (every boundary loop closes), `phase_id` and,
-for rooms, `point_inside_room`. NOT PROVEN yet: whether Room Bounding walls of a
-LINKED model close a host circuit - the reply says so and the live probe measures
-it. When nothing is left to fill the reply lists the circuits and writes nothing.
+row per closed region of the level in that phase that holds no room/space yet and
+is not under `min_area_m2` (shafts, chases). The phase is required, never guessed.
+all_enclosed entries go in a batch of their own: the regions are read before anything
+in the batch is built (walls or separators created in the same request would not be
+seen), and the expanded rows would renumber the caller's other entries. The level
+needs a floor plan (`no_floor_plan` otherwise): `NewRoom(Room, PlanCircuit)` throws
+for a level without a view, and space regions are found through one.
+
+ROOMS: the regions are Revit's `PlanTopology(level, phase)` circuits, each listed
+with `area_m2`, `sides`, `is_room_located` and `point_inside` (Revit's own interior
+point: PlanCircuit exposes no centroid). A room goes in with `NewRoom(Phase)` +
+`NewRoom(Room, PlanCircuit)` in the circuit re-read at apply time (a wall moved since
+the rehearsal refuses as `enclosed_circuit_gone` or as a stale token) - per circuit
+rather than `NewRooms2`, which fills every circuit and could honour `min_area_m2` only
+by creating and deleting. SPACES: space regions are bounded by space separators, not
+room separators, so they are the regions Revit's own `NewSpaces2(level, phase, floor
+plan)` fills, read in a transaction that is always rolled back; each is placed with
+`NewSpace(Level, Phase, UV)` at the point Revit chose, and the spaces already standing
+on the level in that phase are listed as `skipped_has_space`. Whether `NewSpaces2`
+throws or answers empty when every region is filled is not measured; its message, if
+any, is kept in `revit_said`. Reading the topology needs a modifiable document (Revit
+computes it on first access), so the rehearsal reads it in the same rolled-back way.
+
+Each region's `action` is `create`, `skipped_has_room|space`, `skipped_min_area` or
+`no_interior_point` (Revit could not give one: listed and skipped, never aborting the
+batch). Plan rows and errors of expanded rows carry `elements_index`, the caller's own
+entry. After the commit each row re-reads `area_positive`, `boundary_closed` (every
+boundary loop closes), `phase_id` and the interior point (`point_inside_room`, or the
+space's own point check). When nothing is left to fill, a rehearsal lists the regions
+and writes nothing; an apply is refused as `stale_plan` (a token is only issued for a
+plan that creates rows); a level and phase with no region at all is refused as
+`no_enclosed_circuit` rather than read as "all filled". NOT PROVEN and NOT MEASURED:
+whether Room Bounding walls of a LINKED model close a host region - the reply says so
+in `link_bounding`; measuring it needs a linked model whose own walls enclose a region,
+which the live probe does not stage.
 `phase_id` and `min_area_m2` belong to the placement: beside a `point` they are refused by
 name rather than accepted and ignored (a point room goes in with `NewRoom(Level, UV)`, in the
 phase Revit gives it). The advertised room/space branches therefore require only `level_id`:
@@ -2161,8 +2182,8 @@ in its place.
 `points` (exactly one of the two). The caller exports ONE TIN surface to LandXML and passes the
 absolute path; `C:\...\site.xml#EG` picks surface `EG` of a file that holds several (a path that
 exists as written is taken whole). Each `<P>` is read as `northing easting elevation` in the
-file's declared `linearUnit`, and only the points a visible face uses are kept (a face marked
-`i="1"` is invisible). Refused by name: no unit or an unknown one, several surfaces and none
+file's declared `linearUnit` (heights in its `elevationUnit` when it declares one), and only the points a visible face uses are kept (a face marked
+`i="1"` is invisible). Refused by name: no unit or an unknown one (linear or elevation), several surfaces and none
 named, a grid surface, a point without an elevation, a face naming an undefined point, a DTD.
 At most 20 000 used points and 64 MB per file (guards, not measured limits).
 
@@ -2181,11 +2202,14 @@ position is not measured yet - check the printed position before applying.
 `rooms-topo-federation.tests.ps1`, shapes from the code until the first live run). On its own
 level at 71 000 mm, far from the model (X = 1 150 000 mm), it draws two bays with walls of
 `Basic Wall: Generic - 200mm` brought by name from the year's `DefaultMetric.rte` (6 x 4 m and
-2 x 4 m at the centrelines, sharing a wall) and uses the document's last phase: the rehearsal
+2 x 4 m at the centrelines, sharing a wall) gives it its own floor plan and uses the document's last phase: the rehearsal
 lists both circuits, `min_area_m2 = 10` marks the small one `skipped_min_area`, the apply
 creates two verified rooms, a second call plans nothing (`skipped_has_room`), the space
-rehearsal lists the same circuits, and link-bounded circuits stay `not_covered` with the
-reply's `not_proven` declaration. The toposolid goes on a second own level at 500 mm from six
+rehearsal lists as many `NewSpaces2` regions as room circuits, the space apply creates a
+verified space in each and a second call plans nothing (`skipped_has_space`), and
+link-bounded regions stay `not_covered` with the reply's `not_proven` declaration - NOT
+measured: the probe stages no linked model with walls of its own, and no region split only
+by a space separator (the bridge has no typed space separator). The toposolid goes on a second own level at 500 mm from six
 non-coplanar points (Z 1 000 to 4 000 mm) with the type `Toposolid: Toposolid` by name, or is
 `not_covered` naming the types it saw; in 2023 the named refusal is the pass. Beside it
 (X + 40 m) the same kind comes from a five-point LandXML TIN the probe writes: a first rehearsal
