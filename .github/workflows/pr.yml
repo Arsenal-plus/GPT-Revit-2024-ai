@@ -107,6 +107,7 @@ jobs:
             'scripts/structural-state.tests.ps1'
             'scripts/parameter-shadowing.tests.ps1'
             'scripts/hz-call.tests.ps1'
+            'scripts/release-gate-exemptions.tests.ps1'
             'scripts/integrations.tests.ps1'
             'scripts/mcpb-portability.tests.ps1'
           )

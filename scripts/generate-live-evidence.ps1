@@ -108,11 +108,14 @@ foreach ($y in $years) {
     $names = @($rows | ForEach-Object { $_.name })
     if ((@($names | Select-Object -Unique)).Count -ne $names.Count) { Fail "the Revit $y artifact carries duplicate probe names." }
     $passRows = @($rows | Where-Object { $_.outcome -eq 'pass' })
-    $badRows = @($rows | Where-Object { $_.outcome -ne 'pass' })
+    . (Join-Path $PSScriptRoot 'release-gate-exemptions.ps1')
+    $exempt = Get-HzReleaseGateExemptions
+    $badRows = @($rows | Where-Object { $_.outcome -ne 'pass' -and -not (Test-HzExemptNotCovered $_ $exempt $y) })
+    $exemptRows = @($rows | Where-Object { Test-HzExemptNotCovered $_ $exempt $y })
     $s = $r.summary
     if ([int]$s.probes -ne $rows.Count) { Fail "the Revit $y summary says probes=$($s.probes) beside $($rows.Count) rows." }
     if ([int]$s.passed -ne $passRows.Count -or $badRows.Count -ne 0 -or
-        [int]$s.failed -ne 0 -or [int]$s.unverified -ne 0 -or [int]$s.not_covered -ne 0) {
+        [int]$s.failed -ne 0 -or [int]$s.unverified -ne 0 -or ([int]$s.not_covered - $exemptRows.Count) -ne 0) {
         Fail "the Revit $y matrix is not green (failed=$($s.failed), unverified=$($s.unverified), not_covered=$($s.not_covered))."
     }
     foreach ($needed in @('the server binary matches the release manifest', 'the add-in binary matches the release manifest')) {

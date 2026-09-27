@@ -3,7 +3,11 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v2.1.3 — 2026-09-27
+## v2.1.4 — 2026-09-27
+
+v2.1.3 was tagged but not released. Its Revit 2024 and 2025 live gates came back 584 passed, 0 failed, 0 unverified, with only the approved exemption not covered - and the gate script then checked the report a second time for not_covered = 0 and failed it. The named exemptions now live in one file, `scripts/release-gate-exemptions.json`, read by verify-live, the gate script, the stable-evidence job and the evidence tools; a report cannot widen it (name, reason and year must all match). Its 2023 gate had two more gaps: the panel-schedule probe now always stages its own panelboard from the year's template (every 2023 panel already had a schedule), and design options in Revit 2023 - which the API cannot create and whose only Autodesk sample has none - joins the list, approved by the project owner.
+
+### From the v2.1.3 tag (not released)
 
 v2.1.0, v2.1.1 and v2.1.2 were tagged but never released; the product is the same in all four. v2.1.2 passed its builds, packaging and installation, and its Revit 2024 and 2025 release gates found 18 failures each - all in the live probes, none in the product: the release model is a workshared central, and probes that opened another model could not give it back (open_document refuses a central), so a dozen later probes refused the active-document check. Fixed and re-run locally on the release runner's exact fixtures (Revit 2024: 755 passed, 0 failed, 0 unverified):
 

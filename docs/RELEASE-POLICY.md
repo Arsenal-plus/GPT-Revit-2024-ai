@@ -54,14 +54,16 @@ never used for public artifacts. See the repository
 ## Named release-gate exemption
 
 A stable release needs every supported Revit year at 0 failed, 0 unverified and 0 not
-covered. One case is exempt from the **not covered** part, by name and for one reason,
-approved by the project owner on 2026-09-27:
+covered. Two cases are exempt from the **not covered** part, each by name, for one reason
+and for the years listed, approved by the project owner on 2026-09-27. The list lives in
+`scripts/release-gate-exemptions.json`, read by every check that judges a release report:
 
 | Case | Allowed only when | Why |
 |---|---|---|
-| `links-survey: scan_deviation measures the top face of a floor staged on a scanned floor` | the release runner names no `PointCloudFloor` fixture | the only scan on the runner is sparse (about one point per square metre); a floor's top face is then correctly reported `not_measured` for low coverage, and no dense scan is available |
+| `links-survey: scan_deviation measures the top face of a floor staged on a scanned floor` | 2023-2027, when the release runner names no `PointCloudFloor` fixture | the only scan on the runner is sparse (about one point per square metre); a floor's top face is then correctly reported `not_measured` for low coverage, and no dense scan is available |
+| `design options: list reports option sets, options and the primary` | Revit 2023 only, when the year's Autodesk sample carries no design options | Revit's API cannot create design options, and the only 2023 sample has none; 2024-2027 measure the case |
 
-The case is still printed and recorded as NOT COVERED in each year's report
+Each case is still printed and recorded as NOT COVERED in that year's report
 (`release_gate_exemptions` names it); it only stops failing the gate. It does not
 cover a different reason: without any point cloud fixture, or with a `PointCloudFloor`
 that measures wrong, the gate fails as before. Remove the exemption from

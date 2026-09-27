@@ -11766,12 +11766,10 @@ $notCovered = @($notCovered | Select-Object -Unique)
 # point-cloud fixture (the only scan available measured ~1 point per m2, so a floor's top
 # face is honestly not_measured for low coverage). It is still printed and recorded as NOT
 # COVERED; it only stops being a gate failure. Remove it when a dense fixture exists.
-$releaseGateExempt = @(
-    [pscustomobject]@{
-        Case   = 'links-survey: scan_deviation measures the top face of a floor staged on a scanned floor'
-        Prefix = 'links-survey: scan_deviation measures the top face of a floor staged on a scanned floor: fixture PointCloudFloor'
-    }
-)
+. (Join-Path $PSScriptRoot 'release-gate-exemptions.ps1')
+$releaseGateExempt = @(Get-HzReleaseGateExemptions | Where-Object { @($_.years | ForEach-Object { [int]$_ }) -contains [int]$Year } | ForEach-Object {
+    [pscustomobject]@{ Case = [string]$_.case; Prefix = ([string]$_.case + ': ' + [string]$_.reason_prefix) }
+})
 
 if ($notCovered.Count -gt 0) {
     Write-Host ""

@@ -66,8 +66,11 @@ function Get-HorizunLiveMatrix {
             }
             # summary.probes counts planned probes; passed also includes two binary
             # checks. They intentionally differ. Compare outcome counters instead.
-            if ($doc.summary.not_covered -ne 0 -or @($doc.not_covered).Count -ne 0 -or
-                $counts.not_covered -gt 0) { $issues.Add('coverage gaps remain') }
+            # Named release-gate exemptions (docs/RELEASE-POLICY.md) are not coverage gaps here.
+            . (Join-Path $PSScriptRoot 'release-gate-exemptions.ps1')
+            $exemptPrefixes = @(Get-HzReleaseGateExemptions | Where-Object { @($_.years | ForEach-Object { [int]$_ }) -contains [int]$doc.revit_year } | ForEach-Object { [string]$_.case + ': ' + [string]$_.reason_prefix })
+            $listedGaps = @(@($doc.not_covered) | Where-Object { $g = [string]$_; -not @($exemptPrefixes | Where-Object { $g.StartsWith($_, [StringComparison]::Ordinal) }).Count })
+            if (@(Get-HzGateNotCovered $doc).Count -gt 0 -or $listedGaps.Count -gt 0) { $issues.Add('coverage gaps remain') }
             if ($counts.fail -gt 0 -or $counts.unverified -gt 0) { $issues.Add('non-passing probes remain') }
             if ($counts.pass -eq 0) { $issues.Add('no passing probes') }
             foreach ($binary in @('horizun-mcp.exe', 'Horizun.Revit.dll')) {
