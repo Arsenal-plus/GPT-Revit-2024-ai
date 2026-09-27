@@ -110,6 +110,14 @@ namespace Horizun.Revit.Commands
             }
 
             var writesToken = request["writes"] as JArray;
+            // A sequence beside another source is refused BEFORE either expands: a tabular
+            // source with nothing to write returns a completed no-op below, and would
+            // otherwise swallow a sequence that was never generated nor refused.
+            bool hasSequence = request["sequence"] != null && request["sequence"].Type != JTokenType.Null;
+            bool hasTabular = request["tabular_source"] != null && request["tabular_source"].Type != JTokenType.Null;
+            if (hasSequence && (hasTabular || (writesToken != null && writesToken.Count > 0)))
+                return CommandResult.Fail("Give writes, tabular_source OR sequence - one source per batch, " +
+                    "because two sources of the same batch cannot be reconciled honestly. Nothing was written.");
             // ---- tabular_source: the writes come from a CSV, diffed against the model
             // NOW. The expansion is deterministic (same file + same model = same ops),
             // the request hash binds the mapping, and the RESOLVED PLAN binds the

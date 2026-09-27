@@ -2254,16 +2254,23 @@ because an insertion point on the floor plane lies on the room's lower boundary.
 target reports `room_from` (`to_room`, `from_room`, `room`, `point`, `point_raised_1ft`).
 
 **Refused before anything is generated** (nothing written): an unknown field; no
-`parameter`; neither or both of `element_ids`/`category`; a `phase_id` that is not a phase
-of the document; `room` without `phase_id`; `restart_per_level` without `level` first; and
+`parameter`; neither or both of `element_ids`/`category`; a `category` that is not one
+exact `OST_` name (numbers and comma lists are refused); a `category` sweep without
+`phase_id`; a `phase_id` that is not a phase of the document; `room` without `phase_id`;
+a second source beside `sequence` (`writes` or `tabular_source`); `restart_per_level` without `level` first; and
 a target without the datum its order needs (no level - its own or its host's -, no
 readable location, not inside a room at the phase), named by id and never sorted to an end.
 
 **Rehearsal and apply.** The reply's `sequence` block lists `order[]` (position, target_id,
-value, level, x_mm, y_mm, room, room_from; the first 500) beside the ordinary `rows`. The
-token binds the options (request hash) AND every generated value (resolved plan): a target
-moved, added or re-roomed between rehearsal and apply regenerates different values and the
-apply is refused as stale. After the commit every row is re-read exactly as for `writes`.
+value, level, x_mm, y_mm, room, room_from, design_option, phase_status; the first 500)
+beside the ordinary `rows`. A `category` sweep numbers only what exists at `phase_id` (New
+or Existing, unphased, or a room/space OF that phase) and nothing in a secondary design
+option; the rest is listed by id in `excluded_other_phase` / `excluded_secondary_option`
+(unplaced rooms in `excluded_unplaced`). The token binds the options (request hash) AND
+every generated VALUE (resolved plan): a change between rehearsal and apply that alters any
+value (order, membership, room) is refused as stale, while a move that leaves every value
+as it was applies exactly what was rehearsed. After the commit every row is re-read exactly
+as for `writes`.
 
 ```json
 { "target_document": "Tower", "sequence": { "parameter": "ALL_MODEL_MARK", "category": "OST_Doors",
@@ -2277,7 +2284,8 @@ X = 1,120,000 mm; offline fakes in `params-sequence.tests.ps1`).
 
 `sequence` genera las escrituras en vez de listarlas: numera los objetivos (`element_ids` o
 una `category`) en el orden declarado por `order_by` (nivel, x, y, habitación; la habitación
-exige `phase_id`), con `prefix`, `start`, `step`, `pad` y `restart_per_level` (que exige el
-nivel como primera clave). Un objetivo sin el dato que su orden necesita se nombra y la
+exige `phase_id`, y también un barrido por `category`, que solo numera lo que existe en esa
+fase y nada de opciones de diseño secundarias), con `prefix`, `start`, `step`, `pad` y
+`restart_per_level` (que exige el nivel como primera clave). Un objetivo sin el dato que su orden necesita se nombra y la
 generación entera se rechaza. Los valores se muestran en el ensayo, el token los ata y cada
 uno se relee tras el commit.

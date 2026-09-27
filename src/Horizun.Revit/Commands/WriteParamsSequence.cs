@@ -9,16 +9,24 @@
 // datums to ParameterSequenceRules, which orders and formats without a Revit.
 // The generated writes then ride the command's ordinary path unchanged: resolved,
 // rehearsed, bound by the token (the request hash binds the options and the
-// resolved plan binds every generated value, so a door moved between rehearsal
-// and apply changes the plan and is refused as stale), written in one transaction
-// and re-read row by row after the commit.
+// resolved plan binds every generated VALUE, so a change between rehearsal and
+// apply that alters any value - order, membership, room - is refused as stale; a
+// move that leaves every value as it was applies exactly what was rehearsed),
+// written in one transaction and re-read row by row after the commit.
 //
 //   * A target missing a datum its order needs is NAMED and refuses the whole
 //     generation (ParameterSequenceRules); nothing is sorted to an arbitrary end.
 //   * Room order needs a phase: the same point can stand in one room in one phase
 //     and in another (or none) in the next. Refused without phase_id.
+//   * A CATEGORY sweep needs phase_id too, and keeps only what exists at that phase
+//     (New or Existing, unphased, or a room/space OF that phase) outside secondary
+//     design options: numbered together, demolished doors and option rooms would
+//     interleave with the real ones. The rest is listed by id, never dropped silently.
+//     The category is ONE exact BuiltInCategory name (Enum.TryParse would also take
+//     '-2000023' or 'OST_Doors,OST_Windows', the OR of both - some third category).
 //   * Every target's datums (level, x/y in internal mm, room and WHERE the room
-//     came from) travel in the reply, so the order can be checked, not trusted.
+//     came from, design option, phase status) travel in the reply, so the order and
+//     the membership can be checked, not trusted.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -93,6 +101,8 @@ namespace Horizun.Revit.Commands
                     "Nothing was written.");
             var elements = new List<Element>();
             var excluded = new JArray();
+            var excludedPhase = new JArray();
+            var excludedOption = new JArray();
             if (haveIds)
             {
                 var bad = new List<string>();
@@ -111,20 +121,36 @@ namespace Horizun.Revit.Commands
             }
             else
             {
-                BuiltInCategory category;
-                if (!Enum.TryParse(categoryName, false, out category))
-                    return CommandResult.Fail("sequence.category '" + categoryName + "' is not a BuiltInCategory name. " +
-                        "Nothing was written.");
+                if (!Enum.GetNames(typeof(BuiltInCategory)).Contains(categoryName, StringComparer.Ordinal))
+                    return CommandResult.Fail("sequence.category '" + categoryName + "' is not a BuiltInCategory name " +
+                        "(one exact OST_ name; numbers and lists are refused). Nothing was written.");
+                var category = (BuiltInCategory)Enum.Parse(typeof(BuiltInCategory), categoryName);
+                if (phase == null)
+                    return CommandResult.Fail("sequence.category needs phase_id: a category holds every phase, and the " +
+                        "sweep numbers only what exists at the phase named (new or existing, or a room/space of that " +
+                        "phase) - never demolished elements or those of other phases. Nothing was written.");
+                var phaseUnreadable = new List<string>();
                 foreach (Element e in new FilteredElementCollector(doc).OfCategory(category).WhereElementIsNotElementType())
                 {
                     // An UNPLACED room/area/space has no position in the model: numbering it by position
                     // would be a guess. It is excluded BY ID, never silently dropped or sorted to an end.
                     if (e is SpatialElement && e.Location == null) { excluded.Add(Rid.Value(e.Id)); continue; }
+                    string outside = SweepExclusion(e, phase);
+                    if (outside == "secondary_design_option") { excludedOption.Add(Rid.Value(e.Id)); continue; }
+                    if (outside == "other_phase") { excludedPhase.Add(Rid.Value(e.Id)); continue; }
+                    if (outside != null) { phaseUnreadable.Add(Rid.Value(e.Id) + " (" + outside + ")"); continue; }
                     elements.Add(e);
                 }
+                if (phaseUnreadable.Count > 0)
+                    return CommandResult.Fail("sequence.category: the phase status of " + phaseUnreadable.Count +
+                        " element(s) could not be read, so their membership cannot be stated: " +
+                        string.Join(", ", phaseUnreadable.Take(20)) + (phaseUnreadable.Count > 20 ? " ..." : "") +
+                        ". Name the targets with element_ids instead. Nothing was written.");
                 if (elements.Count == 0)
                     return CommandResult.Fail("sequence.category " + categoryName + " holds no placed instance element " +
-                        "in this document (" + excluded.Count + " unplaced). Nothing was written.");
+                        "at phase " + Rid.Value(phase.Id) + " in this document (" + excluded.Count + " unplaced, " +
+                        excludedPhase.Count + " of other phases, " + excludedOption.Count + " in secondary design " +
+                        "options). Nothing was written.");
             }
 
             // ---- The datums, read once per target. Nothing here writes.
@@ -150,7 +176,9 @@ namespace Horizun.Revit.Commands
                     ["x_mm"] = point == null ? null : (JToken)Math.Round(point.X * FeetToMm, 1),
                     ["y_mm"] = point == null ? null : (JToken)Math.Round(point.Y * FeetToMm, 1),
                     ["room"] = byRoom ? (JToken)t.Room : null,
-                    ["room_from"] = roomFrom
+                    ["room_from"] = roomFrom,
+                    ["design_option"] = OptionText(e),
+                    ["phase_status"] = phase == null ? null : PhaseStatusText(e, phase)
                 };
             }
 
@@ -181,18 +209,67 @@ namespace Horizun.Revit.Commands
                 ["phase"] = phase == null ? null : new JObject { ["id"] = Rid.Value(phase.Id), ["name"] = phase.Name },
                 ["targets"] = result.Assignments.Count,
                 ["excluded_unplaced"] = excluded,
+                ["excluded_other_phase"] = excludedPhase,
+                ["excluded_secondary_option"] = excludedOption,
                 ["repeats_across_levels"] = result.RepeatsAcrossLevels,
                 ["order"] = order,
                 ["order_truncated"] = result.Assignments.Count > order.Count,
                 ["note"] = "Values generated from the model NOW, in the order shown (keys left to right, x/y quantised " +
                            "to 1 mm in internal coordinates, element id as the last tie-break). They ride the normal " +
-                           "rehearsal: the token binds every generated value, so a target moved, added or re-roomed " +
-                           "before apply refuses as a stale plan. Each written value is re-read after the commit." +
+                           "rehearsal: the token binds every generated value, so a change before apply that alters any " +
+                           "value (order, membership, room) refuses as a stale plan; a move that leaves every value as it " +
+                           "was applies what was rehearsed. Each written value is re-read after the commit." +
+                           (haveIds ? "" : " A category sweep numbers only what exists at phase_id outside secondary " +
+                                           "design options; the rest is listed by id.") +
                            (result.RepeatsAcrossLevels
                                ? " restart_per_level repeats values across levels; Revit may warn about duplicate marks."
                                : "")
             };
             return null;
+        }
+
+        // Whether a swept element belongs to the set numbered at `phase`: null when it does,
+        // else why not. A room or space belongs to exactly ONE phase (ROOM_PHASE_ID); anything
+        // else must be New or Existing there, or unphased (None) - never Demolished, Temporary,
+        // Past or Future. A member of a SECONDARY design option is not the documented model.
+        private static string SweepExclusion(Element e, Phase phase)
+        {
+            DesignOption option = SafeOption(e);
+            if (option != null && !option.IsPrimary) return "secondary_design_option";
+            string status = PhaseStatusText(e, phase);
+            if (status.StartsWith("<unreadable", StringComparison.Ordinal)) return status;
+            return status == "own_phase" || status == nameof(ElementOnPhaseStatus.New) ||
+                   status == nameof(ElementOnPhaseStatus.Existing) || status == nameof(ElementOnPhaseStatus.None)
+                ? null : "other_phase";
+        }
+
+        // What decided membership, shown per target: a room/space's own phase against the one
+        // asked for, else Revit's ElementOnPhaseStatus at that phase.
+        private static string PhaseStatusText(Element e, Phase phase)
+        {
+            try
+            {
+                Parameter own = e is SpatialElement ? e.get_Parameter(BuiltInParameter.ROOM_PHASE_ID) : null;
+                if (own != null && own.StorageType == StorageType.ElementId && own.AsElementId() != ElementId.InvalidElementId)
+                    return own.AsElementId() == phase.Id ? "own_phase" : "other_phase";
+                return e.GetPhaseStatus(phase.Id).ToString();
+            }
+            catch (Exception ex) { return "<unreadable: " + ex.Message + ">"; }
+        }
+
+        private static DesignOption SafeOption(Element e)
+        {
+            try { return e.DesignOption; } catch (Autodesk.Revit.Exceptions.ApplicationException) { return null; }
+        }
+
+        // Null for the main model; else the option's name and whether it is the primary one.
+        private static string OptionText(Element e)
+        {
+            DesignOption o = SafeOption(e);
+            if (o == null) return null;
+            string name;
+            try { name = o.Name; } catch (Autodesk.Revit.Exceptions.ApplicationException) { name = "<unreadable>"; }
+            return (o.IsPrimary ? "primary: " : "secondary: ") + name;
         }
 
         private static string ReadInteger(JObject source, string field, Action<long> set)
