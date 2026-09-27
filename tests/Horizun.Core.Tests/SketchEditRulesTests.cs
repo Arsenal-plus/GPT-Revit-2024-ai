@@ -161,5 +161,49 @@ namespace Horizun.Core.Tests
             Assert.False(SketchEditRules.AreaAgrees(12.02, 12.0));
             Assert.True(SketchEditRules.AreaAgrees(1000.9, 1000.0));
         }
+
+        private static List<SketchPt> SqLoop(double x, double y, double w, double h) =>
+            new List<SketchPt> { new SketchPt(x, y), new SketchPt(x + w, y), new SketchPt(x + w, y + h), new SketchPt(x, y + h) };
+
+        [Fact]
+        public void RoleChange_refuses_a_hole_left_outside_and_an_island_swallowed()
+        {
+            var hole = SqLoop(8000, 8000, 1000, 1000);
+            var before = new List<IList<SketchPt>> { SqLoop(0, 0, 10000, 10000), hole };
+            // The outer loop stops short of the hole without touching it: the hole would become slab.
+            Assert.Contains("loop 1", SketchEditRules.RoleChange(before, new List<IList<SketchPt>> { SqLoop(0, 0, 6000, 6000), hole }));
+            Assert.Null(SketchEditRules.RoleChange(before, new List<IList<SketchPt>> { SqLoop(0, 0, 9500, 9500), hole }));
+            // ... and NetArea, which reads the same parity, would count it as slab: why the plan refuses first.
+            Assert.Equal(6000.0 * 6000 + 1000 * 1000, SketchEditRules.NetArea(new List<IList<SketchPt>> { SqLoop(0, 0, 6000, 6000), hole }), 3);
+            var island = SqLoop(20000, 2000, 1000, 1000);
+            var two = new List<IList<SketchPt>> { SqLoop(0, 0, 10000, 10000), island };
+            Assert.Contains("a solid into a hole", SketchEditRules.RoleChange(two, new List<IList<SketchPt>> { SqLoop(0, 0, 25000, 10000), island }));
+        }
+
+        [Fact]
+        public void ValidateMovedVertex_holds_the_moved_edges_of_a_loop_with_arcs()
+        {
+            // A top side tessellated like an arc, with a chord under 1 mm: ValidateLoop's every-edge
+            // rule refuses the outline itself, which is why the moved vertex is held on its own.
+            var outline = new List<SketchPt> { new SketchPt(0, 0), new SketchPt(4000, 0), new SketchPt(4000, 3000),
+                                               new SketchPt(2000, 3000.5), new SketchPt(2000.5, 3000.6), new SketchPt(0, 3000) };
+            Assert.NotNull(SketchEditRules.ValidateLoop(outline));
+            var fine = outline.ToList(); fine[1] = new SketchPt(4500, -200);
+            Assert.Null(SketchEditRules.ValidateMovedVertex(fine, 1));
+            var crossing = outline.ToList(); crossing[1] = new SketchPt(1000, 5000);
+            Assert.Contains("cross", SketchEditRules.ValidateMovedVertex(crossing, 1));
+            var tiny = outline.ToList(); tiny[1] = new SketchPt(0.5, 0);
+            Assert.Contains("shorter", SketchEditRules.ValidateMovedVertex(tiny, 1));
+        }
+
+        [Fact]
+        public void AlignCyclic_carries_each_old_vertex_to_the_nearest_new_one_in_either_direction()
+        {
+            var old = SqLoop(0, 0, 6000, 4000);
+            // The same rectangle narrowed to 5000, sent clockwise from another corner.
+            var sent = new List<SketchPt> { new SketchPt(5000, 4000), new SketchPt(5000, 0), new SketchPt(0, 0), new SketchPt(0, 4000) };
+            Assert.Equal(new[] { 2, 1, 0, 3 }, SketchEditRules.AlignCyclic(old, sent));
+            Assert.Null(SketchEditRules.AlignCyclic(old, sent.Take(3).ToList()));
+        }
     }
 }

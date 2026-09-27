@@ -3,7 +3,7 @@
 # simulate the sketch (a 2-D loop per element, areas by the shoelace formula) and answer in
 # the shapes TransformElementsCommand.EditSketch.cs builds. SHAPES FROM THE CODE, TO BE HELD
 # AGAINST THE FIRST LIVE RUN: the rehearsal's plan[] (element_id, mode, loop_index,
-# vertex_index, loops_before_mm, loops_expected_mm, sketch_area_before_m2, expected_area_m2,
+# vertex_index, method, sketch_plane, loops_before (model xyz), loops_before_mm, loops_expected_mm, sketch_area_before_m2, expected_area_m2,
 # area_parameter_before_m2, area_check, rehearsal_ok, rehearsal_error) under
 # transaction_status 'rehearsed_and_cancelled' with a confirmation_token; the apply's rows[]
 # (element_id, verified, unique_id_kept, loops_verified, loops_problem, loops_after_mm,
@@ -26,7 +26,7 @@ Set-Content -LiteralPath (Join-Path $fakeRoot 'English\DefaultMetric.rte') -Valu
 $LevelZ = 117000.0
 
 function New-State {
-    $script:nextId = 5000; $script:sent = @{}; $script:deleted = $null; $script:dryCalls = 0; $script:createdIds = New-Object System.Collections.ArrayList
+    $script:nextId = 5000; $script:sent = @{}; $script:deleted = $null; $script:dryCalls = 0; $script:createdIds = New-Object System.Collections.ArrayList; $script:copiedIds = New-Object System.Collections.ArrayList
     $script:docTypes = @{}; $script:elements = @{}
     # Scenario switches, all off by default.
     $script:templateNames = @('Floor: Generic 150mm', 'Compound Ceiling: 600 x 600mm Grid', 'Basic Roof: Generic - 400mm')
@@ -48,7 +48,7 @@ function PlanEdit($op) {
         $off = [math]::Abs([double]$p[2] - $el.planeZ)
         if ($off -gt 1) {
             return @{ error = ("edit_sketch: loop: a point lies {0} mm off the sketch plane. Points are refused rather than projected, so a wrong elevation is never silently flattened; the plane passes through ({1}, {2}, {3}) mm. Nothing was changed." -f
-                    $off.ToString([Globalization.CultureInfo]::InvariantCulture), '1170000', '0', $el.planeZ.ToString([Globalization.CultureInfo]::InvariantCulture)) } }
+                    $off.ToString([Globalization.CultureInfo]::InvariantCulture), '0', '0', $el.planeZ.ToString([Globalization.CultureInfo]::InvariantCulture)) } }
     }
     if ($op.loop) { return @{ id = $id; el = $el; new = (Flat $op.loop); mode = 'replace_loop'; vi = $null } }
     $vi = -1
@@ -62,7 +62,11 @@ function DryReply($pl) {
     Reply ([pscustomobject]@{ dry_run = $true; transaction_status = 'rehearsed_and_cancelled'; targets = 1; confirmation_token = ('tok-' + $pl.id)
         plan = @([pscustomobject]@{ element_id = $pl.id; mode = $pl.mode; loop_index = 0; vertex_index = $pl.vi
             loops_before_mm = @(, @($pl.el.loop)); loops_expected_mm = @(, @($pl.new))
-            coordinates = 'sketch-plane (u, v) in mm from the plane origin, along its X and Y directions'
+            # The fake's plane origin is (0, 0, z) with world axes, so its (u, v) are the model's x, y.
+            sketch_plane = [pscustomobject]@{ origin = @(0.0, 0.0, $pl.el.planeZ); x_dir = @(1.0, 0.0, 0.0); y_dir = @(0.0, 1.0, 0.0); normal = @(0.0, 0.0, 1.0) }
+            loops_before = @(, @($pl.el.loop | ForEach-Object { , @([double]$_[0], [double]$_[1], $pl.el.planeZ) }))
+            method = $(if ($pl.mode -eq 'move_vertex' -or @($pl.new).Count -eq @($pl.el.loop).Count) { 'reshape_in_place' } else { 'delete_and_redraw' })
+            coordinates = 'loops_before/loops_expected: model [x,y,z] in the request''s units; *_mm: (u, v) in mm from sketch_plane.origin'
             sketch_area_before_m2 = $before; expected_area_m2 = (Area2 $pl.new); area_parameter_before_m2 = $before; area_check = 'will_verify'
             rehearsal_ok = $true; rehearsal_error = $null; rehearsal_detail = [pscustomobject]@{ curves_deleted = 4; curves_created = @($pl.new).Count } })
         note = 'The edit was rehearsed inside the element''s SketchEditScope and Cancelled.' }) $false ''
@@ -108,7 +112,7 @@ $fakeApply = {
             $name = @($arguments.type_names)[0]
             if ($script:templateNames -notcontains $name) { return @{ stage = 'dry_run'; answer = (Reply $null $true "type '$name' was not found in the source document") } }
             $fam, $typ = $name -split ': ', 2
-            $script:nextId++
+            $script:nextId++; [void]$script:copiedIds.Add([long]$script:nextId)
             $script:docTypes[$arguments.category] = @($script:docTypes[$arguments.category]) + @([pscustomobject]@{ element_id = $script:nextId; is_element_type = $true; family = $fam; type = $typ }) | Where-Object { $_ }
             return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ copied = 1 }) $false '') }
         }
@@ -157,8 +161,9 @@ try {
     Check 'the floor was created with the first named floor type' ($script:sent['t1-sk-floor'].elements[0].type_id -eq @($script:docTypes['OST_Floors'] | Where-Object { $_.type -eq 'Generic 150mm' })[0].element_id)
     Check 'the roof type falls back to the second name when the template lacks the first' (($script:sent.ContainsKey('t1-sk-rooftype1')) -and ($script:sent.ContainsKey('t1-sk-rooftype2')) -and
         ($script:sent['t1-sk-roof'].elements[0].type_id -eq @($script:docTypes['OST_Roofs'])[0].element_id) -and (@($script:docTypes['OST_Roofs'])[0].type -eq 'Generic - 400mm'))
-    Check 'cleanup deletes the four staged elements (level, floor, ceiling, roof) and nothing else' ((@($script:deleted).Count -eq 4) -and ($script:createdIds.Count -eq 4) -and
-        (@($script:createdIds | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0))
+    Check 'cleanup deletes the four staged elements and the three types copied from the template, and nothing else' ((@($script:deleted).Count -eq 7) -and
+        ($script:createdIds.Count -eq 4) -and ($script:copiedIds.Count -eq 3) -and
+        (@(@($script:createdIds) + @($script:copiedIds) | Where-Object { @($script:deleted) -notcontains $_ }).Count -eq 0))
     Check 'the rehearsal case sends two dry runs on the floor, the ceiling one, the roof one' ($script:dryCalls -eq 4)
 
     # ---- a type already in the document is used without a copy ----
@@ -166,6 +171,7 @@ try {
     $script:docTypes['OST_Floors'] = @([pscustomobject]@{ element_id = 77; is_element_type = $true; family = 'Floor'; type = 'Generic 300mm' })
     $null = RunBy (Ctx 't2')
     Check 'a floor type the document already carries by name is used, no floor copy sent' (($script:sent['t2-sk-floor'].elements[0].type_id -eq 77) -and -not ($script:sent.Keys | Where-Object { $_ -like 't2-sk-floortype*' }))
+    Check 'a type the document already carried is not deleted at cleanup' (@($script:deleted) -notcontains 77)
 
     # ---- the ceiling's plane lies elsewhere: re-sent there once, and said ----
     New-State; $script:ceilingPlaneLift = 2400.0

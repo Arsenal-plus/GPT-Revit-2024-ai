@@ -15,7 +15,7 @@
 # horizun_query_model read of the same id in the same category after the commit. The
 # rehearsal case sends two dry runs: the second must still read the ORIGINAL boundary, the
 # only outside proof that the first was cancelled. FootPrintRoof is refused by name (no
-# SketchId in 2023-2027). Everything staged is deleted with horizun_delete_verified
+# SketchId in 2023-2027). Everything staged, the types copied from the template included, is deleted with horizun_delete_verified
 # mode='ids'; the document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'sketch-edits'
@@ -82,7 +82,8 @@ $script:HzProbeModules += [pscustomobject]@{
                         type_names = @($n); duplicate_types = 'use_destination' } ($run + '-sk-' + $key + $k)
                 if ($cp.stage -ne 'apply' -or $cp.answer.isError) { continue }
                 $hit = @(Types $category | Where-Object { [string]$_.family -eq $fam -and [string]$_.type -eq $typ }) | Select-Object -First 1
-                if ($hit) { return $hit }
+                # Copied here, so this module's to delete at cleanup along with its elements.
+                if ($hit) { [void]$created.Add([long]$hit.element_id); return $hit }
             }
             return $null
         }

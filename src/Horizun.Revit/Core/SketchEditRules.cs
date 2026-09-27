@@ -93,14 +93,41 @@ namespace Horizun.Revit.Core
             for (int i = 0; i < loops.Count; i++)
             {
                 if (loops[i] == null || loops[i].Count < 3) continue;
-                SketchPt probe = Centroidish(loops[i]);
-                int depth = 0;
-                for (int j = 0; j < loops.Count; j++)
-                    if (j != i && loops[j] != null && loops[j].Count >= 3 && PointInPolygon(probe, loops[j])) depth++;
                 double a = Math.Abs(SignedArea(loops[i]));
-                total += depth % 2 == 0 ? a : -a;
+                total += Depth(loops, i) % 2 == 0 ? a : -a;
             }
             return total;
+        }
+
+        /// <summary>How many OTHER loops contain loop i, tested at its first edge's midpoint: even is solid, odd a hole.</summary>
+        public static int Depth(IList<IList<SketchPt>> loops, int i)
+        {
+            if (loops == null || i < 0 || i >= loops.Count || loops[i] == null || loops[i].Count < 3) return 0;
+            SketchPt probe = Centroidish(loops[i]);
+            int depth = 0;
+            for (int j = 0; j < loops.Count; j++)
+                if (j != i && loops[j] != null && loops[j].Count >= 3 && PointInPolygon(probe, loops[j])) depth++;
+            return depth;
+        }
+
+        /// <summary>
+        /// Null when every loop keeps its role across an edit - solid or hole, by the same
+        /// containment parity NetArea uses; otherwise the first loop whose role changes, named.
+        /// A hole the new boundary leaves outside would become a solid island (slab where the
+        /// opening was) and an island a grown boundary swallows would become a hole: neither is
+        /// a boundary edit, and the area cannot tell, because it agrees with the new sketch.
+        /// </summary>
+        public static string RoleChange(IList<IList<SketchPt>> before, IList<IList<SketchPt>> after)
+        {
+            if (before == null || after == null || before.Count != after.Count) return "the number of loops changed.";
+            for (int i = 0; i < before.Count; i++)
+            {
+                bool holeBefore = Depth(before, i) % 2 == 1, holeAfter = Depth(after, i) % 2 == 1;
+                if (holeBefore != holeAfter)
+                    return "loop " + i + " would turn from " + (holeBefore ? "a hole into a solid island" : "a solid into a hole") +
+                           ": the edit carries a boundary across it. Keep every loop inside or outside the others as it was.";
+            }
+            return null;
         }
 
         // The midpoint of the first edge nudged inwards would be exact; a vertex is not
@@ -139,6 +166,57 @@ namespace Horizun.Revit.Core
                 }
             if (Math.Abs(SignedArea(loop)) < 1.0) return "the loop encloses no area.";
             return null;
+        }
+
+        /// <summary>
+        /// A vertex move on a loop that holds arcs, held on the loop's tessellated outline (the
+        /// moved vertex at index k): both edges that meet there at least MinimumSegmentMm, neither
+        /// touching a segment it shares no vertex with, and the outline still enclosing area.
+        /// ValidateLoop cannot be used there - an arc's chords are sub-millimetre by design - and
+        /// only these two edges changed, so only they can make the loop cross itself.
+        /// </summary>
+        public static string ValidateMovedVertex(IList<SketchPt> outline, int k)
+        {
+            int n = outline == null ? 0 : outline.Count;
+            if (n < 3 || k < 0 || k >= n) return "the moved vertex is not on the loop.";
+            int prev = (k - 1 + n) % n, next = (k + 1) % n;
+            if (outline[prev].DistanceTo(outline[k]) < MinimumSegmentMm || outline[k].DistanceTo(outline[next]) < MinimumSegmentMm)
+                return "an edge at the moved vertex would be shorter than " + MinimumSegmentMm + " mm.";
+            foreach (int e in new[] { prev, k })
+                for (int j = 0; j < n; j++)
+                {
+                    if (j == e || j == (e - 1 + n) % n || j == (e + 1) % n) continue;   // shares a vertex with e
+                    if (SegmentsTouch(outline[e], outline[(e + 1) % n], outline[j], outline[(j + 1) % n]))
+                        return "an edge at the moved vertex meets segment " + j + " of the loop's outline: the loop would cross itself.";
+                }
+            if (Math.Abs(SignedArea(outline)) < 1.0) return "the loop would enclose no area.";
+            return null;
+        }
+
+        /// <summary>
+        /// For a loop redrawn with the same number of vertices: map[i] is the index in the new
+        /// loop that old vertex i goes to - the rotation and direction with the least total
+        /// displacement - so each existing edge is reshaped onto the new edge nearest to where it
+        /// was, and what that curve carries stays on its side. Null when the counts differ.
+        /// </summary>
+        public static int[] AlignCyclic(IList<SketchPt> oldLoop, IList<SketchPt> newLoop)
+        {
+            if (oldLoop == null || newLoop == null || oldLoop.Count != newLoop.Count || oldLoop.Count == 0) return null;
+            int n = oldLoop.Count;
+            int[] best = null; double bestCost = double.MaxValue;
+            for (int offset = 0; offset < n; offset++)
+                for (int dir = 1; dir >= -1; dir -= 2)
+                {
+                    double cost = 0;
+                    for (int i = 0; i < n; i++) cost += oldLoop[i].DistanceTo(newLoop[((offset + dir * i) % n + n) % n]);
+                    if (cost < bestCost - 1e-9)
+                    {
+                        bestCost = cost;
+                        best = new int[n];
+                        for (int i = 0; i < n; i++) best[i] = ((offset + dir * i) % n + n) % n;
+                    }
+                }
+            return best;
         }
 
         /// <summary>
@@ -287,7 +365,7 @@ namespace Horizun.Revit.Core
                     if (loops[l][v].DistanceTo(p) < tolMm) { hits++; loopIndex = l; vertexIndex = v; }
             if (hits == 1) return true;
             problem = hits == 0
-                ? "no vertex of the boundary lies within " + tolMm + " mm of start (" + Math.Round(p.X, 1) + ", " + Math.Round(p.Y, 1) + " in the sketch plane); the dry run lists every loop's vertices."
+                ? "no vertex of the boundary lies within " + tolMm + " mm of start (" + Math.Round(p.X, 1) + ", " + Math.Round(p.Y, 1) + " in the sketch plane); the current boundary is listed with this refusal."
                 : hits + " vertices lie within " + tolMm + " mm of start; name one unambiguously.";
             loopIndex = -1; vertexIndex = -1;
             return false;
