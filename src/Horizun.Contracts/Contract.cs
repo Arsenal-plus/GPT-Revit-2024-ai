@@ -4731,14 +4731,16 @@ namespace Horizun.Contracts
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""route_run"", ""network_census""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""route_run"", ""network_census"", ""system_analysis""] },
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""maxItems"": 500, ""description"": ""network_census: seed elements; omitted, every MEP curve seeds (refused above 2000 - name seeds to bound it). Membership is CONNECTOR CONNECTIVITY (IsConnected), never geometric coincidence; each component reports elements, open connectors, systems and domains."" },
     ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct""] },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""level_id"": { ""type"": ""integer"" },
     ""type_id"": { ""type"": ""integer"", ""description"": ""PipeType or DuctType."" },
     ""system_type_id"": { ""type"": ""integer"", ""description"": ""PipingSystemType or MechanicalSystemType."" },
-    ""points"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 50, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } }
+    ""points"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 50, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } },
+    ""classification"": { ""type"": ""string"", ""description"": ""system_analysis without element_ids: a MEPSystemClassification name, e.g. SupplyAir."" },
+    ""limits"": { ""type"": ""object"", ""description"": ""system_analysis: max_velocity_m_s, max_pressure_loss_pa, max_friction_pa_per_m. Sections beyond them are listed."" }
   }
 }")
             },
