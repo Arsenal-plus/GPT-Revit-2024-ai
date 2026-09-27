@@ -46,16 +46,16 @@ namespace Horizun.Revit.Core
         public string LinkSiteName;
     }
 
-    public static class FederationCheckRules
+    public static partial class FederationCheckRules
     {
-        private static readonly HashSet<string> RuleKeys = new HashSet<string>(StringComparer.Ordinal) { "models", "expected_links", "same_site" };
+        private static readonly HashSet<string> RuleKeys = new HashSet<string>(StringComparer.Ordinal) { "models", "expected_links", "same_site", "levels_match" };
 
         /// <summary>Null when the rules are usable, else the refusal.</summary>
         public static string Validate(JObject rules)
         {
             if (rules == null) return "rules is required.";
             foreach (JProperty p in rules.Properties())
-                if (!RuleKeys.Contains(p.Name)) return "rules: unknown key '" + p.Name + "'. Known: models, expected_links, same_site.";
+                if (!RuleKeys.Contains(p.Name)) return "rules: unknown key '" + p.Name + "'. Known: models, expected_links, same_site, levels_match.";
             foreach (JObject m in (rules["models"] as JArray)?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
             {
                 string match = m.Value<string>("match");
@@ -70,7 +70,9 @@ namespace Horizun.Revit.Core
                 if (string.IsNullOrWhiteSpace(nm) || !IsRegex(nm)) return "every expected_links entry needs a valid name_matches regex.";
                 if (l["workset_matches"] != null && !IsRegex(l.Value<string>("workset_matches"))) return "workset_matches '" + l["workset_matches"] + "' is not a valid regex.";
             }
-            if (rules["models"] == null && rules["expected_links"] == null && rules["same_site"] == null)
+            string levels = ValidateLevelsMatch(rules["levels_match"]);
+            if (levels != null) return levels;
+            if (rules["models"] == null && rules["expected_links"] == null && rules["same_site"] == null && rules["levels_match"] == null)
                 return "rules declares nothing to check.";
             return null;
         }
@@ -88,7 +90,7 @@ namespace Horizun.Revit.Core
                                           string.Equals((string)t, name, StringComparison.OrdinalIgnoreCase));
 
         public static JObject Evaluate(JObject rules, IList<FederationModelFact> models, IList<FederationLinkFact> links,
-                                       double toleranceMm, int maxItems)
+                                       double toleranceMm, int maxItems, FederationLevelInput levelInput = null)
         {
             var modelRows = new JArray();
             int outOfPlace = 0, unclassified = 0;
@@ -174,9 +176,14 @@ namespace Horizun.Revit.Core
                     });
                 }
 
-            bool fails = outOfPlace > 0 || missing > 0 || duplicated > 0 || wrongWorkset > 0 || incoherent > 0;
-            bool open = unclassified > 0 || undecided > 0;
-            return new JObject
+            // ---- levels_match (FederationLevelRules.cs) ------------------------------------
+            int levelsDiffer = 0, levelsNotRead = 0;
+            JArray levelRows = LevelsRequested(rules)
+                ? EvaluateLevels(rules, links, levelInput, toleranceMm, maxItems, out levelsDiffer, out levelsNotRead) : null;
+
+            bool fails = outOfPlace > 0 || missing > 0 || duplicated > 0 || wrongWorkset > 0 || incoherent > 0 || levelsDiffer > 0;
+            bool open = unclassified > 0 || undecided > 0 || levelsNotRead > 0;
+            var result = new JObject
             {
                 ["verdict"] = fails ? "fails" : open ? "not_decidable" : "passes",
                 ["summary"] = new JObject
@@ -195,6 +202,13 @@ namespace Horizun.Revit.Core
                 })),
                 ["tolerance_mm"] = toleranceMm
             };
+            if (levelRows != null)
+            {
+                result["levels"] = levelRows;
+                result["summary"]["links_levels_differ"] = levelsDiffer;
+                result["summary"]["links_levels_not_read"] = levelsNotRead;
+            }
+            return result;
         }
     }
 }

@@ -426,6 +426,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleImport.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleLinkRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\FederationCheckRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\FederationLevelRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Confirmation.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GeometrySignature.cs" />

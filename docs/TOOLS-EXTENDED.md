@@ -1468,6 +1468,17 @@ project location and through the instance transform plus the host's; the largest
 disagreement is compared with `tolerance_mm` (default 10). An unloaded link is
 `not_decidable`. Link workset and phase are reported.
 
+`levels_match` (`true` or `{tolerance_mm}`; default the call's `tolerance_mm`)
+compares every level of every LOADED link, taken into host coordinates through
+the instance's total transform (`ProjectElevation`, so the Elevation Base setting
+does not matter), with the host's levels. Per link: `matches`, `differs` or
+`not_read` (unloaded or unreadable - never counted as matching). Each mismatch is
+`elevation_differs` (same name, height beyond tolerance), `name_differs` (a host
+level at that height under another name; names compare ordinally, so a case
+change counts) or `no_host_level`. Host levels the link does not carry are listed
+in `host_levels_not_in_link` and not judged. Any `differs` fails the verdict; any
+`not_read` makes it `not_decidable`.
+
 ### Resumen (español)
 
 - `horizun_code_check`: evalúa requirement-sets declarativos (parámetros y medidas

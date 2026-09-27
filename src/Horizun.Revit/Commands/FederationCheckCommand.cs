@@ -17,7 +17,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class FederationCheckCommand : ICommand
+    public sealed partial class FederationCheckCommand : ICommand
     {
         public string Name => "horizun_federation_check";
 
@@ -49,6 +49,7 @@ namespace Horizun.Revit.Commands
             var links = new List<FederationLinkFact>();
             var seenDocs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var notLoaded = new JArray();
+            FederationLevelInput levelInput = FederationCheckRules.LevelsRequested(rules) ? HostLevels(doc) : null;
             foreach (RevitLinkInstance inst in new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
             {
                 Document linkDoc = null;
@@ -69,13 +70,14 @@ namespace Horizun.Revit.Commands
                 else
                 {
                     SameSite(doc, inst, linkDoc, f);
+                    if (levelInput != null) ReadLinkLevels(inst, linkDoc, f.InstanceId, levelInput);
                     if (needCategories && seenDocs.Add(linkDoc.PathName ?? title))
                         models.Add(ModelFact(linkDoc, title, false, maxItems));
                 }
                 links.Add(f);
             }
 
-            JObject result = FederationCheckRules.Evaluate(rules, models, links, tolerance, maxItems);
+            JObject result = FederationCheckRules.Evaluate(rules, models, links, tolerance, maxItems, levelInput);
             result["document"] = doc.Title;
             result["links_not_loaded"] = notLoaded;
             result["not_loaded_means"] = "an unloaded link's content and coordinates cannot be read: its models row is absent and its site is not_decidable.";

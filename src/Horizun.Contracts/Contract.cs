@@ -4978,7 +4978,7 @@ namespace Horizun.Contracts
   ""type"": ""object"", ""required"": [""rules""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""rules"": { ""type"": ""object"", ""description"": ""{models:[{match (title regex or $host), allowed_categories?, forbidden_categories?}], expected_links:[{name_matches, count?, workset_matches?}], same_site?}"" },
+    ""rules"": { ""type"": ""object"", ""description"": ""{models:[{match (title regex or $host), allowed_categories?, forbidden_categories?}], expected_links:[{name_matches, count?, workset_matches?}], same_site?, levels_match?}"" },
     ""tolerance_mm"": { ""type"": ""number"" },
     ""max_items"": { ""type"": ""integer"" }
   },
