@@ -117,6 +117,14 @@ namespace Horizun.Revit.Core
                 "SlabShapeCommand.cs: SlabShapeVertex.Position.Z is undocumented as absolute or relative; both readings are accepted and the one that held is reported in evidence.z_convention."),
             Row("horizun_create_railing", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"), F(C + "CreateRailingCommand.cs", C + "ModelEditRunner.cs"),
                 "CreateRailingCommand.cs: a sketched path is compared in plan (x, y); its z is reported, not judged."),
+            // horizun_framing: every planned member re-read (type, endpoints within 1 mm, inside the
+            // source wall's layer / the ceiling's boundary), counts per role == plan, no stud through an
+            // opening, the wall's hosted inserts untouched; read/remove by the marker on each member
+            // (a copied member, whose own UniqueId differs from its marker's, is never removed);
+            // a remove's cascade measured in the rehearsal, bound by the token and re-read.
+            Row("horizun_framing", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"),
+                F(C + "FramingCommand.cs", C + "FramingApply.cs", C + "FramingCeiling.cs", "Horizun.Revit/Core/WallFramingRules.cs", "Horizun.Revit/Core/CeilingFramingRules.cs"),
+                "FramingCeiling.cs: after the commit each hanger is re-cast and its top must meet the first support within 1 mm (hanger_reaches_support); that support is not compared by id with the one the planning ray hit (evidence.hanger_supports)."),
 
             Row("horizun_manage_groups", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
                 F(C + "ManageGroupsCommand.cs", "Horizun.Revit/Core/GroupWorksetRules.cs"),

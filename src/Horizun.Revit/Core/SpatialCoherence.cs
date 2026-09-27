@@ -121,6 +121,7 @@ namespace Horizun.Revit.Core
                         LinesOpeningHost = LinesOpeningHost(a, b) || LinesOpeningHost(b, a),
                         Connected = Connected(a, b),
                         SameAssembly = SameAssembly(a, b),
+                        FramedBy = Horizun.Revit.Commands.FramingMarker.Frames(a, b),
                         SharedVolume = shared,
                         VolumeA = Volume(sa), VolumeB = Volume(sb)
                     };

@@ -1882,3 +1882,202 @@ What the verdict rests on:
 
 Live probe: `scripts/live-probes/cde-cloud-issues.probes.ps1` (read-only cases; the apply
 is `not_covered` and is run by hand, with the user's approval, against a test project).
+
+## horizun_framing: light-gauge / drywall framing from a detail
+
+A consultancy often models, from wall-type and ceiling DETAILS (received as images or
+2-D DWG details), the framing the finished walls and ceilings hide. `horizun_framing`
+builds exactly that framing from a typed **spec**. It never reads an image: the MCP
+client (a vision-capable model, guided by the prompt `framing-from-detail`) reads the
+detail into the spec, the person confirms it, and the tool builds and re-reads it.
+Families, sizes, spacings and rules are the caller's data; nothing organisation-specific
+is compiled in.
+
+| operation | writes | what it does |
+|---|---|---|
+| `wall` | yes | studs, tracks, kings, jacks, headers, sills, cripples and blocking inside one layer of each straight Basic wall in `element_ids` (or visible in `view_id`, where curtain, stacked and curved walls are listed in `plan.skipped` with their reason instead of refusing the call; named in `element_ids` they refuse) |
+| `ceiling` | yes | mains, cross (furring) channels, perimeter track and hangers for each Ceiling in `element_ids` (or visible in `view_id`, where sloped, multi-region and sketchless ceilings are listed in `plan.skipped` with their reason; named in `element_ids` they refuse), the hangers ray-cast to the structure above |
+| `read` | no | what a previous apply produced, per source, found by the marker on each member (`member_count` counts members; the reference planes created for line-based members are counted apart in `work_plane_count`) |
+| `remove` | yes | deletes the members (and their work planes) a previous apply produced for `element_ids`, verified |
+
+Every write rehearses first (`dry_run` defaults to true) and returns a
+`confirmation_token` that binds the operation, the sources, the spec and the RESOLVED
+PLAN: every member's role, type and both endpoints. A wall that moved, gained a door or
+changed type between the rehearsal and the apply yields another plan, the token no longer
+matches, and nothing is written. The apply sends the token and an `idempotency_key`.
+
+### Example: a 92 mm (3-5/8") stud partition at 406 mm (16") on centre
+
+```json
+{
+  "operation": "wall", "element_ids": [412345], "dry_run": true,
+  "spec": { "wall": {
+    "layer": "core",
+    "stud":  { "type_id": 900101, "spacing_mm": 406.4, "start": "wall_start", "double_at_ends": false, "width_mm": 41.3 },
+    "track": { "bottom_type_id": 900102, "top_same_as_bottom": true, "thickness_mm": 0.9 },
+    "openings": { "king_studs": 1, "jack_studs": true, "header_type_id": 900102, "sill_type_id": 900102, "cripple_spacing_mm": 406.4,
+                  "header_depth_mm": 92.1, "sill_depth_mm": 92.1 },
+    "blocking": [ { "height_mm": 1200, "type_id": 900102 } ]
+  } }
+}
+```
+
+### Example: a suspended drywall ceiling (mains at 1200, furring at 400, hangers at 1200)
+
+```json
+{
+  "operation": "ceiling", "element_ids": [523456], "dry_run": true,
+  "spec": { "ceiling": {
+    "main":      { "type_id": 900201, "spacing_mm": 1200, "direction": "short", "depth_mm": 38 },
+    "cross":     { "type_id": 900202, "spacing_mm": 400, "depth_mm": 22 },
+    "perimeter": { "type_id": 900203, "depth_mm": 22 },
+    "hanger":    { "type_id": 900204, "spacing_mm": 1200, "max_length_mm": 3000, "attach": "structure_above" },
+    "drop_mm": 22
+  } }
+}
+```
+
+### Spec fields and defaults
+
+- **wall.layer**: `"core"` (default) puts the studs on the core's structural layer, else
+  the thickest core layer, else the thickest layer (reported as `choice`); an integer is a
+  compound layer index, exterior first. A membrane (zero thickness) is refused.
+- **wall.stud**: `type_id` and `spacing_mm` required; `start` `wall_start` (default) |
+  `wall_end` | `centred`; `max_first_bay_mm`; `double_at_ends` (default false); `width_mm`
+  (the flange along the wall; default the type's published section width, refused when
+  neither exists).
+- **wall.track**: `bottom_type_id` required; `top_type_id` or `top_same_as_bottom`
+  (default true when no top type is named); `thickness_mm` (default 0 with a warning:
+  studs then run from base to top of wall).
+- **wall.openings**: `king_studs` 1 (default) or 2, `jack_studs` (default true),
+  `header_type_id`, `sill_type_id`, `cripple_spacing_mm`, `header_depth_mm`, `sill_depth_mm`
+  (the header's / sill's section depth in z: the header's axis sits at head + depth/2 on
+  the jacks and the cripples above start at head + depth; the sill's axis at sill - depth/2
+  and the cripples below end at sill - depth; a blocking row inside that framed depth is
+  skipped. Without a depth the axis sits ON the head / sill line, half the member in the
+  void, and the plan warns `no_header_depth` / `no_sill_depth`. A header that would rise
+  into the top track, or a sill that would sink into the bottom track, is not placed and
+  is named in `warnings`). Hosted doors, windows and
+  rectangular wall openings are read from the wall (rough size when the family publishes
+  it, else nominal, else the bounding box; each opening says which in `read_from`). A stud
+  station inside an opening is removed; no stud ever crosses one. A cripple that meets
+  ANOTHER opening's framed void (a vent stacked over a door) is cut around it
+  (`cripple_cut_by_opening:<own>:<other>`), and one that would overlap a member already
+  placed (a `cripple_spacing_mm` barely above the stud width) is dropped
+  (`cripple_overlaps_member_dropped:<opening>`). The post-commit `no_stud_through_opening`
+  re-read allows the same 1 mm as `member_endpoints`, so a jack flush with the jamb read
+  back a hair inside it is round-off, not a crossing.
+- **wall.blocking**: up to 20 rows `{height_mm, type_id}`, split at the studs.
+- **ceiling.main**: `type_id`, `spacing_mm` required; `direction` `short` | `long`
+  (default) | an angle in degrees. **ceiling.cross** `{type_id, spacing_mm}`,
+  **ceiling.perimeter** `{type_id}` optional. **ceiling.hanger**: `type_id`, `spacing_mm`
+  (along each main) required; `max_length_mm` default 3000; `end_offset_mm` default half
+  the spacing; `attach` `structure_above`. **ceiling.drop_mm**: from the ceiling's top face
+  up to the mains' underside, default 0 (in the example the furring, 22 mm deep, sits on
+  the board and the mains bear on the furring). `depth_mm` on main, cross and perimeter is
+  optional: each axis sits half its depth above the face it bears on; without it the axis
+  sits ON that face and the plan says so in `warnings`.
+
+### Ceiling geometry
+
+- **Boundary**: the ceiling's own sketch, every loop chained end to end (arcs tessellated),
+  the largest loop first; holes are honoured. A sketch with a second region outside the
+  largest one is refused (split it into one ceiling per region), and so is a sloped
+  ceiling (its box taller than the type's compound width + 1 mm). Under a `view_id` scope
+  either one is listed in `plan.skipped` instead, and the call refuses only when every
+  ceiling the view shows was skipped.
+- **Heights** (model z, mm): cross and perimeter axes at top face + depth/2; mains at top
+  face + `drop_mm` + depth/2; each hanger from the mains' top face up to its support.
+- **Hangers**: one ray straight up per station, from the mains' top face, against floors,
+  structural framing and roofs of the host and of loaded links, in a temporary 3-D view
+  that is always rolled back (no template, filters or section box; the ceiling's phase).
+  The nearest hit within `max_length_mm` is the support and its distance the rod; a
+  horizun_framing member is never a support. A station with nothing above is listed in
+  `no_support_above` (main index and point) and NOT placed; the counts, the signature
+  and the confirmation token are those of the hangers that will exist.
+- **Verification** adds `inside_boundary`: every member end within 1 mm of the sketch
+  boundary (holes count), and reports per ceiling `hanger_supports` (support -> hangers).
+
+Spec errors come back together, before anything is read from the model, as
+`{path, code, detail}` with code `missing`, `not_object`, `not_integer`, `not_number`,
+`not_boolean`, `below_minimum`, `above_maximum`, `bad_value`, `conflict`, `not_array` or
+`unknown_field` (the reply's `code` is `invalid_spec`, `write_started` false). Spacings are
+bounded to 10..20000 mm, so a spacing typed in inches or metres refuses arithmetically
+instead of placing millions of members; a call plans at most 5000 members per source and
+20000 in total.
+
+### Category and placement rules
+
+The member's family decides how it is placed, and a family that cannot take the member's
+orientation is refused by name before anything is written:
+
+- **Structural Framing** places as a beam (`StructuralType.Beam`) on a HORIZONTAL axis only:
+  tracks, headers, sills, blocking, mains, cross, perimeter. Its z-justification is set to
+  centre so the axis is the member's centreline, and its automatic joins are switched off
+  at both ends: a track or a blocking piece ends where the plan says, against a stud's
+  face, instead of being cut back or extended by Revit to meet a column or another beam.
+- **Structural Columns** place as a column (`StructuralType.Column`) on a VERTICAL axis only:
+  studs, kings, jacks, cripples, hangers.
+- **Line-based Generic Model** takes both, on a reference plane through the member's axis
+  that the tool creates, marks (`work_plane`) and removes with the members.
+
+The Revit API documents no orientation rule for `NewFamilyInstance(Curve, FamilySymbol,
+Level, StructuralType)`, so the tool relies on none: which placements Revit commits and
+whether the committed axis keeps the planned ends is what `framing.probes.ps1` measures.
+
+### Verification, markers and idempotence
+
+After the commit the tool re-reads, by marker, every planned member: its type, both
+endpoints within 1 mm of the plan (a vertical column's ends are read from its base and
+top constraints), `|y|` inside the carrying layer, no vertical member inside an opening's
+void, counts per role equal to the plan, every hosted insert of the wall with the same
+type and location as before, and no member geometry-joined with its source wall
+(`source_unjoined`). Revit joins some column families with the wall they stand in and cuts
+the wall by them; a stud never cuts the partition it frames, so such a join is undone inside
+the write and counted in `evidence.source_joins_undone`. Any disagreement rolls the whole
+edit back.
+
+Each member (and work plane) carries an extensible-storage marker naming its source
+element (id and UniqueId), role, plan index, spec hash and plan signature. A second apply
+of the same spec on the same wall is `already_applied`: nothing is created and the
+existing members are re-read against the plan. Framing from another spec on the same
+source is refused until `operation=remove` takes it away. Hand-modelled framing carries no
+marker and is never read, claimed or removed.
+
+The marker also records the member's OWN UniqueId. Extensible storage travels with a copy,
+so a wall copied or arrayed together with its framing brings members whose marker still
+names the original wall; their UniqueId no longer matches, so they are **foreign copies**:
+`remove` keeps them (`plan.foreign_copies_kept`, `evidence.foreign_copies_kept`), the
+idempotence and the re-read never count them, the spatial check never excuses them, and
+`read` lists them apart (`foreign_copies`, `foreign_copy_count`).
+
+`remove` measures, in a rolled-back transaction, what Revit deletes WITH the members (tags,
+dimensions, anything hosted on the tool's work planes): the rehearsal shows it in
+`plan.cascade` (count, by category, ids), the token binds it, and after the commit
+`cascade_absent` and `cascade_as_measured` re-read it (`evidence.cascaded_ids`); a cascade
+the token did not bind rolls the whole remove back.
+
+A ceiling's hangers are re-cast after the commit: one ray up from just under each rod's top
+must meet a floor, framing or roof within 1 mm of that top (`hanger_reaches_support`,
+`evidence.hanger_recheck`).
+
+**The automatic spatial check** (`spatial_check` after every write) treats a framing
+member and its own source wall or ceiling as an EXPECTED intersection (reason "framing
+inside its own source"), read from the marker: studs inside the wall they frame are what was
+asked for. Two members of one source are judged by the normal rules: studs meeting tracks
+share no volume (no finding), but mains running through cross members (`drop_mm` under the
+cross depth) or any real overlap between members is reported. A member touching anything
+else is still reported.
+
+**Live probe** (`scripts/live-probes/framing.probes.ps1`, offline twin
+`framing.tests.ps1`). On its own level it authors a line-based Generic Model member,
+frames an own compound wall with a door and a window (rehearsal, verified apply, second
+apply `already_applied`, read, remove), then an own ceiling 600 mm under an own floor
+(rehearsal and verified apply: `inside_boundary` matched and every hanger's support is
+that floor, by id) and a second ceiling with nothing above (rehearsal: every station
+`no_support_above`, no hanger planned). The ceiling framing is removed with
+`operation=remove` before the staging is deleted, because its members are not hosted by
+the ceiling. A last case frames a wall at 45 degrees with the document's own Structural
+Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
+columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
+when the document carries neither category.
