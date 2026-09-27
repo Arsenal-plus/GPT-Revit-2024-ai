@@ -30,7 +30,7 @@ function New-Ctx([bool]$gate, [bool]$withTemplate = $true) {
                 deleted = @(); wallCopied = $false; doorCopied = $false
                 copied = New-Object System.Collections.Generic.List[string]; roomNumber = $null; roomName = $null; roomPhase = $null; levelName = $null; door = $null; room = $null
                 exportArgs = $null; applyArgs = $null; file = $null; sha = $null
-                wrongSpace = $false; dropCreatedBy = $false; noFinding = $false; mismatch = $false; noPhases = $false; otherFile = $false }
+                wrongSpace = $false; dropCreatedBy = $false; noFinding = $false; mismatch = $false; noPhases = $false; otherFile = $false; truncated = $false }
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('hz-cobie-probe-test-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Force -Path $root
     $tplRoot = Join-Path $root 'templates'
@@ -64,7 +64,8 @@ function New-Ctx([bool]$gate, [bool]$withTemplate = $true) {
                 created_by = [string]$arguments.cobie.created_by; created_on = '2026-09-27T10:00:00'; created_on_source = 'export_time_utc'
                 phase = [string]$arguments.cobie.phase; space_source = 'rooms'; facility = [string]$arguments.cobie.facility.name
                 sheets = $sheets; scope = [pscustomobject]@{ phase = [string]$arguments.cobie.phase }
-                findings = [pscustomobject]@{ total = $items.Count; blocking = $items.Count; advisory = 0; listed = $items.Count; truncated = $false; items = $items }
+                findings = [pscustomobject]@{ total = $(if ($state.truncated) { 9000 } else { $items.Count }); blocking = $items.Count; advisory = 0
+                                              listed = $items.Count; truncated = [bool]$state.truncated; items = $items }
                 content_sha256 = ('ab' * 32)
             }
             return @{ isError = $false; data = [pscustomobject]@{ dry_run = $true; format = 'cobie'; output_path = [string]$arguments.output_path
@@ -180,6 +181,10 @@ Check 'a row read back without created_by fails the created_by case' (($by[$cata
 $c = New-Ctx $false; $c.State.noFinding = $true
 $by = Run-Module $c
 Check 'no Category finding for the own room fails the finding case' (($by[$catalog[1]].Outcome -eq 'fail') -and ($by[$catalog[0]].Outcome -eq 'pass'))
+
+$c = New-Ctx $false; $c.State.noFinding = $true; $c.State.truncated = $true
+$by = Run-Module $c
+Check 'an own-room finding missing from a TRUNCATED list is unverified, never pass or fail' (($by[$catalog[1]].Outcome -eq 'unverified') -and ($by[$catalog[1]].Detail -match 'cut at'))
 
 $c = New-Ctx $false; $c.State.mismatch = $true
 $by = Run-Module $c

@@ -128,6 +128,10 @@ $script:HzProbeModules += [pscustomobject]@{
             elseif ($own -and $own.blocking -eq $true -and [string]$own.detail -eq 'category_parameter was not given' -and $pre.data.deliverable_ready_if_written -eq $false) {
                 Case $names[1] $X 'pass' ("finding: $($own | ConvertTo-Json -Compress); blocking=$(@($pre.data.blocking) -join ',')")
             }
+            elseif (-not $own -and $pre.data.cobie.findings.truncated -eq $true) {
+                # The list stops at max_findings; an unlisted finding is not an absent one.
+                Case $names[1] $X 'unverified' ("the findings list was cut at $($pre.data.cobie.findings.listed) of $($pre.data.cobie.findings.total); the own room's finding may be beyond it")
+            }
             else {
                 Case $names[1] $X 'fail' ("no required-field Category finding for the own room $number (listed $($pre.data.cobie.findings.listed) of $($pre.data.cobie.findings.total)); ready_if_written=$($pre.data.deliverable_ready_if_written)")
             }
