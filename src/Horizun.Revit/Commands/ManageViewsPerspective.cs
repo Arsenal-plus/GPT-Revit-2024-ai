@@ -20,7 +20,6 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Newtonsoft.Json.Linq;
@@ -70,13 +69,7 @@ namespace Horizun.Revit.Commands
         /// A fan names each view by its azimuth: N names that are distinct (steps are at
         /// least 10 degrees, so whole degrees never collide) and say where each one looks.
         /// </summary>
-        private static string PerspectiveName(string name, CameraTriple c, int count)
-        {
-            if (string.IsNullOrWhiteSpace(name)) return null;
-            if (count == 1) return name;
-            int degrees = (int)Math.Round(c.AzimuthDegrees, MidpointRounding.AwayFromZero) % 360;
-            return name + " az" + degrees.ToString("000", CultureInfo.InvariantCulture);
-        }
+        private static string PerspectiveName(string name, CameraTriple c, int count) => PerspectiveRules.ViewName(name, c, count);
 
         internal static void ValidatePerspective(Document doc, JObject a)
         {

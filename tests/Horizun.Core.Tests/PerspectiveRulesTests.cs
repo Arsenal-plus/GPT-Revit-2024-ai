@@ -77,5 +77,18 @@ namespace Horizun.Core.Tests
             Assert.False(PerspectiveRules.SameOrientation(a, turned));
             Assert.False(PerspectiveRules.SameOrientation(a, null));
         }
+
+        [Fact]
+        public void A_fan_names_every_view_by_a_distinct_whole_degree_azimuth()
+        {
+            var cams = PerspectiveRules.Fan(new[] { 0.0, 0, 0 }, new[] { 0.0, 10, 0 }, 4);
+            Assert.Equal(new[] { "Cam az090", "Cam az180", "Cam az270", "Cam az000" },
+                         cams.Select(c => PerspectiveRules.ViewName("Cam", c, cams.Count)).ToArray());
+            // 36 azimuths 10 degrees apart from an awkward start still round to 36 names.
+            var many = PerspectiveRules.Fan(new[] { 0.0, 0, 0 }, new[] { 10.0, 0.9, 0 }, PerspectiveRules.MaxFan);
+            Assert.Equal(many.Count, many.Select(c => PerspectiveRules.ViewName("Cam", c, many.Count)).Distinct().Count());
+            Assert.Equal("Cam", PerspectiveRules.ViewName("Cam", cams[0], 1));
+            Assert.Null(PerspectiveRules.ViewName("  ", cams[0], 4));
+        }
     }
 }

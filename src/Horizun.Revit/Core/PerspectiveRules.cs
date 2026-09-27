@@ -69,6 +69,19 @@ namespace Horizun.Revit.Core
             return cameras;
         }
 
+        /// <summary>
+        /// The name a camera of a request gets: the name itself for one camera; for a fan
+        /// "<name> azNNN" in whole degrees - distinct, because a fan's steps are at least
+        /// 360/MaxFan = 10 degrees apart - saying where each view looks. Null without a name.
+        /// </summary>
+        public static string ViewName(string name, CameraTriple camera, int count)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            if (count <= 1) return name;
+            int degrees = (int)Math.Round(camera.AzimuthDegrees, MidpointRounding.AwayFromZero) % 360;
+            return name + " az" + degrees.ToString("000", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         /// <summary>True when b is a re-read of a: eye within lengthTolerance (feet), directions within angleDegrees.</summary>
         public static bool SameOrientation(CameraTriple a, CameraTriple b, double lengthTolerance = 1e-6, double angleDegrees = 1e-4)
         {
