@@ -376,8 +376,11 @@ namespace Horizun.Revit.Core
                 Path("revit_ui_save_as", "Revit's own Save As.",
                      "DocumentSavingAs is cancellable and unsubscribed, for the same reason."),
                 Path("synchronize_with_central", "Revit's Synchronize with Central.",
-                     "DocumentSynchronizingWithCentral is cancellable and unsubscribed. This bridge does not " +
-                     "synchronize at all, so nothing here stands between a local save and the central model."),
+                     "DocumentSynchronizingWithCentral is cancellable and unsubscribed, so Revit's own sync and another " +
+                     "add-in's are not stopped here. The bridge's own sync (horizun_document_session " +
+                     "operation=sync_with_central) is OFF unless the machine owner enables it in Revit, is refused on " +
+                     "detached copies and under force_read_only_on_workshared. It saves the local before and after " +
+                     "and writes the central, takes no require_gate, and this gate is never evaluated for it."),
                 Path("revit_ui_export", "Revit's own Export menu.",
                      "FileExporting is cancellable and unsubscribed. Only horizun_export consults this gate."),
                 Path("other_addins", "A save, sync or export made by another add-in.",

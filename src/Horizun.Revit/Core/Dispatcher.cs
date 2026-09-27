@@ -746,6 +746,8 @@ namespace Horizun.Revit.Core
                     string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
                     if (operation == "inspect" || string.IsNullOrEmpty(operation)) return false;
                     if (request.Value<bool?>("dry_run") == true) return false;
+                    // sync_with_central previews when dry_run is omitted; only false syncs.
+                    if (operation == "sync_with_central" && request["dry_run"] == null) return false;
                     return true;
                 default:
                     return false;

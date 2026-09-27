@@ -178,6 +178,7 @@ namespace Horizun.Revit
         internal const string OptionHistory = "history";
         internal const string OptionPause = "pause";
         internal const string OptionCentral = "central";
+        internal const string OptionSync = "sync";
 
         /// <summary>The option the person clicked, or null when the window was closed.</summary>
         internal string Selected { get; private set; }
@@ -238,6 +239,9 @@ namespace Horizun.Revit
             rows.Children.Add(Row(OptionHistory, RibbonText.HistoryTitle(spanish), RibbonText.HistoryDetail(spanish), RibbonText.HistoryState(spanish)));
             rows.Children.Add(Row(OptionPause, RibbonText.PauseTitle(spanish), RibbonText.PauseDetail(spanish), RibbonText.PauseState(spanish, paused)));
             rows.Children.Add(Row(OptionCentral, RibbonText.CentralTitle(spanish), RibbonText.CentralDetail(spanish), RibbonText.CentralState(spanish, central)));
+            bool sync;
+            try { sync = BridgeSettings.SyncWithCentralOwnerEnabled; } catch { sync = false; }
+            rows.Children.Add(Row(OptionSync, SyncCentralPermissionCommand.Title(spanish), SyncCentralPermissionCommand.Detail(spanish), SyncCentralPermissionCommand.State(spanish, sync)));
             root.Children.Add(rows);
 
             // Footer: a plain close. Escape does the same.

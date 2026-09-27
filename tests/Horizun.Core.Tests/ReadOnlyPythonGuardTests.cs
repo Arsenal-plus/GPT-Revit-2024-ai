@@ -17,6 +17,8 @@ namespace Horizun.Core.Tests
         [Theory]
         [InlineData("doc.Save()", "Document.Save()")]
         [InlineData("doc.SynchronizeWithCentral(t, s)", "Document.SynchronizeWithCentral()")]
+        [InlineData("s = doc.SynchronizeWithCentral\ns(t, o)", "Document.SynchronizeWithCentral()")]
+        [InlineData("uiapp.PostCommand(RevitCommandId.LookupPostableCommandId(PostableCommand.SynchronizeNow))", "Document.SynchronizeWithCentral()")]
         [InlineData("WorksharingUtils.RelinquishOwnership(doc, r, o)", "WorksharingUtils.RelinquishOwnership()")]
         [InlineData("link_type.Unload(None)", "RevitLinkType/CADLinkType load state")]
         [InlineData("doc.SaveAs(path)", "Document.SaveAs()")]

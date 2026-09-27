@@ -185,9 +185,12 @@ namespace Horizun.Revit.Commands
                     permission_profile = Horizun.Revit.Core.Settings.PermissionProfile,
                     mcp_paused = Horizun.Revit.Core.Settings.McpPaused,
                     force_read_only_on_workshared = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared,
+                    sync_with_central_owner_granted = Horizun.Revit.Core.Settings.SyncWithCentralOwnerEnabled,
                     note = "These are local machine controls shared by the ribbon and MCP server. " +
                            "When MCP is paused only horizun_health remains callable; central protection " +
-                           "refuses potential writes to a workshared active document."
+                           "refuses potential writes to a workshared active document. " +
+                           "sync_with_central_owner_granted is the owner's grant for operation=sync_with_central; " +
+                           "that operation also needs permission_profile=full_write, and central protection wins over it."
                 },
                 current_action = Dispatcher.CurrentActivityDescription(),
                 // The startup comparison between Contract.PluginCommands and what

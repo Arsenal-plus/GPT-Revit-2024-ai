@@ -419,8 +419,16 @@ namespace Horizun.Revit.Commands
             // write outside any transaction), so read_only refuses them OUTRIGHT rather
             // than letting them run and reporting a violation afterwards - by the time
             // "afterwards" arrives, the file on disk is already real.
+            // EVERY source that runs in the scope is scanned: the includes execute before the
+            // main script in the same scope, so a scan of `code` alone is a guard with a side
+            // door. Masked once, and only when a guard needs it.
+            var rawSources = new List<string> { code };
+            foreach (var include in source.Includes) rawSources.Add((string)include["code"] ?? "");
+            List<string> maskedSources = null;
+            Func<List<string>> masked = () => maskedSources ?? (maskedSources = rawSources
+                .Select(s => PythonTokenMask.Mask(GetEngine(), s) ?? PythonSourceMask.StripCommentsAndStrings(s)).ToList());
             List<string> readOnlyViolations = readOnly
-                ? ReadOnlyPythonGuard.Violations(PythonTokenMask.Mask(GetEngine(), code) ?? PythonSourceMask.StripCommentsAndStrings(code))
+                ? masked().SelectMany(ReadOnlyPythonGuard.Violations).Distinct().ToList()
                 : new List<string>();
 
             // THE SAME GATE AS EVERY TYPED MUTATION, and it used to be the one command
@@ -438,6 +446,26 @@ namespace Horizun.Revit.Commands
             // it is smaller than an arbitrary write landing in the wrong building.
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
+
+            // The owner's Synchronize-with-central switch covers scripts as well as
+            // horizun_document_session: a sync the owner did not authorise, or any sync while
+            // shared models are protected (that policy wins over the grant), is refused here,
+            // before preflight or run, whatever read_only says - over the main source AND its
+            // includes. Best-effort text scan - see
+            // SyncWithCentralRules.PythonSyncRefusal for its honest ceiling.
+            if (rawSources.Any(s => s.IndexOf("Synchroniz", StringComparison.Ordinal) >= 0))
+            {
+                // Unreadable settings fall CLOSED, exactly as in the typed operation.
+                bool syncGranted, protectedShared;
+                try { syncGranted = Horizun.Revit.Core.Settings.SyncWithCentralOwnerEnabled; } catch { syncGranted = false; }
+                try { protectedShared = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared; } catch { protectedShared = true; }
+                SyncRefusal syncRefusal = SyncWithCentralRules.PythonSyncRefusal(masked(), syncGranted, protectedShared);
+                if (syncRefusal != null)
+                    return CommandResult.FailWithDetail(syncRefusal.Message, new JObject
+                    {
+                        ["code"] = syncRefusal.Code, ["write_started"] = false, ["changes_applied"] = false
+                    });
+            }
 
             // ---- preflight: validate everything checkable, execute NOTHING. ----
             //

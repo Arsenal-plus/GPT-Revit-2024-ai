@@ -4411,13 +4411,14 @@ namespace Horizun.Contracts
                     "an unattended caller can close what Revit actually opened. " +
                     "Saving reports bytes/mtime/format re-read from " +
                     "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
-                    "so audit_ran only ever describes the open. It never syncs to central.",
+                    "so audit_ran only ever describes the open. sync_with_central is OFF until the machine owner enables it " +
+                    "in Revit (Advanced options); an omitted dry_run is an ESTIMATE whose token the apply needs.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect""],
-                     ""description"": ""inspect: read a file's version off disk without opening it. open/save/save_as/close do what they say."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect"", ""sync_with_central""],
+                     ""description"": ""inspect reads a file's version off disk unopened. sync_with_central is owner-gated; preview is an estimate."" },
     ""file_path"": { ""type"": ""string"",
                      ""description"": ""open/inspect: the file to read. For save/save_as/close it is an ALIAS of target_document, kept for compatibility - it no longer defaults to the active document."" },
     ""target_document"": { ""type"": ""string"",
@@ -4444,10 +4445,12 @@ namespace Horizun.Contracts
                      ""description"": ""open only: how a modal dialog raised WHILE opening is answered unattended. 'cancel' (default) presses Cancel; 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort, recorded in revit_said; scoped to the open call - every other dialog still cancels."" },
     ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path."" },
     ""compact"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save/save_as: pass Compact to the API. The response reports the byte delta it actually produced."" },
+    ""comment"": { ""type"": ""string"", ""description"": ""sync_with_central: stored in central; at most 30000 chars."" },
+    ""relinquish"": { ""type"": ""string"", ""enum"": [""all"", ""keep_borrowed"", ""none""], ""default"": ""all"", ""description"": ""sync_with_central: ownership to give back."" },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save_as: allow overwriting an existing destination file."" },
     ""max_backups"": { ""type"": ""integer"", ""minimum"": 1, ""description"": ""save_as: cap the .000N backup pile Revit leaves behind."" },
     ""force_workshared"": { ""type"": ""boolean"", ""default"": false,
-                            ""description"": ""Required to save/save_as a workshared document, to close one with save_on_close, and in either case when the workshared state cannot be read at all (unknown is not a clearance). This tool never syncs to central; on a central model a save still writes to central."" },
+                            ""description"": ""Required to save/save_as a workshared document or close one with save_on_close, also when that state is unreadable. Save/close never sync; saving a central writes it."" },
     ""save_on_close"": { ""type"": ""boolean"", ""default"": false, ""description"": ""close: save before closing. Off by default - closing should not be a write you did not ask for."" },
     ""discard_unsaved"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""close: REQUIRED to close a document that has unsaved changes without saving them. Close() discards them, returns true, and leaves nothing behind to detect it - the file on disk is untouched and IsModified cannot be asked of a closed document, so an hour of lost edits and an untouched model produce identical responses. Not enough on its own: a dry_run token is required too. Unknown counts as modified."" },
@@ -7292,13 +7295,20 @@ namespace Horizun.Contracts
             ((JObject)props["profile"]["anyOf"][0])["items"]["minItems"] = 2;
             item["oneOf"] = variants;
         }
+        // What a sync caller needs that the base descriptions (written for save/close) do not say.
+        private static readonly Dictionary<string, string> SyncNotes = new Dictionary<string, string>
+        {
+            ["confirmation_token"] = "From the estimate, bound to it; single use.",
+            ["compact"] = "Compacts central."
+        };
         private static readonly Dictionary<string, string[]> SessionFields = new Dictionary<string, string[]>
         {
             ["inspect"] = new[] { "file_path" },
             ["open"] = new[] { "file_path", "cloud_project_guid", "cloud_model_guid", "cloud_region", "expected_version", "allow_upgrade", "audit", "detach", "open_central", "open_all_worksets", "close_workset_names", "on_open_dialog" },
             ["save"] = new[] { "target_document", "file_path", "compact", "force_workshared" },
             ["save_as"] = new[] { "target_document", "file_path", "compact", "force_workshared", "save_as_path", "overwrite", "max_backups" },
-            ["close"] = new[] { "target_document", "file_path", "save_on_close", "discard_unsaved", "activate_other", "force_workshared", "confirmation_token" }
+            ["close"] = new[] { "target_document", "file_path", "save_on_close", "discard_unsaved", "activate_other", "force_workshared", "confirmation_token" },
+            ["sync_with_central"] = new[] { "target_document", "comment", "relinquish", "compact", "confirmation_token" }
         };
         private static HashSet<string> AllowedSession(string operation)
         {
@@ -7311,7 +7321,7 @@ namespace Horizun.Contracts
         public static string ValidateSession(JObject request, string operation)
         {
             var allowed = AllowedSession(operation);
-            if (allowed == null) return "operation must be inspect, open, save, save_as or close.";
+            if (allowed == null) return "operation must be inspect, open, save, save_as, close or sync_with_central.";
             foreach (var p in request.Properties())
                 if (!allowed.Contains(p.Name)) return p.Name + " is not applicable to operation '" + operation + "'. Nothing ran.";
             JToken dry = request["dry_run"];
@@ -7329,14 +7339,25 @@ namespace Horizun.Contracts
             foreach (var operation in SessionFields.Keys)
             {
                 var props = new JObject();
+                // sync_with_central's variant carries types without the descriptions the
+                // base properties already publish: tools/list is a byte budget.
+                bool terse = operation == "sync_with_central";
                 foreach (string field in AllowedSession(operation))
-                    if (properties[field] != null) props[field] = properties[field].DeepClone();
+                    if (properties[field] != null)
+                    {
+                        props[field] = properties[field].DeepClone();
+                        if (terse) ((JObject)props[field]).Remove("description");
+                        if (terse && SyncNotes.TryGetValue(field, out string note)) props[field]["description"] = note;
+                    }
                 props["operation"] = new JObject { ["const"] = operation };
                 if (operation == "open") props["dry_run"] = new JObject { ["const"] = false };
+                // A sync previews when dry_run is omitted (DocumentSessionSync.cs), unlike the shared default.
+                if (operation == "sync_with_central") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
                 var required = new JArray("operation");
                 if (operation == "save_as") required.Add("save_as_path");
                 if (operation == "open") required.Add("expected_version");
                 if (operation == "inspect") required.Add("file_path");
+                if (operation == "sync_with_central") required.Add("target_document");
                 var variant = new JObject { ["type"] = "object", ["properties"] = props, ["required"] = required, ["additionalProperties"] = false };
                 if (operation == "save" || operation == "save_as" || operation == "close")
                     variant["anyOf"] = new JArray(new JObject { ["required"] = new JArray("target_document") }, new JObject { ["required"] = new JArray("file_path") });

@@ -32,12 +32,32 @@ namespace Horizun.Server.Tests
             Assert.Contains("does not support", ToolInputRules.ValidateSession(new JObject { ["dry_run"] = true }, "open"));
         }
         [Fact]
-        public void Published_contract_has_five_disjoint_operation_variants()
+        public void Published_contract_has_six_disjoint_operation_variants()
         {
             var variants = (JArray)Contract.Find("horizun_document_session").InputSchema["oneOf"];
-            Assert.Equal(5, variants.Count);
+            Assert.Equal(6, variants.Count);
             foreach (var variant in variants)
                 Assert.False((bool)variant["additionalProperties"]);
+        }
+        [Fact]
+        public void Sync_with_central_names_its_target_and_takes_only_its_own_arguments()
+        {
+            var sync = ((JArray)Contract.Find("horizun_document_session").InputSchema["oneOf"])
+                .Single(v => (string)v["properties"]["operation"]["const"] == "sync_with_central");
+            Assert.Contains("target_document", sync["required"].Select(t => (string)t));
+            // A sync previews when dry_run is omitted; the shared base property says false.
+            Assert.True((bool)sync["properties"]["dry_run"]["default"]);
+            Assert.Equal(new[] { "all", "keep_borrowed", "none" },
+                sync["properties"]["relinquish"]["enum"].Select(t => (string)t).ToArray());
+            Assert.Null(ToolInputRules.ValidateSession(new JObject
+            {
+                ["operation"] = "sync_with_central", ["target_document"] = "A", ["relinquish"] = "none",
+                ["comment"] = "c", ["compact"] = true, ["dry_run"] = true
+            }, "sync_with_central"));
+            Assert.Contains("file_path", ToolInputRules.ValidateSession(new JObject
+            { ["operation"] = "sync_with_central", ["file_path"] = "A" }, "sync_with_central"));
+            Assert.Contains("detach", ToolInputRules.ValidateSession(new JObject
+            { ["operation"] = "sync_with_central", ["target_document"] = "A", ["detach"] = true }, "sync_with_central"));
         }
         [Fact]
         public void Profiles_have_three_array_dimensions_and_categories_reject_ignored_fields()

@@ -37,10 +37,13 @@
 //     perform the open, it does not know, and "unknown" is a DIFFERENT value from
 //     false. A handler that returned audit_ran=true off a save would be inventing
 //     a flag the API never received.
-//   * NO SYNC. Ever. Horizun does not sync to central from a robot, so there is no
-//     sync operation here and there never will be. On a workshared document a save
-//     is a save — of the local, or worse of the central — and it is refused unless
-//     force_workshared says otherwise, with the distinction spelled out.
+//   * NO SYNC THE OWNER DID NOT AUTHORISE. operation=sync_with_central exists
+//     (DocumentSessionSync.cs) and is OFF by default, gated like execute_python:
+//     only the machine owner turns it on, from Revit's Advanced options. It refuses
+//     detached copies and models under force_read_only_on_workshared, previews an
+//     ESTIMATE, and re-reads ownership and update status after the sync. On a
+//     workshared document a save is still a save — of the local, or worse of the
+//     central — and it is refused unless force_workshared says otherwise.
 //
 // Compact's whole point is the delta, so bytes_before/bytes_after are stat-ed from
 // the filesystem on both sides. bytes_after == bytes_before after a compact is
@@ -60,7 +63,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public class DocumentSessionCommand : ICommand
+    public partial class DocumentSessionCommand : ICommand
     {
         public string Name => "horizun_document_session";
 
@@ -70,7 +73,7 @@ namespace Horizun.Revit.Commands
             "version, and refuses unless both match the REQUIRED expected_version — because opening a 2025 file " +
             "on a 2026 host upgrades it and there is no downgrade. Saving reports bytes/mtime/format re-read from " +
             "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
-            "so audit_ran only ever describes the open. It never syncs to central.";
+            "so audit_ran only ever describes the open. sync_with_central is OFF until the machine owner enables it in Revit.";
 
         // Audit is an OpenOptions flag and Revit never tells you afterwards whether a
         // document was audited. So the only honest source is our own memory of the
@@ -126,9 +129,10 @@ namespace Horizun.Revit.Commands
                 case "save": return Save(app, request, false);
                 case "save_as": return Save(app, request, true);
                 case "close": return Close(app, request);
+                case "sync_with_central": return SyncWithCentral(app, request);
                 default:
                     return CommandResult.Fail(
-                        "operation is required and must be one of: inspect, open, save, save_as, close.");
+                        "operation is required and must be one of: inspect, open, save, save_as, close, sync_with_central.");
             }
         }
 
@@ -618,8 +622,9 @@ namespace Horizun.Revit.Commands
             bool compact = request.Value<bool?>("compact") ?? false;
             bool force = request.Value<bool?>("force_workshared") ?? false;
 
-            // No sync. Not now, not behind a flag. A workshared save is still a write
-            // to a file other people are standing on, and a central save is worse.
+            // save/close never sync: synchronizing is operation=sync_with_central, behind the
+            // machine owner's own switch (DocumentSessionSync.cs). A workshared save is still a
+            // write to a file other people are standing on, and a central save is worse.
             //
             // Read ONCE into a bool?. The old line was
             // `bool workshared = SafeWorkshared(doc) is bool && (bool)SafeWorkshared(doc);`
@@ -638,10 +643,11 @@ namespace Horizun.Revit.Commands
                         ? "This document is WORKSHARED and force_workshared was not set. Refusing. "
                         : "Whether this document is workshared is UNKNOWN — Document.IsWorkshared could not be read — and " +
                           "force_workshared was not set. Refusing: an unreadable workshared state is not a non-workshared " +
-                          "state, and this is the one write in this tool that cannot be undone. ") +
+                          "state, and a save cannot be undone. ") +
                     "On a local file this would write the local; on a central file it would write the central out from " +
                     "under everyone attached to it. " +
-                    "Note this tool has no sync operation and will not get one — synchronizing to central is a human's call. " +
+                    "Save and close never synchronize; operation=sync_with_central does, and only when the machine owner enabled it " +
+                    "(Advanced options > Synchronize with central). " +
                     "If you want a standalone deliverable, re-open with detach=true and save_as from there. " +
                     "Document: " + (sourcePath ?? SafeTitle(doc)));
             }
@@ -917,12 +923,11 @@ namespace Horizun.Revit.Commands
                 ["synced_to_central"] = false,
                 ["sync_note"] = worksharedState == true
                     ? "This document is workshared and was saved, NOT synchronized. No changes were relinquished and nothing " +
-                      "reached other users. This tool does not sync. force_workshared was passed to reach this write."
+                      "reached other users. Save and close never sync; operation=sync_with_central does, only when the machine owner enabled it. force_workshared was passed to reach this write."
                     : worksharedState == null
                         ? "Whether this document is workshared is UNKNOWN: Document.IsWorkshared could not be read. It was " +
                           "SAVED anyway because force_workshared was passed. If it was in fact workshared, this write landed " +
-                          "on the local — or on the central — and nothing was synchronized or relinquished. This tool does " +
-                          "not sync. Null here means nobody looked successfully, NOT that the document is non-workshared."
+                          "on the local — or on the central — and nothing was synchronized or relinquished. Save and close never sync; operation=sync_with_central does, only when the machine owner enabled it. Null here means nobody looked successfully, NOT that the document is non-workshared."
                         : null,
                 ["file_on_disk_before"] = beforeProbe,
                 ["version_on_disk_before"] = versionBefore,
@@ -1306,11 +1311,11 @@ namespace Horizun.Revit.Commands
                     ? null
                     : worksharedState == true
                         ? "This document is workshared and was SAVED on close, NOT synchronized. No changes were relinquished " +
-                          "and nothing reached other users. force_workshared was passed to reach this write. This tool does not sync."
+                          "and nothing reached other users. force_workshared was passed to reach this write. Save and close never sync; operation=sync_with_central does, only when the machine owner enabled it."
                         : worksharedState == null
                             ? "Whether this document was workshared is UNKNOWN: Document.IsWorkshared could not be read before " +
                               "the close, and it cannot be asked now. It was SAVED on close because force_workshared was passed. " +
-                              "If it was workshared, nothing was synchronized or relinquished. This tool does not sync."
+                              "If it was workshared, nothing was synchronized or relinquished. Save and close never sync; operation=sync_with_central does, only when the machine owner enabled it."
                             : null,
                 ["file_on_disk_after"] = ProbeFile(path)
             });
