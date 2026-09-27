@@ -84,7 +84,8 @@ namespace Horizun.Revit.Commands
                     return where + "phase_id is required and must identify a Phase: circuits and rooms exist per phase, " +
                            "and the phase is never guessed.";
                 double minArea = o.Value<double?>("min_area_m2") ?? 0;
-                if (double.IsNaN(minArea) || minArea < 0) return where + "min_area_m2 must be >= 0.";
+                string minBad = EnclosedRules.MinAreaProblem(minArea);
+                if (minBad != null) return where + minBad;
 
                 PlanTopology topology;
                 try { topology = doc.get_PlanTopology(level, phase); }
@@ -96,14 +97,14 @@ namespace Horizun.Revit.Commands
                     UV pt = c.GetPointInside();
                     double areaM2 = c.Area * SquareFeetToM2;
                     bool located = kind == "room" ? c.IsRoomLocated : SpaceAt(doc, level, phase, pt) != null;
-                    string action = located ? "skipped_has_" + kind : areaM2 < minArea ? "skipped_min_area" : "create";
+                    string action = EnclosedRules.CircuitAction(kind, located, areaM2, minArea);
                     circuits.Add(new JObject
                     {
                         ["point_inside"] = new JArray(Math.Round(pt.U / scale, 3), Math.Round(pt.V / scale, 3)),
                         ["area_m2"] = Math.Round(areaM2, 3), ["sides"] = c.SideNum,
                         ["is_room_located"] = c.IsRoomLocated, ["action"] = action
                     });
-                    if (action != "create") continue;
+                    if (action != EnclosedRules.Create) continue;
                     toCreate++;
                     expanded.Add(new JObject
                     {

@@ -16,25 +16,30 @@ namespace Horizun.Revit.Core
     public static class ToposolidRules
     {
         // = the contract's points maxItems (shared with the flex kinds), so the schema and this agree.
+        // A larger surface comes from a file: landxml_path, capped at LandXmlTinRules.MaxFilePoints.
         public const int MaxPoints = 100;
         /// <summary>How many input points the post-commit re-read samples at most (the reply names each one).</summary>
         public const int MaxSamples = 50;
 
         /// <summary>Null when the points can make a surface; otherwise why not. One unit throughout, tolerance included.</summary>
-        public static string ValidatePoints(IList<double[]> points, double tolerance)
+        public static string ValidatePoints(IList<double[]> points, double tolerance, int maxPoints = MaxPoints)
         {
             if (points == null || points.Count < 3) return "points: a toposolid needs at least 3 XYZ points.";
-            if (points.Count > MaxPoints) return "points: at most " + MaxPoints + " points in one toposolid.";
+            if (points.Count > maxPoints) return "points: at most " + maxPoints + " points in one toposolid.";
             for (int i = 0; i < points.Count; i++)
             {
                 double[] p = points[i];
                 if (p == null || p.Length != 3) return "points[" + i + "] must be [x, y, z].";
                 if (p.Any(v => double.IsNaN(v) || double.IsInfinity(v))) return "points[" + i + "] is not finite.";
             }
-            for (int i = 0; i < points.Count; i++)
-                for (int j = i + 1; j < points.Count; j++)
-                    if (Math.Abs(points[i][0] - points[j][0]) <= tolerance && Math.Abs(points[i][1] - points[j][1]) <= tolerance)
-                        return "points[" + i + "] and points[" + j + "] share one X,Y: a surface has one height per plan point.";
+            // Sorted by X and swept: a file brings thousands of points, and a pair is compared
+            // only when its X values already agree within the tolerance.
+            int[] order = Enumerable.Range(0, points.Count).OrderBy(k => points[k][0]).ToArray();
+            for (int u = 0; u < order.Length; u++)
+                for (int w = u + 1; w < order.Length && points[order[w]][0] - points[order[u]][0] <= tolerance; w++)
+                    if (Math.Abs(points[order[u]][1] - points[order[w]][1]) <= tolerance)
+                        return "points[" + Math.Min(order[u], order[w]) + "] and points[" + Math.Max(order[u], order[w]) +
+                               "] share one X,Y: a surface has one height per plan point.";
             // Duplicates are refused above, so points[1] is a distinct plan point: some point
             // must stand off the plan line through the first two, or they bound no area.
             double[] a = points[0], b = points[1];

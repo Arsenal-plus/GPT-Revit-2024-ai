@@ -17,6 +17,22 @@ namespace Horizun.Core.Tests
         [Fact] public void A_surface_is_accepted() => Assert.Null(V(P(0, 0, 1), P(10, 0, 2), P(10, 10, 3), P(0, 10, 1.5), P(5, 5, 4)));
 
         [Fact]
+        public void The_cap_is_the_callers_and_a_file_takes_more()
+        {
+            var grid = Enumerable.Range(0, 150).Select(i => P(i % 15, i / 15, i)).ToList();
+            Assert.Contains("at most 100", ToposolidRules.ValidatePoints(grid, 1e-3));
+            Assert.Null(ToposolidRules.ValidatePoints(grid, 1e-3, LandXmlTinRules.MaxFilePoints));
+        }
+
+        [Fact]
+        public void A_repeated_plan_point_is_found_among_thousands()
+        {
+            var grid = Enumerable.Range(0, 5000).Select(i => P(i % 100, i / 100, 0)).ToList();
+            grid.Add(P(37, 21, 9));
+            Assert.Contains("points[2137] and points[5000]", ToposolidRules.ValidatePoints(grid, 1e-3, 10000));
+        }
+
+        [Fact]
         public void Few_points_are_all_sampled()
             => Assert.Equal(new[] { 0, 1, 2, 3 }, ToposolidRules.SampleIndices(new List<double[]> { P(0, 0, 0), P(1, 0, 0), P(0, 1, 0), P(1, 1, 1) }));
 
