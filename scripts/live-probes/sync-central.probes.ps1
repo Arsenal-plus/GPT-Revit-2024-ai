@@ -55,6 +55,23 @@ $script:HzProbeModules += [pscustomobject]@{
         if ($w.isError -and $wc -eq 'not_workshared') { Case $nNotWs $S 'pass' 'refused before any census' }
         elseif ($w.isError -and -not $wc) { Case $nNotWs $S 'not_covered' ('refused before the operation ran (no detail code; profile, pause or dispatcher): ' + (Short $w)) }
         elseif ($w.isError) { Case $nNotWs $S 'not_covered' "the write document refused as $wc (it may be workshared on this run)" }
+        elseif ($Ctx.PSObject.Properties['LinkSourceFile'] -and $Ctx.LinkSourceFile -and (Test-Path -LiteralPath ([string]$Ctx.LinkSourceFile))) {
+            # The write document is workshared (the release gate's central, MEASURED 2026-09-27):
+            # the refusal is provoked on a scratch copy of the run's link source, a plain model.
+            New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+            $plain = Join-Path $Ctx.ScratchRoot ('HZ_SYNCPLAIN_' + ($Ctx.RunId -replace '[^A-Za-z0-9]', '') + '.rvt')
+            Copy-Item -LiteralPath ([string]$Ctx.LinkSourceFile) -Destination $plain -Force
+            $pf = Enter-HzFixtureFile $Ctx $plain 'sync-plain' $null
+            if (-not $pf.Title) { Case $nNotWs $S 'not_covered' ('the write document is workshared and the plain copy did not open: ' + $pf.Why) }
+            else {
+                try {
+                    $pw = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $pf.Title; dry_run = $true }
+                    $pwc = Code $pw
+                    Case $nNotWs $S $(if ($pw.isError -and $pwc -eq 'not_workshared') { 'pass' } else { 'fail' }) ("on the plain copy '" + $pf.Title + "': code=$pwc " + (Short $pw))
+                }
+                finally { $null = Exit-HzWorksharedFixture $Ctx $pf 'sync-plain' }
+            }
+        }
         else { Case $nNotWs $S 'fail' ('not refused: ' + (Short $w)) }
 
         $fixture = Enter-HzWorksharedFixture $Ctx 'sync'
@@ -73,7 +90,7 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($d.isError -and $dc -eq 'sync_not_authorised' -and -not $d.data.confirmation_token) {
                 Case $nDetached $S 'not_covered' 'the owner switch refused first (sync_not_authorised), so the detached check was not reached; nothing ran'
             }
-            else { Case $nDetached $S $(if ($d.isError -and $dc -eq 'detached_copy' -and -not $d.data.confirmation_token) { 'pass' } else { 'fail' }) "code=$dc" }
+            else { Case $nDetached $S $(if ($d.isError -and $dc -eq 'detached_copy' -and -not $d.data.confirmation_token) { 'pass' } else { 'fail' }) ("code=$dc on '" + $fixture.Title + "' " + (Short $d)) }
 
             # A central of the harness's own, in its own scratch folder, and a new local of it.
             # The title is reported as soon as SaveAs renamed the document, so a failure

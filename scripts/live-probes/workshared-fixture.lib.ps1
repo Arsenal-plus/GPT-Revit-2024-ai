@@ -22,6 +22,14 @@ function Enter-HzWorksharedFixture($Ctx, [string]$Lane) {
     $writePath = [string]$me.path
     $fixturePath = Join-Path ([IO.Path]::GetDirectoryName($writePath)) ([string]$Ctx.ClosedWorksetDocument + '.rvt')
     if (-not (Test-Path -LiteralPath $fixturePath)) { return @{ Why = "no fixture file at $fixturePath" } }
+    # The release gate names the write model itself as the closed-workset fixture (MEASURED
+    # 2026-09-27): opening that path returns the document already open, not a detached copy.
+    # A scratch copy of the file always opens as its own detached document.
+    if ($Ctx.ScratchRoot) {
+        New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+        $copy = Join-Path $Ctx.ScratchRoot ('HZ_WSFX_' + $Lane + '_' + ($Ctx.RunId -replace '[^A-Za-z0-9]', '') + '.rvt')
+        try { Copy-Item -LiteralPath $fixturePath -Destination $copy -Force -ErrorAction Stop; $fixturePath = $copy } catch { }
+    }
     return (Enter-HzFixtureFile $Ctx $fixturePath $Lane $writePath)
 }
 
