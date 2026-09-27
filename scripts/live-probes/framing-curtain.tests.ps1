@@ -4,7 +4,7 @@
 # LIVE RUN: CurtainWallSummary / CurtainCeilingSummary (plan.sources[].method, pieces[].role,
 # carrier.action / type_id / span, layers[].plane_mm, hangers[].base_mm / top_mm, not_built),
 # VerifyCurtainWalls (evidence.sources[].pieces[].grid.layout_vert / layout_vert_text /
-# spacing_mm / spacing_problems, carrier.type_ok / inserts_checked / inserts_changed / deleted /
+# spacing_mm / spacing_problems, carrier.type_ok / location_line / inserts_checked / inserts_changed / deleted /
 # deleted_with_it[_measured]), VerifyRemoved + VerifyCurtainRestores (evidence.carrier_restores[].
 # restored / wall_id / recreated_with_new_id / inserts_changed / not_restored_because),
 # VerifyCurtainCeilings (pieces[].grid.grid1.layout / layout_text / spacing_mm / spacing_problems,
@@ -146,7 +146,7 @@ $fakeApply = {
             if ($sid -eq 7007) {
                 $grid3 = [pscustomobject]@{ vertical_lines = 3; horizontal_lines = 0; layout_vert = 1; layout_vert_text = $script:layoutText; spacing_mm = 406.4; spacing_problems = @() }
                 $pieces3 = @(0..4 | ForEach-Object { [pscustomobject]@{ i = $_; role = $(if ($_ -lt 3) { 'curtain_segment' } else { 'curtain_header' }); id = 9301 + $_; grid = $grid3 } })
-                $carrier3 = [pscustomobject]@{ id = 7007; action = 'keep'; type_ok = $true; curve_deviation_mm = 0.0; inserts_checked = 2; inserts_changed = 0
+                $carrier3 = [pscustomobject]@{ id = 7007; action = 'keep'; type_ok = $true; location_line = 0; curve_deviation_mm = 0.0; inserts_checked = 2; inserts_changed = 0
                     overlap = $(if ($script:noOverlap) { $null } else { $script:overlapNote }); overlapped_by = $(if ($script:noOverlap) { @() } else { @(9301..9305) }) }
                 return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = $false
                     application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }
@@ -160,7 +160,7 @@ $fakeApply = {
                     application = [pscustomobject]@{ state = $(if ($again) { 'no_op' } else { 'verified_applied' }) }; postconditions = [pscustomobject]@{ all_verified = $true }
                     evidence = [pscustomobject]@{ sources = @([pscustomobject]@{ source_id = 7002; already_applied = $again
                         pieces = @(0..2 | ForEach-Object { [pscustomobject]@{ i = $_; role = $(if ($_ -eq 2) { 'curtain_header' } else { 'curtain_segment' }); id = 9001 + $_; location_deviation_mm = 0.0; grid = $grid } })
-                        carrier = [pscustomobject]@{ id = 7002; action = 'trim'; type_ok = $true; curve_deviation_mm = 0.0; inserts_checked = 1; inserts_changed = 0 }; piece_ids = @(9001, 9002, 9003) }) } }) $false '') }
+                        carrier = [pscustomobject]@{ id = 7002; action = 'trim'; type_ok = $true; location_line = 0; curve_deviation_mm = 0.0; inserts_checked = 1; inserts_changed = 0 }; piece_ids = @(9001, 9002, 9003) }) } }) $false '') }
             }
             return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ dry_run = $false; operation = 'wall'; transaction_status = 'Committed'; already_applied = $false
                 application = [pscustomobject]@{ state = 'verified_applied' }; postconditions = [pscustomobject]@{ all_verified = $true }

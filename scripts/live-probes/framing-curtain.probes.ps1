@@ -183,6 +183,16 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         if ($wall1 -and $doorType) { $door = Create @(@{ kind = 'family_instance'; type_id = $doorType.element_id; host_id = $wall1; point = @(($X + 2500), $Y, $E); coordinate_mode = 'absolute'; level_id = $level }) 'door' }
         # multi_opening is never sent: every wall case runs on the DEFAULT (keep_carrier since 2026-09-26).
+        # The one-door carrier stands on Finish Face: Exterior (WALL_KEY_REF_PARAM = 2): the apply must set
+        # its location line to the wall centreline before the type change, so the thinner placeholder keeps
+        # the door where it is (inserts_changed 0, location_line 0), and remove must give the reference back.
+        # MEASURED LIVE HERE: which of the curve or the wall Revit moves when the reference changes.
+        $keyRefNote = 'carrier on its default location line'
+        if ($wall1 -and $door) {
+            $kr = & $Ctx.Apply $WpTool @{ target_document = $doc; writes = @(@{ target_id = $wall1; parameter = 'WALL_KEY_REF_PARAM'; value = 2 }) } ($run + '-frc-keyref')
+            if ($kr.stage -eq 'apply' -and -not $kr.answer.isError -and $kr.answer.data.verification.verified -eq $true) { $keyRefNote = 'carrier on Finish Face: Exterior' }
+            else { $keyRefNote = 'location line NOT set to Finish Face: Exterior (' + (Short $kr.answer) + '), so the centre-plane path was not exercised' }
+        }
         function WallSpec { @{ wall = @{ method = 'curtain'; curtain_type_id = $coreTypeId; placeholder_type_id = [long]$placeholderType.element_id } } }
         $ready = $wall1 -and $door -and $coreTypeId -and $placeholderType
         $why = "staging incomplete: wall $wall1, door $door, curtain type '$coreTypeId', placeholder type '$($placeholderType.element_id)'"
@@ -225,7 +235,8 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($ev -and $ownCore) { $offGrid = @($ev.pieces | Where-Object { OffOwnGrid @{ layout = $_.grid.layout_vert; text = $_.grid.layout_vert_text; spacing = $_.grid.spacing_mm; problems = $_.grid.spacing_problems } }) }
             if ($a.stage -ne 'apply' -or $a.answer.isError -or $a.answer.data.postconditions.all_verified -ne $true -or -not $ev) { Case $catalog[1] $T 'fail' ('apply: ' + (Short $a.answer)) }
             elseif ([string]$a.answer.data.application.state -ne 'verified_applied') { Case $catalog[1] $T 'fail' "application.state '$($a.answer.data.application.state)', expected verified_applied" }
-            elseif ([string]$ev.carrier.action -ne 'trim' -or $ev.carrier.type_ok -ne $true -or [int]$ev.carrier.inserts_checked -ne 1 -or [int]$ev.carrier.inserts_changed -ne 0) {
+            elseif ([string]$ev.carrier.action -ne 'trim' -or $ev.carrier.type_ok -ne $true -or [int]$ev.carrier.inserts_checked -ne 1 -or [int]$ev.carrier.inserts_changed -ne 0 -or
+                    $null -eq $ev.carrier.location_line -or [int]$ev.carrier.location_line -ne 0) {
                 Case $catalog[1] $T 'fail' ('carrier: ' + ($ev.carrier | ConvertTo-Json -Compress -Depth 4)) }
             elseif ($offGrid.Count -gt 0) {
                 Case $catalog[1] $T 'fail' ("$($offGrid.Count) piece(s) do not re-read the own 406.4 mm Fixed Distance grid: " +
@@ -234,7 +245,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 $applied = $true
                 $grids = @($ev.pieces | ForEach-Object { $_.grid })
                 $fixed = @($grids | Where-Object { [int]$_.layout_vert -eq 1 }).Count
-                Case $catalog[1] $T 'pass' ("$(@($ev.pieces).Count) pieces re-read on the $(if ($ownCore) { "own core type $coreTypeId" } else { 'template type' }); spacing checked (Fixed Distance) on $fixed of $($grids.Count), layouts " +
+                Case $catalog[1] $T 'pass' ("$keyRefNote, the trimmed placeholder on the wall centreline $($ev.carrier.placeholder_offset_from_pieces_mm) mm off the pieces; $(@($ev.pieces).Count) pieces re-read on the $(if ($ownCore) { "own core type $coreTypeId" } else { 'template type' }); spacing checked (Fixed Distance) on $fixed of $($grids.Count), layouts " +
                     (($grids | ForEach-Object { "$($_.layout_vert)=$($_.layout_vert_text)" } | Sort-Object -Unique) -join ',') + '; vertical lines ' + (($grids | ForEach-Object { $_.vertical_lines }) -join ',') +
                     "; carrier line off $($ev.carrier.curve_deviation_mm) mm, its door unchanged and still hosted")
             }
