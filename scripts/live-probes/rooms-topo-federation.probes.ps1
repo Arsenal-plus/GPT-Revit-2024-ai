@@ -20,6 +20,7 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'spaces all_enclosed: the rehearsal lists the same circuits'; Tool = 'horizun_create_elements' }
         @{ Name = 'rooms all_enclosed: link-bounded circuits are declared not proven'; Tool = 'horizun_create_elements' }
         @{ Name = 'toposolid: six points on an own level, top re-read (2024+) or refused by name (2023)'; Tool = 'horizun_create_elements' }
+        @{ Name = 'toposolid: a LandXML TIN in shared coordinates, placed through the project position (2024+) or refused by name (2023)'; Tool = 'horizun_create_elements' }
         @{ Name = 'rooms-topo probes: everything created is deleted'; Tool = 'horizun_delete_verified' }
     )
     Run     = {
@@ -102,6 +103,28 @@ $script:HzProbeModules += [pscustomobject]@{
             $b = @($reply.data.enclosed | Where-Object { $_ }) | Select-Object -First 1
             if ($b) { return @($b.circuits | Where-Object { $_ }) }; return @()
         }
+        # A LandXML TIN of ONE surface, in metres and SHARED coordinates: each [x, y, z] (internal
+        # mm) goes through the inverse of LandXmlTinRules.SharedToInternal - rotate by the
+        # position's angle, then add its offsets - so the add-in's own conversion brings it back to
+        # the probe's internal X. Faces 1 2 5 / 2 3 5 / 3 4 5 / 4 1 5: four corners and a centre.
+        $lx = $null
+        function Write-TinFile($path, $pts, $pos) {
+            $inv = [System.Globalization.CultureInfo]::InvariantCulture
+            $a = [double]$pos.angle_degrees * [math]::PI / 180
+            $cos = [math]::Cos($a); $sin = [math]::Sin($a)
+            $sb = New-Object System.Text.StringBuilder
+            for ($k = 0; $k -lt $pts.Count; $k++) {
+                $x = [double]$pts[$k][0] / 1000; $y = [double]$pts[$k][1] / 1000
+                $east = $x * $cos - $y * $sin + [double]$pos.east_west_m
+                $north = $x * $sin + $y * $cos + [double]$pos.north_south_m
+                $elev = [double]$pts[$k][2] / 1000 + [double]$pos.elevation_m
+                $null = $sb.Append('<P id="' + ($k + 1) + '">' + $north.ToString('R', $inv) + ' ' + $east.ToString('R', $inv) + ' ' + $elev.ToString('R', $inv) + '</P>')
+            }
+            $xml = '<?xml version="1.0" encoding="UTF-8"?><LandXML xmlns="http://www.landxml.org/schema/LandXML-1.2" version="1.2">' +
+                   '<Units><Metric linearUnit="meter" areaUnit="squareMeter"/></Units><Surfaces><Surface name="HZ_RT_EG"><Definition surfType="TIN"><Pnts>' +
+                   $sb.ToString() + '</Pnts><Faces><F>1 2 5</F><F>2 3 5</F><F>3 4 5</F><F>4 1 5</F></Faces></Definition></Surface></Surfaces></LandXML>'
+            [System.IO.File]::WriteAllText($path, $xml, (New-Object System.Text.UTF8Encoding($false)))
+        }
         $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
         $tpl = Join-Path $tplRoot 'English\DefaultMetric.rte'
         function TypeNamed($category, $family, $type) {
@@ -167,6 +190,12 @@ $script:HzProbeModules += [pscustomobject]@{
                 $t23 = & $Ctx.Call $CE @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'toposolid'; level_id = $(if ($level) { $level } else { 1 }); type_id = 1; points = @(@(0, 0, 1000), @(1000, 0, 1000), @(0, 1000, 2000)) }) }
                 $said = ([string]$t23.text) + ' ' + ($t23.data | ConvertTo-Json -Compress -Depth 6)
                 Case 10 $(if ($said -match 'toposolid_not_in_revit_2023') { 'pass' } else { 'fail' }) (Short $t23)
+                New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+                $lx = Join-Path $Ctx.ScratchRoot ('HZ_RT_TIN_' + ($run -replace '[^A-Za-z0-9]', '') + '.xml')
+                Write-TinFile $lx @(@(0, 0, 1000), @(1000, 0, 1000), @(1000, 1000, 2000), @(0, 1000, 1500), @(500, 500, 2500)) ([pscustomobject]@{ angle_degrees = 0; east_west_m = 0; north_south_m = 0; elevation_m = 0 })
+                $l23 = & $Ctx.Call $CE @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'toposolid'; level_id = $(if ($level) { $level } else { 1 }); type_id = 1; landxml_path = $lx }) }
+                $said = ([string]$l23.text) + ' ' + ($l23.data | ConvertTo-Json -Compress -Depth 6)
+                Case 11 $(if ($said -match 'toposolid_not_in_revit_2023') { 'pass' } else { 'fail' }) (Short $l23)
             }
             else {
                 $tl = @(Rows (& $Ctx.Apply $CE @{ target_document = $doc; units = 'mm'; elements = @(@{ kind = 'level'; name = ('HZ_RT_TOPO_' + $run); elevation = 500 }) } ($run + '-rt-topolevel')))
@@ -177,8 +206,9 @@ $script:HzProbeModules += [pscustomobject]@{
                     $q = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Toposolid'); include_types = $true; include_links = $false; max_rows = 500 }
                     $seen = @(@($q.data.rows) | Where-Object { $_ -and $_.is_element_type } | ForEach-Object { [string]$_.family + ': ' + [string]$_.type })
                     Case 10 'not_covered' ("no toposolid type 'Toposolid: Toposolid' here or in the template; types seen: " + ($seen -join '; '))
+                    Case 11 'not_covered' 'no toposolid type by name (see the previous case)'
                 }
-                elseif (-not $topoLevel) { Case 10 'unverified' 'the toposolid probe level could not be created' }
+                elseif (-not $topoLevel) { Case 10 'unverified' 'the toposolid probe level could not be created'; Case 11 'unverified' 'the toposolid probe level could not be created' }
                 else {
                     $tx = $X + 20000
                     $pts = @(@($tx, 0, 1000), @(($tx + 10000), 0, 1500), @(($tx + 10000), 10000, 4000), @($tx, 10000, 2000), @(($tx + 5000), 5000, 3500), @(($tx + 2000), 3000, 1200))
@@ -186,19 +216,47 @@ $script:HzProbeModules += [pscustomobject]@{
                     $made = @(Rows $topo)
                     foreach ($m in $made) { $created.Add([long]$m.element_id) }
                     Case 10 $(if ($made.Count -eq 1) { 'pass' } else { 'fail' }) (Short $topo.answer)
+
+                    # The same kind from a LandXML TIN beside it (X + 40 m). A first rehearsal of a
+                    # file written as if shared = internal names the active project position; the
+                    # file is rewritten through it so the surface lands at the probe's own X. The
+                    # re-read proves the solid stands at the CONVERTED points, not the conversion:
+                    # the detail records the position, and an identity one leaves the sign unexercised.
+                    New-Item -ItemType Directory -Force -Path $Ctx.ScratchRoot | Out-Null
+                    $lx = Join-Path $Ctx.ScratchRoot ('HZ_RT_TIN_' + ($run -replace '[^A-Za-z0-9]', '') + '.xml')
+                    $lxX = $X + 40000
+                    $tin = @(@($lxX, 0, 1000), @(($lxX + 10000), 0, 1500), @(($lxX + 10000), 10000, 3000), @($lxX, 10000, 2000), @(($lxX + 5000), 5000, 3500))
+                    Write-TinFile $lx $tin ([pscustomobject]@{ angle_degrees = 0; east_west_m = 0; north_south_m = 0; elevation_m = 0 })
+                    $lxRow = @{ kind = 'toposolid'; level_id = $topoLevel; type_id = [long]$topoType.element_id; landxml_path = $lx }
+                    $lxDry = & $Ctx.Call $CE @{ target_document = $doc; units = 'mm'; elements = @($lxRow) }
+                    $lxPlan = @($lxDry.data.plan | Where-Object { $_ -and $_.landxml }) | Select-Object -First 1
+                    $lxPos = if ($lxPlan) { $lxPlan.landxml.project_position } else { $null }
+                    if ($lxDry.isError -or -not $lxPos) { Case 11 'fail' ('the rehearsal named no project position: ' + (Short $lxDry)) }
+                    else {
+                        Write-TinFile $lx $tin $lxPos
+                        $lxApp = & $Ctx.Apply $CE @{ target_document = $doc; units = 'mm'; elements = @($lxRow) } ($run + '-rt-topo-lx')
+                        $lxMade = @(Rows $lxApp)
+                        foreach ($m in $lxMade) { $created.Add([long]$m.element_id) }
+                        $lxIdentity = [double]$lxPos.angle_degrees -eq 0 -and [double]$lxPos.east_west_m -eq 0 -and [double]$lxPos.north_south_m -eq 0 -and [double]$lxPos.elevation_m -eq 0
+                        $lxText = 'surface {0}, {1} of 5 points used; position {2} deg, E/W {3} m, N/S {4} m, elevation {5} m{6}' -f $lxPlan.landxml.surface, $lxPlan.landxml.points_used,
+                            $lxPos.angle_degrees, $lxPos.east_west_m, $lxPos.north_south_m, $lxPos.elevation_m, $(if ($lxIdentity) { ' (identity: the shared->internal sign is not exercised here)' } else { '' })
+                        $ok = $lxMade.Count -eq 1 -and [int]$lxPlan.landxml.points_used -eq 5 -and [string]$lxPlan.landxml.surface -eq 'HZ_RT_EG'
+                        Case 11 $(if ($ok) { 'pass' } else { 'fail' }) ($lxText + '; ' + (Short $lxApp.answer))
+                    }
                 }
             }
         }
         catch {
             $err = 'probe error: ' + [string]$_
-            for ($i = 4; $i -le 10; $i++) { $nm = $names[$i].Name; if (-not @($out | Where-Object { $_.Name -eq $nm }).Count) { Case $i 'unverified' $err } }
+            for ($i = 4; $i -le 11; $i++) { $nm = $names[$i].Name; if (-not @($out | Where-Object { $_.Name -eq $nm }).Count) { Case $i 'unverified' $err } }
         }
         finally {
+            if ($lx -and (Test-Path -LiteralPath $lx)) { Remove-Item -LiteralPath $lx -Force -ErrorAction SilentlyContinue }
             if ($created.Count -gt 0) {
                 $del = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = @($created.ToArray()) } ($run + '-rt-cleanup')
-                Case 11 $(if ($del.stage -eq 'apply' -and -not $del.answer.isError) { 'pass' } else { 'fail' }) ('{0} ids: {1}' -f $created.Count, (Short $del.answer))
+                Case 12 $(if ($del.stage -eq 'apply' -and -not $del.answer.isError) { 'pass' } else { 'fail' }) ('{0} ids: {1}' -f $created.Count, (Short $del.answer))
             }
-            else { Case 11 'not_covered' 'nothing was created' }
+            else { Case 12 'not_covered' 'nothing was created' }
         }
         return $out.ToArray()
     }

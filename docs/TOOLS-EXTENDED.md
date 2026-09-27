@@ -2155,8 +2155,27 @@ of passing. The live probe stages its level at 500 mm precisely so the two readi
 
 **Revit 2023** has no Toposolid (it arrived in 2024): the row is refused by name,
 `toposolid_not_in_revit_2023`, and a TopographySurface - a different element - is not created
-in its place. A LandXML TIN is not read by this build: export the surface's points and pass
-them as `points`.
+in its place.
+
+**From a LandXML TIN**: `{kind: "toposolid", level_id, type_id, landxml_path}` in place of
+`points` (exactly one of the two). The caller exports ONE TIN surface to LandXML and passes the
+absolute path; `C:\...\site.xml#EG` picks surface `EG` of a file that holds several (a path that
+exists as written is taken whole). Each `<P>` is read as `northing easting elevation` in the
+file's declared `linearUnit`, and only the points a visible face uses are kept (a face marked
+`i="1"` is invisible). Refused by name: no unit or an unknown one, several surfaces and none
+named, a grid surface, a point without an elevation, a face naming an undefined point, a DTD.
+At most 20 000 used points and 64 MB per file (guards, not measured limits).
+
+The file speaks SHARED coordinates, so its points are placed through the document's ACTIVE
+project position - the formula `tabular_source` applies to shared rows: subtract the position's
+east/west and north/south, rotate by minus its angle, subtract its elevation. The rehearsal's
+`plan` row carries a `landxml` block (file, surface, `sha256`, unit, points in file / used /
+unused, visible and invisible faces, the `project_position` used, `sampled_point_ids`), and the
+token binds the hash, the surface and the position: a file edited or a survey point moved between
+rehearsal and apply is refused as stale. Revit triangulates the points itself - the file's faces
+choose which points are used, not how they join. The post-commit re-read proves the solid stands
+at the CONVERTED points; it cannot prove the conversion, and its sign on a ROTATED project
+position is not measured yet - check the printed position before applying.
 
 **Live probe** (`scripts/live-probes/rooms-topo-federation.probes.ps1`, offline twin
 `rooms-topo-federation.tests.ps1`, shapes from the code until the first live run). On its own
@@ -2168,6 +2187,10 @@ creates two verified rooms, a second call plans nothing (`skipped_has_room`), th
 rehearsal lists the same circuits, and link-bounded circuits stay `not_covered` with the
 reply's `not_proven` declaration. The toposolid goes on a second own level at 500 mm from six
 non-coplanar points (Z 1 000 to 4 000 mm) with the type `Toposolid: Toposolid` by name, or is
-`not_covered` naming the types it saw; in 2023 the named refusal is the pass. Everything is
-deleted with `horizun_delete_verified` `mode: "ids"`; nothing is saved.
+`not_covered` naming the types it saw; in 2023 the named refusal is the pass. Beside it
+(X + 40 m) the same kind comes from a five-point LandXML TIN the probe writes: a first rehearsal
+names the active project position, the file is rewritten through its inverse so the surface lands
+at the probe's own X, and the case records the position it used (an identity one leaves the
+rotated-position sign unexercised); in 2023 a `landxml_path` row must bring the same named
+refusal. Everything is deleted with `horizun_delete_verified` `mode: "ids"`; nothing is saved.
 

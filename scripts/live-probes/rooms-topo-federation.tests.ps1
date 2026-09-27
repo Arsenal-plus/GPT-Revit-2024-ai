@@ -1,7 +1,8 @@
 #Requires -Version 5.1
 # Exercises rooms-topo-federation.probes.ps1 WITHOUT Revit. Shapes from the code
 # (FederationLevelRules.cs / FederationCheckCommand.cs, CreateElementsEnclosed.cs /
-# CreateElementsToposolid.cs), to be held against the first live run.
+# CreateElementsToposolid.cs / CreateElementsLandXml.cs: the plan row's landxml block),
+# to be held against the first live run.
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'rooms-topo-federation.probes.ps1')
@@ -12,7 +13,7 @@ function Check($ok, $what) { if ($ok) { Write-Host "  PASS  $what" } else { Writ
 function New-Fake([string]$mode) {
     $src = Join-Path $env:TEMP ('hz-fake-host-' + [guid]::NewGuid().ToString('N') + '.rvt')
     Set-Content -LiteralPath $src -Value 'rvt' -Encoding ascii
-    $s = @{ Mode = $mode; Deleted = @(); Src = $src; Linked = $false; Rooms = $false; NextId = 5000; Made = @() }
+    $s = @{ Mode = $mode; Deleted = @(); Src = $src; Linked = $false; Rooms = $false; NextId = 5000; Made = @(); Y2023 = $false; PosAngle = 30; LxInternal = @(); LxFile = '' }
     $reply = { param($data, $isError = $false, $text = 'fake') [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $call = {
         param($tool, $a)
@@ -45,6 +46,15 @@ function New-Fake([string]$mode) {
             'horizun_create_elements' {
                 # The rehearsal of an all_enclosed entry (ExpandEnclosed + NothingEnclosed shapes).
                 $el = @($a.elements)[0]
+                if ($el.kind -eq 'toposolid' -and $el.landxml_path -and -not $s.Y2023) {
+                    # The rehearsal's plan row carries the landxml block (CreateElementsLandXml.cs); the
+                    # position is rotated and offset so the probe's inverse is exercised, not the identity.
+                    $s.LxFile = [System.IO.File]::ReadAllText([string]$el.landxml_path)
+                    $n = ([regex]::Matches($s.LxFile, '<P ')).Count
+                    $lxb = [pscustomobject]@{ path = $el.landxml_path; surface = 'HZ_RT_EG'; sha256 = 'fake'; linear_unit = 'meter'; points_in_file = $n; points_used = $n; points_unused = 0
+                        project_position = [pscustomobject]@{ angle_degrees = $s.PosAngle; east_west_m = 1000.5; north_south_m = -2000.25; elevation_m = 2600 } }
+                    return & $reply ([pscustomobject]@{ dry_run = $true; requested = 1; plan = @([pscustomobject]@{ index = 0; kind = 'toposolid'; references_resolved = $true; landxml = $lxb }) })
+                }
                 if ($el.kind -eq 'toposolid') { return & $reply $null $true 'elements[0]: toposolid_not_in_revit_2023: Revit 2023 has no Toposolid element (it arrived in Revit 2024). Nothing was planned.' }
                 if ($el.phase_id -ne 12) { return & $reply $null $true 'phase_id must be the last phase' }
                 $min = if ($el.ContainsKey('min_area_m2')) { [double]$el.min_area_m2 } else { 0 }
@@ -70,6 +80,15 @@ function New-Fake([string]$mode) {
             'horizun_copy_between_documents' { return & $ok ([pscustomobject]@{ copied = 0 }) }
             'horizun_create_elements' {
                 $els = @($a.elements); $rows = @()
+                if ($els[0].landxml_path) {
+                    # LandXmlTinRules.SharedToInternal, ported: where the add-in would put each point (mm).
+                    $t = [System.IO.File]::ReadAllText([string]$els[0].landxml_path)
+                    $ang = [double]$s.PosAngle * [math]::PI / 180; $co = [math]::Cos(-$ang); $si = [math]::Sin(-$ang)
+                    $s.LxInternal = @([regex]::Matches($t, '<P id="\d+">([^<]+)</P>') | ForEach-Object {
+                        $v = @($_.Groups[1].Value -split ' ' | ForEach-Object { [double]::Parse($_, [System.Globalization.CultureInfo]::InvariantCulture) })
+                        $re = $v[1] - 1000.5; $rn = $v[0] - (-2000.25)
+                        , @((($re * $co - $rn * $si) * 1000), (($re * $si + $rn * $co) * 1000), (($v[2] - 2600) * 1000)) })
+                }
                 $count = if ($els[0].placement -eq 'all_enclosed') { $s.Rooms = $true; 2 } else { $els.Count }
                 for ($k = 0; $k -lt $count; $k++) { $s.NextId = $s.NextId + 1; $rows += [pscustomobject]@{ element_id = $s.NextId }; $s.Made += $s.NextId }
                 return & $ok ([pscustomobject]@{ rows = $rows })
@@ -81,24 +100,33 @@ function New-Fake([string]$mode) {
 function Outcomes($r) { ($r | ForEach-Object { $_.Outcome }) -join ',' }
 
 $h = New-Fake 'ok'; $r = @(& $module.Run $h.Ctx)
-Check ($r.Count -eq 12) ('twelve cases: ' + $r.Count)
+Check ($r.Count -eq 13) ('thirteen cases: ' + $r.Count)
 Check (@($r | Where-Object { $_.Outcome -ne 'pass' -and $_.Name -notlike '*link-bounded*' }).Count -eq 0) ('everything but the link-bounded declaration passes: ' + (Outcomes $r))
 Check ($r[9].Outcome -eq 'not_covered' -and $r[9].Detail -match 'not_proven') 'link-bounded circuits stay not_covered, with the reply''s declaration'
 Check ($h.State.Deleted -contains 900) 'the probe link type is deleted'
-Check (@($h.State.Made | Where-Object { $h.State.Deleted -notcontains $_ }).Count -eq 0 -and $h.State.Made.Count -eq 10) ('every staged id is deleted (2 levels, 5 walls, 2 rooms, 1 toposolid): ' + $h.State.Made.Count)
+Check (@($h.State.Made | Where-Object { $h.State.Deleted -notcontains $_ }).Count -eq 0 -and $h.State.Made.Count -eq 11) ('every staged id is deleted (2 levels, 5 walls, 2 rooms, 2 toposolids): ' + $h.State.Made.Count)
+$lxi = @($h.State.LxInternal)
+$want = @(@(1190000, 0, 1000), @(1200000, 0, 1500), @(1200000, 10000, 3000), @(1190000, 10000, 2000), @(1195000, 5000, 3500))
+$worst = 0.0
+if ($lxi.Count -eq 5) { for ($k = 0; $k -lt 5; $k++) { for ($d = 0; $d -lt 3; $d++) { $worst = [math]::Max($worst, [math]::Abs([double]$lxi[$k][$d] - $want[$k][$d])) } } }
+Check ($lxi.Count -eq 5 -and $worst -lt 0.001) ('a TIN written through a rotated, offset position comes back at the probe''s own X (SharedToInternal ported), worst ' + $worst + ' mm')
+Check ($r[11].Outcome -eq 'pass' -and $r[11].Detail -match 'HZ_RT_EG' -and $r[11].Detail -notmatch 'identity') ('the LandXML case names the surface and the position it used: ' + $r[11].Detail)
+Check ($h.State.LxFile -match 'linearUnit="meter"' -and $h.State.LxFile -notmatch '<!DOCTYPE') 'the probe''s file declares its unit and carries no DTD'
 
 $h = New-Fake 'differs'; $r = @(& $module.Run $h.Ctx)
 Check ($r[1].Outcome -eq 'fail' -and $r[2].Outcome -eq 'pass') 'a self link that differs fails the matches case but still answers'
 
-$h = New-Fake 'ok'; $h.Ctx.Year = 2023; $r = @(& $module.Run $h.Ctx)
+$h = New-Fake 'ok'; $h.Ctx.Year = 2023; $h.State.Y2023 = $true; $r = @(& $module.Run $h.Ctx)
 Check ($r[10].Outcome -eq 'pass' -and $r[10].Detail -match 'toposolid_not_in_revit_2023') ('2023 reports the named refusal: ' + $r[10].Outcome)
+Check ($r[11].Outcome -eq 'pass' -and $r[11].Detail -match 'toposolid_not_in_revit_2023') ('2023 refuses a landxml_path row by the same name: ' + $r[11].Outcome)
 
 $h = New-Fake 'notopo'; $r = @(& $module.Run $h.Ctx)
 Check ($r[10].Outcome -eq 'not_covered' -and $r[10].Detail -match 'Terrain: Site') ('no toposolid type by name: not_covered, naming what it saw: ' + $r[10].Detail)
+Check ($r[11].Outcome -eq 'not_covered') ('no toposolid type: the LandXML case is not_covered too: ' + $r[11].Outcome)
 
 $h = New-Fake 'ok'; $h.Ctx.WriteGate = $true; $r = @(& $module.Run $h.Ctx)
 Check ($r[1].Outcome -eq 'not_covered' -and $r[2].Outcome -eq 'not_covered' -and $r[3].Outcome -eq 'not_covered' -and $r[0].Outcome -eq 'pass') ('write tier closed, no links: ' + (Outcomes $r))
-Check ($r.Count -eq 12 -and @($r[4..11] | Where-Object { $_.Outcome -ne 'not_covered' }).Count -eq 0) 'write tier closed: rooms and toposolid cases are not_covered'
+Check ($r.Count -eq 13 -and @($r[4..12] | Where-Object { $_.Outcome -ne 'not_covered' }).Count -eq 0) 'write tier closed: rooms and toposolid cases are not_covered'
 
 if ($fail -gt 0) { Write-Host "$fail check(s) failed"; exit 1 }
 Write-Host 'all checks passed'
