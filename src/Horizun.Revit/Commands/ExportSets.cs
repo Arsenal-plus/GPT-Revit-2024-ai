@@ -138,8 +138,11 @@ namespace Horizun.Revit.Commands
                 if (dwgOptions == null) return CommandResult.Fail(dwgRefusal);
                 // Revit: MergedViews = "merge all views in one file (via XRefs)" is false
                 // by default, which writes a sheet's views and links as external
-                // references beside it. bound merges them into the sheet's own file.
-                dwgOptions.MergedViews = xrefs == ExportFormatRules.XrefsBound;
+                // references beside it; bound merges them into the sheet's own file. A
+                // named dwg_setup carries its own choice, which an omitted dwg_xrefs keeps
+                // (and the reply states) instead of silently replacing it with the default.
+                if (request["dwg_xrefs"] == null) xrefs = dwgOptions.MergedViews ? ExportFormatRules.XrefsBound : ExportFormatRules.XrefsLinked;
+                else dwgOptions.MergedViews = xrefs == ExportFormatRules.XrefsBound;
             }
             bool overwrite = request.Value<bool?>("overwrite") == true;
             // Each target's candidate files include what Revit writes beside it
