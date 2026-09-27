@@ -2101,3 +2101,24 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+### `horizun_create_elements` — `placement: "all_enclosed"` (rooms and spaces)
+
+An entry `{kind: room|space, placement: "all_enclosed", level_id, phase_id,
+min_area_m2?}` (no `point`, no `name`/`number`) is expanded on every call into one
+row per closed circuit of Revit's `PlanTopology(level, phase)` that does not
+already hold a room (`PlanCircuit.IsRoomLocated`) or a space (`GetSpaceAtPoint`
+in that phase) and is not under `min_area_m2` (shafts, chases). The phase is
+required, never guessed. The reply's `enclosed` block lists EVERY circuit seen
+with `area_m2`, `sides`, `point_inside` (Revit's own interior point: PlanCircuit
+exposes no centroid) and `action` (`create`, `skipped_has_room|space`,
+`skipped_min_area`). Rooms are placed with `NewRoom(Phase)` + `NewRoom(Room,
+PlanCircuit)` in the circuit re-read at apply time (a wall moved since the
+rehearsal refuses as `enclosed_circuit_gone` or as a stale token); spaces with
+`NewSpace(Level, Phase, UV)` at the circuit's interior point - per circuit rather
+than `NewRooms2`/`NewSpaces2`, which fill every circuit and could honour
+`min_area_m2` only by creating and deleting. After the commit each row re-reads
+`area_positive`, `boundary_closed` (every boundary loop closes), `phase_id` and,
+for rooms, `point_inside_room`. NOT PROVEN yet: whether Room Bounding walls of a
+LINKED model close a host circuit - the reply says so and the live probe measures
+it. When nothing is left to fill the reply lists the circuits and writes nothing.

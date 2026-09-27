@@ -50,6 +50,14 @@ namespace Horizun.Revit.Commands
                 string expandError = ExpandTabularPlacements(doc, tabularSource, preScale, out input, out tabularBlock);
                 if (expandError != null) return CommandResult.Fail(expandError + " Nothing ran.");
             }
+            // placement='all_enclosed' rows become one room/space row per circuit (CreateElementsEnclosed.cs).
+            JArray enclosedBlock = null;
+            if (input != null)
+            {
+                string enclosedError = ExpandEnclosed(doc, request, ref input, out enclosedBlock);
+                if (enclosedError != null) return CommandResult.Fail(enclosedError + " Nothing ran.");
+                if (enclosedBlock != null && input.Count == 0) return NothingEnclosed(request, enclosedBlock);
+            }
             if (input == null || input.Count == 0) return CommandResult.Fail("elements is required and must be non-empty.");
             if (input.Count > 2000) return CommandResult.Fail("elements exceeds the 2000 item atomic-batch limit.");
             if(input.Count!=1 && input.OfType<JObject>().Any(x=>x.Value<string>("kind")=="stairs"))
@@ -142,7 +150,7 @@ namespace Horizun.Revit.Commands
                 }
                 var result = new JObject
                 {
-                    ["dry_run"] = true, ["tabular"] = tabularBlock,
+                    ["dry_run"] = true, ["tabular"] = tabularBlock, ["enclosed"] = enclosedBlock,
                     ["transaction_status"] = "not_started", ["requested"] = input.Count,
                     ["valid"] = plans.Count, ["invalid"] = errors.Count, ["errors"] = errors,
                     ["plan"] = new JArray(plans.Select(p => p.Summary)),
@@ -191,6 +199,7 @@ namespace Horizun.Revit.Commands
 
             var applied = ApplyPlans(doc, request, plans, input.Count);
             if (applied.Data is JObject appliedData) appliedData["tabular"] = tabularBlock;
+            if (enclosedBlock != null && applied.Data is JObject enclosedData) enclosedData["enclosed"] = enclosedBlock;
             return applied;
         }
 
@@ -384,6 +393,7 @@ namespace Horizun.Revit.Commands
                         // from whoever wrote the requirement set, or from nowhere.
                         p.WantName = Trimmed(item, "name");
                         p.WantNumber = Trimmed(item, "number");
+                        if (item["enclosed_from"] != null) PlanEnclosed(doc, item, p);
                         break;
                     // Space.Create(level, uv): a 2D point on a level, exactly like a room.
                     // Verified: level_id (generic), the placement point (generic, 2D like
@@ -391,6 +401,7 @@ namespace Horizun.Revit.Commands
                     // asserted - see ReadCreated).
                     case "space":
                         p.Level = Need<Level>(doc, item, "level_id"); p.Start = Point(item["point"], scale, false);
+                        if (item["enclosed_from"] != null) PlanEnclosed(doc, item, p);
                         break;
                     // Area.Create(areaView, uv): a point in an AREA PLAN view, not a level -
                     // Revit finds the enclosing AreaBoundaryLine loop through the view.
@@ -1289,6 +1300,7 @@ namespace Horizun.Revit.Commands
                     return roof;
                 case "room":
                 {
+                    if (p.Enclosed) return CreateEnclosed(doc, p);
                     Room room = doc.Create.NewRoom(p.Level, new UV(p.Start.X, p.Start.Y));
                     if (room == null)
                         throw new InvalidOperationException(
@@ -1306,6 +1318,7 @@ namespace Horizun.Revit.Commands
                 }
                 case "space":
                 {
+                    if (p.Enclosed) return CreateEnclosed(doc, p);
                     Space space = doc.Create.NewSpace(p.Level, new UV(p.Start.X, p.Start.Y));
                     if (space == null)
                         throw new InvalidOperationException(
@@ -2745,6 +2758,8 @@ namespace Horizun.Revit.Commands
             /// </summary>
             public string WantName;
             public string WantNumber;
+            /// <summary>placement='all_enclosed': the phase the circuit was found in, and that the row came from one.</summary>
+            public Phase Phase; public bool Enclosed;
 
             /// <summary>shaft: the two levels it runs BETWEEN, which is what makes it a shaft.</summary>
             public Level BaseLevel;

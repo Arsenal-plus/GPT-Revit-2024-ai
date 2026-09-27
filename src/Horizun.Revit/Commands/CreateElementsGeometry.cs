@@ -673,6 +673,19 @@ namespace Horizun.Revit.Commands
                     try { return space.IsPointInSpace(new XYZ(p.Start.X, p.Start.Y, testZ)); } catch { return false; }
                 });
             }
+            // ALL_ENCLOSED rows: the circuit really was filled - a positive area, every
+            // boundary loop closing on itself, the phase asked for, the interior point inside.
+            if (p.Enclosed)
+            {
+                Exact("area_positive", true, () => SpatialAreaNow(e) > 0);
+                Exact("boundary_closed", true, () => BoundaryClosed(e));
+                Exact("phase_id", Rid.Value(p.Phase.Id), () => PhaseOf(e));
+                if (p.Kind == "room")
+                    Exact("point_inside_room", true, () =>
+                    {
+                        try { return ((Autodesk.Revit.DB.Architecture.Room)e).IsPointInRoom(new XYZ(p.Start.X, p.Start.Y, p.Level.ProjectElevation + 0.5)); } catch { return false; }
+                    });
+            }
             if (p.Kind == "wall")
             {
                 Numeric("height", p.Height, () => e.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM).AsDouble());
