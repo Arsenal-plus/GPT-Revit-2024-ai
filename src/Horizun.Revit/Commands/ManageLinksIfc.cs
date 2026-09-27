@@ -100,7 +100,7 @@ namespace Horizun.Revit.Commands
             try
             {
                 var options = new IFCImportOptions { Action = IFCImportAction.Open, Intent = IFCImportIntent.Reference };
-                ifcDoc = app.Application.OpenIFCDocument(path, options);
+                ifcDoc = app.Application.OpenIFCDocument(LinkPathRules.ForRevit(path), options);
                 if (ifcDoc == null) failure = "OpenIFCDocument returned no document";
                 else if (ifcDoc.Equals(doc)) { ifcDoc = null; failure = "OpenIFCDocument returned the host document itself"; }
                 else
@@ -124,7 +124,7 @@ namespace Horizun.Revit.Commands
                 tx.Start();
                 try
                 {
-                    LinkLoadResult r = RevitLinkType.CreateFromIFC(doc, path, rvtPath, false, new RevitLinkOptions(false));
+                    LinkLoadResult r = RevitLinkType.CreateFromIFC(doc, LinkPathRules.ForRevit(path), LinkPathRules.ForRevit(rvtPath), false, new RevitLinkOptions(false));
                     if (r == null || !LinkLoadResult.IsCodeSuccess(r.LoadResult))
                         throw new InvalidOperationException("RevitLinkType.CreateFromIFC answered '" +
                             (r == null ? "(null)" : r.LoadResult.ToString()) + "'");

@@ -29,6 +29,10 @@ namespace Horizun.Revit.Core
     {
         public string Root;
         public int Campus, Building, Space, Zone, Surface, Opening;
+
+        /// <summary>Construction definitions (gbXML/Construction): counted, never judged - a file
+        /// exported below tier Final carries none, and whether it must is the caller's rule.</summary>
+        public int Construction;
     }
 
     public static class ExportFormatRules
@@ -187,6 +191,7 @@ namespace Horizun.Revit.Core
                         case "Zone": counts.Zone++; break;
                         case "Surface": counts.Surface++; break;
                         case "Opening": counts.Opening++; break;
+                        case "Construction": counts.Construction++; break;
                     }
                 }
             }

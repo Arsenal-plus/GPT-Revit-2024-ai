@@ -129,14 +129,18 @@ namespace Horizun.Revit.Commands
 
         private static PostconditionCheck VerifyDisplay(Document doc, Plan plan)
         {
+            // The property NOT requested is checked too ("..._unchanged"), so it belongs in the
+            // required list: recorded but undeclared it read as "unexpected" and all_verified could
+            // never be true (MEASURED 2026-09-27 in Revit 2026: detail_level Fine re-read, token
+            // withheld because discipline_unchanged was unexpected).
             var required = new List<string>();
-            if (plan.DetailLevel != null) required.Add("detail_level");
-            if (plan.Discipline != null) required.Add("discipline");
+            required.Add(plan.DetailLevel != null ? "detail_level" : "detail_level_unchanged");
+            required.Add(plan.Discipline != null ? "discipline" : "discipline_unchanged");
             var check = new PostconditionCheck(required.ToArray());
             var view = doc.GetElement(plan.TargetId) as View;
             if (view == null)
             {
-                foreach (string r in required) check.Unreadable(r, r == "detail_level" ? plan.DetailLevel : plan.Discipline,
+                foreach (string r in required) check.Unreadable(r, r.StartsWith("detail_level", StringComparison.Ordinal) ? plan.DetailLevel : plan.Discipline,
                                                                 "the view is gone");
                 return check;
             }

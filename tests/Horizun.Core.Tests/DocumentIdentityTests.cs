@@ -177,6 +177,15 @@ namespace Horizun.Core.Tests
             Assert.Equal(DocMatchOutcome.None, DocumentMatcher.Find(new List<DocIdentity> { Doc("A") }, null).Outcome);
         }
 
+        [Theory]
+        [InlineData(@"C:\Temp\hz\HZ_SYNC_LOCAL.rvt", "C:/Temp/hz/HZ_SYNC_LOCAL.rvt", true)]
+        [InlineData(@"C:\Temp\hz\HZ_SYNC_LOCAL.rvt", "c:/temp/HZ/hz_sync_local.RVT", true)]
+        [InlineData(@"C:\Temp\hz\HZ_SYNC_LOCAL.rvt", @"C:\Temp\hz\HZ_SYNC_CENTRAL.rvt", false)]
+        [InlineData("", "", false)]
+        [InlineData(null, "C:/Temp/a.rvt", false)]
+        public void The_same_file_is_the_same_path_whatever_its_separators_and_case(string a, string b, bool expected)
+            => Assert.Equal(expected, DocIdentity.SamePath(a, b));
+
         [Fact]
         public void A_blank_path_is_normalized_to_null_so_it_never_matches_another_blank()
         {

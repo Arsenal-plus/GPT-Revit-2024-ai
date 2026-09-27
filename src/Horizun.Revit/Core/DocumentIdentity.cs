@@ -61,6 +61,18 @@ namespace Horizun.Revit.Core
             return p.ToLowerInvariant();
         }
 
+        /// <summary>
+        /// The same file, compared through <see cref="NormalizePath"/>: a path asked with forward
+        /// slashes is the document Revit reports with backslashes. Two blanks are never the same.
+        /// MEASURED 2026-09-27: document_session open compared raw strings, and a local it had
+        /// just opened and activated from 'C:/.../HZ_SYNC_LOCAL.rvt' was refused as unproven.
+        /// </summary>
+        public static bool SamePath(string a, string b)
+        {
+            string na = NormalizePath(a), nb = NormalizePath(b);
+            return na != null && string.Equals(na, nb, StringComparison.Ordinal);
+        }
+
         /// <summary>Which Revit this document is open in. Part of the fingerprint.</summary>
         public string RevitYear { get; set; }
 

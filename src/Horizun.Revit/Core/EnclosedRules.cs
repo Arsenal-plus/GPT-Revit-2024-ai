@@ -18,17 +18,24 @@ namespace Horizun.Revit.Core
         public const string SkippedMinArea = "skipped_min_area";
         /// <summary>Revit could not give a valid interior point for the region (PlanCircuit.GetPointInside threw).</summary>
         public const string NoInteriorPoint = "no_interior_point";
+        /// <summary>
+        /// A region Revit reports with no area. For spaces this is NewSpaces2 posting a redundant
+        /// space where one already stands (MEASURED 2026-09-27 in Revit 2026: a second call saw its
+        /// two filled regions as skipped_has_space AND two new zero-area results) - named, never filled.
+        /// </summary>
+        public const string SkippedZeroArea = "skipped_zero_area";
 
         /// <summary>
         /// skipped_has_room / skipped_has_space when one already stands in the circuit - that
         /// wins over the area, because it is the reason nothing goes there whatever the size;
-        /// skipped_min_area when the circuit is smaller than the caller's min_area_m2 (equal is
-        /// kept); otherwise create.
+        /// skipped_zero_area when Revit gives the region no area; skipped_min_area when the circuit
+        /// is smaller than the caller's min_area_m2 (equal is kept); otherwise create.
         /// </summary>
         public static string CircuitAction(string kind, bool occupied, double areaM2, double minAreaM2)
         {
             if (kind != "room" && kind != "space") throw new ArgumentOutOfRangeException(nameof(kind), kind, "all_enclosed places a room or a space.");
             if (occupied) return "skipped_has_" + kind;
+            if (!(areaM2 > 0)) return SkippedZeroArea;
             return areaM2 < minAreaM2 ? SkippedMinArea : Create;
         }
 

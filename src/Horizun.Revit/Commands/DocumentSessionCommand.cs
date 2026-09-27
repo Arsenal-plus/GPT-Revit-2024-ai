@@ -223,7 +223,7 @@ namespace Horizun.Revit.Commands
             // Already open? Then no open happens and no upgrade happens; say which.
             var already = app.Application.Documents
                 .Cast<Document>()
-                .FirstOrDefault(d => !d.IsLinked && string.Equals(SafePath(d), path, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(d => !d.IsLinked && DocIdentity.SamePath(SafePath(d), path));
             if (already != null)
             {
                 if (openRequest.CloseWorksetNames.Count > 0)
@@ -338,7 +338,7 @@ namespace Horizun.Revit.Commands
             var actualPath = SafePath(doc);
             var title = SafeTitle(doc);
             bool hasPath = !string.IsNullOrEmpty(actualPath);
-            bool pathIsRequested = hasPath && string.Equals(actualPath, path, StringComparison.OrdinalIgnoreCase);
+            bool pathIsRequested = hasPath && DocIdentity.SamePath(actualPath, path);
 
             bool titleIsRequested = TitleIdentifies(title, path);
 

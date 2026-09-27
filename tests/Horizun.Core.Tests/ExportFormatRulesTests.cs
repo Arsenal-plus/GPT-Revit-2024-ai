@@ -102,7 +102,18 @@ namespace Horizun.Core.Tests
             Assert.Equal(1, counts.Zone);
             Assert.Equal(2, counts.Surface);
             Assert.Equal(1, counts.Opening);
+            Assert.Equal(0, counts.Construction);
             Assert.Null(ExportFormatRules.GbXmlProblem(counts));
+        }
+
+        [Fact]
+        public void Constructions_are_counted_and_never_judged()
+        {
+            GbXmlCounts counts = Count("<gbXML><Campus><Building><Space id=\"a\"/></Building><Surface constructionIdRef=\"c1\"/></Campus>" +
+                                       "<Construction id=\"c1\"><LayerId layerIdRef=\"l1\"/></Construction><Construction id=\"c2\"/></gbXML>");
+            Assert.Equal(2, counts.Construction);
+            Assert.Null(ExportFormatRules.GbXmlProblem(counts));
+            Assert.Null(ExportFormatRules.GbXmlProblem(Count("<gbXML><Campus><Building><Space id=\"a\"/></Building></Campus></gbXML>")));
         }
 
         [Fact]

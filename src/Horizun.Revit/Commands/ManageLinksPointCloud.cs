@@ -96,7 +96,7 @@ namespace Horizun.Revit.Commands
             // Runs twice (rehearsal, apply): the ids of the LAST run are the ones verified and published.
             edit.Apply = d =>
             {
-                PointCloudType t = PointCloudType.Create(d, engine, path);
+                PointCloudType t = PointCloudType.Create(d, engine, LinkPathRules.ForRevit(path));
                 typeId = t.Id;
                 instId = PointCloudInstance.Create(d, t.Id, Transform.Identity).Id;
             };

@@ -168,6 +168,19 @@ namespace Horizun.Revit.Commands
             {
                 ["id"] = Rid.Value(v.Id), ["name"] = SafePlanName(v), ["sheet_number"] = (v as ViewSheet)?.SheetNumber, ["file"] = targets[i]
             }));
+            if (format == "dgn")
+            {
+                // A DGN needs a seed file: with SeedName left empty Revit 2026 returned without writing
+                // anything (MEASURED 2026-09-27). The seed is the running Revit's own, chosen per view.
+                for (int i = 0; i < views.Count; i++)
+                {
+                    string seed = DgnSeedFor(doc, views[i]);
+                    if (!File.Exists(seed))
+                        return CommandResult.Fail("no DGN seed file at '" + seed + "' (the running Revit's own ACADInterop seeds): " +
+                            "a DGN cannot be written without one. Nothing was exported.");
+                    ((JObject)viewRows[i])["dgn_seed"] = seed;
+                }
+            }
             if (dryRun)
             {
                 bool longSet = views.Count > ExportFormatRules.LongSetViews;
@@ -270,6 +283,18 @@ namespace Horizun.Revit.Commands
             before.TryGetValue(path, out ExportFileStamp old) && after.TryGetValue(path, out ExportFileStamp now) && old != null && now != null &&
             old.Existed && old.Readable == now.Readable && old.Size == now.Size && old.Mtime == now.Mtime;
 
+        /// <summary>
+        /// The V8 seed installed with the running Revit (ACADInterop beside RevitAPI.dll): metric or
+        /// imperial by the document's display unit system, 3D for a 3-D view and 2D otherwise.
+        /// </summary>
+        internal static string DgnSeedFor(Document doc, View view)
+        {
+            string root = Path.GetDirectoryName(typeof(Document).Assembly.Location) ?? "";
+            string units = doc.DisplayUnitSystem == DisplayUnit.METRIC ? "Metric" : "Imperial";
+            string dims = view is View3D ? "3D" : "2D";
+            return Path.Combine(root, "ACADInterop", "V8-" + units + "-Seed" + dims + ".dgn");
+        }
+
         private static bool ExportOneView(Document doc, string format, string folder, string stem, View view, DWGExportOptions dwgOptions)
         {
             switch (format)
@@ -277,7 +302,7 @@ namespace Horizun.Revit.Commands
                 case "dwg":
                     return doc.Export(folder, stem, new List<ElementId> { view.Id }, dwgOptions);
                 case "dgn":
-                    return doc.Export(folder, stem, new List<ElementId> { view.Id }, new DGNExportOptions());
+                    return doc.Export(folder, stem, new List<ElementId> { view.Id }, new DGNExportOptions { SeedName = DgnSeedFor(doc, view) });
                 case "dwfx":
                 {
                     var set = new ViewSet();
@@ -441,7 +466,7 @@ namespace Horizun.Revit.Commands
             result["read_back"] = new JObject
             {
                 ["root"] = counts.Root, ["campus"] = counts.Campus, ["building"] = counts.Building, ["space"] = counts.Space,
-                ["zone"] = counts.Zone, ["surface"] = counts.Surface, ["opening"] = counts.Opening
+                ["zone"] = counts.Zone, ["surface"] = counts.Surface, ["opening"] = counts.Opening, ["construction"] = counts.Construction
             };
             string problem = ExportFormatRules.GbXmlProblem(counts);
             if (problem != null)

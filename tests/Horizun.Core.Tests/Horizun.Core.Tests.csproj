@@ -27,6 +27,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceCoherenceRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadApplyGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SheetRenumberRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkPathRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ParameterSequenceRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PerspectiveRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SunStudyRules.cs" />
@@ -112,6 +113,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\StructuralRequirementSet.cs" />
     <!-- The coverage vocabulary. Zero and "could not look" are different answers. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\StructuralCoverage.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\StructuralLoadRules.cs" />
     <!-- Whether a declared set actually FITS its host. Revit creates a set longer
          than its beam without complaint, so this is measured before a transaction
          exists - every position, not the two ends. -->

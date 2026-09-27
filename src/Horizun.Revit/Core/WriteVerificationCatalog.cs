@@ -252,7 +252,10 @@ namespace Horizun.Revit.Core
                 "CreateFamilyCommand.cs: forms (solid geometry) are verified in memory before saving; the saved file is re-read for dimensions, parameters and types, not forms."),
             Row("horizun_export", VerificationMechanism.FileArtifactReread, E("files_verified"),
                 F(C + "ExportCommand.cs", C + "ExportDwgSetup.cs", C + "ExportSets.cs", "Horizun.Revit/Core/ExportFileDiff.cs"),
-                "ExportCommand.cs dwg with dwg_setup: the named setup's layer mapping is not proved from the DWG binary; dwg_layers proves the table itself."),
+                "ExportCommand.cs dwg with dwg_setup: the named setup's layer mapping is not proved from the DWG binary; dwg_layers proves the table itself. " +
+                "ExportSets.cs: a dwg/dgn/dwfx set is proved file by file from its header (a DWG's AC10xx against the asked acad_version, a DGN v8 " +
+                "structured storage, a DWFx zip package), not from the drawing it holds; an .rfa re-read proves only BasicFileInfo.Format, the saved " +
+                "version, not the family's contents; a gbXML is proved by its root, Campus and Space count - Zone, Surface, Opening and Construction are counted, not judged."),
             Row("horizun_deliver_ifc", VerificationMechanism.FileArtifactReread, E("deliverable_ready"), F(C + "DeliverIfcCommand.cs")),
             Row("horizun_capture_view", VerificationMechanism.FileArtifactReread, E("sha256", "bytes"), F(C + "CaptureViewCommand.cs")),
             Row("horizun_verify_changes", VerificationMechanism.FileArtifactReread, E("image", "spatial_check", "baseline_png", "artifacts_verified"), F(C + "VerifyChangesCommand.cs", C + "VerifyChangesSnapshot.cs")),

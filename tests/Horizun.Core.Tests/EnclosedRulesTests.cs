@@ -11,6 +11,13 @@ namespace Horizun.Core.Tests
         [Fact] public void An_empty_circuit_above_min_area_is_created() => Assert.Equal("create", EnclosedRules.CircuitAction("room", false, 12.5, 10));
         [Fact] public void A_circuit_of_exactly_min_area_is_kept() => Assert.Equal("create", EnclosedRules.CircuitAction("space", false, 10, 10));
         [Fact] public void A_smaller_circuit_is_skipped() => Assert.Equal("skipped_min_area", EnclosedRules.CircuitAction("room", false, 2.4, 10));
+        // MEASURED 2026-09-27: a second NewSpaces2 over filled regions posts zero-area (redundant) spaces.
+        [Fact] public void A_region_with_no_area_is_named_never_created()
+        {
+            Assert.Equal("skipped_zero_area", EnclosedRules.CircuitAction("space", false, 0, 0));
+            Assert.Equal("skipped_zero_area", EnclosedRules.CircuitAction("room", false, double.NaN, 0));
+            Assert.Equal("skipped_has_space", EnclosedRules.CircuitAction("space", true, 0, 0));
+        }
 
         [Fact]
         public void An_occupied_circuit_is_skipped_as_occupied_whatever_its_area()

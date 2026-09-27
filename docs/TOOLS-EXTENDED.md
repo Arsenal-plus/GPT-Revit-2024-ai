@@ -2605,7 +2605,13 @@ scope, not only the page. Nothing is judged. Force and moment components are in
 the load's own frame, `vector_frame` (`project`, `work_plane` or `host_local`,
 from `OrientTo`): only `project` components are project coordinates and add up
 with each other. A field that throws is named in `unread`; `host_id` null with
-nothing unread means the load is not hosted.
+nothing unread means the load is not hosted. A load with NO load case (an invalid
+`LoadCaseId` - an API-created load in a document with no case) reads
+`load_case.assigned: false` with name, nature and category null by design, not
+unread, and is counted under `by_load_case["(no load case)"]`; a case name that
+cannot be read groups under `"(unreadable)"`. No group key is ever empty: Revit
+names such a load's case "" and a JSON property named "" makes PowerShell's
+`ConvertFrom-Json` refuse the whole reply (MEASURED 2026-09-27).
 
 ### horizun_code_check - operation=energy_readiness
 
@@ -2712,9 +2718,10 @@ throws or answers empty when every region is filled is not measured; its message
 any, is kept in `revit_said`. Reading the topology needs a modifiable document (Revit
 computes it on first access), so the rehearsal reads it in the same rolled-back way.
 
-Each region's `action` is `create`, `skipped_has_room|space`, `skipped_min_area` or
-`no_interior_point` (Revit could not give one: listed and skipped, never aborting the
-batch). Plan rows and errors of expanded rows carry `elements_index`, the caller's own
+Each region's `action` is `create`, `skipped_has_room|space`, `skipped_min_area`,
+`skipped_zero_area` (Revit gives the region no area - a second `NewSpaces2` over filled
+regions posts zero-area, redundant spaces; MEASURED 2026-09-27) or `no_interior_point` (Revit
+could not give one: listed and skipped, never aborting the batch). Plan rows and errors of expanded rows carry `elements_index`, the caller's own
 entry. After the commit each row re-reads `area_positive`, `boundary_closed` (every
 boundary loop closes), `phase_id` and the interior point (`point_inside_room`, or the
 space's own point check). When nothing is left to fill, a rehearsal lists the regions

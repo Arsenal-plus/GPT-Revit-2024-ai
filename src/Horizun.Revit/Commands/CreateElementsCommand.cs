@@ -1673,7 +1673,18 @@ namespace Horizun.Revit.Commands
                 case "structural_framing":
                     FamilySymbol framing = (FamilySymbol)p.Type;
                     if (!framing.IsActive) { framing.Activate(); doc.Regenerate(); }
-                    return doc.Create.NewFamilyInstance(Line.CreateBound(p.Start, p.End), framing, p.Level, p.StructuralType);
+                    FamilyInstance placedFraming = doc.Create.NewFamilyInstance(Line.CreateBound(p.Start, p.End), framing, p.Level, p.StructuralType);
+                    // Revit gives a beam the nearest level BELOW its curve as its Reference Level,
+                    // whatever level was passed (MEASURED 2026-09-27 in Revit 2026: asked a level at
+                    // 93,000 mm for a beam at 96,000 mm, got the one at 95,000 mm). The caller's level
+                    // is set back explicitly; the re-read then judges both the level and the ends.
+                    Parameter referenceLevel = placedFraming?.get_Parameter(BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM);
+                    if (referenceLevel != null && !referenceLevel.IsReadOnly && referenceLevel.AsElementId() != p.Level.Id)
+                    {
+                        referenceLevel.Set(p.Level.Id);
+                        doc.Regenerate();
+                    }
+                    return placedFraming;
                 case "structural_column":
                     FamilySymbol column = (FamilySymbol)p.Type;
                     if (!column.IsActive) { column.Activate(); doc.Regenerate(); }

@@ -366,7 +366,7 @@ namespace Horizun.Revit.Commands
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, "horizun_manage_links", hash);
             if (refusal != null) return refusal;
 
-            ModelPath modelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(path);
+            ModelPath modelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(LinkPathRules.ForRevit(path));
             LinkLoadResult loadResult;
             RevitLinkInstance instance;
             using (var tx = new Transaction(doc, "Horizun: add link"))
@@ -574,7 +574,7 @@ namespace Horizun.Revit.Commands
             if (refusal != null) return refusal;
 
             LinkLoadResult loadResult = type.LoadFrom(
-                ModelPathUtils.ConvertUserVisiblePathToModelPath(path), new WorksetConfiguration());
+                ModelPathUtils.ConvertUserVisiblePathToModelPath(LinkPathRules.ForRevit(path)), new WorksetConfiguration());
             string status = SafeStatus(doc.GetElement(type.Id) as RevitLinkType);
             string pathAfter = LinkPath(doc.GetElement(type.Id) as RevitLinkType);
             bool ok = loadResult != null && LinkLoadResult.IsCodeSuccess(loadResult.LoadResult) &&

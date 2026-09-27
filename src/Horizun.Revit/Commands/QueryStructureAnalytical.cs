@@ -602,7 +602,8 @@ namespace Horizun.Revit.Commands
                 rows.Add(LoadRow(doc, (LoadBase)e, reasons));
 
             var byCase = new JObject();
-            foreach (IGrouping<string, Element> g in all.GroupBy(e => Str(() => ((LoadBase)e).LoadCaseName) ?? "(unreadable)")
+            // Never keyed by an empty name: a load with no case is its own group (StructuralLoadRules).
+            foreach (IGrouping<string, Element> g in all.GroupBy(e => StructuralLoadRules.CaseKey(Str(() => ((LoadBase)e).LoadCaseName), CaseAssigned((LoadBase)e)))
                                                         .OrderBy(g => g.Key, StringComparer.Ordinal))
                 byCase[g.Key] = g.Count();
             var extra = new JObject
@@ -634,16 +635,18 @@ namespace Horizun.Revit.Commands
 
             JToken caseId = JValue.CreateNull();
             LoadCase caseElement = null;
-            try
+            bool? assigned = CaseAssigned(load);
+            if (assigned == null) unread.Add("load_case_id");
+            else if (assigned == true)
             {
-                ElementId cid = load.LoadCaseId;
-                if (cid != null && cid != ElementId.InvalidElementId)
+                try
                 {
+                    ElementId cid = load.LoadCaseId;
                     caseId = Rid.Value(cid);
                     caseElement = doc.GetElement(cid) as LoadCase;
                 }
+                catch { unread.Add("load_case_id"); }
             }
-            catch { unread.Add("load_case_id"); }
             JToken caseNumber = JValue.CreateNull();
             if (caseElement != null)
             {
@@ -669,18 +672,25 @@ namespace Horizun.Revit.Commands
                 ["load_case"] = new JObject
                 {
                     ["id"] = caseId,
-                    ["name"] = Field(() => load.LoadCaseName, unread, "load_case"),
-                    ["number"] = caseNumber
+                    // A load with NO case has no name by design: null, and not a failure to read.
+                    ["name"] = assigned == false ? JValue.CreateNull() : Field(() => load.LoadCaseName, unread, "load_case"),
+                    ["number"] = caseNumber,
+                    ["assigned"] = assigned.HasValue ? (JToken)assigned.Value : JValue.CreateNull()
                 },
-                ["nature"] = Field(() => load.LoadNatureName, unread, "nature"),
-                ["category"] = Field(() => load.LoadCategoryName, unread, "category"),
+                ["nature"] = CaseField(() => load.LoadNatureName, assigned, unread, "nature"),
+                ["category"] = CaseField(() => load.LoadCategoryName, assigned, unread, "category"),
                 ["is_reaction"] = Field(() => load.IsReaction, unread, "is_reaction"),
                 ["is_hosted"] = Field(() => load.IsHosted, unread, "is_hosted"),
                 ["host_id"] = host,
                 ["orient_to"] = orient,
                 ["vector_frame"] = frame
             };
-            if (row["load_case"]["name"].Type == JTokenType.Null && !unread.Contains("load_case")) unread.Add("load_case");
+            JToken caseName = row["load_case"]["name"];
+            if (StructuralLoadRules.CaseNameUnread(caseName.Type == JTokenType.String ? (string)caseName : null, assigned))
+            {
+                row["load_case"]["name"] = JValue.CreateNull();
+                if (!unread.Contains("load_case")) unread.Add("load_case");
+            }
 
             if (load is PointLoad pl)
             {
@@ -723,6 +733,30 @@ namespace Horizun.Revit.Commands
             if (unread.Count > 0)
                 reasons.Add(StructuralCoverage.Reason("load", "could not read " + string.Join(", ", unread) + ".", id));
             return row;
+        }
+
+        /// <summary>
+        /// A name that comes from the load's CASE (nature, category): null by design for a load
+        /// with no case; for one with a case, a throw or an empty name is named in unread.
+        /// </summary>
+        private static JToken CaseField(Func<string> read, bool? assigned, List<string> unread, string what)
+        {
+            if (assigned == false) return JValue.CreateNull();
+            string v;
+            try { v = read(); } catch { unread.Add(what); return JValue.CreateNull(); }
+            if (string.IsNullOrWhiteSpace(v)) { unread.Add(what); return JValue.CreateNull(); }
+            return v;
+        }
+
+        /// <summary>Whether the load has a load case (a valid LoadCaseId); null when that could not be read.</summary>
+        private static bool? CaseAssigned(LoadBase load)
+        {
+            try
+            {
+                ElementId cid = load.LoadCaseId;
+                return cid != null && cid != ElementId.InvalidElementId;
+            }
+            catch { return null; }
         }
 
         /// <summary>A scalar field; a throw is NAMED in unread rather than published as a null that reads as "none".</summary>

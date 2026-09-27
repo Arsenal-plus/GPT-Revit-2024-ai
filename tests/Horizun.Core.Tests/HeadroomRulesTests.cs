@@ -51,6 +51,22 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_ray_that_starts_inside_the_enveloping_target_cannot_tell_it_so_the_command_starts_outside_it()
+        {
+            // Read sees only the hits it is given. A ray born INSIDE the slab that envelops the
+            // element never meets the slab's near face, so the slab's far face reads as a clear
+            // height - the limit this pins down. The protection is not here but in
+            // CodeCheckHeadroom.cs: rays start 10 ft beyond the bounding box, so the near face is met.
+            Sample bornInside = Read(new[] { Own(0.3), Own(0.6), Target(0.9, "slab") }, 0.003);
+            Assert.Equal(SampleState.Measured, bornInside.State);
+            Assert.Equal(0.3, bornInside.Clear, 9);
+
+            Sample fromOutside = Read(new[] { Target(10.0, "slab"), Own(10.25), Own(10.55), Target(10.85, "slab") }, 0.003);
+            Assert.Equal(SampleState.InsideTarget, fromOutside.State);
+            Assert.Equal("slab", fromOutside.TargetKey);
+        }
+
+        [Fact]
         public void A_slab_the_ray_starts_in_above_the_element_does_not_hide_the_floor_below()
         {
             // A duct hung tight under a slab: the ray starts inside the slab and leaves it first.

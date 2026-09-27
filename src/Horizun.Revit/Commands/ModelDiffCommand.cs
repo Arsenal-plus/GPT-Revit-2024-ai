@@ -120,7 +120,7 @@ namespace Horizun.Revit.Commands
             snap = null;
             string version = app.Application.VersionNumber;
             Document already = app.Application.Documents.Cast<Document>().FirstOrDefault(d =>
-                !d.IsLinked && string.Equals(SafePath(d), path, StringComparison.OrdinalIgnoreCase));
+                !d.IsLinked && DocIdentity.SamePath(SafePath(d), path));
             if (already != null)
             {
                 snap = ReadDocument(already, version, scope, "already_open_document");
