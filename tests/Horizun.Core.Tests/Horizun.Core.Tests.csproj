@@ -199,6 +199,9 @@
     <!-- Structure: modelling facts only. No safety, capacity or compliance,
          and rebar with an unreadable host is never counted as hostless. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\StructureCensusRules.cs" />
+    <!-- Analysis reads: a number nobody calculated is never judged, and a member
+         end is measured to the other curves, not to their end nodes. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\AnalysisReadRules.cs" />
     <!-- Durable snapshots: atomic, hashed, sanitised, and never written
          beside the model. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\SnapshotStore.cs" />

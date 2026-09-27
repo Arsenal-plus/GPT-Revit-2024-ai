@@ -2905,19 +2905,22 @@ namespace Horizun.Contracts
                     "of them, because a total over the first fifty rows is not a total. A value the model " +
                     "would not report never becomes a zero in a sum: the total is null, the _counted number " +
                     "beside it says what could be read, and the group says how many it could not. Weight needs " +
-                    "a density AND its source, both declared by you. Read-only: no transaction is opened. Every count carries complete, partial, " +
+                    "a density AND its source, both declared by you. mode=analytical: analytical members/panels, physical " +
+                    "association, end releases, node gaps, physical members with no analytical one. mode=loads: point, " +
+                    "line and area loads with case, nature, host, kN units. Read-only: no transaction is opened. Every count carries complete, partial, " +
                     "unavailable, unreadable or not_applicable, and only complete means the number is a total - " +
                     "a zero under any other word means something was not looked at.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""mode"": { ""type"": ""string"", ""enum"": [""members"", ""hosts"", ""covers"", ""rebar"", ""reinforcement_systems"", ""connections"", ""coverage"", ""quantities""], ""description"": ""Which population to read. Required: there is no honest default across eight different questions."" },
+    ""mode"": { ""type"": ""string"", ""enum"": [""members"", ""hosts"", ""covers"", ""rebar"", ""reinforcement_systems"", ""connections"", ""coverage"", ""quantities"", ""analytical"", ""loads""], ""description"": ""Which population to read. Required: there is no honest default across ten different questions."" },
     ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" }, ""description"": ""Narrow to these elements instead of collecting the whole model."" },
     ""categories"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 40, ""items"": { ""type"": ""string"" }, ""description"": ""mode=members: BuiltInCategory names. Defaults to OST_StructuralFraming and OST_StructuralColumns."" },
     ""host_id"": { ""type"": ""integer"", ""description"": ""mode=rebar and mode=quantities: only bars whose host is this element."" },
     ""group_by"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 10, ""items"": { ""type"": ""string"", ""enum"": [""mark"", ""bar_type"", ""nominal_diameter_mm"", ""model_diameter_mm"", ""shape"", ""host"", ""host_category"", ""style"", ""layout"", ""rule""] }, ""description"": ""mode=quantities: how to group. Defaults to mark. `rule` is the provenance rule id, which for a stirrup zone is parent#zone - so grouping by rule groups BY ZONE."" },
     ""density_kg_per_m3"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""description"": ""mode=quantities: the density to weigh the steel with. This bridge carries none of its own. Requires density_source."" },
     ""density_source"": { ""type"": ""string"", ""maxLength"": 400, ""description"": ""mode=quantities: where that density came from - the standard, the supplier, the project document. Required whenever density_kg_per_m3 is given, because a weight nobody can trace is a weight nobody should order from."" },
+    ""tolerance_mm"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""description"": ""mode=analytical: a member end farther than this from every other analytical curve is a gap. Default: Revit vertex tolerance."" },
     ""include_bar_positions"": { ""type"": ""boolean"", ""default"": true, ""description"": ""mode=rebar: the transform origin of every bar position. This is what proves a set sits inside its host, so it is on by default and turning it off costs you that proof."" },
     ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 50 },
     ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 }
@@ -4744,18 +4747,20 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_plan_mep",
                 Command = "horizun_plan_mep",
-                Description = @"Plan a multi-segment pipe or duct run along an explicit polyline, deterministically and READ-ONLY. Collinear vertices are MERGED AND NAMED (the run gets fewer corners than the request had points, and the reply says which); a segment under 50 mm refuses with the measured millimetres and its vertex. The reply is a ready horizun_create_elements request: the segments plus one batch_index elbow per corner, committing as ONE atomic batch through the normal rehearse/token/verify pipeline - the deferred corner selection happens inside the transaction, where any refusal rolls the whole run back.",
+                Description = @"Plan a multi-segment pipe or duct run along an explicit polyline, deterministically and READ-ONLY. Collinear vertices are MERGED AND NAMED (the run gets fewer corners than the request had points, and the reply says which); a segment under 50 mm refuses with the measured millimetres and its vertex. The reply is a ready horizun_create_elements request: the segments plus one batch_index elbow per corner, committing as ONE atomic batch through the normal rehearse/token/verify pipeline - the deferred corner selection happens inside the transaction, where any refusal rolls the whole run back. system_analysis reads Revit's own critical-path results against your limits; an uncalculated system is never ok.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""route_run"", ""network_census""] },
-    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""maxItems"": 500, ""description"": ""network_census: seed elements; omitted, every MEP curve seeds (refused above 2000 - name seeds to bound it). Membership is CONNECTOR CONNECTIVITY (IsConnected), never geometric coincidence; each component reports elements, open connectors, systems and domains."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""route_run"", ""network_census"", ""system_analysis""] },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""maxItems"": 500, ""description"": ""network_census: seed elements (omitted: every MEP curve; refused above 2000); connector connectivity (IsConnected), never geometry. system_analysis: system ids only (max 100)."" },
     ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct""] },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""level_id"": { ""type"": ""integer"" },
     ""type_id"": { ""type"": ""integer"", ""description"": ""PipeType or DuctType."" },
     ""system_type_id"": { ""type"": ""integer"", ""description"": ""PipingSystemType or MechanicalSystemType."" },
-    ""points"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 50, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } }
+    ""points"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 50, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } },
+    ""classification"": { ""type"": ""string"", ""description"": ""system_analysis without element_ids: a MEPSystemClassification name, e.g. SupplyAir."" },
+    ""limits"": { ""type"": ""object"", ""description"": ""system_analysis: max_velocity_m_s, max_pressure_loss_pa, max_friction_pa_per_m. Sections beyond them are listed."" }
   }
 }")
             },

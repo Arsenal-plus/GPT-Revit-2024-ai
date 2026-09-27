@@ -2430,3 +2430,120 @@ fase y nada de opciones de diseño secundarias), con `prefix`, `start`, `step`, 
 `restart_per_level` (que exige el nivel como primera clave). Un objetivo sin el dato que su orden necesita se nombra y la
 generación entera se rechaza. Los valores se muestran en el ensayo, el token los ata y cada
 uno se relee tras el commit.
+
+## MEP and structural analysis reads (read-only)
+
+Three reads of numbers Revit already holds. None of them calculates anything,
+and none of them carries a limit, factor or standard of its own: limits and
+tolerances are arguments.
+
+### horizun_plan_mep operation=system_analysis
+
+Reads the critical path of duct (`MechanicalSystem`) and pipe (`PipingSystem`)
+systems as Revit computed it: `MEPSystem.GetCriticalPathSectionNumbers()` in flow
+order, then per `MEPSection` the flow (l/s), velocity (m/s), total pressure loss
+(Pa), friction (Pa/m) and curve length (mm), all through `UnitUtils`.
+
+- **Scope**: `element_ids` are system ids (anything else is refused by name).
+  Without them, `kind` (`pipe`/`duct`, omitted = both) and `classification`
+  (ONE exact `MEPSystemClassification` name such as `SupplyAir`,
+  `DomesticColdWater`; comma lists and numbers are refused, because
+  `Enum.TryParse` would OR `SupplyAir,ReturnAir` into `ExhaustAir`) select every
+  matching system. More than 100 systems per call is refused, and so is an
+  empty `element_ids` (omit it to read every system) - an empty selection is
+  never widened to the whole model.
+- **Limits**: `limits = { max_velocity_m_s, max_pressure_loss_pa,
+  max_friction_pa_per_m }`. An unknown key is refused, not ignored. Sections
+  beyond a limit are listed under `beyond_limits` with up to 50 element ids.
+- **The calculation level decides what may be judged.** `None`, `Performance`
+  and `Volume` are `not_calculated`: the section numbers are NOT read, because
+  they read as zero and would pass any limit, and the system's coverage word is
+  `unreadable` - so a call mixing judged and unjudged systems is `partial`,
+  never the whole truth. `Flow` claims flow only (the API: "System calculation
+  is only for flow"): velocity, pressure and friction limits on such a system
+  are listed in `unmeasured_limits` until a live run proves Revit fills them.
+  Only `All` claims all four. A claimed quantity that comes back null is named
+  in `unread_quantities` (and makes the row `partial`) even with no limits.
+- **Connectivity is read second.** RevitAPI.xml (2023 and 2026) on
+  `IsWellConnected`: "If the system is not well connected, parameters which
+  need to be calculated are invalid." Invalid, not understated - so a system
+  with `is_well_connected` false (`not_well_connected`) or unreadable
+  (`connectivity_unreadable`) is neither read nor judged: no critical path (it
+  is the path of greatest pressure loss, chosen from those values), no pass and
+  no breach, every limit listed in `unmeasured_limits`, and the row is
+  `unreadable`.
+- **Verdicts per system**: `beyond_limits`, `within_limits` (every limit measured
+  on every critical-path section), `limits_partly_unmeasured` (not a pass),
+  `no_limits_given` (its meaning says on how many critical-path sections the
+  numbers were read), `not_well_connected`, `connectivity_unreadable`,
+  `not_calculated`, `unreadable`, `no_critical_path` (a calculated, well-connected
+  system with no base equipment) and `critical_path_unreadable` (the path would
+  not read, or none of its sections did). None of them is "ok".
+- **Coverage per system**: each row carries its `coverage` word and
+  `coverage_reason` - its own cause (`flow_only`, sections or quantities that
+  would not read, unmeasured limits, `not_calculated`, `not_well_connected`...),
+  null when complete. The call's coverage reasons repeat that cause per system.
+- `critical_path_pressure_loss_pa` is the sum of the critical-path section losses,
+  published only when every one of them was read; null on a system nothing was
+  read from.
+
+### horizun_query_structure mode=analytical
+
+Revit 2023+ analytical model: every `AnalyticalMember` and `AnalyticalPanel`
+(paged with `offset`/`max_rows`, narrowed by `element_ids`).
+
+- **Association** with the physical model through
+  `AnalyticalToPhysicalAssociationManager`. Revit 2023 has only the singular
+  `GetAssociatedElementId`; 2024+ reads the one-to-many
+  `GetAssociatedElementIds`. `association` is `associated`, `none` or
+  `unreadable`.
+- **Members**: start/end (mm), length, section type, cross-section rotation,
+  and releases per end: `GetReleaseType(start)` plus the six
+  `ReleaseConditions` flags, published raw: the API does not state whether
+  `true` is released or fixed, so no polarity is claimed (`flags_polarity`)
+  until a live read of a Pinned member fixes it.
+- **Member ends**: an end is CONNECTED when another analytical element reaches
+  it within `tolerance_mm`: a member's REAL curve (`Curve.Distance` - a curved
+  member is not judged on Revit's display tessellation, whose chords sag
+  millimetres), an `AnalyticalLink`, a panel edge, or a panel SURFACE (inside
+  its outer contour and outside its openings: a flat-slab column top is
+  connected). An end only a `BoundaryConditions` element (point, line or area)
+  holds is SUPPORTED: listed in `supported_ends`, counted in
+  `member_ends_supported`, not a gap. The rest are `node_gaps`, counted in
+  `member_ends_beyond_tolerance`: near-misses AND intended free ends such as
+  cantilever tips, which this read does not tell apart - `nearest_mm` and
+  `nearest_element_id` do. Default tolerance: Revit's own `VertexTolerance`,
+  reported as `tolerance_source`. Every analytical element of the model is a
+  target, whatever the page shows. Above 50,000,000 end x segment checks the
+  check is NOT run and says so (`node_gaps_measured: false`). A member or panel
+  whose curve would not read is named in a `node_gaps` coverage reason for the
+  whole call, whatever page it is on (its ends were not checked, and an end
+  framing into it may be counted as a gap); its own row has `node_gaps` and
+  `supported_ends` null with `node_gaps` in `unread` - never an empty list.
+- **Physical without analytical**: structural framing, structural columns,
+  structural foundations (family instances, wall foundations and foundation
+  slabs, which need no structural flag) and `Wall`/`Floor` elements flagged
+  structural whose `HasAssociation` is false (up to 200 ids listed, with the
+  full count). The category decides before the class: an in-place or loadable
+  wall/floor family is a `FamilyInstance` in walls or floors and carries no flag
+  this check reads, so - like any other class in those categories - it is
+  counted in `excluded_other_classes`, named in a coverage reason, and makes the
+  block `partial`: it was not checked, and it is never reported as a gap. With
+  `element_ids` the block covers only the named ids (`scope` says so); when none
+  of them is a physical element of these categories it is `not_applicable` with
+  `count` null - nothing was checked.
+- Each row carries `unread` - every field that would not read is named there
+  (an end with no `ReleaseConditions` is `releases.start` / `releases.end`),
+  never left a silent null - and its own `coverage` word.
+
+### horizun_query_structure mode=loads
+
+Point, line and area loads with load case (id, name, number), nature, category,
+reaction flag, host and orientation. Magnitudes through `UnitUtils`: point force
+kN, point moment kN*m, line force kN/m, line moment kN*m/m, area force kN/m2,
+area m2, positions mm. `counts` per kind and `by_load_case` count every load in
+scope, not only the page. Nothing is judged. Force and moment components are in
+the load's own frame, `vector_frame` (`project`, `work_plane` or `host_local`,
+from `OrientTo`): only `project` components are project coordinates and add up
+with each other. A field that throws is named in `unread`; `host_id` null with
+nothing unread means the load is not hosted.
