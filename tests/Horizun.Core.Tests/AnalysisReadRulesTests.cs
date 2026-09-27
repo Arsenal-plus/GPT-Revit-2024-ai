@@ -2,9 +2,11 @@
 // Horizun Revit MCP - original Horizun code.
 //
 // Analysis reads, proved by running the rules. The load-bearing properties are
-// negative: a system nobody calculated is never judged "ok", a limit whose value
-// was not claimed is named rather than passed, and a beam framing into the
-// middle of a girder is NOT a gap.
+// negative: a system nobody calculated is never judged "ok" and never lets the
+// aggregate read as the whole truth, a limit whose value was not claimed is
+// named rather than passed, a network Revit does not call well connected never
+// passes, and a beam framing into the middle of a girder, a column top inside a
+// slab and a column base on its support are NOT gaps.
 // -----------------------------------------------------------------------------
 using System.Collections.Generic;
 using System.Linq;
@@ -41,16 +43,69 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void Flow_only_judges_velocity_and_names_pressure_as_unmeasured()
+        public void Flow_only_claims_flow_alone_so_velocity_and_pressure_limits_are_unmeasured()
         {
+            // SystemCalculationLevel.Flow is "System calculation is only for flow" (RevitAPI.xml);
+            // a velocity Revit may not have computed is not judged until a live run proves it is.
             AnalysisReadRules.ParseLimits(
                 JObject.Parse("{\"max_velocity_m_s\":5,\"max_pressure_loss_pa\":100}"), out var limits);
             var unmeasured = new List<string>();
             var s = new AnalysisReadRules.SectionReading { Number = 1, VelocityMs = 7.25, PressureLossPa = 20 };
             JArray breaches = AnalysisReadRules.Breaches(s, AnalysisReadRules.FlowOnly, limits, unmeasured);
-            Assert.Single(breaches);
-            Assert.Equal("max_velocity_m_s", (string)breaches[0]["limit"]);
-            Assert.Equal(new[] { "1#max_pressure_loss_pa" }, unmeasured);
+            Assert.Empty(breaches);
+            Assert.Equal(new[] { "1#max_velocity_m_s", "1#max_pressure_loss_pa" }, unmeasured);
+        }
+
+        [Fact]
+        public void A_not_calculated_system_beside_a_calculated_one_is_never_the_whole_truth()
+        {
+            string judged = AnalysisReadRules.SystemCoverage(AnalysisReadRules.Calculated, true, 0, 0, 0, true);
+            string unjudged = AnalysisReadRules.SystemCoverage(AnalysisReadRules.NotCalculated, false, 0, 0, 0, null);
+            Assert.Equal(StructuralCoverage.Complete, judged);
+            Assert.Equal(StructuralCoverage.Unreadable, unjudged);
+            string mixed = StructuralCoverage.Weakest(new[] { judged, unjudged, unjudged });
+            Assert.Equal(StructuralCoverage.Partial, mixed);
+            Assert.False((bool)StructuralCoverage.Declare(mixed, 1, 2)["is_whole_truth"]);
+            // Nothing calculated is "the model would not answer", not "the question does not arise".
+            Assert.Equal(StructuralCoverage.Unreadable, StructuralCoverage.Weakest(new[] { unjudged, unjudged }));
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(null)]
+        public void A_network_not_provably_well_connected_never_passes(bool? wellConnected)
+        {
+            Assert.Equal("not_well_connected", AnalysisReadRules.SystemVerdict(false, 1, 0, wellConnected, out _));
+            Assert.Equal("beyond_limits", AnalysisReadRules.SystemVerdict(true, 1, 0, wellConnected, out _));
+            Assert.Equal(StructuralCoverage.Partial,
+                AnalysisReadRules.SystemCoverage(AnalysisReadRules.Calculated, true, 0, 0, 0, wellConnected));
+            Assert.Equal("within_limits", AnalysisReadRules.SystemVerdict(false, 1, 0, true, out _));
+        }
+
+        [Fact]
+        public void A_claimed_quantity_that_came_back_null_is_named_even_without_limits()
+        {
+            var s = new AnalysisReadRules.SectionReading { Number = 2, FlowLs = 1, VelocityMs = null, PressureLossPa = 3 };
+            List<string> unread = AnalysisReadRules.UnreadQuantities(s, AnalysisReadRules.Calculated);
+            Assert.Equal(new[] { "2#velocity", "2#friction" }, unread);
+            Assert.Empty(AnalysisReadRules.UnreadQuantities(new AnalysisReadRules.SectionReading { Number = 2, FlowLs = 1 },
+                AnalysisReadRules.FlowOnly));
+            Assert.Equal(StructuralCoverage.Partial,
+                AnalysisReadRules.SystemCoverage(AnalysisReadRules.Calculated, true, 0, 0, unread.Count, true));
+        }
+
+        [Theory]
+        [InlineData("monday", "Monday")]
+        [InlineData(" Friday ", "Friday")]
+        [InlineData("Monday, Tuesday", null)]
+        [InlineData("Monday,Tuesday", null)]
+        [InlineData("+3", null)]
+        [InlineData("-5", null)]
+        [InlineData("1", null)]
+        public void Only_one_exact_defined_name_is_accepted(string input, string expected)
+        {
+            // Enum.TryParse would turn "Monday, Tuesday" into Wednesday (1|2 = 3).
+            Assert.Equal(expected, AnalysisReadRules.ExactName(input, System.Enum.GetNames(typeof(System.DayOfWeek))));
         }
 
         [Fact]
@@ -122,6 +177,65 @@ namespace Horizun.Core.Tests
             var gaps = AnalysisReadRules.NodeGaps(new[] { beam }, new[] { beam }, 10.0);
             Assert.Equal(2, gaps.Count);
             Assert.All(gaps, g => Assert.Null(g.NearestMm));
+        }
+
+        private static AnalysisReadRules.AnalyticalSurface Square(long id, double size, double z, params double[][] hole)
+        {
+            var s = new AnalysisReadRules.AnalyticalSurface { ElementId = id };
+            s.Outer.AddRange(new[] { new double[] { 0, 0, z }, new[] { size, 0, z }, new[] { size, size, z }, new[] { 0, size, z } });
+            if (hole.Length > 0) s.Holes.Add(new List<double[]>(hole));
+            return s;
+        }
+
+        private static AnalysisReadRules.AnalyticalPolyline Edges(AnalysisReadRules.AnalyticalSurface s)
+        {
+            var l = Line(s.ElementId, s.Outer.ToArray());
+            l.Points.Add(s.Outer[0]);
+            return l;
+        }
+
+        [Fact]
+        public void A_column_top_inside_a_slab_panel_is_connected_and_its_supported_base_is_no_gap()
+        {
+            var slab = Square(10, 8000, 3000);
+            var column = Line(2, new double[] { 4000, 4000, 0 }, new double[] { 4000, 4000, 3000 });
+            var targets = new[] { Edges(slab), column };
+            var free = AnalysisReadRules.ClassifyEnds(new[] { column }, targets, new[] { slab }, null, 1.0);
+            Assert.Equal(0, free.Unconnected.Single().End); // only the base: the top is on the slab surface
+            var support = new AnalysisReadRules.SupportTarget { ElementId = 77 };
+            support.Points.Add(new double[] { 4000, 4000, 0 });
+            var held = AnalysisReadRules.ClassifyEnds(new[] { column }, targets, new[] { slab }, new[] { support }, 1.0);
+            Assert.Empty(held.Unconnected);
+            Assert.Equal(77L, held.Supported.Single().NearestElementId);
+        }
+
+        [Fact]
+        public void An_end_inside_a_panel_opening_or_off_its_plane_is_not_on_the_panel()
+        {
+            var slab = Square(10, 8000, 3000, new double[] { 3000, 3000, 3000 }, new double[] { 5000, 3000, 3000 },
+                                                new double[] { 5000, 5000, 3000 }, new double[] { 3000, 5000, 3000 });
+            Assert.False(AnalysisReadRules.OnSurface(new double[] { 4000, 4000, 3000 }, slab, 1.0));
+            Assert.True(AnalysisReadRules.OnSurface(new double[] { 3000, 4000, 3000 }, slab, 1.0)); // on the opening's edge
+            Assert.True(AnalysisReadRules.OnSurface(new double[] { 1000, 1000, 3000.5 }, slab, 1.0));
+            Assert.False(AnalysisReadRules.OnSurface(new double[] { 1000, 1000, 3010 }, slab, 1.0));
+            Assert.False(AnalysisReadRules.OnSurface(new double[] { 9000, 1000, 3000 }, slab, 1.0));
+        }
+
+        [Fact]
+        public void A_curved_target_is_decided_by_its_real_curve_not_its_display_chords()
+        {
+            // The chord sits 60 mm from the end; the real curve passes 0.5 mm from it.
+            var arc = Line(1, new double[] { 0, 0, 0 }, new double[] { 10000, 0, 0 });
+            arc.ExactMm = p => 0.5;
+            arc.SlackMm = 100;
+            var beam = Line(2, new double[] { 5000, 60, 0 }, new double[] { 5000, 6000, 0 });
+            var support = new AnalysisReadRules.SupportTarget { ElementId = 3 };
+            support.Points.Add(new double[] { 5000, 6000, 0 });
+            Assert.Empty(AnalysisReadRules.ClassifyEnds(new[] { beam }, new[] { arc, beam }, null, new[] { support }, 1.0).Unconnected);
+            // With a slack the chord already rules out, the real curve is not consulted.
+            arc.SlackMm = 10;
+            var gap = AnalysisReadRules.ClassifyEnds(new[] { beam }, new[] { arc, beam }, null, new[] { support }, 1.0).Unconnected.Single();
+            Assert.Equal(60.0, gap.NearestMm);
         }
 
         [Fact]

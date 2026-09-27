@@ -5,19 +5,26 @@
 // mode=analytical reads the ANALYTICAL model (Revit 2023+ AnalyticalMember and
 // AnalyticalPanel) beside the physical one: which physical element each
 // analytical element is associated with, member end releases, and member ends
-// that no other analytical curve reaches within a tolerance - measured to the
-// nearest point ON every other curve (Core/AnalysisReadRules.cs), because a
-// beam framing into mid-girder is connected. It also names the physical
-// structural elements that have NO analytical counterpart, which is the gap an
-// analysis export silently drops.
+// no other analytical element reaches within a tolerance. An end is CONNECTED
+// when a member's REAL curve (a beam framing into mid-girder is connected), an
+// analytical link, a panel edge or a panel SURFACE (a flat-slab column top)
+// reaches it; SUPPORTED when only a boundary condition does (a column base is
+// not a gap); otherwise UNCONNECTED - a near-miss or an intended free end such
+// as a cantilever tip, which this read does not pretend to tell apart
+// (Core/AnalysisReadRules.cs). Curved elements are measured to the real curve
+// (Curve.Distance), not to Revit's display tessellation, whose chords sag
+// millimetres. It also names the physical structural elements that have NO
+// analytical counterpart, which is the gap an analysis export silently drops.
 //
 // 2023 vs 2024+: AnalyticalToPhysicalAssociationManager.GetAssociatedElementIds
 // (plural, one-to-many) does not exist in the 2023 API - only the singular
 // GetAssociatedElementId - so 2023 reads one associated id per element.
 //
 // mode=loads reads point, line and area loads with load case, nature, category
-// and host, magnitudes converted through UnitUtils to kN-based units. Nothing
-// here judges a load; the numbers are what the model carries.
+// and host, magnitudes converted through UnitUtils to kN-based units, in the
+// frame the load is oriented to (vector_frame): only 'project' components are
+// project coordinates. Nothing here judges a load; the numbers are what the
+// model carries, and a field that would not read is named, not left null.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -68,23 +75,38 @@ namespace Horizun.Revit.Commands
                 : everyAnalytical.Where(e => idSet.Contains(Rid.Value(e.Id))).ToList();
 
             var polylines = new Dictionary<long, AnalysisReadRules.AnalyticalPolyline>();
+            var surfaces = new List<AnalysisReadRules.AnalyticalSurface>();
+            int panelsWithoutSurface = 0;
             foreach (Element e in everyAnalytical)
             {
                 AnalysisReadRules.AnalyticalPolyline line = Polyline(e);
                 if (line != null) polylines[line.ElementId] = line;
+                if (e is AnalyticalPanel panel)
+                {
+                    AnalysisReadRules.AnalyticalSurface surface = Surface(doc, panel);
+                    if (surface != null) surfaces.Add(surface); else panelsWithoutSurface++;
+                }
             }
+            if (panelsWithoutSurface > 0)
+                reasons.Add(StructuralCoverage.Reason("panel_surfaces", panelsWithoutSurface + " panel(s) would not give a " +
+                    "planar contour with readable openings: an end inside them was judged against their edges only."));
+            var targets = polylines.Values.ToList();
+            targets.AddRange(Links(doc, reasons));
+            List<AnalysisReadRules.SupportTarget> supports = Supports(doc, reasons);
+
             var members = scope.OfType<AnalyticalMember>().Where(m => polylines.ContainsKey(Rid.Value(m.Id)))
                                .Select(m => polylines[Rid.Value(m.Id)]).ToList();
-            var targets = polylines.Values.ToList();
             var gapsById = new Dictionary<long, List<AnalysisReadRules.NodeGap>>();
-            bool gapsMeasured = AnalysisReadRules.PairChecks(members, targets) <= AnalysisReadRules.MaxPairChecks;
+            var supportedById = new Dictionary<long, List<AnalysisReadRules.NodeGap>>();
+            bool gapsMeasured = AnalysisReadRules.PairChecks(members, targets, surfaces, supports) <= AnalysisReadRules.MaxPairChecks;
+            int supportedEnds = 0;
             if (gapsMeasured)
             {
-                foreach (AnalysisReadRules.NodeGap gap in AnalysisReadRules.NodeGaps(members, targets, toleranceMm))
-                {
-                    if (!gapsById.TryGetValue(gap.ElementId, out var list)) gapsById[gap.ElementId] = list = new List<AnalysisReadRules.NodeGap>();
-                    list.Add(gap);
-                }
+                AnalysisReadRules.EndClassification ends =
+                    AnalysisReadRules.ClassifyEnds(members, targets, surfaces, supports, toleranceMm);
+                Group(ends.Unconnected, gapsById);
+                Group(ends.Supported, supportedById);
+                supportedEnds = ends.Supported.Count;
             }
             else
             {
@@ -95,7 +117,8 @@ namespace Horizun.Revit.Commands
 
             var rows = new JArray();
             foreach (Element e in scope.Skip(offset).Take(maxRows))
-                rows.Add(AnalyticalRow(doc, e, manager, polylines, gapsMeasured ? gapsById : null, reasons));
+                rows.Add(AnalyticalRow(doc, e, manager, polylines, gapsMeasured ? gapsById : null,
+                                       gapsMeasured ? supportedById : null, reasons));
 
             var physicalSeen = new HashSet<long>();
             JObject unassociated = PhysicalWithoutAnalytical(doc, manager, ids, reasons, physicalSeen);
@@ -106,6 +129,12 @@ namespace Horizun.Revit.Commands
                 ["tolerance_source"] = toleranceSource,
                 ["node_gaps_measured"] = gapsMeasured,
                 ["member_ends_beyond_tolerance"] = gapsMeasured ? (JToken)gapEnds : JValue.CreateNull(),
+                ["member_ends_supported"] = gapsMeasured ? (JToken)supportedEnds : JValue.CreateNull(),
+                ["supports_read"] = supports.Count,
+                ["ends_mean"] = "member_ends_beyond_tolerance counts ends no member curve (real curve), analytical " +
+                    "link, panel edge or panel surface reaches and no boundary condition holds: near-misses AND " +
+                    "intended free ends such as cantilever tips - nearest_mm tells them apart. Supported ends " +
+                    "are counted apart and are not gaps.",
                 ["physical_without_analytical"] = unassociated,
                 ["unmatched_ids"] = new JArray(ids.Where(id => !scope.Any(s => Rid.Value(s.Id) == id) &&
                     !physicalSeen.Contains(id)).Cast<object>().ToArray()),
@@ -120,31 +149,164 @@ namespace Horizun.Revit.Commands
             return Ok("analytical", scope.Count, offset, rows, reasons, extra);
         }
 
+        private static void Group(List<AnalysisReadRules.NodeGap> ends, Dictionary<long, List<AnalysisReadRules.NodeGap>> byId)
+        {
+            foreach (AnalysisReadRules.NodeGap g in ends)
+            {
+                if (!byId.TryGetValue(g.ElementId, out var list)) byId[g.ElementId] = list = new List<AnalysisReadRules.NodeGap>();
+                list.Add(g);
+            }
+        }
+
+        /// <summary>
+        /// A member's curve or a panel's outer contour as a polyline in mm. A curved
+        /// element also carries the distance to its REAL curves and the chord error
+        /// of the display tessellation measured at each chord's midpoint, so an end
+        /// near it is decided by Curve.Distance rather than by a chord.
+        /// </summary>
         private static AnalysisReadRules.AnalyticalPolyline Polyline(Element e)
         {
             try
             {
-                var line = new AnalysisReadRules.AnalyticalPolyline { ElementId = Rid.Value(e.Id) };
+                var curves = new List<Curve>();
                 if (e is AnalyticalMember member)
                 {
                     Curve c = member.GetCurve();
                     if (c == null) return null;
-                    foreach (XYZ p in c.Tessellate()) line.Points.Add(Mm(p));
+                    curves.Add(c);
                 }
                 else if (e is AnalyticalPanel panel)
                 {
                     CurveLoop loop = panel.GetOuterContour();
                     if (loop == null) return null;
-                    foreach (Curve c in loop)
+                    curves.AddRange(loop);
+                }
+                else return null;
+
+                var line = new AnalysisReadRules.AnalyticalPolyline { ElementId = Rid.Value(e.Id) };
+                double deviationMm = 0;
+                bool curved = false;
+                foreach (Curve c in curves)
+                {
+                    IList<XYZ> pts = c.Tessellate();
+                    for (int i = line.Points.Count == 0 ? 0 : 1; i < pts.Count; i++) line.Points.Add(Mm(pts[i]));
+                    if (c is Line) continue;
+                    curved = true;
+                    for (int i = 0; i + 1 < pts.Count; i++)
+                        deviationMm = Math.Max(deviationMm, c.Distance((pts[i] + pts[i + 1]) * 0.5) * FtToMm);
+                }
+                if (curved)
+                {
+                    line.SlackMm = 2 * deviationMm + 1.0;
+                    line.ExactMm = p =>
                     {
-                        IList<XYZ> pts = c.Tessellate();
-                        for (int i = line.Points.Count == 0 ? 0 : 1; i < pts.Count; i++) line.Points.Add(Mm(pts[i]));
-                    }
-                    if (line.Points.Count > 0) line.Points.Add(line.Points[0]);
+                        try
+                        {
+                            var q = new XYZ(p[0] / FtToMm, p[1] / FtToMm, p[2] / FtToMm);
+                            return curves.Min(c => c.Distance(q)) * FtToMm;
+                        }
+                        catch { return null; }
+                    };
                 }
                 return line.Points.Count >= 2 ? line : null;
             }
             catch { return null; }
+        }
+
+        /// <summary>A panel's outer contour less its openings; null when either would not read (edges still count).</summary>
+        private static AnalysisReadRules.AnalyticalSurface Surface(Document doc, AnalyticalPanel panel)
+        {
+            try
+            {
+                var s = new AnalysisReadRules.AnalyticalSurface { ElementId = Rid.Value(panel.Id) };
+                CurveLoop outer = panel.GetOuterContour();
+                if (outer == null) return null;
+                s.Outer = LoopPoints(outer);
+                foreach (ElementId openingId in panel.GetAnalyticalOpeningsIds())
+                {
+                    // An opening that would not read is not guessed away: an end inside it would
+                    // be called connected, so the whole surface is left to its edges.
+                    if (!(doc.GetElement(openingId) is AnalyticalOpening opening)) return null;
+                    CurveLoop hole = opening.GetOuterContour();
+                    if (hole == null) return null;
+                    s.Holes.Add(LoopPoints(hole));
+                }
+                return s.Outer.Count >= 3 ? s : null;
+            }
+            catch { return null; }
+        }
+
+        private static List<double[]> LoopPoints(CurveLoop loop)
+        {
+            var pts = new List<double[]>();
+            foreach (Curve c in loop)
+            {
+                IList<XYZ> t = c.Tessellate();
+                for (int i = pts.Count == 0 ? 0 : 1; i < t.Count; i++) pts.Add(Mm(t[i]));
+            }
+            if (pts.Count > 1 && AnalysisReadRules.PointSegment(pts[0], pts[pts.Count - 1], pts[pts.Count - 1]) < 1e-6)
+                pts.RemoveAt(pts.Count - 1);
+            return pts;
+        }
+
+        /// <summary>Analytical links (rigid links between hubs) as straight targets.</summary>
+        private static List<AnalysisReadRules.AnalyticalPolyline> Links(Document doc, JArray reasons)
+        {
+            var list = new List<AnalysisReadRules.AnalyticalPolyline>();
+            int unreadable = 0;
+            foreach (AnalyticalLink link in new FilteredElementCollector(doc).OfClass(typeof(AnalyticalLink)).Cast<AnalyticalLink>())
+            {
+                try
+                {
+                    var l = new AnalysisReadRules.AnalyticalPolyline { ElementId = Rid.Value(link.Id) };
+                    l.Points.Add(Mm(link.Start));
+                    l.Points.Add(Mm(link.End));
+                    list.Add(l);
+                }
+                catch { unreadable++; }
+            }
+            if (unreadable > 0)
+                reasons.Add(StructuralCoverage.Reason("analytical_links", unreadable + " analytical link(s) would not " +
+                    "give their end points; an end only they connect is counted unconnected."));
+            return list;
+        }
+
+        /// <summary>Boundary conditions as point, line or area supports.</summary>
+        private static List<AnalysisReadRules.SupportTarget> Supports(Document doc, JArray reasons)
+        {
+            var list = new List<AnalysisReadRules.SupportTarget>();
+            int unreadable = 0;
+            foreach (BoundaryConditions bc in new FilteredElementCollector(doc).OfClass(typeof(BoundaryConditions)).Cast<BoundaryConditions>())
+            {
+                try
+                {
+                    var s = new AnalysisReadRules.SupportTarget { ElementId = Rid.Value(bc.Id) };
+                    BoundaryConditionsType kind = bc.GetBoundaryConditionsType();
+                    if (kind == BoundaryConditionsType.Point) s.Points.Add(Mm(bc.Point));
+                    else if (kind == BoundaryConditionsType.Line)
+                        foreach (XYZ p in bc.GetCurve().Tessellate()) s.Points.Add(Mm(p));
+                    else
+                    {
+                        IList<CurveLoop> loops = bc.GetLoops();
+                        s.Surface = new AnalysisReadRules.AnalyticalSurface { ElementId = s.ElementId };
+                        for (int i = 0; i < loops.Count; i++)
+                        {
+                            List<double[]> pts = LoopPoints(loops[i]);
+                            if (i > 0) { s.Surface.Holes.Add(pts); continue; }
+                            s.Surface.Outer = pts;
+                            s.Points.AddRange(pts);
+                            if (pts.Count > 0) s.Points.Add(pts[0]);
+                        }
+                    }
+                    if (s.Points.Count == 0) { unreadable++; continue; }
+                    list.Add(s);
+                }
+                catch { unreadable++; }
+            }
+            if (unreadable > 0)
+                reasons.Add(StructuralCoverage.Reason("supports", unreadable + " boundary condition(s) would not give " +
+                    "their geometry; an end only they hold is counted unconnected, not supported."));
+            return list;
         }
 
         private static double[] Mm(XYZ p) => new[] { p.X * FtToMm, p.Y * FtToMm, p.Z * FtToMm };
@@ -152,9 +314,19 @@ namespace Horizun.Revit.Commands
         private static JArray MmArray(double[] p) =>
             new JArray(Math.Round(p[0], 1), Math.Round(p[1], 1), Math.Round(p[2], 1));
 
+        private static JArray Ends(List<AnalysisReadRules.NodeGap> ends, string nearestKey) =>
+            new JArray((ends ?? new List<AnalysisReadRules.NodeGap>()).Select(g => (object)new JObject
+            {
+                ["end"] = g.End == 0 ? "start" : "end",
+                ["point_mm"] = MmArray(g.Point),
+                ["nearest_mm"] = g.NearestMm.HasValue ? (JToken)g.NearestMm.Value : JValue.CreateNull(),
+                [nearestKey] = g.NearestElementId.HasValue ? (JToken)g.NearestElementId.Value : JValue.CreateNull()
+            }).ToArray());
+
         private static JObject AnalyticalRow(Document doc, Element e, AnalyticalToPhysicalAssociationManager manager,
             Dictionary<long, AnalysisReadRules.AnalyticalPolyline> polylines,
-            Dictionary<long, List<AnalysisReadRules.NodeGap>> gaps, JArray reasons)
+            Dictionary<long, List<AnalysisReadRules.NodeGap>> gaps,
+            Dictionary<long, List<AnalysisReadRules.NodeGap>> supported, JArray reasons)
         {
             long id = Rid.Value(e.Id);
             var unread = new List<string>();
@@ -206,17 +378,13 @@ namespace Horizun.Revit.Commands
                 if (releases == null) unread.Add("releases");
                 m["releases"] = releases;
                 row["member"] = m;
-                if (gaps == null) { row["node_gaps"] = null; unread.Add("node_gaps"); }
+                if (gaps == null) { row["node_gaps"] = null; row["supported_ends"] = null; unread.Add("node_gaps"); }
                 else
                 {
                     gaps.TryGetValue(id, out List<AnalysisReadRules.NodeGap> mine);
-                    row["node_gaps"] = new JArray((mine ?? new List<AnalysisReadRules.NodeGap>()).Select(g => (object)new JObject
-                    {
-                        ["end"] = g.End == 0 ? "start" : "end",
-                        ["point_mm"] = MmArray(g.Point),
-                        ["nearest_mm"] = g.NearestMm.HasValue ? (JToken)g.NearestMm.Value : JValue.CreateNull(),
-                        ["nearest_element_id"] = g.NearestElementId.HasValue ? (JToken)g.NearestElementId.Value : JValue.CreateNull()
-                    }).ToArray());
+                    row["node_gaps"] = Ends(mine, "nearest_element_id");
+                    supported.TryGetValue(id, out List<AnalysisReadRules.NodeGap> held);
+                    row["supported_ends"] = Ends(held, "boundary_condition_id");
                 }
             }
             else if (e is AnalyticalPanel panel)
@@ -237,6 +405,10 @@ namespace Horizun.Revit.Commands
             return row;
         }
 
+        // RevitAPI.xml documents ReleaseConditions.Fx..Mz only as "the Fx of the release
+        // type" - not whether true means released or fixed. Until a live run fixes the
+        // polarity (a Pinned member read back), the flags are published raw, beside the
+        // release type that gives them their meaning, and no polarity is claimed.
         private static JObject Releases(AnalyticalMember member)
         {
             try
@@ -254,7 +426,8 @@ namespace Horizun.Revit.Commands
                     }
                     o[start ? "start" : "end"] = end;
                 }
-                o["true_means"] = "the degree of freedom is RELEASED at that end.";
+                o["flags_polarity"] = "unmeasured: the API does not state whether true is released or fixed; " +
+                                      "read the flags with the release type.";
                 return o;
             }
             catch { return null; }
@@ -266,6 +439,7 @@ namespace Horizun.Revit.Commands
                                                          List<long> ids, JArray reasons, HashSet<long> seen)
         {
             var physical = new List<Element>();
+            var excluded = new List<long>();
             var cats = new List<BuiltInCategory>
             {
                 BuiltInCategory.OST_StructuralFraming, BuiltInCategory.OST_StructuralColumns,
@@ -273,19 +447,34 @@ namespace Horizun.Revit.Commands
             };
             // Collect ignores categories when ids are named, so the category is checked here.
             var catIds = new HashSet<long>(cats.Select(c => Rid.Value(new ElementId(c))));
+            long foundationCat = Rid.Value(new ElementId(BuiltInCategory.OST_StructuralFoundation));
             foreach (Element e in Collect(doc, cats, ids))
             {
-                if (e is AnalyticalElement || e.Category == null || !catIds.Contains(Rid.Value(e.Category.Id))) continue;
+                if (e is AnalyticalElement || e is ElementType || e.Category == null ||
+                    !catIds.Contains(Rid.Value(e.Category.Id))) continue;
+                bool foundation = Rid.Value(e.Category.Id) == foundationCat;
                 if (e is Wall && ParamNumberInt(e, BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT) != 1) continue;
-                if (e is Floor && ParamNumberInt(e, BuiltInParameter.FLOOR_PARAM_IS_STRUCTURAL) != 1) continue;
-                if (!(e is FamilyInstance) && !(e is Wall) && !(e is Floor)) continue;
+                // A foundation slab is structural by its category; the floor flag may be absent or unset on it.
+                if (e is Floor && !foundation && ParamNumberInt(e, BuiltInParameter.FLOOR_PARAM_IS_STRUCTURAL) != 1) continue;
+                if (!(e is FamilyInstance) && !(e is Wall) && !(e is Floor) && !(e is WallFoundation))
+                {
+                    excluded.Add(Rid.Value(e.Id));
+                    continue;
+                }
                 physical.Add(e);
                 seen.Add(Rid.Value(e.Id));
             }
+            if (excluded.Count > 0)
+                reasons.Add(StructuralCoverage.Reason("physical_without_analytical",
+                    excluded.Count + " element(s) in these categories are of a class this check does not read and " +
+                    "were NOT checked: " + string.Join(", ", excluded.Take(20)) + (excluded.Count > 20 ? ", ..." : "") + "."));
+            string scope = "structural framing, structural columns, structural foundations (family instances, wall " +
+                           "foundations and foundation slabs), and walls/floors flagged structural";
             if (manager == null)
                 return new JObject
                 {
                     ["checked"] = physical.Count, ["count"] = null, ["ids"] = null,
+                    ["excluded_other_classes"] = excluded.Count, ["scope"] = scope,
                     ["coverage"] = StructuralCoverage.Unreadable
                 };
             var missing = new List<long>();
@@ -304,9 +493,9 @@ namespace Horizun.Revit.Commands
                 ["count"] = missing.Count,
                 ["ids"] = new JArray(missing.Take(MaxListedUnassociated).Cast<object>().ToArray()),
                 ["ids_truncated"] = missing.Count > MaxListedUnassociated,
-                ["scope"] = "structural framing, structural columns, structural foundations, and walls/floors " +
-                            "flagged structural",
-                ["coverage"] = unreadable == 0 ? StructuralCoverage.Complete : StructuralCoverage.Partial
+                ["excluded_other_classes"] = excluded.Count,
+                ["scope"] = scope,
+                ["coverage"] = unreadable == 0 && excluded.Count == 0 ? StructuralCoverage.Complete : StructuralCoverage.Partial
             };
         }
 
@@ -358,7 +547,10 @@ namespace Horizun.Revit.Commands
                 ["units"] = new JObject
                 {
                     ["point_force"] = "kN", ["point_moment"] = "kN*m", ["line_force"] = "kN/m",
-                    ["line_moment"] = "kN*m/m", ["area_force"] = "kN/m2", ["area"] = "m2", ["position"] = "mm"
+                    ["line_moment"] = "kN*m/m", ["area_force"] = "kN/m2", ["area"] = "m2", ["position"] = "mm",
+                    ["vector_frame"] = "force and moment components are in each row's vector_frame (Revit's OrientTo): " +
+                                       "project = project coordinates; work_plane and host_local are components in " +
+                                       "that frame and do not add to project ones. Positions are project coordinates."
                 },
                 ["unmatched_ids"] = new JArray(ids.Where(id => !all.Any(e => Rid.Value(e.Id) == id)).Cast<object>().ToArray())
             };
@@ -369,25 +561,56 @@ namespace Horizun.Revit.Commands
         {
             long id = Rid.Value(load.Id);
             var unread = new List<string>();
-            var caseElement = Safe(() => load.LoadCaseId) is ElementId caseId ? doc.GetElement(caseId) as LoadCase : null;
+
+            JToken caseId = JValue.CreateNull();
+            LoadCase caseElement = null;
+            try
+            {
+                ElementId cid = load.LoadCaseId;
+                if (cid != null && cid != ElementId.InvalidElementId)
+                {
+                    caseId = Rid.Value(cid);
+                    caseElement = doc.GetElement(cid) as LoadCase;
+                }
+            }
+            catch { unread.Add("load_case_id"); }
+            JToken caseNumber = JValue.CreateNull();
+            if (caseElement != null)
+            {
+                try { caseNumber = caseElement.Number; } catch { unread.Add("load_case_number"); }
+            }
+            string orient = null;
+            try { orient = load.OrientTo.ToString(); } catch { unread.Add("orient_to"); }
+            string frame = orient == "Project" ? "project" : orient == "WorkPlane" ? "work_plane"
+                         : orient == "HostLocalCoordinateSystem" ? "host_local" : null;
+            if (orient != null && frame == null) unread.Add("vector_frame");
+            JToken host = JValue.CreateNull();
+            try
+            {
+                ElementId h = load.HostElementId;
+                if (h != null && h != ElementId.InvalidElementId) host = Rid.Value(h);
+            }
+            catch { unread.Add("host"); }
+
             var row = new JObject
             {
                 ["id"] = id,
                 ["kind"] = load is PointLoad ? "point" : load is LineLoad ? "line" : "area",
                 ["load_case"] = new JObject
                 {
-                    ["id"] = SafeId(() => load.LoadCaseId),
-                    ["name"] = Str(() => load.LoadCaseName),
-                    ["number"] = caseElement == null ? JValue.CreateNull() : (JToken)Num(() => caseElement.Number)
+                    ["id"] = caseId,
+                    ["name"] = Field(() => load.LoadCaseName, unread, "load_case"),
+                    ["number"] = caseNumber
                 },
-                ["nature"] = Str(() => load.LoadNatureName),
-                ["category"] = Str(() => load.LoadCategoryName),
-                ["is_reaction"] = Bool(() => load.IsReaction),
-                ["is_hosted"] = Bool(() => load.IsHosted),
-                ["host_id"] = SafeId(() => load.HostElementId),
-                ["orient_to"] = Str(() => load.OrientTo.ToString())
+                ["nature"] = Field(() => load.LoadNatureName, unread, "nature"),
+                ["category"] = Field(() => load.LoadCategoryName, unread, "category"),
+                ["is_reaction"] = Field(() => load.IsReaction, unread, "is_reaction"),
+                ["is_hosted"] = Field(() => load.IsHosted, unread, "is_hosted"),
+                ["host_id"] = host,
+                ["orient_to"] = orient,
+                ["vector_frame"] = frame
             };
-            if ((string)row["load_case"]["name"] == null) unread.Add("load_case");
+            if (row["load_case"]["name"].Type == JTokenType.Null && !unread.Contains("load_case")) unread.Add("load_case");
 
             if (load is PointLoad pl)
             {
@@ -408,8 +631,8 @@ namespace Horizun.Revit.Commands
                     ["force2_kn_m"] = Vec(() => ll.ForceVector2, UnitTypeId.KilonewtonsPerMeter, unread, "force2"),
                     ["moment1_kn_m_per_m"] = Vec(() => ll.MomentVector1, UnitTypeId.KilonewtonMetersPerMeter, unread, "moment1"),
                     ["moment2_kn_m_per_m"] = Vec(() => ll.MomentVector2, UnitTypeId.KilonewtonMetersPerMeter, unread, "moment2"),
-                    ["is_uniform"] = Bool(() => ll.IsUniform),
-                    ["is_projected"] = Bool(() => ll.IsProjected)
+                    ["is_uniform"] = Field(() => ll.IsUniform, unread, "is_uniform"),
+                    ["is_projected"] = Field(() => ll.IsProjected, unread, "is_projected")
                 };
             }
             else if (load is AreaLoad al)
@@ -419,9 +642,10 @@ namespace Horizun.Revit.Commands
                     ["force1_kn_m2"] = Vec(() => al.ForceVector1, UnitTypeId.KilonewtonsPerSquareMeter, unread, "force1"),
                     ["force2_kn_m2"] = Vec(() => al.ForceVector2, UnitTypeId.KilonewtonsPerSquareMeter, unread, "force2"),
                     ["force3_kn_m2"] = Vec(() => al.ForceVector3, UnitTypeId.KilonewtonsPerSquareMeter, unread, "force3"),
-                    ["area_m2"] = Round(Num(() => UnitUtils.ConvertFromInternalUnits(al.Area, UnitTypeId.SquareMeters)), 4),
-                    ["reference_points"] = Num(() => al.NumRefPoints) is double n ? (JToken)(int)n : JValue.CreateNull(),
-                    ["is_projected"] = Bool(() => al.IsProjected)
+                    ["area_m2"] = Field(() => Math.Round(UnitUtils.ConvertFromInternalUnits(al.Area, UnitTypeId.SquareMeters), 4),
+                                        unread, "area"),
+                    ["reference_points"] = Field(() => al.NumRefPoints, unread, "reference_points"),
+                    ["is_projected"] = Field(() => al.IsProjected, unread, "is_projected")
                 };
             }
             row["unread"] = new JArray(unread.Cast<object>().ToArray());
@@ -429,6 +653,17 @@ namespace Horizun.Revit.Commands
             if (unread.Count > 0)
                 reasons.Add(StructuralCoverage.Reason("load", "could not read " + string.Join(", ", unread) + ".", id));
             return row;
+        }
+
+        /// <summary>A scalar field; a throw is NAMED in unread rather than published as a null that reads as "none".</summary>
+        private static JToken Field<T>(Func<T> read, List<string> unread, string what)
+        {
+            try
+            {
+                T v = read();
+                return v == null ? JValue.CreateNull() : JToken.FromObject(v);
+            }
+            catch { unread.Add(what); return JValue.CreateNull(); }
         }
 
         /// <summary>A vector in the given unit, or millimetres when unit is null; null (and named) when unreadable.</summary>
