@@ -2149,6 +2149,15 @@ Volume, area and mass per material, multiplied by **your** factor table. Nothing
   `horizun_power_bi_push`. `kgco2e` sums **only** counted readings; `materials_without_factor`,
   `materials_without_density`, `unreadable_volumes` and `elements_without_materials` name the rest.
   Host document only; linked models are not read.
+- Carbon does NOT filter by phase or level (level is a grouping column only).
+
+A key that another mode reads is **refused, not ignored**, in a mode that does not read it -
+the reply names the key and the modes that read it, and nothing is measured. `carbon` refuses
+`phase`, `level`, `quantities`, `classification_parameter`, `include_links`, `detail_level`,
+`tolerance_pct` and `only_disagreements`; `room_finishes` refuses the same takeoff/volume keys
+plus `category`, `carbon_factors` and `factor_source`; `takeoff` refuses `level`,
+`carbon_factors` and `factor_source` (and `phase` without `group_by: "room"`). Without the
+refusal, "the carbon of phase X" would silently come back as the carbon of every phase.
 
 ### Room membership: `horizun_query_model` include_room and takeoff group_by='room'
 

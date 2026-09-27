@@ -92,6 +92,8 @@ namespace Horizun.Revit.Commands
             // back would have every reason to believe they had been measured.
             string mode = request.Value<string>("mode");
             if (string.IsNullOrWhiteSpace(mode)) mode = "volume";
+            string foreignArgument = ForeignModeArgument(mode, request);   // QuantitiesModeArguments.cs
+            if (foreignArgument != null) return CommandResult.Fail(foreignArgument);
             if (mode == "takeoff") return ExecuteTakeoff(doc, request, detail, top);
             if ((mode == "room_finishes" || mode == "carbon") && request["group_by"] != null)
                 return CommandResult.Fail("group_by is read only in mode 'takeoff' (group_by='room'); here it would be silently ignored. Nothing was measured.");
