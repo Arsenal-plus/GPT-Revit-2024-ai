@@ -42,7 +42,8 @@ namespace Horizun.Revit.Commands
     {
         public string Name => "horizun_fix_planimetry";
         public string Description =>
-            "Apply typed corrections to findings from horizun_audit_planimetry - view template/scale/name, sheet " +
+            "Apply typed corrections to findings from horizun_audit_planimetry - view template/scale/name/detail " +
+            "level/discipline, sheet " +
             "number/name, title-block placement, viewport/schedule moves, element-override clearing and " +
             "rectangular or polygon crops - each bound to the finding it corrects, rehearsed provisionally, " +
             "confirmed, committed atomically, re-read from the model, and re-audited so resolved, persistent and " +

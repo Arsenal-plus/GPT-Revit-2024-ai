@@ -3106,7 +3106,7 @@ namespace Horizun.Contracts
           ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": { ""type"": ""integer"" } },
           ""observed"": { ""type"": ""object"", ""description"": ""The finding's observed block, VERBATIM. The fix recomputes the finding and refuses as a stale observation when the model no longer shows this state."" }
         }, ""additionalProperties"": false },
-        ""view_id"": { ""type"": ""integer"", ""description"": ""set_view_template / set_view_scale / rename_view / set_crop: the view to change. clear_element_override: the view whose element override is cleared."" },
+        ""view_id"": { ""type"": ""integer"", ""description"": ""set_view_template / set_view_scale / set_view_display / rename_view / set_crop: the view to change. clear_element_override: the view whose element override is cleared."" },
         ""template_id"": { ""type"": ""integer"", ""description"": ""set_view_template: the ViewTemplate's ElementId. Never resolved from a name."" },
         ""scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000 },
         ""detail_level"": { ""type"": ""string"", ""enum"": [""Coarse"", ""Medium"", ""Fine""] },

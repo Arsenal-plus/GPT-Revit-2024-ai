@@ -107,7 +107,7 @@ namespace Horizun.Revit.Core
             Row("horizun_create_schedule", VerificationMechanism.PostconditionChecklist, E("postcondition", "application"), F(C + "CreateScheduleCommand.cs")),
             Row("horizun_create_elements", VerificationMechanism.PostconditionChecklist, E("postconditions", "production_postconditions", "application"),
                 F(C + "CreateElementsCommand.cs", C + "CreateElementsGeometry.cs", C + "CreateElementsProductionVerification.cs", C + "CreateStairsGeometry.cs")),
-            Row("horizun_fix_planimetry", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "FixPlanimetryCommand.cs")),
+            Row("horizun_fix_planimetry", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "FixPlanimetryCommand.cs", C + "FixPlanimetryDisplay.cs")),
             Row("horizun_transform_elements", VerificationMechanism.PostconditionChecklist, E("operations_verified", "postconditions", "application"), F(C + "TransformElementsCommand.cs"),
                 "TransformElementsCommand.cs Verify: move/rotate/mirror/pin/change_type/set_curve/wall_join compare per element with booleans (guarded: an element that does not re-read fails, an empty target list never passes); only the tag and array operations carry a PostconditionCheck.",
                 "TransformElementsCommand.cs VerifyArray: a radial copy's position is checked, not whether its axes turned."),

@@ -477,6 +477,24 @@ namespace Horizun.Revit.Core
         // ---------------------------------------------------------------------
 
         /// <summary>What an action's `finding` block resolved to, validated pure.</summary>
+        /// <summary>
+        /// set_view_display may change only a property its finding is ABOUT. A requirement-set
+        /// finding names its asserted field in observed.field; a finding of any other shape must
+        /// carry the property among its observed keys. Null when licensed, else the refusal.
+        /// </summary>
+        public static string DisplayPropertyError(CitedFinding cited, string property)
+        {
+            JObject observed = cited?.Observed;
+            string field = (observed?["field"] as JValue)?.Value as string;
+            bool about = field != null ? string.Equals(field, property, StringComparison.Ordinal)
+                                       : observed?.Property(property) != null;
+            if (about) return null;
+            return "set_view_display sets " + property + " only when the cited finding is about " + property +
+                   ": finding '" + (cited?.RuleId ?? "?") + "' " +
+                   (field != null ? "asserts '" + field + "'" : "does not name " + property) +
+                   ". Cite the finding about " + property + " (one action per finding). Nothing was written.";
+        }
+
         public sealed class CitedFinding
         {
             public string RuleId;

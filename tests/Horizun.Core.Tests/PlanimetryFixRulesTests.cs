@@ -1127,5 +1127,21 @@ namespace Horizun.Core.Tests
             Assert.True(cited != null, "the finding did not parse: " + error);
             return cited;
         }
+
+        [Fact]
+        public void Set_view_display_changes_only_what_its_finding_is_about()
+        {
+            var detail = new PlanimetryFixRules.CitedFinding
+            { RuleId = "r1", Observed = new JObject { ["field"] = "detail_level", ["value"] = "Coarse" } };
+            Assert.Null(PlanimetryFixRules.DisplayPropertyError(detail, "detail_level"));
+            Assert.Contains("asserts 'detail_level'", PlanimetryFixRules.DisplayPropertyError(detail, "discipline"));
+            var name = new PlanimetryFixRules.CitedFinding
+            { RuleId = "r2", Observed = new JObject { ["field"] = "name", ["value"] = "x" } };
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(name, "detail_level"));
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(name, "discipline"));
+            var keyed = new PlanimetryFixRules.CitedFinding { RuleId = "r3", Observed = new JObject { ["discipline"] = "Structural" } };
+            Assert.Null(PlanimetryFixRules.DisplayPropertyError(keyed, "discipline"));
+            Assert.NotNull(PlanimetryFixRules.DisplayPropertyError(keyed, "detail_level"));
+        }
     }
 }

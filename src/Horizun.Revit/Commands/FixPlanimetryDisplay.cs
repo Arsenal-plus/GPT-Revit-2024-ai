@@ -14,8 +14,11 @@
 //   * the view kind has no such property (HasDetailLevel / HasViewDiscipline) or
 //     Revit says it cannot be modified (CanModifyDetailLevel /
 //     CanModifyViewDiscipline).
+// And the finding must be ABOUT each property set (observed.field): a detail-level
+// finding never licenses a discipline change, a finding about the name neither.
 // The property the caller did NOT name is re-read too, so a write that moved it
-// as a side effect is a failed postcondition rather than an unnoticed change.
+// as a side effect is a failed postcondition rather than an unnoticed change; a side
+// that could not be read is named unreadable, never passed as "unchanged".
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -45,6 +48,12 @@ namespace Horizun.Revit.Commands
             if (error != null) throw new ArgumentException(error);
             string wantDetail = a.Value<string>("detail_level");
             string wantDiscipline = a.Value<string>("discipline");
+            foreach (string property in new[] { wantDetail != null ? "detail_level" : null,
+                                                wantDiscipline != null ? "discipline" : null })
+            {
+                string notAbout = property == null ? null : PlanimetryFixRules.DisplayPropertyError(cited, property);
+                if (notAbout != null) throw new ArgumentException(notAbout);
+            }
 
             if (wantDetail != null)
             {
@@ -133,10 +142,21 @@ namespace Horizun.Revit.Commands
             }
             // The requested value, and the one NOT requested left exactly as it was.
             if (plan.DetailLevel != null) check.Compare("detail_level", plan.DetailLevel, ReadDetailLevel(view));
-            else check.Compare("detail_level_unchanged", plan.Before["detail_level"], ReadDetailLevel(view));
+            else Unchanged(check, "detail_level_unchanged", plan.Before["detail_level"], ReadDetailLevel(view));
             if (plan.Discipline != null) check.Compare("discipline", plan.Discipline, ReadDiscipline(view));
-            else check.Compare("discipline_unchanged", plan.Before["discipline"], ReadDiscipline(view));
+            else Unchanged(check, "discipline_unchanged", plan.Before["discipline"], ReadDiscipline(view));
             return check;
         }
+
+        // Judged only when BOTH sides were read: the same "<unreadable: ...>" text before and
+        // after is not evidence that the property stayed put.
+        private static void Unchanged(PostconditionCheck check, string what, string before, string now)
+        {
+            if (IsUnreadableText(before) || IsUnreadableText(now))
+                check.Unreadable(what, before, "before=" + (before ?? "<null>") + " after=" + (now ?? "<null>"));
+            else check.Compare(what, before, now);
+        }
+
+        private static bool IsUnreadableText(string v) => v == null || v.StartsWith("<unreadable", StringComparison.Ordinal);
     }
 }
