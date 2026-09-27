@@ -23,6 +23,25 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_loop_that_touches_or_crosses_another_loop_is_named_and_a_clear_one_is_not()
+        {
+            var outer = Rect(0, 0, 4000, 3000);
+            // A hole well inside the boundary is clear of it; a profile of one loop has nothing to cross.
+            Assert.Null(SketchEditRules.CrossesOtherLoops(L(outer, Rect(1000, 1000, 2000, 2000)), 1));
+            Assert.Null(SketchEditRules.CrossesOtherLoops(L(outer), 0));
+            // A hole pushed through the boundary's edge crosses it, and the reason names that loop.
+            string crossing = SketchEditRules.CrossesOtherLoops(L(outer, Rect(3500, 1000, 4500, 2000)), 1);
+            Assert.NotNull(crossing);
+            Assert.Contains("loop 0", crossing);
+            // A hole lying ON the boundary's edge only touches it - Revit refuses that as well.
+            Assert.NotNull(SketchEditRules.CrossesOtherLoops(L(outer, Rect(3000, 1000, 4000, 2000)), 1));
+            // The boundary shrunk onto a hole is refused from the boundary's side too.
+            string shrunk = SketchEditRules.CrossesOtherLoops(L(Rect(0, 0, 2000, 3000), Rect(1000, 1000, 2000, 2000)), 0);
+            Assert.NotNull(shrunk);
+            Assert.Contains("loop 1", shrunk);
+        }
+
+        [Fact]
         public void Two_islands_are_two_solids_not_an_island_with_a_hole()
         {
             double a = SketchEditRules.NetArea(L(Rect(0, 0, 1000, 1000), Rect(5000, 0, 7000, 1000)));

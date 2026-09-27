@@ -9,8 +9,12 @@
 //
 // Same separate path as realign_wall_sketch, for the same reason: a
 // SketchEditScope cannot nest inside the Transaction the other operations
-// share, so edit_sketch is sent alone, and its dry_run is a REAL rehearsal that
-// edits the sketch, lets Revit validate it and Cancels the scope.
+// share, so edit_sketch is sent alone. Its dry_run is a REAL rehearsal of the
+// curve edits inside the scope, which is then Cancelled. Revit checks the
+// finished sketch as a whole only when the scope COMMITS, so the plan first
+// holds the edited loop to what that check refuses (closed, not self-crossing,
+// clear of the other loops): a rehearsal must not pass an edit the apply would
+// refuse. Whatever Revit still refuses at the apply's commit rolls it all back.
 //
 // VERIFIED BY RE-READING, twice over: the committed sketch's loops must match
 // the expected loops (Core/SketchEditRules.MatchLoops - cyclic, either
@@ -205,8 +209,10 @@ namespace Horizun.Revit.Commands
                 {
                     ["dry_run"] = true, ["transaction_status"] = "rehearsed_and_cancelled",
                     ["targets"] = 1, ["plan"] = new JArray(planJson),
-                    ["note"] = "The edit was rehearsed inside the element's SketchEditScope and Cancelled: Revit validated the " +
-                               "new sketch, nothing was committed."
+                    ["note"] = "The curve edits were made inside the element's SketchEditScope and the scope was Cancelled; nothing " +
+                               "was committed. Revit checks the finished sketch only when the apply commits the scope (a refusal " +
+                               "there rolls everything back), so the plan checked the loop first: closed, not self-crossing, clear " +
+                               "of the other loops."
                 };
                 if (ok) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 ApplicationOutcome.StampRehearsal(result, 1, 0, ok ? 0 : 1, 0);
@@ -402,6 +408,11 @@ namespace Horizun.Revit.Commands
                 SketchPt old = before.Vertices[l][v];
                 outlines[l] = outlines[l].Select(p => p.DistanceTo(old) < SketchEditRules.MatchToleranceMm ? to[0] : p).ToList();
             }
+
+            // Loops that touch or cross are refused by Revit only when the sketch is finished -
+            // after a dry run has Cancelled - so the plan refuses them first, by name.
+            string crossing = SketchEditRules.CrossesOtherLoops(outlines.Cast<IList<SketchPt>>().ToList(), plan.LoopIndex);
+            if (crossing != null) { error = (plan.NewLoop != null ? "loop: " : "the moved loop: ") + crossing; return null; }
 
             plan.ExpectedAreaM2 = SketchEditRules.NetArea(outlines.Cast<IList<SketchPt>>().ToList()) / 1e6;
             plan.AreaBeforeM2 = AreaParamM2(e);

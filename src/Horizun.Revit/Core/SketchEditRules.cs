@@ -141,6 +141,29 @@ namespace Horizun.Revit.Core
             return null;
         }
 
+        /// <summary>
+        /// Null when loop `index` neither touches nor crosses any OTHER loop of the profile;
+        /// otherwise which loop and which edges meet. Revit refuses such a sketch only when it
+        /// is FINISHED - the apply's scope commit, after a dry run has already Cancelled - so the
+        /// plan holds the edited loop to it first, rather than let a rehearsal pass an edit the
+        /// apply must refuse. Arcs are held by their tessellation; Revit's commit stays the last word.
+        /// </summary>
+        public static string CrossesOtherLoops(IList<IList<SketchPt>> loops, int index)
+        {
+            if (loops == null || index < 0 || index >= loops.Count || loops[index] == null) return null;
+            IList<SketchPt> a = loops[index];
+            for (int j = 0; j < loops.Count; j++)
+            {
+                IList<SketchPt> b = loops[j];
+                if (j == index || b == null || b.Count < 2) continue;
+                for (int i = 0; i < a.Count; i++)
+                    for (int k = 0; k < b.Count; k++)
+                        if (SegmentsTouch(a[i], a[(i + 1) % a.Count], b[k], b[(k + 1) % b.Count]))
+                            return "it touches or crosses loop " + j + " (its edge " + i + " meets that loop's edge " + k + "); loops of one sketch must stay apart.";
+            }
+            return null;
+        }
+
         private static double Cross(SketchPt o, SketchPt a, SketchPt b) => (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
 
         private static bool OnSegment(SketchPt p, SketchPt a, SketchPt b) =>

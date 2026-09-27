@@ -20,7 +20,7 @@
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'sketch-edits'
     Catalog = @(
-        @{ Name = 'edit_sketch floor rehearsal: Revit validates the new loop and the scope is cancelled - a second rehearsal still reads the original boundary'; Tool = 'horizun_transform_elements' }
+        @{ Name = 'edit_sketch floor rehearsal: the curve edits are made in the SketchEditScope and cancelled - a second rehearsal still reads the original boundary'; Tool = 'horizun_transform_elements' }
         @{ Name = 'edit_sketch floor replace_loop: same id, the loop re-read as sent, Area 24 -> 20 m2'; Tool = 'horizun_transform_elements' }
         @{ Name = 'edit_sketch floor move_vertex: same id, one corner moved 1000 mm, Area down by 2 m2'; Tool = 'horizun_transform_elements' }
         @{ Name = 'edit_sketch ceiling replace_loop: same id, the rectangle becomes an L, Area 12 -> 9 m2'; Tool = 'horizun_transform_elements' }
@@ -32,7 +32,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $cases = New-Object System.Collections.ArrayList
         function Case($name, $tool, $outcome, $detail) { [void]$cases.Add(@{ Name = $name; Tool = $tool; Outcome = $outcome; Detail = [string]$detail }) }
         $catalog = @(
-            'edit_sketch floor rehearsal: Revit validates the new loop and the scope is cancelled - a second rehearsal still reads the original boundary',
+            'edit_sketch floor rehearsal: the curve edits are made in the SketchEditScope and cancelled - a second rehearsal still reads the original boundary',
             'edit_sketch floor replace_loop: same id, the loop re-read as sent, Area 24 -> 20 m2',
             'edit_sketch floor move_vertex: same id, one corner moved 1000 mm, Area down by 2 m2',
             'edit_sketch ceiling replace_loop: same id, the rectangle becomes an L, Area 12 -> 9 m2',

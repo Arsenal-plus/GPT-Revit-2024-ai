@@ -2124,8 +2124,11 @@ Points must lie **on the sketch plane** (within 1 mm). They are refused, never p
 a wrong elevation is never silently flattened; the refusal names a point of the plane as
 `(x, y, z) mm` in invariant-culture numbers, so a caller can re-send on it.
 
-`dry_run` (the default) is a **real rehearsal**: the edit is made inside the scope, Revit
-validates the whole sketch, and the scope is Cancelled. The plan reports `mode`,
+`dry_run` (the default) is a **real rehearsal** of the curve edits: they are made inside the
+scope, which is then Cancelled. Revit checks the finished sketch as a whole only when the
+apply commits the scope (a refusal there rolls the whole group back), so the plan first
+refuses by name a loop with fewer than three vertices, an edge under 1 mm, a self-crossing,
+or contact with another loop of the sketch (arcs held by their tessellation). The plan reports `mode`,
 `loop_index`, `vertex_index`, `loops_before_mm` and `loops_expected_mm` (sketch-plane
 `(u, v)` in mm from the plane origin), `sketch_area_before_m2`, `expected_area_m2`,
 `area_parameter_before_m2`, `area_check` (`will_verify` | `not_applicable`) and
@@ -2243,8 +2246,10 @@ verifier are covered by `tests/Horizun.Core.Tests/Bc3RulesTests.cs` and
 `edit_sketch` cambia el contorno de UN suelo, techo o hueco sin recrearlo: se conserva el
 id, el UniqueId y todo lo alojado. Reemplaza un lazo (`loop` + `loop_index`) o mueve un
 vértice (`start` -> `end`, solo entre líneas), siempre solo en su llamada. Los puntos deben
-estar sobre el plano del sketch (1 mm): se rechazan, no se proyectan. El dry run edita de
-verdad y cancela el scope. Tras el commit se relee: mismo UniqueId, lazos iguales a lo
+estar sobre el plano del sketch (1 mm): se rechazan, no se proyectan. El dry run hace de
+verdad la edición de las curvas y cancela el scope; como Revit solo revisa el sketch completo
+al confirmar el scope en el apply (si lo rechaza, se revierte todo), el plan rechaza antes, por
+nombre, un lazo que se cruza a sí mismo o que toca otro lazo. Tras el commit se relee: mismo UniqueId, lazos iguales a lo
 pedido, y el área del elemento igual al área del nuevo sketch cuando antes coincidía; si
 no coincidía (pendiente, forma editada, un corte) el chequeo de área queda
 `not_applicable`, nombrado. Un FootPrintRoof se rechaza por nombre (no tiene SketchId).
