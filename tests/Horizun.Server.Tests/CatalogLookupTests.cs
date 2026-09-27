@@ -489,6 +489,10 @@ namespace Horizun.Server.Tests
     // -------------------------------------------------------------------------
     public sealed class CatalogLookupPathValidationTests
     {
+        // A drive path is rooted on Windows only; the hosted Linux job needs its own root.
+        private static string Native(string windowsPath) =>
+            System.IO.Path.DirectorySeparatorChar == '\\' ? windowsPath : "/" + windowsPath.Substring(3).Replace('\\', '/');
+
         [Theory]
         [InlineData(@"C:\catalogs\classification.csv")]
         [InlineData(@"C:\catalogs\classification.CSV")]
@@ -496,7 +500,7 @@ namespace Horizun.Server.Tests
         [InlineData(@"C:\catalogs\classification.txt")]
         public void ValidateCatalogPath_AbsoluteAllowedExtension_DoesNotThrow(string path)
         {
-            CatalogLookup.ValidateCatalogPath(path);   // no exception == pass
+            CatalogLookup.ValidateCatalogPath(Native(path));   // no exception == pass
         }
 
         [Fact]
@@ -512,7 +516,7 @@ namespace Horizun.Server.Tests
         [InlineData(@"C:\catalogs\classification")]
         public void ValidateCatalogPath_DisallowedExtension_Throws(string path)
         {
-            var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.ValidateCatalogPath(path));
+            var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.ValidateCatalogPath(Native(path)));
             Assert.Contains(".csv", ex.Message, StringComparison.Ordinal);
         }
 
@@ -545,7 +549,7 @@ namespace Horizun.Server.Tests
             var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.Handle(new JObject
             {
                 ["operation"] = "leaf",
-                ["catalog_path"] = @"C:\catalogs\does-not-exist.xlsx",
+                ["catalog_path"] = Native(@"C:\catalogs\does-not-exist.xlsx"),
                 ["code"] = "D01"
             }));
             Assert.Contains(".csv", ex.Message, StringComparison.Ordinal);

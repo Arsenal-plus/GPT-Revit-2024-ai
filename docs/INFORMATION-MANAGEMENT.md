@@ -591,7 +591,7 @@ Verified against modelcontextprotocol.io on 2026-09-24:
   interactions. Servers MUST NOT send a mode the client did not declare.
 - **2026-07-28** no longer sends elicitation as a request. Verified against the
   specification source (`modelcontextprotocol/modelcontextprotocol`,
-  `docs/specification/2026-07-28/basic/patterns/mrtr.mdx`, `client/elicitation.mdx`,
+  `specification/2026-07-28/basic/patterns/mrtr.mdx`, `client/elicitation.mdx`,
   `changelog.mdx`, SEP-2322 and SEP-2577) on 2026-09-24:
   - *Multi round-trip requests* (SEP-2322): servers "MUST send server-to-client
     requests (such as `roots/list`, `sampling/createMessage`, or

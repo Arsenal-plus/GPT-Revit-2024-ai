@@ -2007,7 +2007,7 @@ this and still goes through `View.CropBox`.
   rehearsal's and the apply's own re-read of the shape (vertex by vertex, see
   below) simply fails the postcondition and the whole batch rolls back - it can
   never silently report success over a broken shape or a model that kept the
-  extra elements. `scripts/live-probes/fix-planimetry.probes.ps1` needs a case
+  extra elements. A live probe of `horizun_fix_planimetry` needs a case
   that actually sets a polygon crop and inspects the model's `Dimension` count
   before/after to close this gap.
 - **Verification compares vertices, not a bounding box.** `crop_shape`'s postcondition
