@@ -112,7 +112,8 @@ try {
     Check ($r.Count -eq 8) 'eight cases'
     Check (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0) ('all pass with fixtures: ' + (($r | ForEach-Object { $_.Outcome }) -join ','))
     Check ($h.State.Restored -and [double]$h.State.Restored.east_west -eq 1.5 -and [double]$h.State.Restored.angle_to_true_north -eq 12) 'shared position restored from the dry run''s project_position_before'
-    Check ((@(900, 950, 960, 500, 501, 502, 503) | Where-Object { $h.State.Deleted -notcontains $_ }).Count -eq 0) ('link types, point cloud type, levels, wall and floor deleted: ' + ($h.State.Deleted -join ','))
+    Check ((@(900, 951, 960, 500, 501, 502, 503) | Where-Object { $h.State.Deleted -notcontains $_ }).Count -eq 0) ('link types, the point cloud INSTANCE, levels, wall and floor deleted: ' + ($h.State.Deleted -join ','))
+    Check ($h.State.Deleted -notcontains 950) 'the point cloud TYPE is not asked for: Revit''s API refuses to delete it'
     Check ($r[2].Detail -match 'Revit refused') 'a type placed twice is answered by Revit for the named instance'
     Check ($r[5].Detail -match 'points=800' -and $r[5].Detail -match 'frame=identity') 'the floor''s top face is measured, with its points and frame'
     Check ($h.State.TwiceAsked -eq 'off-site') 'the placed-twice question is asked while the site still differs, so Revit answers it'

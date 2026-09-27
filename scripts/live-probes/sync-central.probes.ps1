@@ -172,7 +172,30 @@ __output__ = {'is_local': bool(i.IsLocal), 'is_central': bool(i.IsCentral), 'cen
                 Skip @($nReal, $nKeep, $nNone) 'the machine owner has not enabled Synchronize with central (Advanced options); a probe never enables it'
                 return $cases
             }
-            Case $nOwnerOff $S 'not_covered' $(if ($pv.isError) { "refused as $pc" } else { 'the owner switch is ON on this machine' })
+            # The switch is ON. A run with an ISOLATED data root (the release gate copies the owner's
+            # settings.json into its own folder) may turn it off in that copy only, prove the
+            # refusal, and turn it back on. The owner's own file is never touched: the check below
+            # refuses unless the isolated root is a different folder from the owner's.
+            $isoRoot = [string]$env:HORIZUN_DATA_ROOT
+            $ownerRoot = Join-Path $env:USERPROFILE '.horizun'
+            $isoSettings = if ($isoRoot) { Join-Path $isoRoot 'settings.json' } else { $null }
+            if ($pv.isError) { Case $nOwnerOff $S 'not_covered' "refused as $pc" }
+            elseif (-not $isoSettings -or -not (Test-Path -LiteralPath $isoSettings) -or
+                    [IO.Path]::GetFullPath($isoRoot).TrimEnd('\') -ieq [IO.Path]::GetFullPath($ownerRoot).TrimEnd('\')) {
+                Case $nOwnerOff $S 'not_covered' 'the owner switch is ON and this run has no isolated settings copy to turn it off in'
+            }
+            else {
+                $orig = [IO.File]::ReadAllText($isoSettings)
+                try {
+                    $js = $orig | ConvertFrom-Json
+                    $js.sync_with_central_owner_granted = $false
+                    [IO.File]::WriteAllText($isoSettings, ($js | ConvertTo-Json -Depth 20))
+                    $off = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $local; relinquish = 'all'; comment = ('hz probe off ' + $run); dry_run = $true }
+                    $offc = Code $off
+                    Case $nOwnerOff $S $(if ($off.isError -and $offc -eq 'sync_not_authorised' -and [string]$off.text -like '*Advanced options*' -and -not $off.data.confirmation_token) { 'pass' } else { 'fail' }) ("switch turned off in the run's isolated settings copy only: code=$offc " + (Short $off))
+                }
+                finally { [IO.File]::WriteAllText($isoSettings, $orig) }
+            }
             if ($pv.isError -or $pv.data.preview_kind -ne 'estimate' -or -not $pv.data.confirmation_token) {
                 Case $nReal $S 'fail' ('the preview is not a labelled estimate with a token: ' + (Short $pv))
                 Skip @($nKeep, $nNone) 'the relinquish=all sync did not run'

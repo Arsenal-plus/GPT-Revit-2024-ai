@@ -141,7 +141,10 @@ $script:HzProbeModules += [pscustomobject]@{
             try {
                 $pa = & $Ctx.Apply 'horizun_manage_links' @{ operation = 'add'; kind = 'point_cloud'; target_document = $doc; path = $pcPath } ($run + '-ls-pc')
                 $pr = Res $pa.answer.data
-                if ($pa.stage -eq 'apply' -and -not $pa.answer.isError -and $pr.link_type_id) { [void]$created.Add([long]$pr.link_type_id) }
+                # Only the INSTANCE goes in the cleanup: Revit's API refuses to delete a PointCloudType
+                # even after its instance is gone ('ElementId cannot be deleted', MEASURED 2026-09-27,
+                # Revit 2024). The type stays in the disposable model, which is never saved.
+                if ($pa.stage -eq 'apply' -and -not $pa.answer.isError -and $pr.link_instance_id) { [void]$created.Add([long]$pr.link_instance_id) }
                 Case 3 $(if ($pa.stage -eq 'apply' -and -not $pa.answer.isError -and $pr.verified -eq $true) { 'pass' } else { 'fail' }) ('engine=' + $pr.engine + ' found=' + $pr.found_status + ' ' + (Short $pa.answer))
                 $pcInst = $pr.link_instance_id
             }

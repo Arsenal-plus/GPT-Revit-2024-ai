@@ -130,14 +130,17 @@ $script:HzProbeModules += [pscustomobject]@{
         elseif (-not $optIn) {
             Skip 2 'creates a real ACC issue the API cannot delete: run by hand with the user''s approval (HORIZUN_PROBE_ACC_ISSUE_WRITE=1)'
         }
-        elseif (-not $rehearsed -or -not $dry.data.confirmation_token) {
-            Case 2 $false ('no confirmation token to apply: ' + $detail2)
-        }
         elseif ($existing) {
+            # An earlier run created the one approved issue: the keyed create must answer
+            # already_exists with that id and issue no token (nothing to apply).
             $retry = & $Ctx.Call $T $create
-            $noDup = -not $retry.isError -and $retry.data.state -eq 'already_exists' -and [string]$retry.data.issue_id -eq [string]$existing.issue_id -and $null -eq $retry.data.duplicates
+            $noDup = -not $retry.isError -and $retry.data.state -eq 'already_exists' -and [string]$retry.data.issue_id -eq [string]$existing.issue_id -and
+                     $null -eq $retry.data.duplicates -and -not $retry.data.confirmation_token
             Case 2 $noDup ('the issue under the fixed key already exists (' + $existing.issue_id + '), created by an earlier run; keyed create: ' +
                            $(if ($retry.isError) { Excerpt $retry } else { 'state=' + $retry.data.state + ' issue=' + $retry.data.issue_id }))
+        }
+        elseif (-not $rehearsed -or -not $dry.data.confirmation_token) {
+            Case 2 $false ('no confirmation token to apply: ' + $detail2)
         }
         else {
             $apply = $create.Clone(); $apply['dry_run'] = $false; $apply['confirmation_token'] = $dry.data.confirmation_token
