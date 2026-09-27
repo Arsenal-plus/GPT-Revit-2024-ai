@@ -153,6 +153,9 @@ Check 'a closed write tier reports every case not_covered' (@($catalog | Where-O
 $ctx = New-Ctx $false
 $by = Run-Module $ctx
 Check 'every catalogued case is reported' (@($catalog | Where-Object { -not $by.ContainsKey($_) }).Count -eq 0)
+# Every case names its tool as the catalogue does - a reply that overwrote a tool-name
+# variable (PowerShell names ignore case) would show up here as a hashtable.
+Check 'every case reports the tool its catalogue entry names, as a string' (@($module.Catalog | Where-Object { -not ($by[$_.Name].Tool -is [string]) -or $by[$_.Name].Tool -ne $_.Tool }).Count -eq 0)
 foreach ($n in $catalog) {
     Check "passes: $n" ($by[$n].Outcome -eq 'pass')
     if ($by[$n].Outcome -ne 'pass') { "        $($by[$n].Outcome): $($by[$n].Detail)" }

@@ -138,26 +138,27 @@ $script:HzProbeModules += [pscustomobject]@{
 
             # ==== 3: the apply, verified from the file ============================================
             $r = & $Ctx.Apply $X $export 'cobie-apply'
-            $d = if (Applied $r) { $r.answer.data } else { $null }
-            $file = if ($d) { @($d.files)[0] } else { $null }
+            $result = if (Applied $r) { $r.answer.data } else { $null }
+            $file = if ($result) { @($result.files)[0] } else { $null }
             $diskSha = if (Test-Path -LiteralPath $out) { (Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
-            $readSheets = if ($d) { @($d.read_back.sheets | ForEach-Object { [string]$_.name }) -join ',' } else { '' }
-            if (-not $d) { Case $names[2] $X 'fail' (Why $r) }
-            elseif ($d.files_verified -eq 1 -and $d.read_back.matches_plan -eq $true -and $readSheets -eq $want -and $diskSha -and [string]$file.sha256 -eq $diskSha -and $d.deliverable_ready -eq $false) {
-                Case $names[2] $X 'pass' ("bytes=$($file.bytes) sha256=$diskSha cells_sha256=$($d.read_back.cells_sha256) blocking=$(@($d.blocking) -join ',')")
+            $readSheets = if ($result) { @($result.read_back.sheets | ForEach-Object { [string]$_.name }) -join ',' } else { '' }
+            if (-not $result) { Case $names[2] $X 'fail' (Why $r) }
+            elseif ($result.files_verified -eq 1 -and $result.read_back.matches_plan -eq $true -and $readSheets -eq $want -and $diskSha -and [string]$file.sha256 -eq $diskSha -and $result.deliverable_ready -eq $false) {
+                Case $names[2] $X 'pass' ("bytes=$($file.bytes) sha256=$diskSha cells_sha256=$($result.read_back.cells_sha256) blocking=$(@($result.blocking) -join ',')")
             }
-            else { Case $names[2] $X 'fail' ("files_verified=$($d.files_verified) matches_plan=$($d.read_back.matches_plan) sheets='$readSheets' reply_sha=$($file.sha256) disk_sha=$diskSha ready=$($d.deliverable_ready)") }
+            else { Case $names[2] $X 'fail' ("files_verified=$($result.files_verified) matches_plan=$($result.read_back.matches_plan) sheets='$readSheets' reply_sha=$($file.sha256) disk_sha=$diskSha ready=$($result.deliverable_ready)") }
 
             # ==== 4 + 5: the workbook itself, through the server's own reader ======================
-            if (-not $d) {
+            if (-not $result) {
                 foreach ($n in $names[3..4]) { Case $n $X 'unverified' ('the apply did not produce a verified workbook, so its content was not judged: ' + (Why $r)) }
             }
             else {
                 $book = @{}
                 $readWhy = New-Object System.Collections.Generic.List[string]
                 foreach ($s in 'Facility', 'Space', 'Component') {
-                    $x = & $Ctx.Call 'horizun_excel_read_rows' @{ file_path = $out; sheet = $s; max_rows = 10000 }
-                    if ($x.isError -or -not $x.data) { [void]$readWhy.Add("$s`: " + [string]$x.text) } else { $book[$s] = $x.data }
+                    # Not $x: PowerShell names ignore case, and $X holds this module's tool name.
+                    $sheetRead = & $Ctx.Call 'horizun_excel_read_rows' @{ file_path = $out; sheet = $s; max_rows = 10000 }
+                    if ($sheetRead.isError -or -not $sheetRead.data) { [void]$readWhy.Add("$s`: " + [string]$sheetRead.text) } else { $book[$s] = $sheetRead.data }
                 }
                 # Rows are addressed by INDEX and only strings and ints leave these helpers:
                 # PowerShell unrolls an array a function returns, so a one-row sheet handed back
@@ -197,9 +198,9 @@ $script:HzProbeModules += [pscustomobject]@{
                             if ($by -ne $email) { [void]$wrong.Add("$s row $($i + 1): '$by'") }
                         }
                     }
-                    $replyOk = [string]$d.cobie.created_by -eq $email -and [string]$pre.data.cobie.created_by -eq $email
+                    $replyOk = [string]$result.cobie.created_by -eq $email -and [string]$pre.data.cobie.created_by -eq $email
                     if ($replyOk -and $rowsRead -gt 0 -and $wrong.Count -eq 0) { Case $names[4] $X 'pass' ("created_by=$email on $rowsRead row(s) of Facility, Space and Component") }
-                    else { Case $names[4] $X 'fail' ("reply created_by='$($d.cobie.created_by)' rows read=$rowsRead wrong=" + ($wrong -join ', ')) }
+                    else { Case $names[4] $X 'fail' ("reply created_by='$($result.cobie.created_by)' rows read=$rowsRead wrong=" + ($wrong -join ', ')) }
                 }
             }
         }
