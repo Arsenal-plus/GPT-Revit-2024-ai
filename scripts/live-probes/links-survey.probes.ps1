@@ -228,12 +228,17 @@ $script:HzProbeModules += [pscustomobject]@{
             # would_delete_total 4 of 5). What is left is judged by re-reading the ids.
             [array]::Reverse($ids)
             $k = 0
-            foreach ($one in $ids) { $k++; $null = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = @($one); id_cap = 5 } ($run + '-ls-cleanup' + $k) }
+            $delWhy = @{}
+            foreach ($one in $ids) {
+                $k++
+                $dr = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = @($one); id_cap = 5 } ($run + '-ls-cleanup' + $k)
+                if ($dr.stage -ne 'apply' -or $dr.answer.isError) { $delWhy[[long]$one] = Short $dr.answer }
+            }
             $left = & $Ctx.Call 'horizun_query_model' @{ target_document = $doc; element_ids = @($ids); include_types = $true; include_links = $false; max_rows = 50 }
             $still = @()
             if ($left.data) { $still = @($left.data.rows | ForEach-Object { [long]$_.element_id } | Where-Object { $ids -contains $_ }) }
             if (-not $left.data -or $left.isError) { $problems += ('the cleanup could not be re-read: ' + (Short $left)) }
-            elseif ($still.Count -gt 0) { $problems += ('left in the disposable document: ' + ($still -join ',')) }
+            elseif ($still.Count -gt 0) { $problems += ('left in the disposable document: ' + (@($still | ForEach-Object { "$_ (" + $delWhy[[long]$_] + ')' }) -join '; ')) }
         }
         if ($ids.Count -eq 0 -and -not $applyRan) { Case 7 'not_covered' 'nothing was staged' }
         elseif ($problems.Count -eq 0) { Case 7 'pass' ('restored=' + [bool]$applyRan + ' deleted ' + ($ids -join ',')) }

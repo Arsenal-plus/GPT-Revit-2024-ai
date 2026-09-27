@@ -51,6 +51,23 @@ may reduce Revit prompts on a machine whose owner explicitly trusts it, but it i
 never used for public artifacts. See the repository
 [unsigned release policy](../CODE-SIGNING-POLICY.md).
 
+## Named release-gate exemption
+
+A stable release needs every supported Revit year at 0 failed, 0 unverified and 0 not
+covered. One case is exempt from the **not covered** part, by name and for one reason,
+approved by the project owner on 2026-09-27:
+
+| Case | Allowed only when | Why |
+|---|---|---|
+| `links-survey: scan_deviation measures the top face of a floor staged on a scanned floor` | the release runner names no `PointCloudFloor` fixture | the only scan on the runner is sparse (about one point per square metre); a floor's top face is then correctly reported `not_measured` for low coverage, and no dense scan is available |
+
+The case is still printed and recorded as NOT COVERED in each year's report
+(`release_gate_exemptions` names it); it only stops failing the gate. It does not
+cover a different reason: without any point cloud fixture, or with a `PointCloudFloor`
+that measures wrong, the gate fails as before. Remove the exemption from
+`scripts/verify-live.ps1` and from this table as soon as a dense point-cloud fixture
+exists. No other case may be added without the same written owner approval.
+
 ## Versioning
 
 SemVer over the **tool contract**, not over the C#. What is public is the set of tool

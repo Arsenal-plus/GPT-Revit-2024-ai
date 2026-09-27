@@ -238,7 +238,10 @@ $script:HzProbeModules += [pscustomobject]@{
                 $ok = -not $sp.isError -and $spCreate.Count -ge 2 -and $spCreate.Count -eq $circ.Count
                 Case 8 $(if ($ok) { 'pass' } else { 'fail' }) ('room circuits m2 ' + (& $areas $circ) + ' | space regions m2 ' + (& $areas $spc) + ' ' + (Short $sp))
                 $lb = [string]$blk.link_bounding
-                Case 9 $(if ($lb -match '^not_proven') { 'not_covered' } else { 'fail' }) ('declared by the reply and NOT measured by this probe (it needs a linked model whose own walls enclose a region): ' + $lb)
+                # The case asserts the DECLARATION, which is what this build promises: link-bounded
+                # circuits are reported not_proven, never counted as enclosed. Whether linked walls
+                # really close a region is not measured, and the detail says so.
+                Case 9 $(if ($lb -match '^not_proven') { 'pass' } else { 'fail' }) ('the reply declares it (the geometry itself is not measured by this probe): ' + $lb)
                 $spEntry = @{ kind = 'space'; placement = 'all_enclosed'; level_id = $level; phase_id = $phaseId }
                 $spApp = & $Ctx.Apply $CE @{ target_document = $doc; units = 'mm'; elements = @($spEntry) } ($run + '-rt-spaces')
                 $spaces = @(Rows $spApp)

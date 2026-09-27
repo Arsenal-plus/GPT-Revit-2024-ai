@@ -81,13 +81,19 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         $local = $null
         $centralClosed = $false
+        $deferDetached = $false
         $dir = Join-Path ([IO.Path]::GetTempPath()) ('hz-sync-probe-' + $run)
         try {
             $d = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $fixture.Title; dry_run = $true }
             $dc = Code $d
             # The owner switch answers first on a release runner (MEASURED 2026-09-27, v2.1.2 gate:
             # sync_not_authorised): the detached check is then not reached, which is not a failure.
-            if ($d.isError -and $dc -eq 'sync_not_authorised' -and -not $d.data.confirmation_token) {
+            if ($fixture.Title -eq $Ctx.Document) {
+                # The "fixture" is the write model itself (release gate): not a detached copy.
+                # Checked at the end on a copy of this probe's own central, once it is closed.
+                $deferDetached = $true
+            }
+            elseif ($d.isError -and $dc -eq 'sync_not_authorised' -and -not $d.data.confirmation_token) {
                 Case $nDetached $S 'not_covered' 'the owner switch refused first (sync_not_authorised), so the detached check was not reached; nothing ran'
             }
             else { Case $nDetached $S $(if ($d.isError -and $dc -eq 'detached_copy' -and -not $d.data.confirmation_token) { 'pass' } else { 'fail' }) ("code=$dc on '" + $fixture.Title + "' " + (Short $d)) }
@@ -253,6 +259,24 @@ __output__ = out
         finally {
             if ($local) { $null = Exit-HzWorksharedFixture $Ctx @{ Title = $local; WritePath = $fixture.WritePath } 'sync-local' }
             if (-not $centralClosed) { $null = Exit-HzWorksharedFixture $Ctx $fixture 'sync' }
+            if ($deferDetached) {
+                $ownCentral = Join-Path $dir 'HZ_SYNC_CENTRAL.rvt'
+                if (-not (Test-Path -LiteralPath $ownCentral)) { Case $nDetached $S 'not_covered' 'the write model is the fixture and this probe made no central of its own to copy' }
+                else {
+                    $dcopy = Join-Path $dir 'HZ_SYNC_DETACHED.rvt'
+                    Copy-Item -LiteralPath $ownCentral -Destination $dcopy -Force
+                    $df = Enter-HzFixtureFile $Ctx $dcopy 'sync-detached' $fixture.WritePath
+                    if (-not $df.Title) { Case $nDetached $S 'fail' ('a copy of the probe''s own closed central did not open detached: ' + $df.Why) }
+                    else {
+                        try {
+                            $dd = & $Ctx.Call $S @{ operation = 'sync_with_central'; target_document = $df.Title; dry_run = $true }
+                            $ddc = Code $dd
+                            Case $nDetached $S $(if ($dd.isError -and $ddc -eq 'detached_copy' -and -not $dd.data.confirmation_token) { 'pass' } else { 'fail' }) ("code=$ddc on the detached copy '" + $df.Title + "' of the probe's own central " + (Short $dd))
+                        }
+                        finally { $null = Exit-HzWorksharedFixture $Ctx $df 'sync-detached' }
+                    }
+                }
+            }
             if (Test-Path -LiteralPath $dir) {
                 $failed = @($cases | Where-Object { $_.Outcome -eq 'fail' })
                 if ($failed.Count -eq 0) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }

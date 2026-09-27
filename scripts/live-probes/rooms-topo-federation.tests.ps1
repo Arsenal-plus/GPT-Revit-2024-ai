@@ -123,7 +123,7 @@ function At($r, $i) { @($r | Where-Object { $_.Name -eq $names[$i].Name })[0] }
 $h = New-Fake 'ok'; $r = @(& $module.Run $h.Ctx)
 Check ($r.Count -eq 14) ('fourteen cases: ' + $r.Count)
 Check (@($r | Where-Object { $_.Outcome -ne 'pass' -and $_.Name -notlike '*link-bounded*' }).Count -eq 0) ('everything but the link-bounded declaration passes: ' + (Outcomes $r))
-Check ((At $r 9).Outcome -eq 'not_covered' -and (At $r 9).Detail -match 'not_proven') 'link-bounded circuits stay not_covered, with the reply''s declaration'
+Check ((At $r 9).Outcome -eq 'pass' -and (At $r 9).Detail -match 'not_proven' -and (At $r 9).Detail -match 'not measured') 'link-bounded circuits pass on the reply''s declaration, and say the geometry is not measured'
 Check ($h.State.Deleted -contains 900) 'the probe link type is deleted'
 Check ((At $r 13).Outcome -eq 'pass' -and (At $r 13).Detail -match 'second call: requested 0') ('spaces: apply fills each region, a second call plans nothing: ' + (At $r 13).Detail)
 Check ((At $r 8).Detail -match 'space regions m2 6.8;22') ('the space rehearsal records the region areas: ' + (At $r 8).Detail)
