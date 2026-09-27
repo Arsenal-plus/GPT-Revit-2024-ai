@@ -122,9 +122,15 @@ namespace Horizun.Revit.Core
             // opening, the wall's hosted inserts untouched; read/remove by the marker on each member
             // (a copied member, whose own UniqueId differs from its marker's, is never removed);
             // a remove's cascade measured in the rehearsal, bound by the token and re-read.
+            // method 'curtain': every curtain wall / layer roof / hanger wall re-read (type, line or
+            // plane and footprint within 1 mm, fixed-distance grid spacing, mullion types, grid 1
+            // direction), the carrier's action and inserts, its delete cascade as measured; remove
+            // restores the carrier from the record the pieces carry and re-reads it.
             Row("horizun_framing", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"),
-                F(C + "FramingCommand.cs", C + "FramingApply.cs", C + "FramingCeiling.cs", "Horizun.Revit/Core/WallFramingRules.cs", "Horizun.Revit/Core/CeilingFramingRules.cs"),
-                "FramingCeiling.cs: after the commit each hanger is re-cast and its top must meet the first support within 1 mm (hanger_reaches_support); that support is not compared by id with the one the planning ray hit (evidence.hanger_supports)."),
+                F(C + "FramingCommand.cs", C + "FramingApply.cs", C + "FramingCeiling.cs", C + "FramingCurtain.cs", C + "FramingCurtainRemove.cs", C + "FramingCurtainCeiling.cs",
+                  "Horizun.Revit/Core/WallFramingRules.cs", "Horizun.Revit/Core/CeilingFramingRules.cs", "Horizun.Revit/Core/CurtainFramingRules.cs"),
+                "FramingCeiling.cs: after the commit each hanger is re-cast and its top must meet the first support within 1 mm (hanger_reaches_support); that support is not compared by id with the one the planning ray hit (evidence.hanger_supports). " +
+                "FramingCurtainRemove.cs: a carrier the curtain method deleted comes back under a NEW id, without its mark, comments, phase or workset (named in the plan)."),
 
             Row("horizun_manage_groups", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
                 F(C + "ManageGroupsCommand.cs", "Horizun.Revit/Core/GroupWorksetRules.cs"),
