@@ -66,6 +66,8 @@ namespace Horizun.Revit.Commands
                     // rehearsal came back without the sets it exists to list).
                     if (string.Equals(a.Value<string>("operation"), "sheet_set_list", StringComparison.OrdinalIgnoreCase))
                         planRow["report"] = SheetSetCensus(doc);
+                    // The renumbering is shown step by step, temporaries included, before any write.
+                    if (IsRenumberOperation(a.Value<string>("operation"))) planRow["renumber"] = RenumberPreview(doc, a);
                     plans.Add(planRow);
                 }
             }
@@ -105,6 +107,7 @@ namespace Horizun.Revit.Commands
                     BeforeValues = new Dictionary<string, string>()
                 };
                 row.ProposedValues = new Dictionary<string,string> { { "specification", a.ToString(Formatting.None) } };
+                if (IsRenumberOperation(op)) BindRenumber(doc, row.BeforeValues);
                 if (op == "apply_template" && a["view_id"] != null)
                 {
                     View targetView = doc.GetElement(Rid.Make(a.Value<long>("view_id"))) as View;
@@ -250,6 +253,7 @@ namespace Horizun.Revit.Commands
                 JObject detail = GraphicsDetail(doc, a.Action, a.Operation.ToLowerInvariant(), e)
                                  ?? ControlDetail(a.Action, a.Operation.ToLowerInvariant());
                 if (detail != null) row["graphics"] = detail;
+                if (IsRenumberOperation(a.Operation)) row["renumber"] = RenumberDetail(a.Action);
                 rows.Add(row);
             }
             if (verified != applied.Count)
@@ -280,7 +284,7 @@ namespace Horizun.Revit.Commands
             "convert_placeholder_sheet", "set_phase", "assign_scope_box", "set_view_range",
             "set_crop", "set_annotation_crop", "set_viewport_type", "align_viewports",
             "edit_filter", "order_filters", "set_template_controls", "explain_graphics",
-            "sheet_set_list", "sheet_set_update", "sheet_set_delete"
+            "sheet_set_list", "sheet_set_update", "sheet_set_delete", "renumber_sheets"
         };
 
         /// <summary>
@@ -561,6 +565,8 @@ namespace Horizun.Revit.Commands
                         if (IsLegendOperation(op)) { ValidateLegend(doc, a, op, known); break; }
                         // Filter editing/order, the precedence report and templates. See ManageViewsControl.cs.
                         if (IsControlOperation(op)) { ValidateControl(doc, a, op, known); break; }
+                        // Register-wide renumbering by map. See ManageViewsRenumber.cs.
+                        if (IsRenumberOperation(op)) { ValidateRenumber(doc, a, known); break; }
                         // A capability gap, not a fixable argument: this command implements a
                         // fixed set of documentation operations and this is not one of them.
                         unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
@@ -622,6 +628,7 @@ namespace Horizun.Revit.Commands
             if (IsGraphicsOperation(op)) return ApplyGraphics(doc, a, op, aliases);
             if (IsLegendOperation(op)) return ApplyLegend(doc, a, op, aliases, scale);
             if (IsControlOperation(op)) return ApplyControl(doc, a, op, aliases);
+            if (IsRenumberOperation(op)) return ApplyRenumber(doc, a);
             if (op == "create_floor_plan" || op == "create_ceiling_plan" || op == "create_structural_plan")
             {
                 ViewFamily family = op == "create_floor_plan" ? ViewFamily.FloorPlan :
@@ -1150,6 +1157,7 @@ namespace Horizun.Revit.Commands
                     if (IsGraphicsOperation(graphicsOp)) return VerifyGraphics(doc, a.Action, graphicsOp, e);
                     if (IsLegendOperation(graphicsOp)) return VerifyLegend(doc, a.Action, graphicsOp, e, a.Scale);
                     if (IsControlOperation(graphicsOp)) return VerifyControl(doc, a.Action, graphicsOp, e);
+                    if (IsRenumberOperation(graphicsOp)) return VerifyRenumber(doc, a.Action);
                     return false;
                 }
             }

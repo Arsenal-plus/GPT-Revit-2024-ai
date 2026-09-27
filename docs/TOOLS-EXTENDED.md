@@ -2122,3 +2122,37 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+## horizun_manage_views: `renumber_sheets` (a register-wide map)
+
+`renumber_sheets` renumbers many sheets at once from a map `old number -> new
+number`, as ONE action inside the batch's single transaction:
+
+```json
+{ "operation": "renumber_sheets",
+  "renumber": { "A101": "A102", "A102": "A101", "A103": "A110" } }
+```
+
+- **Collisions are refused before anything is written, all at once**: an old
+  number no sheet holds, an old number named twice, two sheets sent to the same
+  number, a new number held by a sheet the map does NOT move (checked against
+  EVERY sheet, placeholders included), and a number another action of the same
+  batch creates. Numbers compare case-insensitively, like the create operations.
+- **Swaps and cycles are allowed.** Revit refuses a number another sheet still
+  holds at the moment of assignment, so the steps are ordered: a sheet moves
+  straight to its target as soon as it is free, and each closed cycle parks ONE
+  sheet on a temporary `HZTMP-n` number that no sheet or target holds. A swap
+  costs one extra step; a shifted series (`A101->A102->A103->A104`) costs none.
+- **The rehearsal shows the plan**: `plan[i].renumber` lists `final` (sheet id,
+  from, to), the ordered `steps` with `temporary` flags, `temporary_steps` and
+  `unchanged` (entries whose new number equals the old one exactly).
+- **The token binds the whole register** (every sheet's UniqueId and number):
+  a sheet renumbered by anyone between rehearsal and apply refuses as stale.
+- **After the commit every sheet is re-read**: `rows[i].renumber.renumbered[]`
+  carries `reread` and `verified` per sheet; a single mismatch fails the action
+  and the batch rolls back before commit.
+- One `renumber_sheets` per batch (merge the maps). Its targets are reserved for
+  the rest of the batch; the numbers it frees are NOT offered to a later
+  `create_sheet` in the same batch, which checks the document as it was.
+- Why not `horizun_fix_planimetry set_sheet_number`: that one corrects a cited
+  finding and refuses a number another sheet holds, which a swap needs.
