@@ -259,11 +259,15 @@ namespace Horizun.Revit.Core
             Row("horizun_create_family", VerificationMechanism.FileArtifactReread, E("output_verified", "reopened_verification"), F(C + "CreateFamilyCommand.cs"),
                 "CreateFamilyCommand.cs: forms (solid geometry) are verified in memory before saving; the saved file is re-read for dimensions, parameters and types, not forms."),
             Row("horizun_export", VerificationMechanism.FileArtifactReread, E("files_verified"),
-                F(C + "ExportCommand.cs", C + "ExportDwgSetup.cs", C + "ExportSets.cs", "Horizun.Revit/Core/ExportFileDiff.cs"),
+                F(C + "ExportCommand.cs", C + "ExportDwgSetup.cs", C + "ExportSets.cs", C + "ExportCobie.cs", "Horizun.Revit/Core/ExportFileDiff.cs",
+                  "Horizun.Revit/Core/XlsxWorkbookWriter.cs", "Horizun.Revit/Core/XlsxWorkbookReader.cs", "Horizun.Revit/Core/CobieRules.cs"),
                 "ExportCommand.cs dwg with dwg_setup: the named setup's layer mapping is not proved from the DWG binary; dwg_layers proves the table itself. " +
                 "ExportSets.cs: a dwg/dgn/dwfx set is proved file by file from its header (a DWG's AC10xx against the asked acad_version, a DGN v8 " +
                 "structured storage, a DWFx zip package), not from the drawing it holds; an .rfa re-read proves only BasicFileInfo.Format, the saved " +
-                "version, not the family's contents; a gbXML is proved by its root, Campus and Space count - Zone, Surface, Opening and Construction are counted, not judged."),
+                "version, not the family's contents; a gbXML is proved by its root, Campus and Space count - Zone, Surface, Opening and Construction are counted, not judged. " +
+                "ExportCobie.cs: the .xlsx is re-read from disk with the Core reader and must equal the plan in sheet names and order, row counts " +
+                "and every cell (kind and exact text), hashed; that proves the file holds the rows that were built and judged, not that Excel or a " +
+                "COBie checker accepts it, and not that the model's data is right - deliverable_ready is the tool's own findings, not COBie QC."),
             Row("horizun_deliver_ifc", VerificationMechanism.FileArtifactReread, E("deliverable_ready"), F(C + "DeliverIfcCommand.cs")),
             Row("horizun_capture_view", VerificationMechanism.FileArtifactReread, E("sha256", "bytes"), F(C + "CaptureViewCommand.cs")),
             Row("horizun_verify_changes", VerificationMechanism.FileArtifactReread, E("image", "spatial_check", "baseline_png", "artifacts_verified"), F(C + "VerifyChangesCommand.cs", C + "VerifyChangesSnapshot.cs")),

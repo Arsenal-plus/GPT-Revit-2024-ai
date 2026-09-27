@@ -17,7 +17,7 @@ namespace Horizun.Revit.Commands
     public sealed partial class ExportCommand : ICommand
     {
         public string Name => "horizun_export";
-        public string Description => "Export PDF, DWG/DGN/DWFX view sets, IFC, NWC, FBX, image, schedule CSV, gbXML or family .rfa and verify actual files.";
+        public string Description => "Export PDF, DWG/DGN/DWFX view sets, IFC, NWC, FBX, image, schedule CSV, gbXML, family .rfa or a COBie workbook and verify actual files.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -30,8 +30,10 @@ namespace Horizun.Revit.Commands
 
             string format = (request.Value<string>("format") ?? "").ToLowerInvariant();
             if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv" && format != "dwg_layers"
-                && format != "dgn" && format != "dwfx" && format != "gbxml" && format != "rfa")
-                return CommandResult.Fail("format must be pdf, dwg, dgn, dwfx, ifc, nwc, fbx, image, schedule_csv, dwg_layers, gbxml or rfa.");
+                && format != "dgn" && format != "dwfx" && format != "gbxml" && format != "rfa" && format != "cobie")
+                return CommandResult.Fail("format must be pdf, dwg, dgn, dwfx, ifc, nwc, fbx, image, schedule_csv, dwg_layers, gbxml, rfa or cobie.");
+            if (format != "cobie" && request["cobie"] != null && request["cobie"].Type != JTokenType.Null)
+                return CommandResult.Fail("cobie applies to format cobie only. Nothing was exported.");
             string output = request.Value<string>("output_path");
             if (string.IsNullOrWhiteSpace(output) || !System.IO.Path.IsPathRooted(output))
                 return CommandResult.Fail("output_path must be absolute.");
@@ -46,6 +48,8 @@ namespace Horizun.Revit.Commands
             if (format == "dwg_layers") return ExecuteDwgLayers(app, gate, doc, request, output);
             // gbXML and the DWG/DGN/DWFX view sets (one file per view or sheet). See ExportSets.cs.
             if (format == "gbxml") return ExecuteGbXml(app, gate, doc, request, output);
+            // A COBie 2.4 workbook written by the Core writer and re-read cell by cell. See ExportCobie.cs.
+            if (format == "cobie") return ExecuteCobie(app, gate, doc, request, output);
             if (format == "dgn" || format == "dwfx" || (format == "dwg" && IsDwgSet(request)))
                 return ExecuteViewSet(app, gate, doc, request, format, output);
             foreach (string setField in new[] { "file_naming", "dwg_xrefs", "family_ids", "category" })
@@ -907,6 +911,7 @@ namespace Horizun.Revit.Commands
                 case "dgn": return ext == ".dgn";
                 case "dwfx": return ext == ".dwfx";
                 case "gbxml": return ext == ".xml";
+                case "cobie": return ext == ".xlsx";
                 case "image": return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff";
                 case "schedule_csv": return ext == ".csv" || ext == ".txt";
                 default: return false;
@@ -925,6 +930,7 @@ namespace Horizun.Revit.Commands
                 case "dgn": return ext == ".dgn";
                 case "dwfx": return ext == ".dwfx";
                 case "gbxml": return ext == ".xml";
+                case "cobie": return ext == ".xlsx";
                 case "image": return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff";
                 case "schedule_csv": return ext == ".csv" || ext == ".txt";
                 case "dwg_layers": return ext == ".json";
@@ -937,6 +943,7 @@ namespace Horizun.Revit.Commands
             if (format == "schedule_csv") return ".csv or .txt";
             if (format == "dwg_layers") return ".json";
             if (format == "gbxml") return ".xml";
+            if (format == "cobie") return ".xlsx";
             return "." + format;
         }
         /// <summary>
