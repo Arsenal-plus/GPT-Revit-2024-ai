@@ -33,6 +33,8 @@ function New-Fake([string]$mode, [bool]$withFixtures, [bool]$importerOnDisk = $t
         switch ($tool) {
             'horizun_health' { return & $reply ([pscustomobject]@{ open_documents = @([pscustomobject]@{ title = 'HZ_WRITE'; path = $s.Src }) }) }
             'horizun_query_model' {
+                # A re-read by ids answers the ones not deleted (QueryModelCommand element_ids).
+                if ($a.element_ids) { return & $reply ([pscustomobject]@{ rows = @(@($a.element_ids) | Where-Object { @($s.Deleted) -notcontains $_ } | ForEach-Object { [pscustomobject]@{ element_id = $_ } }) }) }
                 $rows = if ([string]@($a.categories)[0] -eq 'OST_Walls') { @([pscustomobject]@{ element_id = 70; is_element_type = $true; family = 'Curtain Wall'; type = 'Curtain Wall 1' }, [pscustomobject]@{ element_id = 72; is_element_type = $true; family = 'Basic Wall'; type = 'Exterior - Brick' }, [pscustomobject]@{ element_id = 71; is_element_type = $true; family = 'Basic Wall'; type = 'Generic - 200mm' }) } else { @([pscustomobject]@{ element_id = 80; is_element_type = $true; family = 'Floor'; type = 'Generic 150mm' }) }
                 if ($s.Mode -eq 'no-types') { $rows = @() }
                 return & $reply ([pscustomobject]@{ rows = $rows })

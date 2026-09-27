@@ -45,7 +45,11 @@ $script:HzProbeModules += [pscustomobject]@{
             foreach ($i in 0..2) { Skip $i 'no ACC test project named: set HORIZUN_PROBE_ACC_PROJECT_ID to a test project GUID' }
             return $out.ToArray()
         }
-        $key = 'hz-probe-' + ($Ctx.RunId -replace '[^A-Za-z0-9]', '')
+        # A fixed key (HORIZUN_PROBE_ACC_ISSUE_KEY) keeps a release gate that runs five years to
+        # the ONE issue the project owner approved: the first run creates it, every later run
+        # proves the keyed create does not duplicate it.
+        $fixedKey = CtxValue 'AccIssueKey' 'HORIZUN_PROBE_ACC_ISSUE_KEY'
+        $key = if (-not [string]::IsNullOrWhiteSpace($fixedKey)) { [string]$fixedKey } else { 'hz-probe-' + ($Ctx.RunId -replace '[^A-Za-z0-9]', '') }
         if ($key.Length -gt 100) { $key = $key.Substring(0, 100) }
 
         # ---- case 1: issues_list ----
@@ -116,6 +120,11 @@ $script:HzProbeModules += [pscustomobject]@{
 
         # ---- case 3: the apply (opt-in) ----
         $optIn = (CtxValue 'AccIssueWrite' 'HORIZUN_PROBE_ACC_ISSUE_WRITE') -in @('1', 'true', 'True')
+        $existing = $null
+        if ($optIn -and -not $Ctx.WriteGate -and -not $noCredential -and -not [string]::IsNullOrWhiteSpace($fixedKey)) {
+            $ex = & $Ctx.Call $T @{ operation = 'issues_list'; provider = 'acc'; project_id = $project; external_key = $key }
+            if (-not $ex.isError -and $ex.data) { $existing = @($ex.data.issues | Where-Object { $_ }) | Select-Object -First 1 }
+        }
         if ($Ctx.WriteGate) { Skip 2 'write tier closed' }
         elseif ($noCredential) { Skip 2 'no APS credential on this machine' }
         elseif (-not $optIn) {
@@ -123,6 +132,12 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         elseif (-not $rehearsed -or -not $dry.data.confirmation_token) {
             Case 2 $false ('no confirmation token to apply: ' + $detail2)
+        }
+        elseif ($existing) {
+            $retry = & $Ctx.Call $T $create
+            $noDup = -not $retry.isError -and $retry.data.state -eq 'already_exists' -and [string]$retry.data.issue_id -eq [string]$existing.issue_id -and $null -eq $retry.data.duplicates
+            Case 2 $noDup ('the issue under the fixed key already exists (' + $existing.issue_id + '), created by an earlier run; keyed create: ' +
+                           $(if ($retry.isError) { Excerpt $retry } else { 'state=' + $retry.data.state + ' issue=' + $retry.data.issue_id }))
         }
         else {
             $apply = $create.Clone(); $apply['dry_run'] = $false; $apply['confirmation_token'] = $dry.data.confirmation_token
