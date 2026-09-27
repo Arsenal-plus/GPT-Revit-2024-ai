@@ -93,11 +93,13 @@ namespace Horizun.Revit.Commands
             string mode = request.Value<string>("mode");
             if (string.IsNullOrWhiteSpace(mode)) mode = "volume";
             if (mode == "takeoff") return ExecuteTakeoff(doc, request, detail, top);
+            if ((mode == "room_finishes" || mode == "carbon") && request["group_by"] != null)
+                return CommandResult.Fail("group_by is read only in mode 'takeoff' (group_by='room'); here it would be silently ignored. Nothing was measured.");
             if (mode == "room_finishes") return ExecuteRoomFinishes(doc, request, top);
             if (mode == "carbon") return ExecuteCarbon(doc, request, top);
             if (mode != "volume")
                 return CommandResult.Fail("mode must be 'volume' (the three-source reconciliation, the default), 'takeoff', 'room_finishes' or 'carbon'. Nothing was measured.");
-            foreach (string takeoffOnly in new[] { "quantities", "classification_parameter", "include_links", "phase", "level", "carbon_factors", "factor_source" })
+            foreach (string takeoffOnly in new[] { "quantities", "classification_parameter", "include_links", "phase", "level", "carbon_factors", "factor_source", "group_by" })
                 if (request[takeoffOnly] != null)
                     return CommandResult.Fail("'" + takeoffOnly + "' is not read in mode 'volume': it would be " +
                                               "silently ignored, and you would read the volume reconciliation as though your " +
@@ -430,6 +432,13 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("include_links must be true or false. Nothing was measured.");
             bool includeLinks = linksTok != null && (bool)linksTok;
 
+            // group_by='room' (needs phase): a by_room rollup beside by_code. See QuantitiesByRoom.cs.
+            string roomProblem;
+            RoomMembershipReader roomReader = ParseTakeoffRoomGrouping(doc, request, out roomProblem);
+            if (roomProblem != null) return CommandResult.Fail(roomProblem + " Nothing was measured.");
+            var byRoom = new Dictionary<string, TakeoffCodeTally>(StringComparer.Ordinal);
+            var roomsByKey = new Dictionary<string, SpatialElement>(StringComparer.Ordinal);
+
             var idsToken = request["element_ids"] as JArray;
             bool byIds = idsToken != null && idsToken.Count > 0;
             string catName = request.Value<string>("category");
@@ -609,6 +618,15 @@ namespace Horizun.Revit.Commands
                 DocumentVisibilityCoverage visibility = DocumentVisibility.Measure(owner);
                 if (!visibility.CoverageComplete) visibilityComplete = false;
                 if (link != null) anyLinkMeasured = true;
+                // A linked element is placed in the HOST's rooms through its own placement.
+                Transform toHost = Transform.Identity;
+                string noTransform = null;
+                if (roomReader != null && link != null)
+                {
+                    try { toHost = link.GetTotalTransform(); }
+                    catch (Exception ex) { noTransform = "the link's transform could not be read: " + ex.Message; }
+                    if (toHost == null && noTransform == null) noTransform = "the link's transform could not be read.";
+                }
 
                 var docJson = new JObject
                 {
@@ -639,6 +657,16 @@ namespace Horizun.Revit.Commands
                     TakeoffCodeTally tally;
                     if (!byCode.TryGetValue(code, out tally)) byCode[code] = tally = new TakeoffCodeTally();
                     tally.Elements++;
+                    RoomHit roomHit = null;
+                    TakeoffCodeTally roomTally = null;
+                    if (roomReader != null)
+                    {
+                        roomHit = roomReader.Locate(e, toHost, noTransform);
+                        string roomKey = roomHit.RoomKey;
+                        if (roomHit.Room != null) roomsByKey[roomKey] = roomHit.Room;
+                        if (!byRoom.TryGetValue(roomKey, out roomTally)) byRoom[roomKey] = roomTally = new TakeoffCodeTally();
+                        roomTally.Elements++;
+                    }
 
                     var quantities = new JObject();
                     foreach (TakeoffDefinition d in defs)
@@ -654,6 +682,7 @@ namespace Horizun.Revit.Commands
                             case QuantityState.Invalid: qt.Invalid++; invalidReads++; break;
                             default: qt.Unreadable++; unreadableReads++; break;
                         }
+                        if (roomTally != null) TallyRoomReading(roomTally, d.Name, r);
                         quantities[d.Name] = new JObject
                         {
                             ["value"] = r.Value.HasValue ? (JToken)Math.Round(r.Value.Value, 6) : JValue.CreateNull(),
@@ -683,6 +712,7 @@ namespace Horizun.Revit.Commands
                         ["classification_code"] = code,
                         ["quantities"] = quantities
                     };
+                    if (roomHit != null) row["room"] = RoomRowJson(roomHit);
                     rows.Add(row);
                 }
             }
@@ -727,7 +757,10 @@ namespace Horizun.Revit.Commands
             if (!visibilityComplete) headline += " At least one document has CLOSED worksets: what is not loaded was not measured." +
                 (anyLinkMeasured ? " For a LINKED document that flag is the linked model's own state; the configuration a link was loaded with is not readable." : "");
 
-            return CommandResult.Ok(new JObject
+            if (roomReader != null)
+                headline += " By room in phase '" + roomReader.PhaseName + "': " + roomReader.Assigned + " element(s) in a room, " +
+                            roomReader.Unassigned + " unassigned, " + roomReader.Unlocatable + " unlocatable (see room_membership).";
+            var takeoffResult = new JObject
             {
                 ["mode"] = "takeoff",
                 ["classification_parameter"] = classificationParameter,
@@ -769,7 +802,14 @@ namespace Horizun.Revit.Commands
                 ["truncated_note"] = rowsWanted > rows.Count
                     ? "by_code and coverage are EXACT; only the per-element rows were shortened. horizun_budget_compare refuses a truncated reply - re-run with top >= rows_matching."
                     : null
-            });
+            };
+            if (roomReader != null)
+            {
+                // Exact like by_code: every matched element is in one key, rows shown or not.
+                takeoffResult["by_room"] = RoomRollup(byRoom, roomsByKey, defs);
+                takeoffResult["room_membership"] = roomReader.Summary();
+            }
+            return CommandResult.Ok(takeoffResult);
         }
 
         private static List<TakeoffDefinition> ParseTakeoffDefinitions(JToken token, out string problem)
