@@ -665,6 +665,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\DataOnlyGeometryRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SessionScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\TagOverlapRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkSurveyRules.cs" />
     <!-- horizun_verify_changes operation=compare_to: pure ARGB pixel-diff math, Revit-free. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ImageDiff.cs" />
     <!-- horizun_mep_routing's `route` op: 3-D A* on an orthogonal grid, boxes and
