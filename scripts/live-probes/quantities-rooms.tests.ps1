@@ -62,13 +62,14 @@ function Fake-Call($tool, $a) {
         }
         $openingIds = if ($script:variant -eq 'no-door-deduction') { @((Id 'window')) } else { @((Id 'door'), (Id 'window')) }
         $deduction = if ($script:variant -eq 'no-door-deduction') { 1.1163 } else { 3.0689 }
-        $wallRow = [pscustomobject]@{ room_id = [long]$room; surface = 'wall'; bounding_type = 'Exterior - Brick on Mtl. Stud'; material = 'Gypsum Wall Board'; code = $null
+        $wallRow = [pscustomobject]@{ room_id = [long]$room; kind = 'room'; surface = 'wall'; bounding_type = 'Walls: Exterior - Brick on Mtl. Stud'; material = 'Gypsum Wall Board'; material_source = 'face'; code = $null
             gross_m2 = 52.7481; openings_deduction_m2 = $deduction; openings = $openingIds.Count; openings_unsized = 0; opening_size_basis = @('rough')
-            opening_ids = $openingIds; bounding_element_keys = @(WallIds | ForEach-Object { [string]$_ }) }
-        $floorRow = [pscustomobject]@{ room_id = [long]$room; surface = 'floor'; bounding_type = 'Generic 150mm'; material = 'Concrete, Cast-in-Place gray'; code = $null
-            gross_m2 = 18.9; openings_deduction_m2 = $null; openings = 0; openings_unsized = 0; opening_size_basis = @(); opening_ids = @(); bounding_element_keys = @([string](Id 'floor')) }
+            opening_ids = $openingIds; bounding_element_keys = @(WallIds | ForEach-Object { 'host:' + $_ }) }
+        $floorRow = [pscustomobject]@{ room_id = [long]$room; kind = 'room'; surface = 'floor'; bounding_type = 'Floors: Generic 150mm'; material = 'Concrete, Cast-in-Place gray'; material_source = 'face'; code = $null
+            gross_m2 = 18.9; openings_deduction_m2 = $null; openings = 0; openings_unsized = 0; opening_size_basis = @(); opening_ids = @(); bounding_element_keys = @('host:' + (Id 'floor')) }
         return Reply ([pscustomobject]@{ mode = 'room_finishes'; phase = $a.phase; rows = @($wallRow, $floorRow); rows_total = 2; not_measured = @()
-            gross_m2_by_surface = [pscustomobject]@{ wall = 52.7481; floor = 18.9; ceiling = 0 }; openings_deduction_m2_total = $deduction }) $false ''
+            totals_by_kind = [pscustomobject]@{ room = [pscustomobject]@{ wall_gross_m2 = 52.7481; floor_gross_m2 = 18.9; ceiling_gross_m2 = 0; openings_deduction_m2 = $deduction } }
+            openings = @($openingIds | ForEach-Object { [pscustomobject]@{ room_id = [long]$room; bounding_element_key = 'host:' + (Id 'wall-s'); insert_id = $_; insert_kind = 'door'; width_m = 0.915; height_m = 2.134; area_m2 = 1.9526; size_basis = 'rough' } }) }) $false ''
     }
     if ($a.mode -eq 'carbon') {
         # QuantitiesModeArguments.cs: a key carbon does not read is refused before anything is measured.

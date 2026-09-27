@@ -129,7 +129,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $wallRows = @($rows | Where-Object { $_.surface -eq 'wall' })
             $gross = 0.0; $deduct = 0.0; $ids = @(); $bases = @()
             foreach ($r in $wallRows) { $gross += [double]$r.gross_m2; $deduct += [double]$r.openings_deduction_m2; $ids += @($r.opening_ids | ForEach-Object { [string]$_ }); $bases += @($r.opening_size_basis) }
-            $floorRow = @($rows | Where-Object { $_.surface -eq 'floor' -and ((@($_.bounding_element_keys) -join ' ') -match ('\b' + $floor + '\b')) }) | Select-Object -First 1
+            $floorRow = @($rows | Where-Object { $_.surface -eq 'floor' -and (@($_.bounding_element_keys | ForEach-Object { [string]$_ }) -contains ('host:' + $floor)) }) | Select-Object -First 1
             $problems = @()
             if (-not ($gross -gt 0)) { $problems += 'no gross wall face' }
             if ($ids -notcontains [string]$door) { $problems += "door $door not among the deducted openings" }
@@ -138,6 +138,8 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not ($deduct -ge 2.9 -and $deduct -le 4.5)) { $problems += "deduction $deduct m2 outside 2.9..4.5" }
             if (-not ($gross -gt $deduct)) { $problems += 'gross is not above the deduction' }
             if (@($bases).Count -eq 0) { $problems += 'no opening_size_basis named' }
+            $listed = @($rf.data.openings | ForEach-Object { [string]$_.insert_id })
+            if ($listed -notcontains [string]$door -or $listed -notcontains [string]$window) { $problems += "door/window not both in the per-opening list: $($listed -join ',')" }
             if (-not $floorRow) { $problems += "no floor row bounded by the own floor $floor" }
             $detail = "phase '$phase': wall gross $([math]::Round($gross, 3)) m2, deduction $([math]::Round($deduct, 3)) m2 ($($bases -join ',')), floor row $([bool]$floorRow)"
             if ($problems.Count -eq 0) { Case $catalog[0] $Q 'pass' $detail } else { Case $catalog[0] $Q 'fail' (($problems -join '; ') + ' | ' + $detail) }
