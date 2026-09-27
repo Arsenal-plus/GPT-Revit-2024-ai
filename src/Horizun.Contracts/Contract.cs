@@ -7093,7 +7093,7 @@ namespace Horizun.Contracts
             ["area"] = new[] { "point", "view_id" },
             ["area_boundary"] = new[] { "profile", "view_id" },
             // Toposolid.Create(doc, points, typeId, levelId): the points ARE the top surface (Revit 2024+).
-            ["toposolid"] = new[] { "points", "type_id", "level_id" }
+            ["toposolid"] = new[] { "points", "landxml_path", "type_id", "level_id" }
         };
         public static string ValidateCreation(JObject item, string kind)
         {
@@ -7172,6 +7172,7 @@ namespace Horizun.Contracts
                 ["items"] = new JObject { ["type"] = "array", ["minItems"] = 3, ["maxItems"] = 3, ["items"] = new JObject { ["type"] = "number" } },
                 ["description"] = "Flex path, ends included. toposolid (Revit 2024+): the top surface, absolute internal coords."
             };
+            props["landxml_path"] = new JObject { ["type"] = "string" };
             props["desired_risers"]=new JObject { ["type"]="integer",["minimum"]=1,["maximum"]=1000 };
             props["tread_depth"]=new JObject { ["type"]="number",["exclusiveMinimum"]=0 };
             props["runs"]=JObject.Parse(@"{'type':'array','minItems':1,'maxItems':50,'items':{'type':'object','required':['start','end','width','expected_risers'],'properties':{'start':{'type':'array','minItems':3,'maxItems':3,'items':{'type':'number'}},'end':{'type':'array','minItems':3,'maxItems':3,'items':{'type':'number'}},'width':{'type':'number','exclusiveMinimum':0},'expected_risers':{'type':'integer','minimum':1}},'additionalProperties':false}}");
@@ -7203,6 +7204,7 @@ namespace Horizun.Contracts
                 if (pair.Key == "room_separator" || pair.Key == "area_boundary") specific["profile"]["items"]["minItems"] = 2;
                 if(pair.Key=="wall_profile") specific["profile"]["description"]="One simple contour in a vertical plane, absolute internal XYZ. No holes. Revit base normalization is checked against the resulting world-space side-face silhouette.";
                 if (pair.Key == "area_boundary") specific["profile"]["description"] = "One open chain; one line per curve.";
+                if (pair.Key == "toposolid") specific["landxml_path"]["description"] = "Instead of points: LandXML TIN file, shared coords; path#name picks a surface";
                 if (pair.Key == "sprinkler")
                 {
                     specific["host_id"]["description"] = "Host for a hosted/face sprinkler.";
@@ -7232,7 +7234,7 @@ namespace Horizun.Contracts
                     case "duct": case "pipe": requiredFields = new[] { "start", "end", "type_id", "level_id", "system_type_id" }; break;
                     case "flex_pipe": case "flex_duct": requiredFields = new[] { "points", "type_id", "level_id", "system_type_id" }; break;
                     case "space": requiredFields = new[] { "level_id" }; break;
-                    case "toposolid": requiredFields = new[] { "points", "type_id", "level_id" }; break;
+                    case "toposolid": requiredFields = new[] { "type_id", "level_id" }; break; // points or landxml_path: the add-in wants exactly one
                     case "area": requiredFields = new[] { "point", "view_id" }; break;
                     case "area_boundary": requiredFields = new[] { "profile", "view_id" }; break;
                     case "cable_tray": requiredFields = new[] { "start", "end", "level_id" }; break;

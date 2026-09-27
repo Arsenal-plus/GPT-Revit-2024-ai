@@ -3,7 +3,9 @@
 //
 // Toposolid.Create(doc, points, typeId, levelId) - the points ARE the top surface,
 // triangulated by Revit. The type and the level are the caller's (a toposolid type is
-// never "the first one"; the refusal lists the document's types by name and id).
+// never "the first one"; the refusal lists the document's types by name and id). The
+// points come inline (at most 100, internal coordinates) or from a LandXML TIN the
+// caller exported (landxml_path, shared coordinates: CreateElementsLandXml.cs).
 //
 // VERIFIED by re-reading the committed solid, not the call that did not throw: at up to
 // ToposolidRules.MaxSamples input points (every point when there are fewer; otherwise the
@@ -41,7 +43,7 @@ namespace Horizun.Revit.Commands
         private static void PlanToposolid(Document doc, JObject item, Plan p, double scale)
         {
 #if REVIT2023
-            p.TopoPoints = null; p.TopoSamples = null;   // nothing to plan here; the fields exist in every year's build
+            p.TopoPoints = null; p.TopoSamples = null; p.TopoSource = null;   // nothing to plan here; the fields exist in every year's build
             throw new ArgumentException(ToposolidNotIn2023 + ": Revit 2023 has no Toposolid element (it arrived in Revit 2024). " +
                 "A TopographySurface is a different element and this tool does not create one in its place. Nothing was planned.");
 #else
@@ -50,13 +52,27 @@ namespace Horizun.Revit.Commands
                 throw new ArgumentException("type_id is required for toposolid - the type is never guessed. Toposolid types here: " + ToposolidTypeNames(doc));
             p.Type = Optional<ToposolidType>(doc, item, "type_id");
             JArray raw = item["points"] as JArray;
-            if (raw == null) throw new ArgumentException("points is required for toposolid: [[x, y, z], ...] in the request's units, internal coordinates.");
-            var pts = new List<double[]>(raw.Count);
-            foreach (JToken t in raw) { XYZ q = Point(t, scale, true); pts.Add(new[] { q.X, q.Y, q.Z }); }
-            string bad = ToposolidRules.ValidatePoints(pts, TopoXyMatchFeet);
+            string landXml = item.Value<string>("landxml_path");
+            if ((raw == null) == (landXml == null))
+                throw new ArgumentException("toposolid takes points ([[x, y, z], ...] in the request's units, internal coordinates) " +
+                                            "OR landxml_path (a LandXML TIN in shared coordinates) - exactly one of the two.");
+            List<double[]> pts;
+            List<string> ids = null;
+            if (landXml != null) pts = ToposolidFromLandXml(doc, landXml, p, out ids);
+            else
+            {
+                pts = new List<double[]>(raw.Count);
+                foreach (JToken t in raw) { XYZ q = Point(t, scale, true); pts.Add(new[] { q.X, q.Y, q.Z }); }
+            }
+            string bad = ToposolidRules.ValidatePoints(pts, TopoXyMatchFeet, ids == null ? ToposolidRules.MaxPoints : LandXmlTinRules.MaxFilePoints);
+            // A file's points are named by the file's own ids, not by a position the caller never wrote.
+            if (bad != null && ids != null)
+                bad = "landxml_path: " + System.Text.RegularExpressions.Regex.Replace(bad, @"points\[(\d+)\]",
+                    m => "point '" + ids[int.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)] + "'");
             if (bad != null) throw new ArgumentException(bad);
             p.TopoPoints = pts.Select(a => new XYZ(a[0], a[1], a[2])).ToList();
             p.TopoSamples = ToposolidRules.SampleIndices(pts);
+            if (ids != null) p.TopoSource["sampled_point_ids"] = new JArray(p.TopoSamples.Select(k => ids[k]));
 #endif
         }
 

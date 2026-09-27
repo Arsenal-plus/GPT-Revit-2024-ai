@@ -1170,6 +1170,7 @@ namespace Horizun.Revit.Commands
                 }
                 NormalizePlan(doc, p);
                 p.Summary = new JObject { ["index"] = index, ["kind"] = kind, ["references_resolved"] = true };
+                if (p.TopoSource != null) p.Summary["landxml"] = p.TopoSource;
                 if (p.FittingMembers != null)
                 {
                     // Deferred members (batch_index refs, and a takeoff's branch) have no
@@ -2764,6 +2765,8 @@ namespace Horizun.Revit.Commands
             public Phase Phase; public bool Enclosed;
             /// <summary>kind=toposolid: the top-surface points (internal feet) and the indices re-read after the commit.</summary>
             public List<XYZ> TopoPoints; public List<int> TopoSamples;
+            /// <summary>kind=toposolid from landxml_path: what was read (file, surface, hash, counts, position), echoed in the plan.</summary>
+            public JObject TopoSource;
 
             /// <summary>shaft: the two levels it runs BETWEEN, which is what makes it a shaft.</summary>
             public Level BaseLevel;
