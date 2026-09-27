@@ -1514,6 +1514,19 @@ project location and through the instance transform plus the host's; the largest
 disagreement is compared with `tolerance_mm` (default 10). An unloaded link is
 `not_decidable`. Link workset and phase are reported.
 
+`levels_match` (`true` or `{tolerance_mm}`; default the call's `tolerance_mm`)
+compares every level of every LOADED link, taken into host coordinates through
+the instance's total transform (`ProjectElevation`, so the Elevation Base setting
+does not matter), with the host's levels. Per link: `matches`, `differs` or
+`not_read` (unloaded or unreadable - never counted as matching). Each mismatch is
+`elevation_differs` (same name, height beyond tolerance), `name_differs` (a host
+level at that height under another name; names compare ordinally, so a case
+change counts) or `no_host_level`. Host levels the link does not carry are listed
+in `host_levels_not_in_link` and not judged. Any `differs` fails the verdict; any
+`not_read` makes it `not_decidable`, and so does a host with no link instance: zero links
+compared (`summary.links_compared`) is never a pass. `levels_match: false` (like
+`same_site: false`) asks for nothing, so alone it is refused as declaring nothing.
+
 ### Resumen (español)
 
 - `horizun_code_check`: evalúa requirement-sets declarativos (parámetros y medidas
@@ -2671,3 +2684,118 @@ host or linked element id, link instance id, category).
 
 Live probe: `scripts/live-probes/headroom.probes.ps1`. Not measured yet: rays against linked
 surfaces, and a perspective view.
+
+### `horizun_create_elements` — `placement: "all_enclosed"` (rooms and spaces)
+
+An entry `{kind: room|space, placement: "all_enclosed", level_id, phase_id,
+min_area_m2?}` (no `point`, no `name`/`number`) is expanded on every call into one
+row per closed region of the level in that phase that holds no room/space yet and
+is not under `min_area_m2` (shafts, chases). The phase is required, never guessed.
+all_enclosed entries go in a batch of their own: the regions are read before anything
+in the batch is built (walls or separators created in the same request would not be
+seen), and the expanded rows would renumber the caller's other entries. The level
+needs a floor plan (`no_floor_plan` otherwise): `NewRoom(Room, PlanCircuit)` throws
+for a level without a view, and space regions are found through one.
+
+ROOMS: the regions are Revit's `PlanTopology(level, phase)` circuits, each listed
+with `area_m2`, `sides`, `is_room_located` and `point_inside` (Revit's own interior
+point: PlanCircuit exposes no centroid). A room goes in with `NewRoom(Phase)` +
+`NewRoom(Room, PlanCircuit)` in the circuit re-read at apply time (a wall moved since
+the rehearsal refuses as `enclosed_circuit_gone` or as a stale token) - per circuit
+rather than `NewRooms2`, which fills every circuit and could honour `min_area_m2` only
+by creating and deleting. SPACES: space regions are bounded by space separators, not
+room separators, so they are the regions Revit's own `NewSpaces2(level, phase, floor
+plan)` fills, read in a transaction that is always rolled back; each is placed with
+`NewSpace(Level, Phase, UV)` at the point Revit chose, and the spaces already standing
+on the level in that phase are listed as `skipped_has_space`. Whether `NewSpaces2`
+throws or answers empty when every region is filled is not measured; its message, if
+any, is kept in `revit_said`. Reading the topology needs a modifiable document (Revit
+computes it on first access), so the rehearsal reads it in the same rolled-back way.
+
+Each region's `action` is `create`, `skipped_has_room|space`, `skipped_min_area` or
+`no_interior_point` (Revit could not give one: listed and skipped, never aborting the
+batch). Plan rows and errors of expanded rows carry `elements_index`, the caller's own
+entry. After the commit each row re-reads `area_positive`, `boundary_closed` (every
+boundary loop closes), `phase_id` and the interior point (`point_inside_room`, or the
+space's own point check). When nothing is left to fill, a rehearsal lists the regions
+and writes nothing; an apply is refused as `stale_plan` (a token is only issued for a
+plan that creates rows); a level and phase with no region at all is refused as
+`no_enclosed_circuit` rather than read as "all filled". NOT PROVEN and NOT MEASURED:
+whether Room Bounding walls of a LINKED model close a host region - the reply says so
+in `link_bounding`; measuring it needs a linked model whose own walls enclose a region,
+which the live probe does not stage.
+`phase_id` and `min_area_m2` belong to the placement: beside a `point` they are refused by
+name rather than accepted and ignored (a point room goes in with `NewRoom(Level, UV)`, in the
+phase Revit gives it). The advertised room/space branches therefore require only `level_id`:
+a row carries either a `point` or `placement: "all_enclosed"`.
+
+### `horizun_create_elements` — `kind: "toposolid"` (Revit 2024+)
+
+`{kind: "toposolid", level_id, type_id, points: [[x, y, z], ...]}` creates one toposolid with
+`Toposolid.Create(doc, points, typeId, levelId)`: the points ARE its top surface, triangulated
+by Revit. They are in the request's `units` and in ABSOLUTE internal coordinates - not shared or
+survey coordinates; take surveyed or shared points into internal
+coordinates first. Between 3 and 100 points (the `points` field is
+the one the flex kinds use, and its `maxItems` is 100), all finite, one height per plan point
+(two points closer than ~0.3 mm in plan are refused), not all on one plan line.
+
+`type_id` is required - the type is never "the first one": a row without it is refused with
+the document's toposolid types listed by name and id (copy one in with
+`horizun_copy_between_documents` when there is none).
+
+**Verified after the commit** by re-reading the solid, not the call that did not throw: at up
+to 50 sampled input points (every point when there are fewer; the lowest and the highest
+always, the rest evenly spread), each named `top_z_at_point_<i>` in the postconditions, the top
+of the solid at that X,Y must stand at the point's Z within 1 mm. The height is read from the
+solid's own vertices at that plan point and, when Revit merged the point into a flat face,
+from a vertical line through its faces; an X,Y where neither finds the solid is unmeasured and
+the row fails.
+
+**Not measured yet**: whether Revit reads a point's Z as absolute or relative to the level.
+Absolute is asserted; a Revit that reads it the other way fails the row (rolled back) instead
+of passing. The live probe stages its level at 500 mm precisely so the two readings differ.
+
+**Revit 2023** has no Toposolid (it arrived in 2024): the row is refused by name,
+`toposolid_not_in_revit_2023`, and a TopographySurface - a different element - is not created
+in its place.
+
+**From a LandXML TIN**: `{kind: "toposolid", level_id, type_id, landxml_path}` in place of
+`points` (exactly one of the two). The caller exports ONE TIN surface to LandXML and passes the
+absolute path; `C:\...\site.xml#EG` picks surface `EG` of a file that holds several (a path that
+exists as written is taken whole). Each `<P>` is read as `northing easting elevation` in the
+file's declared `linearUnit` (heights in its `elevationUnit` when it declares one), and only the points a visible face uses are kept (a face marked
+`i="1"` is invisible). Refused by name: no unit or an unknown one (linear or elevation), several surfaces and none
+named, a grid surface, a point without an elevation, a face naming an undefined point, a DTD.
+At most 20 000 used points and 64 MB per file (guards, not measured limits).
+
+The file speaks SHARED coordinates, so its points are placed through the document's ACTIVE
+project position - the formula `tabular_source` applies to shared rows: subtract the position's
+east/west and north/south, rotate by minus its angle, subtract its elevation. The rehearsal's
+`plan` row carries a `landxml` block (file, surface, `sha256`, unit, points in file / used /
+unused, visible and invisible faces, the `project_position` used, `sampled_point_ids`), and the
+token binds the hash, the surface and the position: a file edited or a survey point moved between
+rehearsal and apply is refused as stale. Revit triangulates the points itself - the file's faces
+choose which points are used, not how they join. The post-commit re-read proves the solid stands
+at the CONVERTED points; it cannot prove the conversion, and its sign on a ROTATED project
+position is not measured yet - check the printed position before applying.
+
+**Live probe** (`scripts/live-probes/rooms-topo-federation.probes.ps1`, offline twin
+`rooms-topo-federation.tests.ps1`, shapes from the code until the first live run). On its own
+level at 71 000 mm, far from the model (X = 1 150 000 mm), it draws two bays with walls of
+`Basic Wall: Generic - 200mm` brought by name from the year's `DefaultMetric.rte` (6 x 4 m and
+2 x 4 m at the centrelines, sharing a wall) gives it its own floor plan and uses the document's last phase: the rehearsal
+lists both circuits, `min_area_m2 = 10` marks the small one `skipped_min_area`, the apply
+creates two verified rooms, a second call plans nothing (`skipped_has_room`), the space
+rehearsal lists as many `NewSpaces2` regions as room circuits, the space apply creates a
+verified space in each and a second call plans nothing (`skipped_has_space`), and
+link-bounded regions stay `not_covered` with the reply's `not_proven` declaration - NOT
+measured: the probe stages no linked model with walls of its own, and no region split only
+by a space separator (the bridge has no typed space separator). The toposolid goes on a second own level at 500 mm from six
+non-coplanar points (Z 1 000 to 4 000 mm) with the type `Toposolid: Toposolid` by name, or is
+`not_covered` naming the types it saw; in 2023 the named refusal is the pass. Beside it
+(X + 40 m) the same kind comes from a five-point LandXML TIN the probe writes: a first rehearsal
+names the active project position, the file is rewritten through its inverse so the surface lands
+at the probe's own X, and the case records the position it used (an identity one leaves the
+rotated-position sign unexercised); in 2023 a `landxml_path` row must bring the same named
+refusal. Everything is deleted with `horizun_delete_verified` `mode: "ids"`; nothing is saved.
+

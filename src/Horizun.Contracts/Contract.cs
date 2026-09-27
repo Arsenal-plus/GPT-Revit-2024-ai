@@ -831,6 +831,8 @@ namespace Horizun.Contracts
         ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""ceiling"", ""roof"", ""room"", ""family_instance"", ""sprinkler"", ""structural_framing"", ""structural_column"", ""duct"", ""pipe"", ""conduit"", ""cable_tray"", ""flex_pipe"", ""flex_duct"", ""fitting"", ""wall_opening"", ""slab_opening"", ""beam_system"", ""wall_foundation"", ""accessory_inline"", ""mep_system"", ""shaft"", ""room_separator"", ""space"", ""area"", ""area_boundary""] },
         ""name"": { ""type"": ""string"", ""description"": ""Level/grid name where supported. REQUIRED for kind=mep_system: an unnamed system is indistinguishable from the ones Revit invents from connectivity."" },
         ""elevation"": { ""type"": ""number"" },
+        ""placement"": { ""type"": ""string"", ""enum"": [""all_enclosed""], ""description"": ""room/space: one per empty region of level_id+phase_id; no point"" },
+        ""phase_id"": { ""type"": ""integer"" }, ""min_area_m2"": { ""type"": ""number"", ""description"": ""all_enclosed: skip smaller regions"" },
         ""number"": { ""type"": ""string"", ""description"": ""kind='room': the room NUMBER, which is separate from its name and is the identity Revit requires to be unique. Set inside the creating transaction and re-read from the model afterwards."" },
         ""base_level_id"": { ""type"": ""integer"", ""description"": ""kind='shaft': the storey the shaft starts at. A shaft cuts every floor, roof and ceiling between its two levels - that is what separates it from a hole in one slab - and a drawing carries neither, so both are required and neither is defaulted."" },
         ""top_level_id"": { ""type"": ""integer"", ""description"": ""kind='shaft': the storey it stops at. Must sit above base_level_id. Columns (structural_column, or a two-level family_instance such as an architectural column): the top level, with top_offset; or give height instead. Set and read back."" },
@@ -4998,14 +5000,14 @@ namespace Horizun.Contracts
                 Name = "horizun_federation_check",
                 Command = "horizun_federation_check",
                 Description =
-                    "Federation QA against declared rules, read-only: out-of-place categories per model (host and loaded links), " +
+                    "Federation QA against declared rules, read-only: out-of-place categories per model (host and loaded links), link levels, " +
                     "expected/missing/duplicate links, link workset and phase, and whether each link's shared coordinates match " +
                     "the host's (same site).",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""rules""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""rules"": { ""type"": ""object"", ""description"": ""{models:[{match (title regex or $host), allowed_categories?, forbidden_categories?}], expected_links:[{name_matches, count?, workset_matches?}], same_site?}"" },
+    ""rules"": { ""type"": ""object"", ""description"": ""{models:[{match (title regex or $host), allowed_categories?, forbidden_categories?}], expected_links:[{name_matches, count?, workset_matches?}], same_site?, levels_match?: true|{tolerance_mm}}"" },
     ""tolerance_mm"": { ""type"": ""number"" },
     ""max_items"": { ""type"": ""integer"" }
   },
@@ -7090,7 +7092,7 @@ namespace Horizun.Contracts
             ["floor"] = new[] { "profile", "level_id", "type_id", "offset", "structural" },
             ["ceiling"] = new[] { "profile", "level_id", "type_id", "offset" },
             ["roof"] = new[] { "profile", "level_id", "type_id", "offset", "slope_degrees", "slope_ratio", "edge_slopes" },
-            ["room"] = new[] { "point", "level_id", "name", "number" },
+            ["room"] = new[] { "point", "level_id", "name", "number", "placement", "phase_id", "min_area_m2" },
             // flip: a MIRRORED symbol. No rotation reproduces a reflection, and a
             // drawing distinguishes a left-handed fixture from a right-handed one
             // that way. Applied with flipHand() and verified by re-reading
@@ -7114,9 +7116,11 @@ namespace Horizun.Contracts
             ["flex_duct"] = new[] { "points", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
             // Space: a 2D point on a level, like room. Area/area_boundary: a POINT/PROFILE
             // in an area plan VIEW, not a level - Revit finds the boundary through the view.
-            ["space"] = new[] { "point", "level_id" },
+            ["space"] = new[] { "point", "level_id", "placement", "phase_id", "min_area_m2" },
             ["area"] = new[] { "point", "view_id" },
-            ["area_boundary"] = new[] { "profile", "view_id" }
+            ["area_boundary"] = new[] { "profile", "view_id" },
+            // Toposolid.Create(doc, points, typeId, levelId): the points ARE the top surface (Revit 2024+).
+            ["toposolid"] = new[] { "points", "landxml_path", "type_id", "level_id" }
         };
         public static string ValidateCreation(JObject item, string kind)
         {
@@ -7140,6 +7144,7 @@ namespace Horizun.Contracts
             ((JArray)props["kind"]["enum"]).Add("wall_profile");
             ((JArray)props["kind"]["enum"]).Add("displacement");
             ((JArray)props["kind"]["enum"]).Add("stairs");
+            ((JArray)props["kind"]["enum"]).Add("toposolid");
             props["source_row"] = new JObject { ["type"]="integer", ["minimum"]=1 };
             // JOIN RULE. Declared here because every field named in CreationFields
             // is cloned from these properties: a field in that table with no
@@ -7194,6 +7199,7 @@ namespace Horizun.Contracts
                 ["items"] = new JObject { ["type"] = "array", ["minItems"] = 3, ["maxItems"] = 3, ["items"] = new JObject { ["type"] = "number" } },
                 ["description"] = "The flex path; ends included."
             };
+            props["landxml_path"] = new JObject { ["type"] = "string" };
             props["desired_risers"]=new JObject { ["type"]="integer",["minimum"]=1,["maximum"]=1000 };
             props["tread_depth"]=new JObject { ["type"]="number",["exclusiveMinimum"]=0 };
             props["runs"]=JObject.Parse(@"{'type':'array','minItems':1,'maxItems':50,'items':{'type':'object','required':['start','end','width','expected_risers'],'properties':{'start':{'type':'array','minItems':3,'maxItems':3,'items':{'type':'number'}},'end':{'type':'array','minItems':3,'maxItems':3,'items':{'type':'number'}},'width':{'type':'number','exclusiveMinimum':0},'expected_risers':{'type':'integer','minimum':1}},'additionalProperties':false}}");
@@ -7212,7 +7218,7 @@ namespace Horizun.Contracts
                 // whole tool over budget. ValidateCreation still allows both fields by name for
                 // every kind - this only affects what the compact, advertised schema documents.
                 bool leanKind = pair.Key == "flex_pipe" || pair.Key == "flex_duct" || pair.Key == "sprinkler" ||
-                                pair.Key == "space" || pair.Key == "area" || pair.Key == "area_boundary";
+                                pair.Key == "space" || pair.Key == "area" || pair.Key == "area_boundary" || pair.Key == "toposolid";
                 var specific = new JObject { ["kind"] = new JObject { ["const"] = pair.Key } };
                 if (!leanKind)
                 {
@@ -7225,6 +7231,8 @@ namespace Horizun.Contracts
                 if (pair.Key == "room_separator" || pair.Key == "area_boundary") specific["profile"]["items"]["minItems"] = 2;
                 if(pair.Key=="wall_profile") specific["profile"]["description"]="One simple contour in a vertical plane, absolute internal XYZ. No holes. Revit base normalization is checked against the resulting world-space side-face silhouette.";
                 if (pair.Key == "area_boundary") specific["profile"]["description"] = "One open chain; one line per curve.";
+                if (pair.Key == "toposolid") specific["landxml_path"]["description"] = "Instead of points: LandXML TIN, shared coords; path#name = surface";
+                if (pair.Key == "toposolid") specific["points"]["description"] = "Top surface; absolute internal coords.";
                 if (pair.Key == "sprinkler")
                 {
                     specific["host_id"]["description"] = "Host for a hosted/face sprinkler.";
@@ -7246,14 +7254,15 @@ namespace Horizun.Contracts
                     case "floor": case "ceiling": case "roof": requiredFields = new[] { "profile", "level_id" }; break;
                     case "wall_profile": requiredFields = new[] { "profile", "level_id", "type_id" }; break;
                     case "wall_opening": requiredFields = new[] { "host_id" }; break;
-                    case "room": requiredFields = new[] { "point", "level_id" }; break;
+                    case "room": requiredFields = new[] { "level_id" }; break; // a point, or placement all_enclosed
                     case "family_instance": case "sprinkler": requiredFields = new[] { "point", "type_id", "coordinate_mode" }; break;
                     case "structural_column": requiredFields = new[] { "point", "type_id", "level_id", "coordinate_mode" }; break;
                     case "stairs": requiredFields = new[] { "level_id", "top_level_id", "type_id", "desired_risers", "tread_depth", "runs" }; break;
                     case "displacement": requiredFields = new[] { "view_id", "element_ids", "displacement" }; break;
                     case "duct": case "pipe": requiredFields = new[] { "start", "end", "type_id", "level_id", "system_type_id" }; break;
                     case "flex_pipe": case "flex_duct": requiredFields = new[] { "points", "type_id", "level_id", "system_type_id" }; break;
-                    case "space": requiredFields = new[] { "point", "level_id" }; break;
+                    case "space": requiredFields = new[] { "level_id" }; break;
+                    case "toposolid": requiredFields = new[] { "type_id", "level_id" }; break; // points or landxml_path: the add-in wants exactly one
                     case "area": requiredFields = new[] { "point", "view_id" }; break;
                     case "area_boundary": requiredFields = new[] { "profile", "view_id" }; break;
                     case "cable_tray": requiredFields = new[] { "start", "end", "level_id" }; break;

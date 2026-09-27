@@ -52,7 +52,7 @@ namespace Horizun.Server.Tests
                 .Select(s => s.Tool + " " + s.Pointer + " " + s.Discriminator + " " + s.Values.Count).ToArray();
             Assert.Equal(new[]
             {
-                "horizun_create_elements /properties/elements/items kind 32",
+                "horizun_create_elements /properties/elements/items kind 33",
                 "horizun_document_session  operation 5"
             }, sites);
             foreach (VariantSite s in ContractVariants.All)

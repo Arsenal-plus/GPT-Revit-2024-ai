@@ -50,6 +50,14 @@ namespace Horizun.Revit.Commands
                 string expandError = ExpandTabularPlacements(doc, tabularSource, preScale, out input, out tabularBlock);
                 if (expandError != null) return CommandResult.Fail(expandError + " Nothing ran.");
             }
+            // placement='all_enclosed' rows become one room/space row per circuit (CreateElementsEnclosed.cs).
+            JArray enclosedBlock = null;
+            if (input != null)
+            {
+                string enclosedError = ExpandEnclosed(doc, request, ref input, out enclosedBlock);
+                if (enclosedError != null) return CommandResult.Fail(enclosedError + " Nothing ran.");
+                if (enclosedBlock != null && input.Count == 0) return NothingEnclosed(request, enclosedBlock);
+            }
             if (input == null || input.Count == 0) return CommandResult.Fail("elements is required and must be non-empty.");
             if (input.Count > 2000) return CommandResult.Fail("elements exceeds the 2000 item atomic-batch limit.");
             if(input.Count!=1 && input.OfType<JObject>().Any(x=>x.Value<string>("kind")=="stairs"))
@@ -72,8 +80,12 @@ namespace Horizun.Revit.Commands
                 if (plan == null)
                 {
                     string message = item == null ? "entry is not an object" : error;
-                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
-                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
+                    // An all_enclosed row names the caller's own entry too, not only a position the caller never wrote.
+                    int? entry = item?.Value<int?>("enclosed_from");
+                    var rowError = new JObject { ["index"] = i, ["error"] = message };
+                    if (entry != null) rowError["elements_index"] = entry.Value;
+                    errors.Add(rowError);
+                    outcomes.Add(new ActionOutcome { Index = entry ?? i, Error = message, UnsupportedReason = reason });
                 }
                 else plans.Add(plan);
             }
@@ -142,7 +154,7 @@ namespace Horizun.Revit.Commands
                 }
                 var result = new JObject
                 {
-                    ["dry_run"] = true, ["tabular"] = tabularBlock,
+                    ["dry_run"] = true, ["tabular"] = tabularBlock, ["enclosed"] = enclosedBlock,
                     ["transaction_status"] = "not_started", ["requested"] = input.Count,
                     ["valid"] = plans.Count, ["invalid"] = errors.Count, ["errors"] = errors,
                     ["plan"] = new JArray(plans.Select(p => p.Summary)),
@@ -191,6 +203,7 @@ namespace Horizun.Revit.Commands
 
             var applied = ApplyPlans(doc, request, plans, input.Count);
             if (applied.Data is JObject appliedData) appliedData["tabular"] = tabularBlock;
+            if (enclosedBlock != null && applied.Data is JObject enclosedData) enclosedData["enclosed"] = enclosedBlock;
             return applied;
         }
 
@@ -315,13 +328,14 @@ namespace Horizun.Revit.Commands
             var p = new Plan { Index = index, Kind = kind, Input = item, Scale = scale };
             try
             {
-                string invalid = Horizun.Contracts.ToolInputRules.ValidateCreation(item, kind);
+                string invalid = Horizun.Contracts.ToolInputRules.ValidateCreation(EnclosedPublicView(item), kind);
                 if (invalid != null) throw new ArgumentException(invalid);
                 switch (kind)
                 {
                     case "stairs": PlanStairs(doc,p); break;
                     case "wall_profile": PlanProfileWall(doc,p); break;
                     case "displacement": PlanDisplacement(doc,p); break;
+                    case "toposolid": PlanToposolid(doc, item, p, scale); break;
                     case "level":
                         if (item["elevation"] == null) throw new ArgumentException("elevation is required");
                         p.Elevation = Finite(item.Value<double>("elevation"), "elevation") * scale;
@@ -384,6 +398,7 @@ namespace Horizun.Revit.Commands
                         // from whoever wrote the requirement set, or from nowhere.
                         p.WantName = Trimmed(item, "name");
                         p.WantNumber = Trimmed(item, "number");
+                        if (item["enclosed_from"] != null) PlanEnclosed(doc, item, p);
                         break;
                     // Space.Create(level, uv): a 2D point on a level, exactly like a room.
                     // Verified: level_id (generic), the placement point (generic, 2D like
@@ -391,6 +406,7 @@ namespace Horizun.Revit.Commands
                     // asserted - see ReadCreated).
                     case "space":
                         p.Level = Need<Level>(doc, item, "level_id"); p.Start = Point(item["point"], scale, false);
+                        if (item["enclosed_from"] != null) PlanEnclosed(doc, item, p);
                         break;
                     // Area.Create(areaView, uv): a point in an AREA PLAN view, not a level -
                     // Revit finds the enclosing AreaBoundaryLine loop through the view.
@@ -1158,6 +1174,8 @@ namespace Horizun.Revit.Commands
                 }
                 NormalizePlan(doc, p);
                 p.Summary = new JObject { ["index"] = index, ["kind"] = kind, ["references_resolved"] = true };
+                if (p.TopoSource != null) p.Summary["landxml"] = p.TopoSource;
+                if (p.Enclosed) p.Summary["elements_index"] = item["enclosed_from"].DeepClone();
                 if (p.FittingMembers != null)
                 {
                     // Deferred members (batch_index refs, and a takeoff's branch) have no
@@ -1252,6 +1270,7 @@ namespace Horizun.Revit.Commands
                         doc.Regenerate();
                     }
                     return wall;
+                case "toposolid": return CreateToposolid(doc, p);
                 case "floor":
                     Floor madeFloor = Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
                     // THE PARAMETER, not an overload. Floor.Create's structural
@@ -1289,6 +1308,7 @@ namespace Horizun.Revit.Commands
                     return roof;
                 case "room":
                 {
+                    if (p.Enclosed) return CreateEnclosed(doc, p);
                     Room room = doc.Create.NewRoom(p.Level, new UV(p.Start.X, p.Start.Y));
                     if (room == null)
                         throw new InvalidOperationException(
@@ -1306,6 +1326,7 @@ namespace Horizun.Revit.Commands
                 }
                 case "space":
                 {
+                    if (p.Enclosed) return CreateEnclosed(doc, p);
                     Space space = doc.Create.NewSpace(p.Level, new UV(p.Start.X, p.Start.Y));
                     if (space == null)
                         throw new InvalidOperationException(
@@ -2279,7 +2300,7 @@ namespace Horizun.Revit.Commands
                 case "floor": return e is Floor; case "ceiling": return e is Ceiling; case "roof": return e is FootPrintRoof;
                 case "room": return e is Autodesk.Revit.DB.Architecture.Room;
                 case "space": return e is Autodesk.Revit.DB.Mechanical.Space;
-                case "area": return e is Autodesk.Revit.DB.Area;
+                case "area": return e is Autodesk.Revit.DB.Area; case "toposolid": return IsToposolid(e);
                 case "area_boundary":
                     return e is CurveElement && InCategory(e, BuiltInCategory.OST_AreaSchemeLines);
                 case "sprinkler": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_Sprinklers);
@@ -2745,6 +2766,12 @@ namespace Horizun.Revit.Commands
             /// </summary>
             public string WantName;
             public string WantNumber;
+            /// <summary>placement='all_enclosed': the phase the circuit was found in, and that the row came from one.</summary>
+            public Phase Phase; public bool Enclosed;
+            /// <summary>kind=toposolid: the top-surface points (internal feet) and the indices re-read after the commit.</summary>
+            public List<XYZ> TopoPoints; public List<int> TopoSamples;
+            /// <summary>kind=toposolid from landxml_path: what was read (file, surface, hash, counts, position), echoed in the plan.</summary>
+            public JObject TopoSource;
 
             /// <summary>shaft: the two levels it runs BETWEEN, which is what makes it a shaft.</summary>
             public Level BaseLevel;
