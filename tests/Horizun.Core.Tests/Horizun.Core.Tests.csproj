@@ -28,6 +28,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadApplyGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SheetRenumberRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ParameterSequenceRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PerspectiveRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ParameterClassificationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupWorksetRules.cs" />
