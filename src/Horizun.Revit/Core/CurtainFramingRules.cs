@@ -25,9 +25,11 @@
 //  * THE CARRIER keeps its identity and its inserts, because no public API
 //    re-hosts a door in another wall: with ONE opening it is trimmed to that
 //    opening's span and takes the placeholder type; with NONE it is deleted once
-//    the curtain walls exist (replaced_by names them); with SEVERAL the default is
-//    to refuse, and multi_opening = 'keep_carrier' keeps it full length with the
-//    placeholder type (the plan says the curtain walls overlap it).
+//    the curtain walls exist (replaced_by names them); with SEVERAL the default
+//    (multi_opening = 'keep_carrier', the user's decision of 2026-09-26) keeps it
+//    full length with the placeholder type, so every door keeps its id, tags and
+//    data, and the plan and the result say plainly that the curtain walls overlap
+//    it; multi_opening = 'refuse' refuses such a wall and names why.
 //
 // THE CEILING: one flat footprint roof per layer over the ceiling's boundary, its
 // plane at the ceiling's top face + offset_mm, and optional hanger lines parallel
@@ -67,8 +69,9 @@ namespace Horizun.Revit.Core
         public long? HeaderTypeId { get; set; }
         public long? SillTypeId { get; set; }
         public long PlaceholderTypeId { get; set; }
-        /// <summary>refuse | keep_carrier.</summary>
-        public string MultiOpening { get; set; } = "refuse";
+        /// <summary>keep_carrier (default) | refuse.</summary>
+        public string MultiOpening { get; set; } = MultiOpeningDefault;
+        public const string MultiOpeningDefault = "keep_carrier";
         public double MinSegmentMm { get; set; } = 50;
 
         public IEnumerable<long> TypeIds()
@@ -130,7 +133,7 @@ namespace Horizun.Revit.Core
         public string HeaderTypeKey { get; set; }
         public string SillTypeKey { get; set; }
         public string PlaceholderTypeKey { get; set; }
-        public string MultiOpening { get; set; } = "refuse";
+        public string MultiOpening { get; set; } = CurtainWallFramingSpec.MultiOpeningDefault;
         public double MinSegment { get; set; } = 50;
         public List<WallOpeningSpan> Openings { get; set; } = new List<WallOpeningSpan>();
     }
@@ -225,11 +228,13 @@ namespace Horizun.Revit.Core
                 if (openings[i].Start < openings[i - 1].End - Tol)
                 { plan.Refusal = "openings " + openings[i - 1].Id + " and " + openings[i].Id + " overlap along the wall; the curtain method needs disjoint spans"; return plan; }
 
-            string multi = input.MultiOpening ?? "refuse";
+            // Anything but keep_carrier refuses: the parser admits only the two values, and a
+            // caller-built input with an unknown one must not silently keep a carrier.
+            string multi = input.MultiOpening ?? CurtainWallFramingSpec.MultiOpeningDefault;
             if (openings.Count > 1 && multi != "keep_carrier")
             {
-                plan.Refusal = openings.Count + " openings in one wall: the carrier can keep only one insert as a trimmed placeholder. "
-                               + "Split the wall at the openings first, or pass multi_opening='keep_carrier' to keep it full length under the curtain walls";
+                plan.Refusal = openings.Count + " openings in one wall and multi_opening='" + multi + "': the carrier can keep only one insert as a trimmed placeholder. "
+                               + "Split the wall at the openings first, or leave multi_opening at its default 'keep_carrier' to keep it full length under the curtain walls";
                 return plan;
             }
 
@@ -262,10 +267,16 @@ namespace Horizun.Revit.Core
             else
             {
                 plan.Carrier = new CurtainCarrierAction { Action = CurtainFramingRoles.CarrierKeep, X0 = 0, X1 = length, TypeKey = input.PlaceholderTypeKey };
-                plan.Warnings.Add("multi_opening=keep_carrier: the carrier stays full length with the placeholder type and the curtain walls overlap it");
+                plan.Warnings.Add(openings.Count + " openings: " + OverlapNote());
             }
             return plan;
         }
+
+        /// <summary>What a kept carrier means, said the same way in the plan's warnings and in the carrier row of the plan and the result.</summary>
+        // No count in it: a re-verification from the record does not carry the openings.
+        public static string OverlapNote()
+            => "the curtain walls OVERLAP the kept carrier: a wall with several openings (multi_opening=keep_carrier) stays full length "
+               + "with the placeholder type so its inserts keep their ids, tags and data";
 
         private static void AddPiece(CurtainWallPlan plan, string role, string typeKey, double x0, double x1, double z0, double z1, int source, double min)
         {
@@ -346,7 +357,7 @@ namespace Horizun.Revit.Core
                 HeaderTypeId = r.Id(w, "header_type_id", "spec.wall", false),
                 SillTypeId = r.Id(w, "sill_type_id", "spec.wall", false),
                 PlaceholderTypeId = r.Id(w, "placeholder_type_id", "spec.wall", true) ?? 0,
-                MultiOpening = r.Choice(w, "multi_opening", "spec.wall", "refuse", "refuse", "keep_carrier"),
+                MultiOpening = r.Choice(w, "multi_opening", "spec.wall", CurtainWallFramingSpec.MultiOpeningDefault, "keep_carrier", "refuse"),
                 MinSegmentMm = r.Mm(w, "min_segment_mm", "spec.wall", false, 1, 10000) ?? 50,
             };
             if (c.PlaceholderTypeId != 0 && c.PlaceholderTypeId == c.CurtainTypeId)

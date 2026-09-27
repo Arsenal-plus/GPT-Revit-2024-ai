@@ -468,7 +468,7 @@ namespace Horizun.Server
                         "), propose method 'curtain' instead and ASK which of its types maps to which part of the detail: " +
                         (wall
                             ? "spec.wall {method:'curtain', curtain_type_id, header_type_id, sill_type_id, placeholder_type_id (a thin Basic wall type that keeps " +
-                              "the door or window), multi_opening refuse|keep_carrier, min_segment_mm}. "
+                              "the door or window), multi_opening keep_carrier (default; the pieces overlap the kept wall)|refuse, min_segment_mm}. "
                             : "spec.ceiling {method:'curtain', layers [{type_id, offset_mm above the ceiling top, angle_deg}], hanger {type_id (a Curtain Wall " +
                               "type), spacing_mm, max_length_mm}}. ") +
                         "3) Types are the person's: list candidate family types with horizun_query_model and let the person choose; a vertical member needs " +

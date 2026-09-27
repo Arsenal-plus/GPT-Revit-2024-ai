@@ -26,7 +26,9 @@
 //
 // THE CARRIER keeps its identity and its inserts (no public API re-hosts a door):
 // trimmed to its one opening's span and set to the placeholder type, deleted when it
-// had no opening (after the pieces exist), or kept full length under the pieces.
+// had no opening (after the pieces exist), or - several openings, the default
+// multi_opening = keep_carrier - kept full length under the pieces, which then
+// overlap it: carrier.overlap says so in the plan and in the verified result.
 // An insert whose span cannot be measured, or an edited wall profile, refuses the
 // wall: trimming or deleting it could take an element nobody planned for with it.
 //
@@ -399,6 +401,12 @@ namespace Horizun.Revit.Commands
                 // The carrier: gone, or its planned type and curve, its inserts still its own.
                 Element carrierElement = doc.GetElement(Rid.Make(s.CarrierId));
                 var carrierRow = new JObject { ["id"] = s.CarrierId, ["action"] = s.Plan.Carrier.Action };
+                if (s.Plan.Carrier.Action == CurtainFramingRoles.CarrierKeep)
+                {
+                    // Never silent: the kept carrier and the pieces occupy the same wall line.
+                    carrierRow["overlap"] = CurtainFramingRules.OverlapNote();
+                    carrierRow["overlapped_by"] = new JArray(p.MemberIds.OrderBy(kv => kv.Key).Select(kv => kv.Value));
+                }
                 int changed = 0;
                 if (s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete)
                 {
@@ -586,6 +594,7 @@ namespace Horizun.Revit.Commands
                         ["span"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? null : new JArray(Math.Round(s.Plan.Carrier.X0, 1), Math.Round(s.Plan.Carrier.X1, 1)),
                         ["opening_id"] = s.Plan.Carrier.OpeningId,
                         ["replaced_by"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierDelete ? "every curtain_segment piece" : null,
+                        ["overlap"] = s.Plan.Carrier.Action == CurtainFramingRoles.CarrierKeep ? CurtainFramingRules.OverlapNote() : null,
                         ["deleted_with_it"] = s.Plan.Carrier.Action != CurtainFramingRoles.CarrierDelete || p.AlreadyApplied ? null : new JObject
                         {
                             ["count"] = s.CarrierDeleteMeasured.Count,

@@ -41,7 +41,7 @@ namespace Horizun.Core.Tests
             Assert.NotNull(spec.Curtain);
             Assert.Equal(3001, spec.Curtain.CurtainTypeId);
             Assert.Null(spec.Curtain.HeaderTypeId);
-            Assert.Equal("refuse", spec.Curtain.MultiOpening);
+            Assert.Equal("keep_carrier", spec.Curtain.MultiOpening);   // the user's decision of 2026-09-26
             Assert.Equal(50, spec.Curtain.MinSegmentMm);
             CurtainWallInput input = spec.Curtain.ToInput(3000, 2700, null);
             Assert.Equal("3001", input.HeaderTypeKey);   // header / sill default to the curtain type
@@ -131,28 +131,49 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void Several_openings_refuse_by_default_and_keep_the_carrier_when_asked()
+        public void Several_openings_keep_the_carrier_by_default_saying_the_pieces_overlap_it_and_refuse_when_asked()
         {
+            // The default is the input's own (keep_carrier): the doors keep their ids, tags and data.
             CurtainWallInput input = Wall(5000, 2700, Door("D1", 500, 1400, 2100), Window("W1", 2500, 3700, 900, 2100));
-            CurtainWallPlan refused = CurtainFramingRules.PlanWall(input);
-            Assert.Contains("2 openings", refused.Refusal);
-
-            input.MultiOpening = "keep_carrier";
             CurtainWallPlan kept = CurtainFramingRules.PlanWall(input);
             Assert.Null(kept.Refusal);
             Assert.Equal(3, kept.Pieces.Count(p => p.Role == CurtainFramingRoles.Segment));
             Assert.Equal(2, kept.Pieces.Count(p => p.Role == CurtainFramingRoles.Header));
             Assert.Equal(1, kept.Pieces.Count(p => p.Role == CurtainFramingRoles.Sill));
             Assert.Equal(CurtainFramingRoles.CarrierKeep, kept.Carrier.Action);
-            Assert.Equal(5000, kept.Carrier.X1);
-            Assert.NotEmpty(kept.Warnings);
+            Assert.Equal(0, kept.Carrier.X0); Assert.Equal(5000, kept.Carrier.X1);
+            Assert.Equal("3002", kept.Carrier.TypeKey);
+            // Never silent: the plan says the pieces overlap the kept carrier.
+            Assert.Contains(kept.Warnings, w => w.StartsWith("2 openings: ") && w.Contains("OVERLAP the kept carrier"));
+
+            // The same wall through the parser's default, and the explicit refusal naming why.
+            WallFramingSpec parsed = FramingSpecRules.ParseWall(JObject.Parse(CurtainWall), out _);
+            Assert.Equal(CurtainFramingRoles.CarrierKeep,
+                CurtainFramingRules.PlanWall(parsed.Curtain.ToInput(5000, 2700, input.Openings)).Carrier.Action);
+            input.MultiOpening = "refuse";
+            CurtainWallPlan refused = CurtainFramingRules.PlanWall(input);
+            Assert.Contains("2 openings in one wall and multi_opening='refuse'", refused.Refusal);
+            Assert.Contains("Split the wall at the openings", refused.Refusal);
+            Assert.Empty(refused.Pieces);
+
+            // A value the parser would refuse never silently keeps a carrier.
+            input.MultiOpening = "split";
+            Assert.NotNull(CurtainFramingRules.PlanWall(input).Refusal);
+        }
+
+        [Fact]
+        public void An_explicit_multi_opening_refuse_is_read_as_given()
+        {
+            JObject spec = JObject.Parse(@"{ ""wall"": { ""method"": ""curtain"", ""curtain_type_id"": 3001, ""placeholder_type_id"": 3002, ""multi_opening"": ""refuse"" } }");
+            Assert.Equal("refuse", FramingSpecRules.ParseWall(spec, out var errors).Curtain.MultiOpening);
+            Assert.Empty(errors);
         }
 
         [Fact]
         public void Overlapping_or_outside_openings_and_a_wall_too_small_to_replace_are_refused()
         {
+            // Overlapping openings are refused even under the default keep_carrier.
             CurtainWallInput overlap = Wall(5000, 2700, Door("D1", 500, 1400, 2100), Door("D2", 1300, 2000, 2100));
-            overlap.MultiOpening = "keep_carrier";
             Assert.Contains("overlap", CurtainFramingRules.PlanWall(overlap).Refusal);
             Assert.Contains("past the wall's ends", CurtainFramingRules.PlanWall(Wall(1000, 2700, Door("D1", 600, 1100, 2100))).Refusal);
             Assert.Contains("not inside the wall's height", CurtainFramingRules.PlanWall(Wall(3000, 2700, Door("D1", 600, 1100, 2900))).Refusal);

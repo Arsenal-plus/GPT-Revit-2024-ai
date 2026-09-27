@@ -1955,7 +1955,7 @@ leaves, or a single-layer wall.
 { "operation": "wall", "element_ids": [412345],
   "spec": { "wall": { "method": "curtain",
     "curtain_type_id": 1001, "header_type_id": 1002, "sill_type_id": 1002,
-    "placeholder_type_id": 1003, "multi_opening": "refuse", "min_segment_mm": 50 } } }
+    "placeholder_type_id": 1003, "multi_opening": "keep_carrier", "min_segment_mm": 50 } } }
 ```
 
 Here type 1001 is a Curtain Wall type with a Fixed Distance vertical grid of 406.4 mm, a
@@ -1969,10 +1969,14 @@ profile as the border mullions; 1002 is the type for the pieces above and below 
   piece shorter or lower than `min_segment_mm` is named in `skipped`, never dropped silently.
 - **The carrier** keeps its identity and its inserts (no public API re-hosts a door): with ONE
   opening it is trimmed to that opening's span and takes `placeholder_type_id`; with NONE it is
-  deleted after the pieces exist (`replaced_by`); with SEVERAL, `refuse` names the reason and
-  `keep_carrier` keeps it full length with the placeholder type under the pieces. What deleting it
-  takes along (tags, dimensions, hosted families) is measured in a rolled-back transaction, listed
-  in `carrier.deleted_with_it` and bound by the token.
+  deleted after the pieces exist (`replaced_by`); with SEVERAL, the default `keep_carrier` keeps it
+  full length with the placeholder type, so every door and window keeps its id, tags and data, and
+  the pieces are still split around every opening - they **overlap the kept carrier**, which the
+  plan and the verified result say in `carrier.overlap` (the result also lists `overlapped_by`, the
+  piece ids) and the plan's warnings repeat. `multi_opening: "refuse"` refuses such a wall instead
+  and names the reason (split it at the openings first). What deleting a carrier takes along (tags,
+  dimensions, hosted families) is measured in a rolled-back transaction, listed in
+  `carrier.deleted_with_it` and bound by the token.
 - **Verification:** every piece by marker - type, line within 1 mm of the plan, base and top; its
   vertical grid (Fixed Distance: every interior spacing within 1 mm and no edge bay wider than one
   spacing; other layouts: count and first/last line); mullion types per role against the type's
