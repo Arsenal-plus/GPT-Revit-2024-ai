@@ -75,9 +75,19 @@ $script:HzProbeModules += [pscustomobject]@{
         $created = New-Object System.Collections.ArrayList
         function Short($a) { $s = [string]$a.text; if ($s.Length -gt 400) { $s.Substring(0, 400) } else { $s } }
         function Types($category) {
-            $q = & $Ctx.Call 'horizun_query_model' @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 500 }
-            if (-not $q.data) { return @() }
-            return @($q.data.rows | Where-Object { $_.is_element_type })
+            # Every page: the instances come in the same rows, and a type copied in lately has a high
+            # id - a category with 1459 mullions truncated at 500 hid it (MEASURED 2026-09-27, Revit 2023).
+            $types = @(); $cursor = $null
+            for ($page = 0; $page -lt 20; $page++) {
+                $a = @{ categories = @($category); include_types = $true; include_links = $false; max_rows = 500 }
+                if ($cursor) { $a['cursor'] = $cursor }
+                $q = & $Ctx.Call 'horizun_query_model' $a
+                if (-not $q.data) { break }
+                $types += @($q.data.rows | Where-Object { $_.is_element_type })
+                if ($q.data.truncated -ne $true -or -not $q.data.next_cursor) { break }
+                $cursor = [string]$q.data.next_cursor
+            }
+            return $types
         }
         function Create($elements, $key) {
             $r = & $Ctx.Apply 'horizun_create_elements' @{ target_document = $doc; units = 'mm'; elements = @($elements) } ($run + '-frc-' + $key)
@@ -89,7 +99,14 @@ $script:HzProbeModules += [pscustomobject]@{
         }
         $tplRoot = if ($Ctx.TemplateRoot) { [string]$Ctx.TemplateRoot } else { 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates' }
         function FindType($category, $typeName, $familyName) {
-            @(Types $category | Where-Object { [string]$_.type -eq $typeName -and [string]$_.family -eq $familyName }) | Select-Object -First 1
+            $named = @(Types $category | Where-Object { [string]$_.type -eq $typeName })
+            $exact = @($named | Where-Object { [string]$_.family -eq $familyName }) | Select-Object -First 1
+            if ($exact) { return $exact }
+            # A system family's name is the DOCUMENT's language: in a German-template model a type
+            # copied from 'Rectangular Mullion' reads back under 'Rechteckiger Pfosten' (MEASURED
+            # 2026-09-27, Revit 2023). The type name alone is taken only when exactly one type has it.
+            if ($named.Count -eq 1) { return $named[0] }
+            return $null
         }
         # The first of $typeNames the document has; else each copied from the template in turn.
         $typeSource = @{}

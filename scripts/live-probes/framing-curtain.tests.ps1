@@ -27,7 +27,7 @@ function New-State {
     $script:nextId = 7000; $script:wallApplies = 0; $script:sent = @{}; $script:deleted = $null; $script:removeTargets = @(); $script:reusedKeys = @()
     $script:noGlazing = $false; $script:w1Restore = @{ restored = $true; inserts_changed = 0; why = $null }; $script:notAtSupport = @()
     $script:nextTypeId = 600; $script:typesRefused = $false; $script:layoutText = 'Fixed Distance'
-    $script:noOverlap = $false; $script:w3Restored = $true
+    $script:noOverlap = $false; $script:w3Restored = $true; $script:localizedMullion = $false; $script:mullionCopied = $false; $script:twinMullion = $false; $script:pagedMullion = $false
     $script:overlapNote = 'the curtain walls OVERLAP the kept carrier: a wall with several openings (multi_opening=keep_carrier) stays full length with the placeholder type so its inserts keep their ids, tags and data'
 }
 
@@ -42,10 +42,22 @@ $fakeCall = {
             'OST_Roofs' { if ($script:noGlazing) { @() } else { @(@{ element_id = 505; is_element_type = $true; family = 'Sloped Glazing'; type = 'Sloped Glazing' }) } }
             'OST_Floors' { @(@{ element_id = 506; is_element_type = $true; family = 'Floor'; type = 'Generic 300mm' }) }
             'OST_Ceilings' { @(@{ element_id = 507; is_element_type = $true; family = 'Compound Ceiling'; type = '600 x 600mm Grid' }) }
-            'OST_CurtainWallMullions' { @(@{ element_id = 508; is_element_type = $true; family = 'Rectangular Mullion'; type = '50 x 150mm' }) }
+            'OST_CurtainWallMullions' {
+                # A German-template model names the system family in its own language (MEASURED 2026-09-27, Revit 2023).
+                if (-not $script:localizedMullion) { @(@{ element_id = 508; is_element_type = $true; family = 'Rectangular Mullion'; type = '50 x 150mm' }) }
+                elseif ($script:mullionCopied) {
+                    $r = @(@{ element_id = 509; is_element_type = $true; family = 'Rechteckiger Pfosten'; type = '50 x 150mm' })
+                    if ($script:twinMullion) { $r += @{ element_id = 510; is_element_type = $true; family = 'Kreisfoermiger Pfosten'; type = '50 x 150mm' } }
+                    $r }
+                else { @() } }
             default { @() }
         }
-        return Reply ([pscustomobject]@{ rows = @($rows | ForEach-Object { [pscustomobject]$_ }) }) $false ''
+        # QueryModelCommand pages with truncated / next_cursor; types and instances share the rows.
+        if ($script:pagedMullion -and $arguments.categories[0] -eq 'OST_CurtainWallMullions' -and -not $arguments.cursor) {
+            $inst = @(1..3 | ForEach-Object { [pscustomobject]@{ element_id = 8000 + $_; is_element_type = $false; family = 'Rectangular Mullion'; type = '50 x 150mm' } })
+            return Reply ([pscustomobject]@{ rows = $inst; truncated = $true; next_cursor = 'page-2' }) $false ''
+        }
+        return Reply ([pscustomobject]@{ rows = @($rows | ForEach-Object { [pscustomobject]$_ }); truncated = $false }) $false ''
     }
     if ($tool -eq 'horizun_framing' -and $arguments.operation -eq 'wall') {
         $sid = [long]@($arguments.element_ids)[0]; $tid = [long]$arguments.spec.wall.curtain_type_id
@@ -175,6 +187,15 @@ $fakeApply = {
                     carrier = [pscustomobject]@{ id = $sid; action = 'delete'; deleted = $true; deleted_with_it = @(); deleted_with_it_measured = @(); inserts_checked = 0; inserts_changed = 0 } }) } }) $false '') }
         }
         'horizun_delete_verified' { $script:deleted = $arguments.ids; return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{}) $false '') } }
+        'horizun_copy_between_documents' {
+            # CopyBetweenDocumentsCommand's reply: types_that_arrived[].type_id / name / category.
+            $arrived = @()
+            if ($arguments.category -eq 'OST_CurtainWallMullions' -and $script:localizedMullion) {
+                $script:mullionCopied = $true
+                $arrived = @([pscustomobject]@{ type_id = 509; name = '50 x 150mm'; category = 'Curtain Wall Mullions' })
+            }
+            return @{ stage = 'apply'; answer = (Reply ([pscustomobject]@{ state = 'committed_verified'; types_that_arrived = $arrived }) $false '') }
+        }
         default { return @{ stage = 'apply'; answer = (Reply $null $true "unexpected apply $tool") } }
     }
 }
@@ -271,6 +292,27 @@ try {
     $numBy = RunBy (Ctx 't8')
     Check 'layout 1 re-read as anything but Fixed Distance fails the wall apply, naming the text' (($numBy[$names[1]].Outcome -eq 'fail') -and ($numBy[$names[1]].Detail -match "='Fixed Number'"))
     Check 'a committed apply that failed a check is still removed; the idempotent case is not_covered' ((@($script:removeTargets) -contains 7002) -and ($numBy[$names[2]].Outcome -eq 'not_covered'))
+
+    # ---- a template type that reads back under a localized family: found by the id the copy verified ----
+    New-State; $script:localizedMullion = $true
+    $locCtx = Ctx 't11'; $locCtx.TemplateRoot = Join-Path $noTemplates 'tpl'
+    New-Item -ItemType Directory -Force (Join-Path $locCtx.TemplateRoot 'English') | Out-Null
+    Set-Content -LiteralPath (Join-Path $locCtx.TemplateRoot 'English\DefaultMetric.rte') -Value 'fake'
+    $locBy = RunBy $locCtx
+    Check 'a mullion copied from the template under a localized family is found by its name, and the types case runs' (($locBy[$names[9]].Outcome -eq 'pass') -and
+        ($locBy[$names[9]].Detail -match "mullion = template '50 x 150mm'") -and $script:mullionCopied)
+    New-State; $script:localizedMullion = $true; $script:mullionCopied = $true
+    $hadBy = RunBy (Ctx 't12')
+    Check 'a mullion the document already has under a localized family is taken from the document, nothing copied' (($hadBy[$names[9]].Outcome -eq 'pass') -and
+        ($hadBy[$names[9]].Detail -match "mullion = document '50 x 150mm'"))
+    New-State; $script:pagedMullion = $true
+    $pageBy = RunBy (Ctx 't14')
+    Check 'a type past the first page of a truncated query is found on the next page' (($pageBy[$names[9]].Outcome -eq 'pass') -and
+        ($pageBy[$names[9]].Detail -match "mullion = document '50 x 150mm'"))
+    New-State; $script:localizedMullion = $true; $script:mullionCopied = $true; $script:twinMullion = $true
+    $twinBy = RunBy (Ctx 't13')
+    Check 'a type name two families share is never guessed: no mullion, the types case is not_covered' (($twinBy[$names[9]].Outcome -eq 'not_covered') -and
+        ($twinBy[$names[9]].Detail -match 'no source for a Rectangular Mullion type'))
 
     # ---- a closed write tier ----
     New-State
