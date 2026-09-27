@@ -3,7 +3,9 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v2.1.0 — 2026-09-27
+## v2.1.1 — 2026-09-27
+
+v2.1.0 was tagged but never released: its hosted whitespace gate stopped it before any package was built (trailing whitespace in the vendored IDS schema, one example and two tests). v2.1.1 is the same product with that hygiene fixed; the vendored schema is kept byte for byte and exempted from the gate.
 
 Minor release over 2.0.5 (tool contract: new tools, operations and optional fields; nothing removed). Live matrix at the release candidate: Revit 2023, 2024, 2026 and 2027 with 0 failures; 2025 is measured by the release gate.
 

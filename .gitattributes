@@ -27,3 +27,7 @@
 *.exe  binary
 *.pdb  binary
 *.zip  binary
+
+# The buildingSMART IDS schema is vendored byte for byte; its own trailing
+# whitespace is not ours to rewrite, so the whitespace gate skips it.
+schemas/ids/*.xsd -whitespace

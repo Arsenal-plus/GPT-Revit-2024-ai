@@ -1162,7 +1162,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(WallLayerRules.EdgeKey(10, 20), WallLayerRules.EdgeKey(20, 10));
             Assert.NotEqual(WallLayerRules.EdgeKey(10, 20), WallLayerRules.EdgeKey(10, 21));
         }
-    
+
         // A window's 'Wall Thickness' (a family reporting parameter) and 'Extension Jamb' (a
         // formula on it) follow the host the conversion makes one layer thick: MEASURED
         // 2026-09-26, every wall with such a window rolled back on them. What says WHERE or
