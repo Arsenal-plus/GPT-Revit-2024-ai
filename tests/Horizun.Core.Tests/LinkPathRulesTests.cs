@@ -13,7 +13,8 @@ namespace Horizun.Core.Tests
             string asked = "C:/links/model.rvt";
             string given = LinkPathRules.ForRevit(asked);
             if (Path.DirectorySeparatorChar == '\\') Assert.Equal(@"C:\links\model.rvt", given);
-            else Assert.Equal(Path.GetFullPath(asked), given);
+            // Off Windows 'C:/...' is not rooted, and a path that is not rooted is left as given.
+            else Assert.Equal(Path.IsPathRooted(asked) ? Path.GetFullPath(asked) : asked, given);
         }
 
         [Theory]
