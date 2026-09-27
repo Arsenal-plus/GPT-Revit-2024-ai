@@ -4,7 +4,7 @@
 
 Horizun Revit MCP es un servidor MCP y add-in de Windows gratuito y de código
 abierto para **Autodesk Revit 2023–2027**. Su catálogo completo contiene
-**122 herramientas** <!--inventory:tools--> con **431 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+**123 herramientas** <!--inventory:tools--> con **435 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 para modelado arquitectónico y estructural, MEP, familias paramétricas, planos,
 CAD a BIM, auditoría, cantidades, Excel, Power BI y exportación.
 
@@ -29,8 +29,8 @@ el runtime del servidor y los add-ins.
 
 | Superficie | Qué ofrece | Dónde comprobarlo |
 |---|---|---|
-| Entradas MCP | **122 herramientas** <!--inventory:tools-->, incluidas **45 de solo lectura** <!--inventory:reads--> y **77 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
-| Acciones internas | **431 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
+| Entradas MCP | **123 herramientas** <!--inventory:tools-->, incluidas **45 de solo lectura** <!--inventory:reads--> y **78 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
+| Acciones internas | **435 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
 | Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
 | Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
 | Planos y entregables | 24 acciones de vistas/láminas, 10 acciones de anotación, tablas nativas y distribución de láminas | [Producción de planos](docs/PLANIMETRY-PRODUCTION.md) |
@@ -327,6 +327,7 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 |---|---|
 | `horizun_split_floor_loops` | Separar un suelo por bucles de boceto conservando desfases de altura. |
 | `horizun_split_multilayer_walls` | Separar capas de muros conservando la identidad del muro original del núcleo y sus elementos hospedados. |
+| `horizun_framing` | Construir estructura de perfilería liviana dentro de una capa de muro y la estructura de cielo suspendido (principales, omegas, perimetral y cuelgues a la estructura) desde un spec de detalle, verificada, legible y removible. |
 | `horizun_split_multilayer_slabs` | Separar capas de materiales de suelos/cielos, conservando perfiles y con reversión por losa. |
 | `horizun_rectangularize_walls` | Descomponer geometría ortogonal soportada de muros en fragmentos rectangulares. |
 | `horizun_ungroup_and_mark` | Desagrupar grupos del modelo registrando el grupo original de cada miembro. |
@@ -377,7 +378,7 @@ Una herramienta MCP puede ejecutar muchas acciones. Crear un muro, una tubería
 y una escalera son opciones de `horizun_create_elements`; crear una sección y
 colocar una tabla son acciones diferentes de `horizun_manage_views`.
 
-La tabla contiene **431 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+La tabla contiene **435 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 en 26 herramientas compuestas. Cada opción se cuenta una vez por herramienta,
 propiedad selectora y valor, incluidos selectores anidados. Las rutas repetidas
 del esquema `oneOf` se cuentan una sola vez. Algunos selectores afinan otra
@@ -439,6 +440,7 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_mep_routing` | `action` | `add`, `remove`, `move` |
 | `horizun_electrical` | `operation` | `list_panels`, `list_circuits`, `create_circuit`, `assign_panel`, `add_to_circuit`, `remove_from_circuit`, `panel_schedule` |
 | `horizun_resolve_clash` | `operation` | `propose`, `apply`, `propose_opening`, `apply_opening` |
+| `horizun_framing` | `operation` | `wall`, `ceiling`, `read`, `remove` |
 | `horizun_manage_groups` | `operation` | `list`, `create`, `add_members`, `remove_members`, `rename_type`, `duplicate_type`, `swap_type`, `ungroup`, `convert_to_link` |
 | `horizun_manage_worksets` | `operation` | `list`, `create`, `rename`, `move_elements`, `set_default`, `visibility` |
 | `horizun_quantities` | `mode` | `volume`, `takeoff` |
@@ -454,7 +456,7 @@ herramientas MCP adicionales de primer nivel.
 
 Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
-registra **1537 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+registra **1541 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
 entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
 por lo que esa cifra no se utiliza como número de herramientas.
 

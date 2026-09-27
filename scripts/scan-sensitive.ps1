@@ -142,7 +142,9 @@ try {
            # Inno Setup declares Win32 imports as Function@module.dll; that is
            # an ABI identifier, not an e-mail address. Keep the exception pinned
            # to a .dll suffix rather than weakening the general address rule.
-           Allow   = '(?i)(noreply@|example\.(com|org)|@types/|@anthropic-ai|@[A-Za-z0-9_-]+\.dll\b)' }
+           # horizun_framing's validation codes are <code>@spec.<json path>
+           # (missing@spec.ceiling.hanger): a path into the spec, not an address.
+           Allow   = '(?i)(noreply@|example\.(com|org)|@types/|@anthropic-ai|@[A-Za-z0-9_-]+\.dll\b|@spec\.)' }
 
         @{ Rule = 'cloud-project-path'
            # Spaces are IN these paths - "Autodesk Docs://Sample Project/..." - so the

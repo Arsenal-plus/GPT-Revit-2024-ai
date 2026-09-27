@@ -521,6 +521,11 @@
           "Separar capas de muros conservando la identidad del muro original del núcleo y sus elementos hospedados."
         ],
         [
+          "horizun_framing",
+          "Build light-gauge stud framing inside a wall layer and suspended-ceiling framing (mains, furring, perimeter, hangers to the structure) from a detail spec, verified, readable and removable.",
+          "Construir estructura de perfilería liviana dentro de una capa de muro y la estructura de cielo suspendido (principales, omegas, perimetral y cuelgues a la estructura) desde un spec de detalle, verificada, legible y removible."
+        ],
+        [
           "horizun_split_multilayer_slabs",
           "Separate floor/ceiling material layers with profile preservation and per-slab rollback.",
           "Separar capas de materiales de suelos/cielos, conservando perfiles y con reversión por losa."

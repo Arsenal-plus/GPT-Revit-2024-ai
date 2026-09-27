@@ -3,24 +3,24 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary; enumerated values walked from the full input schemas of horizun://contract/tools served by the same binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "169b63fdb95f8bbac39e67cd3c2ec16fe1a6faffaa937cdabdca87c2d61de5c4",
-  "generated_from_contract_hash": "67abcdc0bbf1cb66a8d984e4",
+  "generated_from_server_sha": "b896e314e98e6662f0cdee29905fb3d6f37cd6754a501d440c3a84204a796cd6",
+  "generated_from_contract_hash": "ba25ff2f069c359219f4bbe8",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "b1904db6e55a32ec46676e89a29cd2178ef22d37",
+  "code_candidate_commit": "22fe73e3fb8d56e11d3e90ec55620fea2599c2db-dirty",
   "code_candidate_version": "2.0.5",
   "code_candidate_stamp_source": "product_version",
-  "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "b1904db6e55a32ec46676e89a29cd2178ef22d37",
+  "source_tree_clean_at_generation": false,
+  "source_tree_head_at_generation": "22fe73e3fb8d56e11d3e90ec55620fea2599c2db",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 122,
+    "tools": 123,
     "reads": 45,
-    "writes": 77,
+    "writes": 78,
     "destructive": 20,
-    "operations": 431,
-    "enumerated_variants": 1537
+    "operations": 435,
+    "enumerated_variants": 1541
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -420,6 +420,27 @@
             "family_lookup_tables",
             "unused_codes",
             "missing_codes"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_framing",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 4,
+      "enumerated_variants": 4,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "wall",
+            "ceiling",
+            "read",
+            "remove"
           ],
           "source_read_confirmed": true
         }
