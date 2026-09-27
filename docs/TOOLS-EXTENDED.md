@@ -2090,3 +2090,62 @@ the ceiling. A last case frames a wall at 45 degrees with the document's own Str
 Columns type as studs and Structural Framing type as tracks (the Column and Beam placements;
 columns re-read from their constraints, beams from their curves) and is `not_covered`, named,
 when the document carries neither category.
+
+## horizun_quantities - mode room_finishes
+
+Gross wall, floor and ceiling area of each room or space, per bounding element type,
+material and classification code, from Revit's `SpatialElementGeometryCalculator` at the
+**finish** face (`SpatialElementBoundaryLocation.Finish`). Read-only.
+
+```json
+{ "mode": "room_finishes", "phase": "New Construction", "level": "Level 1", "code_parameter": "Assembly Code" }
+```
+
+- `phase` is **required**: rooms, spaces and the side a door faces are per phase, and a hidden
+  default would silently measure a different building. `element_ids` (rooms/spaces) or `level`
+  narrow the scope; without them every room and space of that phase is measured.
+- Each face piece comes from `GetBoundaryFaceInfo`: `SubfaceType.Side` is a wall finish,
+  `Bottom` the floor, `Top` the ceiling. A face piece no element bounds (an unbounded room top)
+  is its own row under `(no bounding element)`, so the rows still add up to the room.
+- `material` is the bounding element's material **on that face** (`Face.MaterialElementId` of
+  `GetBoundingElementFace()`), or a named non-value: `(no material on face)`, `(face unreadable)`.
+- **Openings are never netted.** The room solid runs past doors and windows, so `gross_m2` is
+  gross. `openings_deduction_m2` is a separate column: the doors/windows hosted by each bounding
+  wall that face this room (a room: Revit's `FromRoom`/`ToRoom` in the phase; a space: a point
+  probe on each side of the insert), sized by `rough` width x height when the family publishes
+  it, else `nominal`, else `bounding_box` measured along the wall - `opening_size_basis` names
+  which. When a wall's faces in one room fall into two rows (two materials), its deductions go to
+  the row where it has the most area. Deduct by your contract's rule; this tool computes no net.
+- Other inserts (generic models, wall openings) are listed in `inserts_not_deducted`.
+- **Named, never zero**: `unplaced`, `not_enclosed`, `redundant` (its point lies inside another
+  enclosed room of the same phase), `other_phase`, `other_level` (for explicit ids),
+  `geometry_failed`. `coverage.complete` is false whenever any of them, an unsized opening or an
+  unattributed opening exists.
+- **Links**: a room bounded by a linked element gets that face's area (it is the room's own
+  geometry) and the element's type, material and code read from the link document; if the link is
+  not loaded only the area is read. Openings hosted in a **linked** wall are not read - their
+  From/To room answers the link's rooms, not this document's - and each such bound is listed in
+  `linked_bounding_elements` with what was and was not read.
+
+## horizun_quantities - mode carbon
+
+Volume, area and mass per material, multiplied by **your** factor table. Nothing is compiled in.
+
+```json
+{ "mode": "carbon", "category": "OST_Walls", "code_parameter": "Assembly Code",
+  "factor_source": "Project EPD list rev B",
+  "carbon_factors": [ { "material": "Concrete, Cast-in-Place gray", "factor": 240, "per": "m3" },
+                      { "material_class": "Metal", "factor": 1.55, "per": "kg" } ] }
+```
+
+- Readings are `Element.GetMaterialIds(false)` x `GetMaterialVolume` / `GetMaterialArea`; density
+  is the material's `StructuralAsset.Density` (kg/m3) when it has one.
+- A factor names exactly one of `material` or `material_class`; name matches first, then class,
+  case-insensitive. A repeated key is refused (the total would depend on order). Negative factors
+  are accepted: EPDs declare biogenic carbon negative.
+- `per: "m3"` multiplies the volume; `per: "kg"` multiplies volume x density.
+- Rows are flat - material x code x level with `volume_m3`, `area_m2`, `mass_kg`, `kgco2e` and the
+  counts `readings / counted / no_factor / no_density / unreadable_volume` - ready for
+  `horizun_power_bi_push`. `kgco2e` sums **only** counted readings; `materials_without_factor`,
+  `materials_without_density`, `unreadable_volumes` and `elements_without_materials` name the rest.
+  Host document only; linked models are not read.
