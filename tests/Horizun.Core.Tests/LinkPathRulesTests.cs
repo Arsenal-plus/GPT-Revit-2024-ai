@@ -18,7 +18,7 @@ namespace Horizun.Core.Tests
 
         [Theory]
         [InlineData("RSN://server/project/model.rvt")]
-        [InlineData("Autodesk Docs://Project/model.rvt")]
+        [InlineData("Autodesk Docs://Sample Project/model.rvt")]
         [InlineData("relative/model.rvt")]
         [InlineData("")]
         public void Server_cloud_relative_and_empty_paths_are_left_as_given(string asked)
