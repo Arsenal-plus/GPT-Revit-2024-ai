@@ -686,6 +686,17 @@ namespace Horizun.Revit.Commands
                         try { return ((Autodesk.Revit.DB.Architecture.Room)e).IsPointInRoom(new XYZ(p.Start.X, p.Start.Y, p.Level.ProjectElevation + 0.5)); } catch { return false; }
                     });
             }
+            // TOPOSOLID rows: the top of the committed solid at each sampled input point stands at
+            // that point's Z (CreateElementsToposolid.cs); the vertices are read once, on first use.
+            if (p.Kind == "toposolid" && p.TopoPoints != null && p.TopoSamples != null)
+            {
+                List<XYZ> topoVerts = null;
+                foreach (int k in p.TopoSamples)
+                {
+                    XYZ at = p.TopoPoints[k];
+                    Numeric("top_z_at_point_" + k, at.Z, () => TopoZAt(e, topoVerts ?? (topoVerts = TopoVertices(e)), at), TopoZToleranceFeet);
+                }
+            }
             if (p.Kind == "wall")
             {
                 Numeric("height", p.Height, () => e.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM).AsDouble());

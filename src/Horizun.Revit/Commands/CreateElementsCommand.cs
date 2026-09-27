@@ -331,6 +331,7 @@ namespace Horizun.Revit.Commands
                     case "stairs": PlanStairs(doc,p); break;
                     case "wall_profile": PlanProfileWall(doc,p); break;
                     case "displacement": PlanDisplacement(doc,p); break;
+                    case "toposolid": PlanToposolid(doc, item, p, scale); break;
                     case "level":
                         if (item["elevation"] == null) throw new ArgumentException("elevation is required");
                         p.Elevation = Finite(item.Value<double>("elevation"), "elevation") * scale;
@@ -1263,6 +1264,7 @@ namespace Horizun.Revit.Commands
                         doc.Regenerate();
                     }
                     return wall;
+                case "toposolid": return CreateToposolid(doc, p);
                 case "floor":
                     Floor madeFloor = Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
                     // THE PARAMETER, not an overload. Floor.Create's structural
@@ -2292,7 +2294,7 @@ namespace Horizun.Revit.Commands
                 case "floor": return e is Floor; case "ceiling": return e is Ceiling; case "roof": return e is FootPrintRoof;
                 case "room": return e is Autodesk.Revit.DB.Architecture.Room;
                 case "space": return e is Autodesk.Revit.DB.Mechanical.Space;
-                case "area": return e is Autodesk.Revit.DB.Area;
+                case "area": return e is Autodesk.Revit.DB.Area; case "toposolid": return IsToposolid(e);
                 case "area_boundary":
                     return e is CurveElement && InCategory(e, BuiltInCategory.OST_AreaSchemeLines);
                 case "sprinkler": return e is FamilyInstance && InCategory(e, BuiltInCategory.OST_Sprinklers);
@@ -2760,6 +2762,8 @@ namespace Horizun.Revit.Commands
             public string WantNumber;
             /// <summary>placement='all_enclosed': the phase the circuit was found in, and that the row came from one.</summary>
             public Phase Phase; public bool Enclosed;
+            /// <summary>kind=toposolid: the top-surface points (internal feet) and the indices re-read after the commit.</summary>
+            public List<XYZ> TopoPoints; public List<int> TopoSamples;
 
             /// <summary>shaft: the two levels it runs BETWEEN, which is what makes it a shaft.</summary>
             public Level BaseLevel;
