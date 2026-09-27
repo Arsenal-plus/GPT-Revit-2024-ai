@@ -2108,27 +2108,40 @@ base point and the source instance. After the commit the checklist re-reads:
 
 The reply publishes `project_position_before` / `project_position_after` in mm and
 degrees - the units `horizun_manage_units operation=base_points project_position` takes,
-so a caller can restore. Refused by name before Revit is asked: a type placed more than
-once (RevitAPI lists "Cannot acquire coordinates from a model placed multiple times"; the
-instance ids are named), a link that already shares the host's site (delta <= 1 mm), an
-unloaded link. The API always overwrites the host's geolocation with the link's, unlike
-the UI; the warning says so. `publish_coordinates` is a later step.
+so a caller can restore. The token also binds where the source instance sits (its total
+transform) and, for an RVT, the link's own same_site delta: a link moved or reloaded
+between the dry run and the apply refuses as a changed plan. Refused by name before Revit
+is asked: a link that already shares the host's site (delta <= 1 mm) and an unloaded link.
+A type placed more than once is NOT pre-refused, because the instance is always named:
+the rehearsal asks Revit, whose own answer ("Cannot acquire coordinates from a model
+placed multiple times" per RevitAPI) is what the caller hears; the plan lists
+`placements_of_type`. The API always overwrites the host's geolocation with the link's,
+unlike the UI; the warning says so. `publish_coordinates` is a later step.
 
 **add kind=point_cloud** (`.rcp` / `.rcs`; `kind` defaults from the extension).
 `PointCloudType.Create` + `PointCloudInstance.Create` with the identity transform, inside a
 transaction: the dry run is a real rehearsal with rollback. Refused by name when
 `PointCloudEngineRegistry.GetSupportedEngines()` lacks the engine
-(`point_cloud_engine_unavailable`) or the path is already linked. Verified: type and
+(`point_cloud_engine_unavailable`) or the path is already linked (compared with each
+`PointCloudType.GetPath()`: a point cloud is not an ExternalFileReference). Verified: type and
 instance re-read, instance of that type, engine identifier.
 
-**add kind=ifc**. `Application.OpenIFCDocument(path, IFCImportOptions{Action=Link})`
-produces the intermediate `<file>.ifc.RVT` (saved there when the importer returned an
-unsaved document), then `RevitLinkType.CreateFromIFC` + `RevitLinkInstance.Create` link it.
-The dry run is a measured preview (the importer writes a file outside any transaction) and
-says whether an existing intermediate will be regenerated. A missing or failing importer is
-refused by name, `ifc_importer_unavailable`, with the Revit version, before anything is
-linked. Verified like `add`: type Loaded, instance present and of that type; `linked_by`
-says whether the importer or `CreateFromIFC` created the type.
+**add kind=ifc**. The importer's own Link branch, aimed at the host:
+`Application.OpenIFCDocument(path, IFCImportOptions{Action=Open, Intent=Reference})`
+imports the IFC by reference into a NEW document, which is saved as `<file>.ifc.RVT` and
+closed; then `RevitLinkType.CreateFromIFC` + `RevitLinkInstance.Create` link it in the
+host. (`Action=Link` is not used: with it the importer links the intermediate into the
+document OpenIFCDocument returns, never into the host.) The dry run is a measured preview
+(the import and the save happen outside any transaction); its token binds the path AND
+the intermediate's state on disk (absent, or size and last write), so an `.ifc.RVT` that
+appears or changes before the apply refuses as a changed plan. Failures are named by step:
+`ifc_importer_unavailable` only when `Revit.IFC.Import` is neither loaded, nor beside
+RevitAPI.dll, nor in an ApplicationPlugins IFC bundle (`importer_looked_in` says where);
+`ifc_import_failed` (importer present, Revit refused the file); `intermediate_save_failed`;
+`link_failed` (host transaction rolled back). None touches the host model, and each
+reports `intermediate_before` / `intermediate_after` / `disk_changed`. Verified: type
+Loaded, instance present and of that type, the linked model holds DirectShape elements
+(`linked_direct_shapes` > 0, what a Reference import builds) and does not link to itself.
 
 **scan_deviation** (read-only): `link_instance_id` names the `PointCloudInstance`,
 `element_ids` (<= 200) the walls, floors and columns, `tolerance_mm` (default 10). For
@@ -2137,13 +2150,25 @@ face (band = max(3 x tolerance, 30 mm)) and four around its UV rectangle - is th
 multi-plane filter for `GetPoints(filter, averageDistance = 20 mm, maxPoints = 5000)`.
 Points that project inside the face give signed distances; a face is `ok` when the 95th
 percentile of |distance| is within tolerance, else `deviates`, and `not_measured` with
-fewer than 20 points - never `ok`. Non-planar faces are counted not_measured. The point
-frame (raw or through the instance's total transform) is taken per face from where the
-points actually fall inside the filter; a face where neither frame holds is
-`not_measured`, `point_frame_undetermined`. Elements: `ok` only when every face is ok,
+fewer than 20 points (`too_few_points`) or under `min_coverage_share` (0.1) of the points
+its area should return at 20 mm, capped at 5000 (`low_coverage`, `coverage_share`
+published) - never `ok`. The slab reaches `band_mm` outward but only
+`band_inward_mm` = min(band, 0.4 x the thickness behind the face, from the element's
+nearest antiparallel face) inward, so the element's own opposite face is never taken for
+this face's deviation. Non-planar faces and faces beyond 60 per element count as
+not_measured in the element's state and in `faces_not_measured`. The point frame (raw or
+through the instance's total transform) is taken per face from where the points actually
+fall inside the filter; a face where neither frame holds, or where both do (a transform
+smaller than the band), is `not_measured`, `point_frame_undetermined`. A cloud whose file
+is not found (`FoundStatus` NotFound) is refused, `cloud_not_found`; an element without
+readable solids is `geometry_unreadable` / `no_solid_geometry`. The reply declares its
+application outcome as not started (read-only). Elements: `ok` only when every face is ok,
 `partially_measured`, `not_measured` or `deviates`; the verdict passes only when every
 element is ok. Deviations beyond the band are not visible, and the reply says so.
 
-Live probes: `scripts/live-probes/links-survey.probes.ps1`. Point-cloud and IFC cases read
-`PointCloudPath` and `IfcLinkSource` from `%USERPROFILE%\.horizun\live-fixtures.json`
-and are `not_covered`, named, without them.
+Live probes: `scripts/live-probes/links-survey.probes.ps1`. Point-cloud cases read
+`PointCloudPath` (and, for the positive scan, `PointCloudFloor`) from
+`%USERPROFILE%\.horizun\live-fixtures.json` and are `not_covered`, named, without them.
+The IFC case uses `IfcLinkSource` when given and otherwise exports its own IFC of the
+write document, so every year is measured; a refusal passes only as
+`ifc_importer_unavailable` AND with that year's `Revit.IFC.Import.dll` really absent.

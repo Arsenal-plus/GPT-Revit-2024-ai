@@ -15,6 +15,15 @@
     "from the output reads exactly like one that passed."
   ],
 
+  "_PointCloudPath": "Full path to a SMALL .rcp or .rcs this machine can read, for the links-survey probes (add kind=point_cloud, scan_deviation). Blank: those cases are NOT COVERED, named.",
+  "PointCloudPath": "",
+
+  "_PointCloudFloor": "Optional, with PointCloudPath: a horizontal floor the scan really covers, in the cloud's coordinates as linked at the origin - {\"min_xy\": [x, y], \"max_xy\": [x, y], \"z\": z} in mm. The probe stages a floor there and scan_deviation must MEASURE its top face. Blank: that positive case is NOT COVERED.",
+  "PointCloudFloor": null,
+
+  "_IfcLinkSource": "Optional full path to a disposable .ifc for add kind=ifc (copied to scratch before linking). Blank: the probe exports its own IFC of the write document with horizun_export.",
+  "IfcLinkSource": "",
+
   "_Document": "Title of a model open in the Revit under test. Without it, links, quantities and the whole confirmation flow are NOT COVERED.",
   "Document": "",
 
