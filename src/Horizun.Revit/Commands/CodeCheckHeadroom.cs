@@ -12,14 +12,20 @@
 // shows (RevitAPI.xml: hidden elements and elements outside the section box are never
 // returned). The hangers build a temporary view of known visibility inside a transaction
 // they roll back; a check that must not open one takes the caller's view instead and
-// refuses, by name, the two cases that would lose surfaces silently: a view template and
-// an active section box. What the view hides is stated in the reply: it is not a surface.
+// refuses, by name, every case read here that would lose surfaces silently: a view
+// template, an active section box, a detail level below Fine (pipes, fittings, conduit and
+// tray are single lines with no faces there; CoordinationNavisworksReadiness records the
+// same at Coarse), temporary hide/isolate, and a target or source category hidden - or an
+// enabled filter hiding elements - in the view or its template. A source element hidden by
+// itself is skipped by name. Hidden worksets, links and single target elements are not
+// read: the reply states that limit; they are never surfaces.
 //
 // THE COUNT IS BOUNDED BEFORE ANY RAY: the samples are planned arithmetically (along a
 // location curve, else a grid over the bounding box - Core/HeadroomRules) and a call over
 // HeadroomRules.MaxRays refuses before casting one.
 //
-// Each ray starts just beyond the element's bounding box and crosses the element; its far
+// Each ray starts 3 m beyond the element's bounding box - so a slab or screed the element
+// is embedded in is ENTERED and Read sees it on both sides - and crosses the element; its far
 // face and the first target surface beyond it give the clear height, decided in
 // Core/HeadroomRules.Read. A ray that finds nothing is NOT MEASURED, never a pass.
 // NOT MEASURED YET (headroom.probes.ps1 measures own host floors): rays against linked
@@ -105,6 +111,12 @@ namespace Horizun.Revit.Commands
             if (view.IsSectionBoxActive)
                 return CommandResult.Fail("headroom.view_id " + viewId + " ('" + view.Name + "') has an active section box: the rays never return what lies outside it, " +
                     "so a surface there would read as nothing. Turn the section box off or give another 3D view.");
+            if (view.DetailLevel != ViewDetailLevel.Fine)
+                return CommandResult.Fail("headroom.view_id " + viewId + " ('" + view.Name + "') is at detail level " + view.DetailLevel + ": below Fine, pipes, " +
+                    "fittings, conduit and cable tray are single lines with no faces, so a ray passes through them. Set it to Fine or give another 3D view.");
+            if (view.IsTemporaryHideIsolateActive())
+                return CommandResult.Fail("headroom.view_id " + viewId + " ('" + view.Name + "') has temporary hide/isolate on: what it hides is not a surface " +
+                    "to the rays. Reset it or give another 3D view.");
 
             // ---- the surfaces a ray may stop at --------------------------------------------
             var targets = new List<BuiltInCategory>();
@@ -127,6 +139,10 @@ namespace Horizun.Revit.Commands
                 // Toposolid exists from Revit 2024: parsed by name so the 2023 build compiles.
                 if (direction == "down" && Enum.TryParse("OST_Toposolid", out BuiltInCategory topo)) targets.Add(topo);
             }
+            // Component stairs keep their faces on their runs and landings, not on the Stairs element.
+            if (targets.Contains(BuiltInCategory.OST_Stairs))
+                foreach (BuiltInCategory part in new[] { BuiltInCategory.OST_StairsRuns, BuiltInCategory.OST_StairsLandings })
+                    if (!targets.Contains(part)) targets.Add(part);
             var targetIds = new HashSet<long>(targets.Select(b => (long)b));
 
             // ---- the elements measured -------------------------------------------------------
@@ -165,6 +181,10 @@ namespace Horizun.Revit.Commands
             }
             if (sources.Count > HeadroomRules.MaxElements)
                 return CommandResult.Fail("headroom would measure " + sources.Count + " elements, over the " + HeadroomRules.MaxElements + " one call may: name fewer. No ray was cast.");
+            string hides = HeadroomViewHides(doc, view, targets, sources);
+            if (hides != null)
+                return CommandResult.Fail("headroom.view_id " + viewId + " ('" + view.Name + "') hides " + hides + ": the rays never return what a view hides, " +
+                    "so a surface there would read as open space. Show them or give another 3D view. No ray was cast.");
 
             // ---- pass 1, arithmetic only: every sample planned and counted --------------------
             double spacingFt = spacingMm / HeadroomMmPerFoot;
@@ -175,6 +195,9 @@ namespace Horizun.Revit.Commands
                 BoundingBoxXYZ box = null;
                 try { box = e.get_BoundingBox(null); } catch { }
                 if (box == null) { skipped.Add(HeadroomSkip(e, "no model bounding box: nothing to cast from")); continue; }
+                bool hiddenHere = false;
+                try { hiddenHere = e.IsHidden(view); } catch { }
+                if (hiddenHere) { skipped.Add(HeadroomSkip(e, "hidden in this view: the rays would not see its own faces")); continue; }
                 var plan = new HeadroomPlan { Element = e, Box = box };
                 Curve curve = null;
                 try { curve = (e.Location as LocationCurve)?.Curve; } catch { }
@@ -221,7 +244,11 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { return CommandResult.Fail("Revit refused to cast rays in view " + viewId + " ('" + view.Name + "'): " + ex.Message); }
 
             XYZ dir = direction == "down" ? -XYZ.BasisZ : XYZ.BasisZ;
-            const double margin = 0.1; // ft beyond the bounding box, so the ray starts outside the element
+            // 10 ft (3.05 m) beyond the bounding box, not just past it: an element embedded in a slab
+            // or screed must meet that target's near face before its own, or Read cannot tell
+            // "inside a target" from "clear to its far face". Targets of other keys met before the
+            // element are ignored by Read, so the longer approach adds no false surface.
+            const double margin = 10.0;
             double tolerance = 1.0 / HeadroomMmPerFoot;
             var surfaces = new Dictionary<string, JObject>(StringComparer.Ordinal);
             var rows = new List<JObject>();
@@ -315,10 +342,11 @@ namespace Horizun.Revit.Commands
                 ["targets"] = new JArray(targets.Select(b => HeadroomCategoryName(doc, b))),
                 ["rules"] = new JObject
                 {
-                    ["ray"] = "vertical, from just beyond the element's bounding box through the element: clear height = its far face to the first target surface beyond it, host or loaded link",
+                    ["ray"] = "vertical, from 3 m beyond the element's bounding box through the element: clear height = its far face to the first target surface beyond it, host or loaded link",
                     ["not_measured"] = "a ray that crosses the element and finds no target beyond it, or finds the element inside a target, is not measured - never a pass; " +
                                        "an element with an unmeasured sample and no failing one is not_decidable",
-                    ["visibility"] = "the rays see only what this 3D view shows: hidden elements, categories, worksets and links are not surfaces here"
+                    ["visibility"] = "refused unless the view is at Fine detail with no hidden target/source category, hiding filter or temporary hide; " +
+                                     "hidden worksets, links and single target elements are not read and are not surfaces here"
                 },
                 ["summary"] = new JObject
                 {
@@ -363,6 +391,49 @@ namespace Horizun.Revit.Commands
             if (target && !surfaces.ContainsKey(key))
                 surfaces[key] = new JObject { ["kind"] = "host", ["element_id"] = Rid.Value(e.Id), ["category"] = e.Category.Name };
             return new HeadroomRules.Hit(rc.Proximity, target ? HeadroomRules.HitKind.Target : HeadroomRules.HitKind.Other, key);
+        }
+
+        /// <summary>Target and source categories hidden in the view or its template, and enabled filters that hide; null when none.</summary>
+        private static string HeadroomViewHides(Document doc, View view, IEnumerable<BuiltInCategory> targets, IEnumerable<Element> sources)
+        {
+            var views = new List<View> { view };
+            try { if (doc.GetElement(view.ViewTemplateId) is View template) views.Add(template); } catch { }
+            IEnumerable<BuiltInCategory> asked = targets;
+            // Links matter only where there are links: their category hidden loses every linked surface.
+            if (new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).GetElementCount() > 0)
+                asked = asked.Concat(new[] { BuiltInCategory.OST_RvtLinks });
+            var categories = new List<Category>();
+            foreach (BuiltInCategory b in asked)
+            {
+                Category c = null;
+                try { c = Category.GetCategory(doc, b); } catch { }
+                if (c != null && !categories.Any(x => x.Id == c.Id)) categories.Add(c);
+            }
+            foreach (Element e in sources)
+                if (e.Category != null && !categories.Any(x => x.Id == e.Category.Id)) categories.Add(e.Category);
+            var hidden = new List<string>();
+            foreach (Category c in categories)
+                foreach (View v in views)
+                {
+                    bool off = false;
+                    try { off = v.GetCategoryHidden(c.Id); } catch { }
+                    if (off) { hidden.Add("category '" + c.Name + "'" + (v.Id == view.Id ? "" : " (in its template)")); break; }
+                }
+            foreach (View v in views)
+            {
+                ICollection<ElementId> filters = null;
+                try { filters = v.GetFilters(); } catch { }
+                foreach (ElementId filterId in filters ?? new List<ElementId>())
+                {
+                    bool hides = false;
+                    try { hides = v.GetIsFilterEnabled(filterId) && !v.GetFilterVisibility(filterId); } catch { }
+                    if (!hides) continue;
+                    string filterName = null;
+                    try { filterName = doc.GetElement(filterId)?.Name; } catch { }
+                    hidden.Add("filter '" + (filterName ?? Rid.Value(filterId).ToString()) + "'" + (v.Id == view.Id ? "" : " (in its template)"));
+                }
+            }
+            return hidden.Count == 0 ? null : string.Join(", ", hidden.Distinct());
         }
 
         private static string HeadroomUnfit(Element e)

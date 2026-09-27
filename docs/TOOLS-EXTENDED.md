@@ -322,15 +322,22 @@ ella; la persistencia se mide releyendo antes y después del commit, por año.
   is snapshotted on its own, so the files that changed during call *i* belong to
   view *i*; a view is verified when its planned file was written, is non-empty
   and starts with the format's signature (`AC10xx`; an OLE container or a V7
-  header for DGN; a zip package for DWFX). Xrefs are checked the same way; any
-  other extra file fails the view. With more than 20 views the dry run says
+  header for DGN; a zip package for DWFX) - with `acad_version`, a DWG signature of
+  that version. Companion files the call writes beside the target - a sheet's views
+  and a view's visible links, for DWG `linked` and for DGN (whose `MergedViews` stays
+  at Revit's default, false) - must be named `<stem>-...` and pass the same check;
+  any other extra file, and a file of the view's name family left empty or
+  unreadable, fails the view. Only the view's name family is hashed around each
+  call; the rest of the folder is stamped by size and time. With more than 20 views the dry run says
   `long_set: true`: send the apply through `horizun_submit_job`. DWFX runs in a
   transaction that is rolled back (RevitAPI.xml documents the overload as
   throwing on a non-modifiable document).
 - **gbXML** (`.xml`). Refused as **`no spaces`** when the document has no placed,
-  bounded room or MEP space — no empty campus is written. The export needs a main
-  energy analysis model: one is built from rooms/spaces (SpatialElement,
-  second-level boundaries), with the energy settings' analysis mode set to
+  bounded room or MEP space of the energy settings' export category and phase (dry
+  run), or when the model built on apply holds no analytical space (checked before
+  the file is written) — no empty campus is written. The export needs a main
+  energy analysis model: one is built from rooms/spaces (SpatialElement, tier Final -
+  Revit's default, the only tier that computes constructions), with the energy settings' analysis mode set to
   `RoomsOrSpaces` in every year — 2027 builds the model from that mode, and 2026's
   `GBXMLExportOptions` default the model type to `AnalysisMode`, which follows it —
   inside a transaction that is **rolled back** after the file is on disk, so the
@@ -2133,8 +2140,10 @@ when the document carries neither category.
 ### horizun_code_check - operation=energy_readiness
 
 Read-only in effect: Revit's energy analytical model is built from rooms/spaces
-(SpatialElement, second-level boundaries - the same build `horizun_export
-format=gbxml` uses) inside a transaction that is always rolled back.
+(SpatialElement, tier Final, read back as `energy_model.tier` - the same build `horizun_export
+format=gbxml` uses) inside a transaction that is always rolled back; `energy_model.rolled_back`
+is the rollback's own status, read back. Only rooms/spaces of the energy settings' export
+category and `ProjectPhase` are judged; others are counted as `out_of_energy_phase`.
 
 ```json
 { "operation": "energy_readiness", "max_findings": 200 }
@@ -2143,13 +2152,18 @@ format=gbxml` uses) inside a transaction that is always rolled back.
 The reply has `spaces` (rooms and MEP spaces placed but not enclosed - zero area,
 which Revit reports alike for not-enclosed and redundant ones - and enclosed ones
 the energy model did not turn into an analytical space, matched by
-CADObjectUniqueId, or reported unavailable when nothing resolves), `surfaces`
+CADObjectUniqueId, or reported unavailable when nothing resolves, and listed as
+`possibly_not_in_energy_model` - not counted as findings - when some analytical spaces resolve
+to no element), `surfaces`
 (analytical surfaces by gbXML type and those whose `GetConstruction()` is null;
 SurfaceAir and Shade are not asked; in Revit 2023 constructions are reported not
-measurable, because the API exists from 2024) and `window_to_wall` (window and door
+measurable, because the API exists from 2024, and so they are whenever the model's tier
+reads back below Final) and `window_to_wall` (window and door
 area over gross exterior-wall area in four 90-degree sectors centred on N/E/S/W,
-azimuth from the wall's outward normal after `TransformModel` applies true north,
-or project north when it throws - `energy_model.azimuth_basis` says which; a sector
+azimuth from the wall's outward normal after `TransformModel`; `energy_model.azimuth_basis`
+says `true_north` only when one exterior wall's normal was seen to turn by the project angle
+(or the angle is 0), `project_north` when it did not turn or TransformModel threw, else
+`unverified`; a sector
 with no wall has `wwr: null`). The counts are measurements; nothing is called
 compliant.
 
@@ -2165,9 +2179,12 @@ document and loaded Revit links - the ray and link handling of the hanger rods.
                 "min_mm": 2100, "direction": "down", "spacing_mm": 1000 } }
 ```
 
-- `view_id` (required): a `View3D` that is not a template and has no active section box. Both are
-  refused by name: the intersector never returns what a view hides or what lies outside its section
-  box. What the view hides (elements, categories, worksets, links) is not a surface here.
+- `view_id` (required): a `View3D` that is not a template, has no active section box, is at **Fine**
+  detail (below it pipes, fittings, conduit and tray are single lines with no faces), has no
+  temporary hide/isolate, and hides - itself or through its template - no target or source category
+  and has no enabled filter that hides elements. Each is refused by name: the intersector never
+  returns what a view hides. Source elements hidden one by one are skipped with the reason; hidden
+  worksets, links and single target elements are not read and are not surfaces here.
 - `element_ids` **or** `categories`, exactly one. By category, the elements are the ones the view
   shows. Views, types, link instances and non-model elements are skipped with the reason, and so are
   vertical curves (risers, columns).
@@ -2179,9 +2196,11 @@ document and loaded Revit links - the ray and link handling of the hanger rods.
 - `targets` (optional): the categories a ray may stop at. Defaults - down: floors, stairs, ramps,
   roofs, structural foundations, topography (and toposolids from 2024); up: floors, ceilings, roofs,
   stairs, structural framing, ducts, pipes, cable trays and conduits with their fittings and
-  accessories, flex ducts and pipes, mechanical equipment, lighting fixtures, sprinklers.
+  accessories, flex ducts and pipes, mechanical equipment, lighting fixtures, sprinklers. Stairs
+  always bring stair runs and landings, which hold a component stair's faces.
 
-Each ray starts just beyond the element's bounding box and crosses the element: the clear height runs
+Each ray starts 3 m beyond the element's bounding box - so a slab or screed the element is embedded in
+is entered, and the sample reads `inside_target` - and crosses the element: the clear height runs
 from the element's far face to the first target surface beyond it (a touching surface is 0). A sample
 whose ray never crosses the element is `off_element` and not judged; one that crosses it and finds no
 target beyond, or finds the element inside a target, is **not measured - never a pass**.
