@@ -19,8 +19,13 @@
 // model coordinates; whether the returned points are too, or in the cloud's own
 // frame, is taken per face from the points themselves: the frame (raw, or through
 // the instance's total transform) in which the points actually fall inside the
-// filter's volume is the one used, and a face where neither holds is
-// not_measured with that reason rather than measured in the wrong frame.
+// filter's volume is the one used. A face where neither holds - or where BOTH do,
+// because the transform moves less than the band - is not_measured
+// (point_frame_undetermined) rather than measured in a frame that was picked.
+//
+// THE SLAB IS ASYMMETRIC. Outward it reaches band_mm; inward it stops below half
+// the element's thickness behind the face (LinkSurveyRules.InwardBandMm), so the
+// element's own opposite face is never measured as this face's deviation.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -55,9 +60,17 @@ namespace Horizun.Revit.Commands
                     "' engine (registered: " + (engines == null ? "(none)" : string.Join(", ", engines)) + "). Nothing was linked.");
             foreach (PointCloudType existing in new FilteredElementCollector(doc).OfClass(typeof(PointCloudType)).Cast<PointCloudType>())
             {
-                string existingPath = ExternalPath(existing);
-                if (existingPath != null && string.Equals(System.IO.Path.GetFullPath(existingPath), System.IO.Path.GetFullPath(path),
-                        StringComparison.OrdinalIgnoreCase))
+                // PointCloudType is not an ExternalFileReference (no such ExternalFileReferenceType): GetPath is its file.
+                string existingPath = null;
+                try
+                {
+                    ModelPath mp = existing.GetPath();
+                    existingPath = mp == null ? null : ModelPathUtils.ConvertModelPathToUserVisiblePath(mp);
+                    if (!string.IsNullOrEmpty(existingPath)) existingPath = System.IO.Path.GetFullPath(existingPath);
+                }
+                catch { existingPath = null; }
+                if (!string.IsNullOrEmpty(existingPath) &&
+                    string.Equals(existingPath, System.IO.Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase))
                     return CommandResult.Fail("'" + path + "' is ALREADY LINKED as point cloud type " + Rid.Value(existing.Id) +
                         ". Nothing was linked.");
             }
@@ -115,17 +128,6 @@ namespace Horizun.Revit.Commands
             return VerifiedModelEdit.Run(app, gate, request, edit, "path", "kind");
         }
 
-        private static string ExternalPath(Element e)
-        {
-            try
-            {
-                if (!e.IsExternalFileReference()) return null;
-                ModelPath mp = e.GetExternalFileReference()?.GetAbsolutePath();
-                return mp == null ? null : ModelPathUtils.ConvertModelPathToUserVisiblePath(mp);
-            }
-            catch { return null; }
-        }
-
         // ---- scan_deviation (read-only) --------------------------------------------
         private static readonly BuiltInCategory[] ScanCategories =
             { BuiltInCategory.OST_Walls, BuiltInCategory.OST_Floors, BuiltInCategory.OST_StructuralColumns, BuiltInCategory.OST_Columns };
@@ -145,6 +147,12 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("scan_deviation needs link_instance_id naming a PointCloudInstance. Point clouds here: " +
                     (clouds.Count == 0 ? "(none)" : string.Join(", ", clouds)) + ".");
             }
+            // A cloud whose file is not found returns no points: every face would read "the scan did not see it".
+            string found = null;
+            try { found = (doc.GetElement(pc.GetTypeId()) as PointCloudType)?.FoundStatus.ToString(); } catch { found = null; }
+            if (found == "NotFound")
+                return CommandResult.Fail("cloud_not_found: the file of point cloud " + pcId + " is not found (PointCloudType.FoundStatus " +
+                    "NotFound), so no point can be read and no face measured. Repath or reload it first. Nothing was measured.");
             var idsToken = request["element_ids"] as JArray;
             if (idsToken == null || idsToken.Count == 0)
                 return CommandResult.Fail("scan_deviation needs element_ids: the walls, floors and columns whose faces are measured. " +
@@ -154,13 +162,13 @@ namespace Horizun.Revit.Commands
             double tol = request.Value<double?>("tolerance_mm") ?? LinkSurveyRules.DefaultToleranceMm;
             if (!(tol > 0) || tol > 1000) return CommandResult.Fail("tolerance_mm must be > 0 and <= 1000.");
             double bandMm = LinkSurveyRules.BandMm(tol);
-            double band = bandMm / 304.8, avg = LinkSurveyRules.AverageDistanceMm / 304.8;
+            double avg = LinkSurveyRules.AverageDistanceMm / 304.8;
             Transform tr;
             try { tr = pc.GetTotalTransform(); } catch { tr = Transform.Identity; }
 
             var rows = new JArray();
             var states = new List<string>();
-            int facesMeasured = 0, facesNotMeasured = 0, nonPlanarTotal = 0;
+            int facesMeasured = 0, facesNotMeasured = 0, nonPlanarTotal = 0, beyondTotal = 0;
             foreach (JToken tok in idsToken)
             {
                 long id = tok.Type == JTokenType.Integer ? tok.Value<long>() : -1;
@@ -175,14 +183,19 @@ namespace Horizun.Revit.Commands
                     row["category"] = e.Category?.Name; states.Add("not_measured"); continue;
                 }
                 row["category"] = e.Category.Name;
-                List<PlanarFace> faces = PlanarFaces(e, out int nonPlanar);
+                List<PlanarFace> faces = PlanarFaces(e, out int nonPlanar, out string geometryWhy);
                 nonPlanarTotal += nonPlanar;
+                if (faces.Count == 0 && nonPlanar == 0)
+                {
+                    row["state"] = "not_measured"; row["reason"] = geometryWhy ?? "no_solid_geometry";
+                    row["faces"] = new JArray(); states.Add("not_measured"); continue;
+                }
                 var faceRows = new JArray();
                 var faceStates = new List<string>();
                 int index = 0;
                 foreach (PlanarFace f in faces.Take(LinkSurveyRules.MaxFacesPerElement))
                 {
-                    JObject fv = MeasureFace(pc, tr, f, band, avg, tol);
+                    JObject fv = MeasureFace(pc, tr, f, faces, bandMm, avg, tol);
                     fv.AddFirst(new JProperty("face", index++));
                     fv["normal"] = new JArray(Math.Round(f.FaceNormal.X, 4), Math.Round(f.FaceNormal.Y, 4), Math.Round(f.FaceNormal.Z, 4));
                     fv["area_m2"] = Math.Round(f.Area * 0.09290304, 3);
@@ -191,15 +204,16 @@ namespace Horizun.Revit.Commands
                     faceStates.Add(st);
                     faceRows.Add(fv);
                 }
-                // A non-planar face is not sampled: it counts as a face nobody measured.
-                for (int k = 0; k < nonPlanar; k++) faceStates.Add("not_measured");
-                facesNotMeasured += nonPlanar;
-                string es = LinkSurveyRules.ElementState(faceStates);
+                // Non-planar faces and faces beyond the per-element limit are not sampled: they count as
+                // faces nobody measured, in the element's state and in the totals.
+                int beyond = Math.Max(0, faces.Count - LinkSurveyRules.MaxFacesPerElement);
+                facesNotMeasured += nonPlanar + beyond;
+                beyondTotal += beyond;
+                string es = LinkSurveyRules.ElementState(faceStates, nonPlanar + beyond);
                 row["state"] = es;
                 row["faces"] = faceRows;
                 if (nonPlanar > 0) row["non_planar_faces_not_measured"] = nonPlanar;
-                if (faces.Count > LinkSurveyRules.MaxFacesPerElement)
-                    row["faces_beyond_limit_not_measured"] = faces.Count - LinkSurveyRules.MaxFacesPerElement;
+                if (beyond > 0) row["faces_beyond_limit_not_measured"] = beyond;
                 states.Add(es);
             }
             var result = new JObject
@@ -209,6 +223,8 @@ namespace Horizun.Revit.Commands
                 ["verdict"] = LinkSurveyRules.Verdict(states),
                 ["tolerance_mm"] = tol,
                 ["band_mm"] = bandMm,
+                ["cloud_found_status"] = found,
+                ["min_coverage_share"] = LinkSurveyRules.MinCoverageShare,
                 ["average_distance_mm"] = LinkSurveyRules.AverageDistanceMm,
                 ["max_points_per_face"] = LinkSurveyRules.MaxPointsPerFace,
                 ["min_points_per_face"] = LinkSurveyRules.MinPointsPerFace,
@@ -221,19 +237,28 @@ namespace Horizun.Revit.Commands
                     ["not_measured"] = states.Count(s => s == "not_measured"),
                     ["faces_measured"] = facesMeasured,
                     ["faces_not_measured"] = facesNotMeasured,
-                    ["non_planar_faces"] = nonPlanarTotal
+                    ["non_planar_faces"] = nonPlanarTotal,
+                    ["faces_beyond_limit"] = beyondTotal
                 },
                 ["elements"] = rows,
-                ["note"] = "A face is judged on the 95th percentile of |distance|. Points farther than band_mm from a face are " +
-                           "never sampled, so a deviation beyond the band cannot be seen. A face with fewer than " +
-                           "min_points_per_face points is not_measured, never ok."
+                ["note"] = "A face is judged on the 95th percentile of |distance|. Points farther than band_mm outside a face " +
+                           "(or than band_inward_mm inside it, below half the element's thickness) are never sampled, so a " +
+                           "deviation beyond them cannot be seen. A face with fewer than min_points_per_face points, or under " +
+                           "min_coverage_share of the points its area should return, is not_measured, never ok; so are faces " +
+                           "that were not sampled, and an element with any of them is at best partially_measured."
             };
+            // Read-only: declared, so a plan step reads "nothing written" instead of an undeclared (uncertain) child.
+            ApplicationOutcome.StampApplied(result, ApplicationOutcome.NotStarted, 0, 0, 0, 0, 0, 0);
             return CommandResult.Ok(result);
         }
 
-        private static JObject MeasureFace(PointCloudInstance pc, Transform tr, PlanarFace f, double band, double avg, double tolMm)
+        private static JObject MeasureFace(PointCloudInstance pc, Transform tr, PlanarFace f, List<PlanarFace> all, double bandMm,
+                                           double avg, double tolMm)
         {
             XYZ n = f.FaceNormal.Normalize();
+            double? thicknessFt = ThicknessBehind(f, all);
+            double inwardMm = LinkSurveyRules.InwardBandMm(bandMm, thicknessFt * 304.8);
+            double band = bandMm / 304.8, inward = inwardMm / 304.8;
             BoundingBoxUV bb = f.GetBoundingBox();
             var corners = new[]
             {
@@ -243,7 +268,7 @@ namespace Horizun.Revit.Commands
             var planes = new List<Plane>
             {
                 Plane.CreateByNormalAndOrigin(n.Negate(), corners[0] + n * band),
-                Plane.CreateByNormalAndOrigin(n, corners[0] - n * band)
+                Plane.CreateByNormalAndOrigin(n, corners[0] - n * inward)
             };
             for (int i = 0; i < 4; i++)
             {
@@ -266,18 +291,19 @@ namespace Horizun.Revit.Commands
             {
                 return new JObject { ["points"] = 0, ["state"] = "not_measured", ["reason"] = "points_unreadable", ["note"] = ex.Message };
             }
-            // Which frame are the points in? The one where they lie inside the filter's volume.
+            // Which frame are the points in? The one where they lie inside the filter's volume - and only that one.
             List<XYZ> moved = tr.IsIdentity ? raw : raw.Select(p => tr.OfPoint(p)).ToList();
             int insideRaw = raw.Count(p => Inside(planes, p)), insideMoved = tr.IsIdentity ? insideRaw : moved.Count(p => Inside(planes, p));
-            List<XYZ> use = insideMoved >= insideRaw ? moved : raw;
-            string frame = tr.IsIdentity ? "identity" : insideMoved >= insideRaw ? "instance_transform" : "raw";
-            int inside = Math.Max(insideRaw, insideMoved);
-            if (raw.Count > 0 && inside * 2 < raw.Count)
+            string frame = LinkSurveyRules.PointFrame(tr.IsIdentity, raw.Count, insideRaw, insideMoved);
+            if (frame == null)
                 return new JObject
                 {
                     ["points"] = raw.Count, ["state"] = "not_measured", ["reason"] = "point_frame_undetermined",
-                    ["note"] = "fewer than half the returned points fall inside the sampled volume in either frame."
+                    ["inside_as_returned"] = insideRaw, ["inside_through_transform"] = insideMoved,
+                    ["note"] = "the returned points fall inside the sampled volume in neither frame, or in both (the instance " +
+                               "transform moves less than the band): which frame Revit returned cannot be told from this face."
                 };
+            List<XYZ> use = frame == "instance_transform" ? moved : raw;
             var signed = new List<double>();
             foreach (XYZ p in use)
             {
@@ -285,23 +311,47 @@ namespace Horizun.Revit.Commands
                 if (f.Project(p) == null) continue; // inside the UV rectangle but outside the face's own boundary
                 signed.Add((p - corners[0]).DotProduct(n) * 304.8);
             }
-            JObject v = LinkSurveyRules.FaceVerdict(signed, tolMm, LinkSurveyRules.MinPointsPerFace);
+            double expected = LinkSurveyRules.ExpectedPoints(f.Area * 0.09290304, LinkSurveyRules.AverageDistanceMm,
+                                                             LinkSurveyRules.MaxPointsPerFace);
+            JObject v = LinkSurveyRules.FaceVerdict(signed, tolMm, LinkSurveyRules.MinPointsPerFace, expected);
             v["points_returned"] = raw.Count;
-            v["point_frame"] = frame;
+            v["point_frame"] = raw.Count == 0 ? null : frame;
+            v["band_inward_mm"] = Math.Round(inwardMm, 1);
+            if (thicknessFt.HasValue) v["thickness_behind_mm"] = Math.Round(thicknessFt.Value * 304.8, 1);
             return v;
+        }
+
+        /// <summary>
+        /// Distance to the nearest antiparallel face of the same element behind this one - the material
+        /// the slab must not cross. Null when the element has none (the inward band then stays the band).
+        /// </summary>
+        private static double? ThicknessBehind(PlanarFace f, List<PlanarFace> all)
+        {
+            XYZ n = f.FaceNormal.Normalize();
+            double? best = null;
+            foreach (PlanarFace g in all)
+            {
+                if (ReferenceEquals(g, f) || g.FaceNormal.Normalize().DotProduct(n) > -0.999) continue;
+                double d = (f.Origin - g.Origin).DotProduct(n);
+                if (d > 1e-6 && (!best.HasValue || d < best.Value)) best = d;
+            }
+            return best;
         }
 
         private static bool Inside(List<Plane> planes, XYZ p)
             => planes.All(pl => (p - pl.Origin).DotProduct(pl.Normal) >= -1e-3);
 
-        private static List<PlanarFace> PlanarFaces(Element e, out int nonPlanar)
+        private static List<PlanarFace> PlanarFaces(Element e, out int nonPlanar, out string why)
         {
             var list = new List<PlanarFace>();
             nonPlanar = 0;
+            why = null;
             GeometryElement g;
             try { g = e.get_Geometry(new Options { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = false }); }
-            catch { return list; }
+            catch (Exception ex) { why = "geometry_unreadable: " + ex.Message; return list; }
+            if (g == null) { why = "geometry_unreadable: the element returned no geometry"; return list; }
             Collect(g, list, ref nonPlanar);
+            if (list.Count == 0 && nonPlanar == 0) why = "no_solid_geometry";
             return list;
         }
 

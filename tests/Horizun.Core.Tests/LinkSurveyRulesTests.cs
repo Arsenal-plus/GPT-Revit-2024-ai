@@ -100,6 +100,66 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Faces_nobody_sampled_keep_an_element_from_ok()
+        {
+            var sixtyOk = Enumerable.Repeat("ok", LinkSurveyRules.MaxFacesPerElement).ToList();
+            Assert.Equal("ok", LinkSurveyRules.ElementState(sixtyOk, 0));
+            // 62 planar faces (a wall with 14 openings): the two beyond the limit were never sampled.
+            Assert.Equal("partially_measured", LinkSurveyRules.ElementState(sixtyOk, 2));
+            Assert.Equal("fails", LinkSurveyRules.Verdict(new[] { LinkSurveyRules.ElementState(new[] { "deviates" }, 5) }));
+            Assert.Equal("not_decidable", LinkSurveyRules.Verdict(new[] { LinkSurveyRules.ElementState(sixtyOk, 1) }));
+            Assert.Equal("not_measured", LinkSurveyRules.ElementState(new string[0], 3));
+        }
+
+        [Fact]
+        public void A_face_seen_in_a_patch_is_not_measured_for_low_coverage()
+        {
+            // 10 m2 at 20 mm spacing is 25,000 points, capped by the 5,000 requested.
+            double expected = LinkSurveyRules.ExpectedPoints(10, LinkSurveyRules.AverageDistanceMm, LinkSurveyRules.MaxPointsPerFace);
+            Assert.Equal(LinkSurveyRules.MaxPointsPerFace, expected);
+            var patch = Enumerable.Repeat(1.0, 20).ToList();
+            JObject v = LinkSurveyRules.FaceVerdict(patch, 10, LinkSurveyRules.MinPointsPerFace, expected);
+            Assert.Equal("not_measured", (string)v["state"]);
+            Assert.Equal("low_coverage", (string)v["reason"]);
+            Assert.Equal(0.004, (double)v["coverage_share"], 6);
+            var covered = Enumerable.Repeat(1.0, 600).ToList();
+            Assert.Equal("ok", (string)LinkSurveyRules.FaceVerdict(covered, 10, LinkSurveyRules.MinPointsPerFace, expected)["state"]);
+            // A small face needs only its share: 0.02 m2 expects 50 points; 20 of them are enough.
+            double small = LinkSurveyRules.ExpectedPoints(0.02, LinkSurveyRules.AverageDistanceMm, LinkSurveyRules.MaxPointsPerFace);
+            Assert.Equal("ok", (string)LinkSurveyRules.FaceVerdict(patch, 10, LinkSurveyRules.MinPointsPerFace, small)["state"]);
+        }
+
+        [Fact]
+        public void The_slab_never_reaches_the_elements_own_opposite_face()
+        {
+            double band = LinkSurveyRules.BandMm(50);                       // 150 mm outward
+            Assert.Equal(40, LinkSurveyRules.InwardBandMm(band, 100), 6);   // a 100 mm partition: 40 mm inward, not 150
+            Assert.True(LinkSurveyRules.InwardBandMm(band, 100) < 50);
+            Assert.Equal(band, LinkSurveyRules.InwardBandMm(band, 1000), 6);
+            Assert.Equal(band, LinkSurveyRules.InwardBandMm(band, null), 6);
+        }
+
+        [Fact]
+        public void The_point_frame_is_taken_only_when_one_frame_holds()
+        {
+            Assert.Equal("identity", LinkSurveyRules.PointFrame(true, 100, 90, 90));
+            Assert.Null(LinkSurveyRules.PointFrame(true, 100, 10, 10));
+            Assert.Equal("instance_transform", LinkSurveyRules.PointFrame(false, 100, 5, 95));
+            Assert.Equal("raw", LinkSurveyRules.PointFrame(false, 100, 95, 5));
+            // A transform smaller than the band: both frames hold, so neither is assumed.
+            Assert.Null(LinkSurveyRules.PointFrame(false, 100, 95, 97));
+            Assert.Null(LinkSurveyRules.PointFrame(false, 100, 10, 20));
+        }
+
+        [Fact]
+        public void A_named_instance_of_a_type_placed_twice_is_left_for_Revit_to_answer()
+        {
+            Assert.Null(LinkSurveyRules.AcquireRefusal(901, new List<long> { 901, 902 }, 10000, 1, instanceNamed: true));
+            Assert.NotNull(LinkSurveyRules.AcquireRefusal(901, new List<long> { 901, 902 }, 10000, 1));
+            Assert.NotNull(LinkSurveyRules.AcquireRefusal(901, new List<long> { 901, 902 }, 0.2, 1, instanceNamed: true));
+        }
+
+        [Fact]
         public void The_band_always_exceeds_the_tolerance()
         {
             Assert.Equal(30, LinkSurveyRules.BandMm(5));

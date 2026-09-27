@@ -5477,9 +5477,9 @@ namespace Horizun.Contracts
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""unload"", ""reload"", ""pin"", ""unpin"", ""add"", ""add_instance"", ""change_path"", ""acquire_coordinates"", ""scan_deviation""], ""default"": ""list"" },
-    ""kind"": { ""type"": ""string"", ""enum"": [""rvt"", ""point_cloud"", ""ifc""], ""description"": ""add: defaults from the path's extension (.rvt, .rcp/.rcs, .ifc)."" },
-    ""path"": { ""type"": ""string"", ""description"": ""add / change_path: the absolute .rvt to link or repoint to - validated (exists, .rvt) before anything is touched. change_path IS the rewire: the dry run names path_before, path_after and every instance that re-resolves, and the apply re-reads the type's external path."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""unload"", ""reload"", ""pin"", ""unpin"", ""add"", ""add_instance"", ""change_path"", ""acquire_coordinates"", ""scan_deviation""], ""default"": ""list"", ""description"": ""acquire_coordinates: the host takes a link's shared site (rehearsed). scan_deviation: read-only faces vs a point cloud."" },
+    ""kind"": { ""type"": ""string"", ""enum"": [""rvt"", ""point_cloud"", ""ifc""], ""description"": ""add: from the extension (.rvt, .rcp/.rcs, .ifc); a year without the IFC importer refuses ifc_importer_unavailable."" },
+    ""path"": { ""type"": ""string"", ""description"": ""add: absolute .rvt, .rcp/.rcs or .ifc; change_path: the .rvt to repoint to. Validated before anything is touched."" },
     ""link_type_id"": { ""type"": ""integer"", ""description"": ""unload/reload: the RevitLinkType, from operation=list. add_instance: the loaded type to place AGAIN - Revit holds one link type per path, so a file linked twice is one type with two instances, and each placement's elements are measured on their own in a takeoff with include_links."" },
     ""link_instance_id"": { ""type"": ""integer"", ""description"": ""pin/unpin; acquire_coordinates: the RVT or CAD link instance; scan_deviation: the PointCloudInstance."" },
     ""element_ids"": { ""type"": ""array"", ""maxItems"": 200, ""items"": { ""type"": ""integer"" }, ""description"": ""scan_deviation: walls, floors, columns whose faces are measured."" },

@@ -77,7 +77,9 @@ namespace Horizun.Revit.Commands
                     return CommandResult.Fail("the link's shared coordinates could not be compared with the host's (" + why +
                         "), so the result could not be verified either. Nothing was written.");
             }
-            string refusal = LinkSurveyRules.AcquireRefusal(instanceId, siblings, deltaBefore, AcquireToleranceMm);
+            // The instance is always named here, so a type placed several times is Revit's to refuse: the
+            // rehearsal (a real transaction, rolled back) asks it, and its own message is what the caller hears.
+            string refusal = LinkSurveyRules.AcquireRefusal(instanceId, siblings, deltaBefore, AcquireToleranceMm, instanceNamed: true);
             if (refusal != null) return CommandResult.Fail(refusal);
 
             ProjectLocation loc = doc.ActiveProjectLocation;
@@ -103,6 +105,17 @@ namespace Horizun.Revit.Commands
             };
             foreach (var p in positionBefore.Properties()) edit.Before[p.Name] = p.Value.ToString();
             edit.Before["source_instance"] = instanceId.ToString();
+            // What decides the result is bound too: where the source instance sits (Revit acquires "based on the
+            // position of the linked model instance") and, for an RVT, the link's own site. A link moved or
+            // reloaded after the dry run refuses as a changed plan instead of acquiring a site nobody rehearsed.
+            Transform placed = source is Instance placedInstance ? placedInstance.GetTotalTransform() : null;
+            if (placed != null)
+            {
+                edit.Before["source_origin_mm"] = Xyz(placed.Origin * 304.8, 1);
+                edit.Before["source_basis_x"] = Xyz(placed.BasisX, 6);
+            }
+            if (deltaBefore.HasValue) edit.Before["same_site_delta_mm"] = Math.Round(deltaBefore.Value, 1).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            if (siblings.Count > 1) edit.Before["placements_of_type"] = string.Join(",", siblings);
             edit.Plan = new JObject
             {
                 ["source_instance_id"] = instanceId,
@@ -197,6 +210,13 @@ namespace Horizun.Revit.Commands
                 return worst;
             }
             catch (Exception ex) { why = "the CAD link's coordinates could not be compared: " + ex.Message; return null; }
+        }
+
+        private static string Xyz(XYZ v, int digits)
+        {
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            return Math.Round(v.X, digits).ToString("R", ci) + "," + Math.Round(v.Y, digits).ToString("R", ci) + "," +
+                   Math.Round(v.Z, digits).ToString("R", ci);
         }
 
         /// <summary>Same units horizun_manage_units base_points takes back (mm, degrees), so a caller can restore.</summary>
