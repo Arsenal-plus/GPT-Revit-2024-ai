@@ -15,7 +15,8 @@
 # not account for fails. The end-classification case is not_covered on a document with no
 # analytical element. Analytical members read for the own ones are deleted with them.
 # What was created is deleted at the end (and a system Revit made for a run, if it outlived
-# the run); the document is never saved.
+# the run). Types COPIED from a template are not deleted: they stay in the disposable document
+# and the cleanup case names them. The document is never saved.
 $script:HzProbeModules += [pscustomobject]@{
     Name    = 'rm-analysis'
     Catalog = @(
@@ -51,6 +52,7 @@ $script:HzProbeModules += [pscustomobject]@{
         # ---- staging (write tier only) --------------------------------------------------------
         $created = New-Object System.Collections.ArrayList
         $ownAnalytical = New-Object System.Collections.ArrayList
+        $copiedTypes = New-Object System.Collections.ArrayList
         $why = @{}
         $level = $null; $pipe = $null; $duct = $null; $beam = $null; $column = $null; $pipeSystem = $null; $ductSystem = $null
         if (-not $Ctx.WriteGate) {
@@ -80,7 +82,7 @@ $script:HzProbeModules += [pscustomobject]@{
                                 type_names = @($cand); duplicate_types = 'use_destination' } $k
                         if ($r.stage -eq 'apply' -and -not $r.answer.isError) {
                             $hit = Named @(Types $category) $cand
-                            if ($hit) { return $hit }
+                            if ($hit) { [void]$copiedTypes.Add([long]$hit.element_id); return $hit }
                             $why[$key] = "copied '$cand' from $(Split-Path $tpl -Leaf) but no type of that name reads back"
                         }
                         else { $why[$key] = (Split-Path $tpl -Leaf) + " '" + $cand + "': " + (Short $r.answer) }
@@ -148,12 +150,22 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $row) { Case $catalog[$index] $tools[$index] 'fail' "no row for the own $what system $sysId"; return }
             $status = [string]$row.calculation_status; $verdict = [string]$row.verdict
             $judged = @('within_limits', 'beyond_limits', 'no_limits_given', 'limits_partly_unmeasured')
+            # The API calls a badly connected system's calculated values invalid: nothing is read from it.
+            $invalid = @('not_well_connected', 'connectivity_unreadable')
+            $calc = ($status -eq 'calculated' -or $status -eq 'flow_only')
+            $nothingRead = ($status -eq 'not_calculated' -or $status -eq 'unreadable') -or ($calc -and $invalid -contains $verdict)
             $problems = @()
             if ([int]$a.data.system_count -ne 1) { $problems += "system_count $($a.data.system_count) for one id" }
-            if ($status -eq 'not_calculated' -or $status -eq 'unreadable') {
+            if (-not $row.coverage) { $problems += 'the system row carries no coverage word' }
+            if ($nothingRead) {
+                # One system nothing was read from: never judged, no critical path, never the whole truth.
                 if ($judged -contains $verdict) { $problems += "a $status system was judged '$verdict'" }
+                if ($row.coverage -and [string]$row.coverage -ne 'unreadable') { $problems += "row coverage '$($row.coverage)' for a system nothing was read from, expected unreadable" }
+                if ($a.data.coverage -and [string]$a.data.coverage.coverage -ne 'unreadable') { $problems += "reply coverage '$($a.data.coverage.coverage)' for one system nothing was read from, expected unreadable" }
+                if ($null -ne $row.critical_path) { $problems += 'a critical path was published for a system nothing was read from' }
+                if ($null -ne $row.critical_path_pressure_loss_pa) { $problems += 'a path loss was published for a system nothing was read from' }
             }
-            elseif ($status -eq 'calculated' -or $status -eq 'flow_only') {
+            elseif ($calc) {
                 if ($verdict -eq 'within_limits' -and @($row.unmeasured_limits).Count -gt 0) { $problems += 'within_limits with limits unmeasured: ' + (@($row.unmeasured_limits) -join ',') }
                 if ($judged -contains $verdict -and $null -eq $row.critical_path_sections) { $problems += "verdict '$verdict' with no critical path count" }
             }
@@ -162,7 +174,7 @@ $script:HzProbeModules += [pscustomobject]@{
             if ($problems.Count) { Case $catalog[$index] $tools[$index] 'fail' ($problems -join '; '); return }
             $first = @($row.critical_path) | Select-Object -First 1
             $numbers = if ($first) { "; first section flow $($first.flow_l_s) l/s, velocity $($first.velocity_m_s) m/s, loss $($first.pressure_loss_pa) Pa" } else { '' }
-            Case $catalog[$index] $tools[$index] 'pass' ("$status (level $($row.calculation_level)): verdict $verdict, $($row.critical_path_sections) critical-path section(s), path loss $($row.critical_path_pressure_loss_pa) Pa$numbers")
+            Case $catalog[$index] $tools[$index] 'pass' ("$status (level $($row.calculation_level), well connected $($row.is_well_connected)): verdict $verdict, coverage $($row.coverage), $($row.critical_path_sections) critical-path section(s), path loss $($row.critical_path_pressure_loss_pa) Pa$numbers")
         }
         ReadSystem 0 'duct' $duct $ductSystem @('level', 'ducttype', 'ductsystype', 'duct', 'ductsys')
         ReadSystem 1 'pipe' $pipe $pipeSystem @('level', 'pipetype', 'pipesystype', 'pipe', 'pipesys')
@@ -183,11 +195,12 @@ $script:HzProbeModules += [pscustomobject]@{
         else {
             $w = $whole.data; $problems = @()
             if ([string]$w.tolerance_source -ne 'caller' -or [math]::Abs([double]$w.tolerance_mm - 5) -gt 0.001) { $problems += "tolerance $($w.tolerance_mm) from '$($w.tolerance_source)', expected 5 from the caller" }
-            $reasonsText = if ($w.coverage) { $w.coverage | ConvertTo-Json -Depth 8 -Compress } else { '' }
+            # StructuralCoverage.Reason publishes { what, why, element_id? }: read the field, not the JSON text.
+            $reasonWhat = if ($w.coverage) { @($w.coverage.reasons | ForEach-Object { [string]$_.what }) } else { @() }
             if ($w.node_gaps_measured -eq $true) { if ($null -eq $w.member_ends_beyond_tolerance -or $null -eq $w.member_ends_supported) { $problems += 'gaps measured but member_ends_beyond_tolerance or member_ends_supported is null' } }
             elseif ($w.node_gaps_measured -eq $false) {
                 if ($null -ne $w.member_ends_beyond_tolerance) { $problems += 'gaps not measured but a count is given' }
-                if ($reasonsText -notmatch 'node_gaps') { $problems += 'gaps not measured and no coverage reason names node_gaps' }
+                if ($reasonWhat -notcontains 'node_gaps') { $problems += 'gaps not measured and no coverage reason names node_gaps' }
             }
             else { $problems += "node_gaps_measured is '$($w.node_gaps_measured)'" }
             if (-not $w.coverage) { $problems += 'no coverage block' }
@@ -259,6 +272,7 @@ $script:HzProbeModules += [pscustomobject]@{
         else {
             # Analytical members read for the own ones go first (the list is reversed).
             $ids = @(@($created) + @($ownAnalytical) | Select-Object -Unique)
+            $kept = if ($copiedTypes.Count) { '; types copied from a template stay in the disposable document: ' + (@($copiedTypes) -join ',') } else { '' }
             if ($ids.Count -eq 0) { Case $catalog[7] $tools[7] 'not_covered' 'nothing was created' }
             else {
                 [array]::Reverse($ids)
@@ -271,10 +285,10 @@ $script:HzProbeModules += [pscustomobject]@{
                         $q = & $Ctx.Call 'horizun_query_model' @{ element_ids = $systems; include_links = $false }
                         $left = if ($q.data) { @($q.data.rows | Where-Object { $_.element_id } | ForEach-Object { [long]$_.element_id }) } else { @() }
                     }
-                    if ($left.Count -eq 0) { Case $catalog[7] $tools[7] 'pass' ("deleted $($ids.Count) created ids; the run systems ($($systems -join ',')) went with their runs") }
+                    if ($left.Count -eq 0) { Case $catalog[7] $tools[7] 'pass' ("deleted $($ids.Count) created ids; the run systems ($($systems -join ',')) went with their runs$kept") }
                     else {
                         $del2 = & $Ctx.Apply $DeleteTool @{ target_document = $doc; mode = 'ids'; ids = $left; id_cap = 500 } ($run + '-rm-cleanup-systems')
-                        if ($del2.stage -eq 'apply' -and -not $del2.answer.isError) { Case $catalog[7] $tools[7] 'pass' ("deleted $($ids.Count) created ids, then the $($left.Count) run system(s) Revit had kept: $($left -join ',')") }
+                        if ($del2.stage -eq 'apply' -and -not $del2.answer.isError) { Case $catalog[7] $tools[7] 'pass' ("deleted $($ids.Count) created ids, then the $($left.Count) run system(s) Revit had kept: $($left -join ',')$kept") }
                         else { Case $catalog[7] $tools[7] 'fail' ('run systems left in the disposable document: ' + ($left -join ',') + ' - ' + (Short $del2.answer)) }
                     }
                 }

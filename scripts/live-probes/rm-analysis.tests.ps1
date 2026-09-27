@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 # Exercises rm-analysis.probes.ps1 WITHOUT Revit: its Run against fake Call/Apply.
 # The reply shapes are FROM THE CODE (PlanMepSystemAnalysis.cs, QueryStructureAnalytical.cs,
-# QueryStructureCommand.Ok, MepFacts.Json's connector.system), to be held against the first
-# live run - none of them is measured yet.
+# QueryStructureCommand.Ok, StructuralCoverage.Declare/Reason, MepFacts.Json's connector.system),
+# to be held against the first live run - none of them is measured yet.
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'rm-analysis.probes.ps1')
@@ -11,6 +11,12 @@ $fails = 0
 function Check($name, $ok) { if ($ok) { "  PASS  $name" } else { "  FAIL  $name"; $script:fails++ } }
 function Reply($data, $isError, $text) { @{ isError = $isError; data = $data; text = $text } }
 function Obj($h) { [pscustomobject]$h }
+# StructuralCoverage.Declare: { coverage, measured, not_measured, is_whole_truth, reasons[] },
+# each reason StructuralCoverage.Reason: { what, why, element_id? }.
+function Cov($word, [object[]]$reasons = @()) {
+    $whole = $word -eq 'complete'
+    Obj @{ coverage = $word; measured = $(if ($whole) { 1 } else { 0 }); not_measured = $(if ($whole) { 0 } else { 1 }); is_whole_truth = $whole; reasons = $reasons }
+}
 
 # A fake template root: the probe copies BY NAME from files that exist.
 $tpl = Join-Path $env:TEMP ('hz-rm-tpl-' + [guid]::NewGuid().ToString('N'))
@@ -30,12 +36,15 @@ function New-State {
     }
     $script:systemsLeft = @()
     $script:systemRow = { param($id, $classification) Obj @{ id = $id; class = $classification; calculation_level = 'None'; calculation_status = 'not_calculated'
-        verdict = 'not_calculated'; verdict_means = 'the system calculation level claims nothing'; critical_path = $null } }
+        is_well_connected = $true; verdict = 'not_calculated'; verdict_means = 'the system type calculates None: nothing was judged.'; critical_path = $null
+        critical_path_pressure_loss_pa = $null; unmeasured_limits = @('max_velocity_m_s', 'max_pressure_loss_pa'); coverage = 'unreadable'
+        coverage_reason = 'not_calculated: the system type calculates nothing this read may judge, so no number was read.' } }
+    $script:aggCoverage = $null
     $script:pwa = { Obj @{ checked = 2; count = 2; ids = @($script:byKind['structural_framing'], $script:byKind['structural_column']); coverage = 'complete' } }
     $script:wholeRows = { @(Obj @{ id = 9001; kind = 'member'; associated_physical_ids = @(); association = 'none'; coverage = 'complete'; node_gaps = @(); member = (Obj @{ releases = (Obj @{}) }) }) }
     $script:loads = { @(Obj @{ id = 900; kind = 'point'; load_case = (Obj @{ id = 50; name = 'DL1'; number = 1 }); nature = 'Dead'; host_id = $null; vector_frame = 'project'; point = (Obj @{ position_mm = @(0, 0, 0); force_kn = @(0, 0, -10) }); unread = @(); coverage = 'complete' }) }
     $script:unmatched = @()
-    $script:gaps = { @{ node_gaps_measured = $true; member_ends_beyond_tolerance = 0; member_ends_supported = 0; coverage = (Obj @{ coverage = 'complete'; reasons = @() }) } }
+    $script:gaps = { @{ node_gaps_measured = $true; member_ends_beyond_tolerance = 0; member_ends_supported = 0; coverage = (Cov 'complete') } }
 }
 
 $fakeCall = {
@@ -60,18 +69,22 @@ $fakeCall = {
             $id = [long]$arguments.element_ids[0]
             if ($id -ne 700 -and $id -ne 701) { return Reply $null $true "element_ids: $id is a Pipe, not a MechanicalSystem or PipingSystem. system_analysis reads systems; nothing was read." }
             $cls = if ($id -eq 700) { 'PipingSystem' } else { 'MechanicalSystem' }
-            return Reply (Obj @{ operation = 'system_analysis'; systems = @(& $script:systemRow $id $cls); system_count = 1; systems_beyond_limits = 0
-                                 coverage = (Obj @{ coverage = 'partial'; reasons = @() }) }) $false ''
+            $r = & $script:systemRow $id $cls
+            # One system: the call's word is the row's (StructuralCoverage.Weakest of one), its reason the row's cause.
+            $word = if ($script:aggCoverage) { $script:aggCoverage } elseif ($r.coverage) { [string]$r.coverage } else { 'partial' }
+            $rs = if ($word -eq 'complete') { @() } else { @(Obj @{ what = 'system'; why = [string]$r.coverage_reason; element_id = $id }) }
+            return Reply (Obj @{ operation = 'system_analysis'; systems = @($r); system_count = 1; systems_beyond_limits = 0
+                                 coverage = (Cov $word $rs) }) $false ''
         }
         'horizun_query_structure' {
             if ($arguments.mode -eq 'loads') {
                 $rows = @(& $script:loads)
                 return Reply (Obj @{ mode = 'loads'; matched = $rows.Count; returned = $rows.Count; rows = $rows; counts = (Obj @{ point = $rows.Count; line = 0; area = 0 }); by_load_case = (Obj @{ DL1 = $rows.Count })
-                                     units = (Obj @{ point_force = 'kN'; point_moment = 'kN*m'; line_force = 'kN/m'; area_force = 'kN/m2' }); coverage = (Obj @{ coverage = 'complete' }) }) $false ''
+                                     units = (Obj @{ point_force = 'kN'; point_moment = 'kN*m'; line_force = 'kN/m'; area_force = 'kN/m2' }); coverage = (Cov 'complete') }) $false ''
             }
             if ($arguments.element_ids) {
                 return Reply (Obj @{ mode = 'analytical'; matched = 0; rows = @(); physical_without_analytical = (& $script:pwa); unmatched_ids = $script:unmatched
-                                     tolerance_mm = 5; tolerance_source = 'caller'; node_gaps_measured = $true; member_ends_beyond_tolerance = 0; coverage = (Obj @{ coverage = 'complete' }) }) $false ''
+                                     tolerance_mm = 5; tolerance_source = 'caller'; node_gaps_measured = $true; member_ends_beyond_tolerance = 0; coverage = (Cov 'complete') }) $false ''
             }
             $g = & $script:gaps
             $rows = @(& $script:wholeRows)
@@ -125,6 +138,24 @@ try {
     Check 'types in the document are used by name - nothing copied' ($script:copies.Count -eq 0)
     Check 'the duct is rectangular with width and height, on its own system type' (($script:sent['t1-rm-duct'].elements[0].width -eq 400) -and ($script:sent['t1-rm-duct'].elements[0].system_type_id -eq 204))
 
+    # ---- a system nothing was read from: never complete, never a critical path ----
+    New-State
+    $script:aggCoverage = 'complete'
+    $b16 = RunWith 't16'
+    Check 'a lone not_calculated system under a complete reply fails' (($b16[$n[0]].Outcome -eq 'fail') -and ($b16[$n[0]].Detail -match "reply coverage 'complete'"))
+    New-State
+    $script:systemRow = { param($id, $classification) Obj @{ id = $id; calculation_level = 'All'; calculation_status = 'calculated'; is_well_connected = $false; verdict = 'not_well_connected'
+        verdict_means = 'Revit reports the system NOT well connected: ...'; critical_path = @(Obj @{ number = 1; velocity_m_s = 12.0 }); critical_path_pressure_loss_pa = $null
+        unmeasured_limits = @('max_velocity_m_s', 'max_pressure_loss_pa'); coverage = 'unreadable'; coverage_reason = 'not_well_connected: ...' } }
+    $b17 = RunWith 't17'
+    Check 'a not_well_connected system that still publishes a critical path fails' (($b17[$n[1]].Outcome -eq 'fail') -and ($b17[$n[1]].Detail -match 'critical path was published'))
+    New-State
+    $script:systemRow = { param($id, $classification) Obj @{ id = $id; calculation_level = 'All'; calculation_status = 'calculated'; is_well_connected = $false; verdict = 'not_well_connected'
+        verdict_means = 'Revit reports the system NOT well connected: ...'; critical_path = $null; critical_path_pressure_loss_pa = $null
+        unmeasured_limits = @('max_velocity_m_s', 'max_pressure_loss_pa'); coverage = 'unreadable'; coverage_reason = 'not_well_connected: ...' } }
+    $b19 = RunWith 't19'
+    Check 'a not_well_connected system read as nothing passes, saying so' (($b19[$n[1]].Outcome -eq 'pass') -and ($b19[$n[1]].Detail -match 'verdict not_well_connected, coverage unreadable'))
+
     # ---- a not_calculated system judged within_limits is a fail ----
     New-State
     $script:systemRow = { param($id, $classification) Obj @{ id = $id; calculation_level = 'None'; calculation_status = 'not_calculated'; verdict = 'within_limits'; unmeasured_limits = @() } }
@@ -133,12 +164,13 @@ try {
 
     # ---- calculated with numbers: pass with the numbers; within_limits with unmeasured limits fails ----
     New-State
-    $script:systemRow = { param($id, $classification) Obj @{ id = $id; calculation_level = 'All'; calculation_status = 'calculated'; verdict = 'within_limits'; unmeasured_limits = @()
-        critical_path_sections = 2; critical_path_pressure_loss_pa = 41.2; critical_path = @(Obj @{ number = 1; flow_l_s = 0.3; velocity_m_s = 1.1; pressure_loss_pa = 20.6 }) } }
+    $script:systemRow = { param($id, $classification) Obj @{ id = $id; calculation_level = 'All'; calculation_status = 'calculated'; is_well_connected = $true; verdict = 'within_limits'; unmeasured_limits = @()
+        critical_path_sections = 2; critical_path_pressure_loss_pa = 41.2; critical_path = @(Obj @{ number = 1; flow_l_s = 0.3; velocity_m_s = 1.1; pressure_loss_pa = 20.6 }); coverage = 'complete'; coverage_reason = $null } }
     $b3 = RunWith 't3'
     Check 'a calculated system passes with its numbers named' (($b3[$n[1]].Outcome -eq 'pass') -and ($b3[$n[1]].Detail -match 'velocity 1.1'))
     New-State
-    $script:systemRow = { param($id, $classification) Obj @{ id = $id; calculation_status = 'calculated'; verdict = 'within_limits'; unmeasured_limits = @('max_velocity_m_s'); critical_path_sections = 1 } }
+    $script:systemRow = { param($id, $classification) Obj @{ id = $id; calculation_status = 'calculated'; is_well_connected = $true; verdict = 'within_limits'; unmeasured_limits = @('max_velocity_m_s'); critical_path_sections = 1
+        coverage = 'partial'; coverage_reason = '1 section limit(s) unmeasured (unmeasured_limits).' } }
     $b4 = RunWith 't4'
     Check 'within_limits with a limit unmeasured fails' (($b4[$n[1]].Outcome -eq 'fail') -and ($b4[$n[1]].Detail -match 'unmeasured'))
 
@@ -166,13 +198,19 @@ try {
 
     # ---- node gaps unmeasured without a reason is a fail; with a reason, a pass ----
     New-State
-    $script:gaps = { @{ node_gaps_measured = $false; member_ends_beyond_tolerance = $null; coverage = (Obj @{ coverage = 'partial'; reasons = @() }) } }
+    $script:gaps = { @{ node_gaps_measured = $false; member_ends_beyond_tolerance = $null; coverage = (Cov 'partial') } }
     $b8 = RunWith 't8'
     Check 'gaps unmeasured with no reason naming node_gaps fail' (($b8[$n[4]].Outcome -eq 'fail') -and ($b8[$n[4]].Detail -match 'node_gaps'))
     New-State
-    $script:gaps = { @{ node_gaps_measured = $false; member_ends_beyond_tolerance = $null; coverage = (Obj @{ coverage = 'partial'; reasons = @(Obj @{ scope = 'node_gaps'; reason = 'too many' }) }) } }
+    $script:gaps = { @{ node_gaps_measured = $false; member_ends_beyond_tolerance = $null
+        coverage = (Cov 'partial' @(Obj @{ what = 'node_gaps'; why = 'ends x segments exceeds 50000000 checks; narrow with element_ids. Node gaps were NOT measured, which is not the same as none.' })) } }
     $b9 = RunWith 't9'
     Check 'gaps unmeasured and named pass' ($b9[$n[4]].Outcome -eq 'pass')
+    New-State
+    $script:gaps = { @{ node_gaps_measured = $false; member_ends_beyond_tolerance = $null
+        coverage = (Cov 'partial' @(Obj @{ what = 'supports'; why = '1 boundary condition(s) would not give their geometry - node_gaps may be off' })) } }
+    $b18 = RunWith 't18'
+    Check 'a reason that says node_gaps only in its why text does not name the unmeasured check' (($b18[$n[4]].Outcome -eq 'fail') -and ($b18[$n[4]].Detail -match 'no coverage reason names node_gaps'))
 
     # ---- a type absent from the document is copied BY NAME from the template ----
     New-State
@@ -180,6 +218,7 @@ try {
     $b10 = RunWith 't10'
     $copy = @($script:copies | Where-Object { $_.category -eq 'OST_PipeCurves' }) | Select-Object -First 1
     Check 'the pipe type is copied by name with its category, never the first type' ($copy -and ($copy.type_names[0] -eq 'Pipe Types: Default') -and ($copy.source_path -match 'Systems-Default_Metric.rte$') -and ($script:sent['t10-rm-pipe'].elements[0].type_id -eq 800))
+    Check 'a copied type is not deleted and the cleanup case names it as kept' (($b10[$n[7]].Outcome -eq 'pass') -and ($b10[$n[7]].Detail -match 'stay in the disposable document: 800') -and (@($script:deleted[0]) -notcontains 800))
 
     # ---- a leftover run system is deleted in a second call ----
     New-State
