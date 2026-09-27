@@ -158,7 +158,7 @@ namespace Horizun.Revit.Core
                 F(C + "ModelDiffColorize.cs"),
                 "ModelDiffColorize.cs: only the projection line colour of each override is re-read; the surface pattern is set but not compared."),
             Row("horizun_manage_views", VerificationMechanism.PerRowReread, E("actions_verified", "application"),
-                F(C + "ManageViewsCommand.cs", C + "ManageViewsGraphics.cs", C + "ManageViewsLegends.cs", C + "ManageViewsControl.cs", C + "ManageViewsRenumber.cs", C + "ManageViewsPerspective.cs"),
+                F(C + "ManageViewsCommand.cs", C + "ManageViewsGraphics.cs", C + "ManageViewsLegends.cs", C + "ManageViewsControl.cs", C + "ManageViewsRenumber.cs", C + "ManageViewsPerspective.cs", C + "ManageViewsSunStudy.cs"),
                 "ManageViewsControl.cs order_filters: restored overrides are compared on the fields the precedence report reads, not background patterns or detail level."),
             Row("horizun_link_schedule", VerificationMechanism.PerRowReread, E("verification", "overrides_verified", "postcondition", "application"),
                 F(C + "LinkScheduleCommand.cs", C + "LinkScheduleWrite.cs", C + "LinkScheduleStatusView.cs"),
