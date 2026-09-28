@@ -153,7 +153,9 @@ $script:HzProbeModules += [pscustomobject]@{
         # could be chosen - measured 2026-09-26), and delete both afterwards.
         $staged = @()
         $stageNote = $null
-        if ($panels.Count -eq 0) {
+        # Always an own panel, tried first: the 2023 release model's panels ALL carry a panel
+        # schedule already (MEASURED 2026-09-27, v2.1.3 gate), so an existing panel proves nothing.
+        if ($true) {
             $tpl = "C:\ProgramData\Autodesk\RVT $($Ctx.Year)\Templates\English\Electrical-Default_Metric.rte"
             $panelName = 'M_Lighting and Appliance Panelboard - 208V MLO: 100 A'
             if (-not (Test-Path -LiteralPath $tpl)) { $stageNote = "no electrical template at $tpl" }
@@ -173,6 +175,7 @@ $script:HzProbeModules += [pscustomobject]@{
                     else { $stageNote = 'the panelboard could not be placed: ' + $(if ($pn) { Short $pn.answer } else { 'no host wall: ' + (Short $wl.answer) }) }
                     $pl = & $Ctx.Call 'horizun_electrical' (@{ operation = 'list_panels' } + $readArgs)
                     $panels = @($pl.data.panels) | Where-Object { $_.is_panel -eq $true }
+                    $panels = @(@($panels | Where-Object { $staged -contains [long]$_.id }) + @($panels | Where-Object { $staged -notcontains [long]$_.id }))
                 }
             }
         }

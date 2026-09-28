@@ -1,0 +1,27 @@
+{
+  "_comment": "Named release-gate exemptions, docs/RELEASE-POLICY.md#named-release-gate-exemption. Each case may be NOT COVERED in a stable release gate only with a detail that starts with its reason. Adding one needs the project owner's written approval.",
+  "exemptions": [
+    {
+      "case": "links-survey: scan_deviation measures the top face of a floor staged on a scanned floor",
+      "reason_prefix": "fixture PointCloudFloor",
+      "approved": "2026-09-27, project owner",
+      "why": "the release runner's only point cloud is sparse (about one point per square metre)",
+      "years": [
+        2023,
+        2024,
+        2025,
+        2026,
+        2027
+      ]
+    },
+    {
+      "case": "design options: list reports option sets, options and the primary",
+      "reason_prefix": "rac_advanced_sample_project (the only sample of this year) carries no design options",
+      "years": [
+        2023
+      ],
+      "approved": "2026-09-27, project owner",
+      "why": "Revit's API cannot create design options and Autodesk's only 2023 sample has none; 2024-2027 measure it"
+    }
+  ]
+}

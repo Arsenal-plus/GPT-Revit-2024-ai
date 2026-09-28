@@ -327,9 +327,11 @@ try {
     if ($verifyExit -ne 0) { throw "verify-live.ps1 failed with exit $verifyExit; the JSON report was preserved at $Json." }
 
     $report = Get-Content $Json -Raw | ConvertFrom-Json
+    . (Join-Path $PSScriptRoot 'release-gate-exemptions.ps1')
+    # not_covered rows other than the named exemptions (docs/RELEASE-POLICY.md) fail the gate.
     if (-not $report.release_gate -or -not $report.write_tier.requested -or
         $report.summary.failed -ne 0 -or $report.summary.unverified -ne 0 -or
-        $report.summary.not_covered -ne 0) {
+        @(Get-HzGateNotCovered $report).Count -ne 0) {
         throw "The live report is not a complete green release gate: $($report.summary | ConvertTo-Json -Compress)"
     }
     # STRUCTURAL COHERENCE, checked where the verdict is consumed. A report whose

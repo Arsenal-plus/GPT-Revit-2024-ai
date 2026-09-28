@@ -86,7 +86,8 @@ $r = Invoke-Probe $f $false
 Check 'every catalogued case is reported' (@($module.Catalog | Where-Object { -not $r.ContainsKey($_.Name) }).Count -eq 0)
 Check 'every case passes against well-behaved tools' (@($r.Values | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
 Check 'the length accuracy is restored to its original value' ($f.State.accuracy -eq 0.01)
-Check 'what the probe created is deleted again' (@($f.State.applied | Where-Object { $_ -like 'horizun_delete_verified*' }).Count -eq 3)
+# Four: the three probe objects plus the own panel and its wall, staged even when the model has panels.
+Check 'what the probe created is deleted again' (@($f.State.applied | Where-Object { $_ -like 'horizun_delete_verified*' }).Count -eq 4)
 
 $sched = 'electrical: create a panel schedule for a panel without one and re-read its panel'
 $f = New-Fakes $false $false $false
