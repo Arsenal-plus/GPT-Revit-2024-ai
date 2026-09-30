@@ -164,6 +164,7 @@ Copy-Item (Join-Path $repo 'scripts\stop-installed-server.ps1') $clientTools -Fo
 Copy-Item (Join-Path $repo 'scripts\hz-call.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\uninstall-cleanup.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\toml-section.lib.ps1') $clientTools -Force
+Copy-Item (Join-Path $repo 'scripts\mcp-legacy-registrations.lib.ps1') $clientTools -Force
 # The desktop and ChatGPT Work integrations and their libraries travel with the installer,
 # because a shortcut that dot-sources a file the installer did not stage fails
 # at the first line with a message about a path.
