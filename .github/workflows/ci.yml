@@ -25,6 +25,16 @@ on:
 permissions:
   contents: read
 
+# ONE RUN AT A TIME. Every job that needs Revit runs on the same self-hosted machine,
+# and a release pushes main and a v* tag at once: the two runs raced for that runner
+# and it dropped jobs as cancelled (v2.1.3's Revit 2023 build, main's Revit 2027 build
+# at v2.1.4), which left main's badge red over a job that never ran. The second run
+# now waits for the first. Nothing is cancelled here: a newer run waits in line and
+# only replaces an OLDER one that has not started (GitHub keeps one pending run).
+concurrency:
+  group: ci-self-hosted-revit
+  cancel-in-progress: false
+
 jobs:
   # ---------------------------------------------------------------------------
   # Everything provable without Revit. This is the gate for merging.
