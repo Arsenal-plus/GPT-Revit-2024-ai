@@ -133,8 +133,15 @@ namespace Horizun.Revit.Core
         /// <summary>True when opening this WILL upgrade it. False for a cloud model: unknowable.</summary>
         public bool WillUpgrade { get; internal set; }
 
-        /// <summary>"checked" or "not_applicable_cloud". Never blank, never implied.</summary>
+        /// <summary>"checked", "not_applicable_cloud" or "not_applicable_already_open". Never blank, never implied.</summary>
         public string VersionGuard { get; internal set; }
+
+        /// <summary>
+        /// The document already open in this session at the requested path, when the request
+        /// is an activation of it (OpenDecision.IsActivationOnly). Null otherwise - including
+        /// when the path is open but detach or audit asked for a real open.
+        /// </summary>
+        public Document AlreadyOpen { get; internal set; }
 
         /// <summary>How the central guard was satisfied: detached, open_central, not_a_central.</summary>
         public string CentralGuard { get; internal set; }
@@ -192,7 +199,7 @@ namespace Horizun.Revit.Core
                     "Nothing to open: pass 'path' for a local .rvt/.rfa, or cloud_project_guid + " +
                     "cloud_model_guid for a model in ACC / BIM 360.");
 
-            OpenFacts facts = wantsCloud ? GatherCloud(plan, r) : GatherLocal(plan, r);
+            OpenFacts facts = wantsCloud ? GatherCloud(plan, r) : GatherLocal(app, plan, r);
             if (facts == null) return plan;           // gathering already refused, with a reason
 
             OpenVerdict verdict = OpenDecision.Decide(facts, new OpenIntent
@@ -201,10 +208,12 @@ namespace Horizun.Revit.Core
                 ExpectedVersionRequired = r.ExpectedVersionRequired,
                 AllowUpgrade = r.AllowUpgrade,
                 Detach = r.Detach,
-                OpenCentral = r.OpenCentral
+                OpenCentral = r.OpenCentral,
+                Audit = r.Audit
             });
 
             plan.VersionGuard = verdict.VersionGuard;
+            if (verdict.ActivationOnly) plan.AlreadyOpen = FindOpen(app, r.Path);
             plan.WillUpgrade = verdict.WillUpgrade;
             plan.CentralGuard = verdict.CentralGuard;
             if (!verdict.Ok) return Refuse(plan, verdict.Refusal);
@@ -302,7 +311,7 @@ namespace Horizun.Revit.Core
         }
 
         // ------------------------------------------------------------------ local
-        private static OpenFacts GatherLocal(OpenPlan plan, OpenRequest r)
+        private static OpenFacts GatherLocal(UIApplication app, OpenPlan plan, OpenRequest r)
         {
             string path = r.Path;
 
@@ -337,8 +346,31 @@ namespace Horizun.Revit.Core
                 IsCentral = plan.FileIsCentral,
                 DisplayName = FileName(path),
                 Path = path,
-                CentralPath = plan.CentralPath
+                CentralPath = plan.CentralPath,
+                AlreadyOpenInSession = FindOpen(app, path) != null
             };
+        }
+
+        /// <summary>
+        /// The non-linked document open in this session at this path, or null. Compared with
+        /// DocIdentity.SamePath (case and separator insensitive), the rule document_session's
+        /// already-open branch uses, so the guard and that branch cannot disagree about it.
+        /// </summary>
+        internal static Document FindOpen(UIApplication app, string path)
+        {
+            if (app == null || string.IsNullOrWhiteSpace(path)) return null;
+            try
+            {
+                foreach (Document d in app.Application.Documents)
+                {
+                    if (d == null || d.IsLinked) continue;
+                    string p = null;
+                    try { p = d.PathName; } catch { }
+                    if (DocIdentity.SamePath(p, path)) return d;
+                }
+            }
+            catch { }
+            return null;
         }
 
         // ------------------------------------------------------------------ after

@@ -236,8 +236,8 @@ workbook with `ExcelWriteRows.MinimalWorkbook` plus `horizun_excel_write_rows`,
 write a takeoff reply as JSON by hand, run the compare, and read the report
 back with `horizun_excel_read_rows`. From an MCP client:
 
-1. `horizun_excel_write_rows` onto a fresh `.xlsx` (or any workbook you do not
-   mind touching) with a header `Codigo, Descripcion, Und, Cantidad, Precio`
+1. `horizun_excel_write_rows` with `create_if_missing: true` onto a new `.xlsx`
+   path (or any workbook you do not mind touching) with a header `Codigo, Descripcion, Und, Cantidad, Precio`
    and a few lines.
 2. Save a takeoff reply to a temp `.json` - a real one from `horizun_quantities`
    mode `takeoff`, or a hand-written `{"mode":"takeoff","truncated":false,

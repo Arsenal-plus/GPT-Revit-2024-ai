@@ -510,6 +510,12 @@
          strings and four booleans, and they lived in two large command files in two
          versions that had quietly diverged. Split out so the whole table is here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDecision.cs" />
+    <!-- When write_params_verified calls SetAllowVaryBetweenGroups (defect #15). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\VaryBetweenGroupsRules.cs" />
+    <!-- document_session new_project: target, template and token rules (defect #18). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\NewProjectRules.cs" />
+    <!-- response_mode=summary for create_elements and clash (defect #17). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ResponseSummaryRules.cs" />
     <!-- How on_open_dialog parses (5.22). The enum and the parse rule are Revit-free;
          the watcher that acts on the answer needs a Revit and is not here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDialogPolicy.cs" />

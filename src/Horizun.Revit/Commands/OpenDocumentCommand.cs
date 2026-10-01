@@ -200,6 +200,7 @@ namespace Horizun.Revit.Commands
         private static CommandResult OpenLocal(UIApplication app, OpenPlan plan, OpenRequest r)
         {
             string path = r.Path;
+            if (plan.AlreadyOpen != null) return ActivateOpen(app, plan, r);
 
             Document opened;
             try
@@ -268,6 +269,81 @@ namespace Horizun.Revit.Commands
                       plan.HostVersion + ". That is permanent. Saving it writes the new version to disk; closing " +
                       "without saving leaves the file on disk as it was."
                     : null
+            });
+        }
+
+        // ---------------------------------------------------------------- already open
+        /// <summary>
+        /// The path is already open in this session: ACTIVATE it, never open it again. No
+        /// upgrade guard ran, because none applies - the document is in memory already and
+        /// this call cannot change its version. It used to demand allow_upgrade here, read
+        /// off a disk header that still said 2023 for a model an earlier open had upgraded
+        /// in memory (course dry run 2026-09-30, defect #13). Activation goes through the
+        /// same bare-path OpenAndActivateDocument document_session uses for this case, and
+        /// is proven like an open: the active document must be that document, at that path.
+        /// </summary>
+        private static CommandResult ActivateOpen(UIApplication app, OpenPlan plan, OpenRequest r)
+        {
+            Document already = plan.AlreadyOpen;
+            Document before = app.ActiveUIDocument != null ? app.ActiveUIDocument.Document : null;
+            bool wasActive = OpenGuard.SameDocument(before, already);
+            if (!wasActive)
+            {
+                try
+                {
+                    using (Interference.WithDialogAnswer(r.OnOpenDialog))
+                        app.OpenAndActivateDocument(r.Path);
+                }
+                catch (Exception ex)
+                {
+                    return CommandResult.Fail(
+                        "The requested document is already open in this session, but Revit refused to make it " +
+                        "active: " + ex.Message + ". It remains open in the background; nothing was opened or " +
+                        "upgraded by this call.");
+                }
+            }
+
+            Document nowActive = app.ActiveUIDocument != null ? app.ActiveUIDocument.Document : null;
+            string activePath = nowActive != null ? nowActive.PathName : null;
+            if (!OpenGuard.SameDocument(nowActive, already) || !PathsEqual(activePath, r.Path))
+                return CommandResult.Fail(
+                    "The requested document is already open, but it is NOT proven active after the activation " +
+                    "attempt (active_path='" + (activePath ?? "(none)") + "', requested_path='" + r.Path + "'). " +
+                    "Refusing to report success: the next command would target another document.");
+
+            return CommandResult.Ok(new
+            {
+                opened = false,
+                opened_now = false,
+                already_open = true,
+                status = wasActive ? "already_open_and_active" : "already_open_activated",
+                confirmed_active = true,
+                source = "local",
+                path_matches_request = true,
+                requested_path = r.Path,
+                active_document = nowActive.Title,
+                active_path = activePath,
+                file_saved_in_version = plan.FileVersion,
+                running_revit_version = plan.HostVersion,
+                version_guard = plan.VersionGuard,
+                upgraded_on_open = false,
+                detached = false,
+                audited = false,
+                all_worksets_opened = false,
+                was_central = plan.FileIsCentral,
+                central_path = plan.CentralPath,
+                is_workshared = plan.FileIsWorkshared,
+                central_guard = plan.CentralGuard,
+                note = "This document was already open in this session, so it was ACTIVATED, not opened again: this " +
+                       "call opened, upgraded and modified nothing, and needed no allow_upgrade. file_saved_in_version " +
+                       "is the header ON DISK" +
+                       (plan.FileVersion == null
+                           ? " (unreadable here)."
+                           : OpenGuard.SameVersion(plan.FileVersion, plan.HostVersion)
+                           ? "."
+                           : ", which differs from this Revit (" + plan.HostVersion + "): the document in memory " +
+                             "was upgraded when it was first opened, and saving it writes Revit " + plan.HostVersion +
+                             " over that file.")
             });
         }
 

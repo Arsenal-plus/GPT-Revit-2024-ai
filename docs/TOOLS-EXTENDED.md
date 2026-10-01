@@ -895,6 +895,36 @@ con token y rollback si la relectura no coincide.
 
 
 
+## Smaller replies: `response_mode: "summary"` for `horizun_create_elements` and `horizun_clash`
+
+Course dry run 2026-09-30 (defect #17): `horizun_create_elements` of 75 walls answered
+262-276 kB and `horizun_clash` with 165 interferences 58 kB, over the client's limit, so
+the reply was truncated to a file. Both now take the `response_mode` the reads already
+use (`full`, the default, changes nothing). It is presentation only: the measured verdict,
+counts, coverage and headline are untouched, and every shortened array is named in
+`response_omissions` (`json_pointer`, `returned_items_before_summary`, `shown`,
+`omitted`) with `response_detail_complete`, as `horizun_model_scan` does.
+
+- **create_elements** (`rows`, and `api_rehearsal.provisional_verification` of a
+  `revit_rollback` rehearsal): a row that did not verify, whose postconditions did not
+  all verify, whose source comparison did not match, that carries an error or warnings,
+  or whose element the `spatial_check` names stays IN FULL. The rest collapse into
+  `rows_summary` - `total`, `by_status` (`verified_clean`, `verified_with_findings`,
+  `not_verified`), `by_kind` and `collapsed_element_ids`. Re-read any of them with
+  `horizun_query_model element_ids`. Shaped by the dispatcher after the spatial check,
+  so the rows it names are known. The confirmation token does not bind
+  `response_mode`: a summary rehearsal can be applied in full, and the other way round.
+- **clash**: `clash_summary` with totals by category pair and source model
+  (`by_pair`), the total intersection volume and the cross-model count, plus the 10
+  largest clashes by volume in full, each with its `clash_index` in the full list. The
+  rest: `horizun_coordination` (with `record_findings: true`) or the same request with
+  `response_mode: "full"` - `expand` names which. Refused with `plan_penetrations`,
+  whose plan cites clashes by index.
+
+MEASURED offline on synthetic replies shaped like the real ones
+(`ResponseSummaryRulesTests`): 75 clean walls 198,370 -> 1,444 bytes; 165 clashes in the
+course run's category mix 51,545 -> 5,041 bytes. Not yet measured on a live reply.
+
 ## Clash resolution and batch undo
 
 ### horizun_resolve_clash
@@ -3141,6 +3171,37 @@ names the active project position, the file is rewritten through its inverse so 
 at the probe's own X, and the case records the position it used (an identity one leaves the
 rotated-position sign unexercised); in 2023 a `landxml_path` row must bring the same named
 refusal. Everything is deleted with `horizun_delete_verified` `mode: "ids"`; nothing is saved.
+
+## horizun_document_session — operation `new_project`
+
+Creates a blank project from a template and saves it: `save_as_path` (required, an
+absolute `.rvt` that must **not** exist) and `template_path` (optional `.rte`). Without
+`template_path` it uses this Revit's own `Application.DefaultProjectTemplate` (Options >
+File Locations, set per locale by the installer) and says so in `template_source`; when
+none is configured, or it is not on disk, the call is refused and names where Autodesk's
+templates usually live. A project with no template is never created in its place.
+
+- **Never overwrites.** There is no `overwrite` for this operation; an existing file, or a
+  path whose existence cannot be tested, is refused. A template from a newer Revit is
+  refused; an older one is upgraded in memory only and the template file is never written.
+- **Rehearses by default.** `dry_run` defaults to true (as for `sync_with_central`): the
+  rehearsal reads both paths and the template header and returns a `confirmation_token`
+  bound to the template (path, size, write time) and the target. Apply with the same
+  arguments, `dry_run: false`, that token and a new `idempotency_key`.
+- **Verified by re-reading.** `Application.NewProjectDocument(template)` then `SaveAs`
+  with `OverwriteExistingFile = false`; afterwards the file must exist with a size and a
+  header that reads this host's Revit year, and the document's `PathName` must be the
+  requested path. Either check failing closes the document without saving and deletes the
+  file this call wrote, so the path is empty again.
+- **Activation is reported, not assumed.** The API activates a document only through
+  `UIApplication.OpenAndActivateDocument`; the operation uses the same bare-path call as an
+  `open` of an already-open document and re-reads the active document. `activated: false`
+  (with `activation_note`) means the project is created, saved and open in the background.
+
+Course dry run 2026-09-30 (defect #18): without this the run fell back to a copy of
+another model plus a new level, which modified 172 unrelated elements. Live probe:
+`scripts/live-probes/document-session-new-project.probes.ps1` (offline tests in its
+`.tests.ps1`); not yet run in Revit.
 
 ## horizun_document_session — operation `sync_with_central`
 

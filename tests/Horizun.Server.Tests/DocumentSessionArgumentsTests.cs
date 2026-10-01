@@ -32,10 +32,10 @@ namespace Horizun.Server.Tests
             Assert.Contains("does not support", ToolInputRules.ValidateSession(new JObject { ["dry_run"] = true }, "open"));
         }
         [Fact]
-        public void Published_contract_has_six_disjoint_operation_variants()
+        public void Published_contract_has_seven_disjoint_operation_variants()
         {
             var variants = (JArray)Contract.Find("horizun_document_session").InputSchema["oneOf"];
-            Assert.Equal(6, variants.Count);
+            Assert.Equal(7, variants.Count);
             foreach (var variant in variants)
                 Assert.False((bool)variant["additionalProperties"]);
         }
@@ -59,6 +59,42 @@ namespace Horizun.Server.Tests
             Assert.Contains("detach", ToolInputRules.ValidateSession(new JObject
             { ["operation"] = "sync_with_central", ["target_document"] = "A", ["detach"] = true }, "sync_with_central"));
         }
+        [Fact]
+        public void New_project_takes_its_target_template_and_token_and_rehearses_by_default()
+        {
+            // Course dry run 2026-09-30, defect #18: there was no typed way to create a blank project.
+            var schema = Contract.Find("horizun_document_session").InputSchema;
+            Assert.Contains("new_project", schema["properties"]["operation"]["enum"].Select(t => (string)t));
+            var variant = ((JArray)schema["oneOf"])
+                .Single(v => (string)v["properties"]["operation"]["const"] == "new_project");
+            Assert.Contains("save_as_path", variant["required"].Select(t => (string)t));
+            Assert.True((bool)variant["properties"]["dry_run"]["default"]);
+            Assert.NotNull(variant["properties"]["template_path"]);
+            Assert.NotNull(variant["properties"]["confirmation_token"]);
+
+            Assert.Null(ToolInputRules.ValidateSession(new JObject
+            {
+                ["operation"] = "new_project", ["save_as_path"] = "C:/P/Nuevo.rvt",
+                ["template_path"] = "C:/T/a.rte", ["dry_run"] = true
+            }, "new_project"));
+            Assert.Null(ToolInputRules.ValidateSession(new JObject
+            {
+                ["operation"] = "new_project", ["save_as_path"] = "C:/P/Nuevo.rvt",
+                ["dry_run"] = false, ["confirmation_token"] = "t", ["idempotency_key"] = "k"
+            }, "new_project"));
+        }
+
+        [Theory]
+        [InlineData("overwrite")]          // there is no overwrite for new_project, by design
+        [InlineData("target_document")]
+        [InlineData("expected_version")]
+        [InlineData("compact")]
+        public void New_project_refuses_arguments_that_are_not_its_own(string field)
+        {
+            var request = new JObject { ["operation"] = "new_project", ["save_as_path"] = "C:/P/Nuevo.rvt", [field] = true };
+            Assert.Contains(field, ToolInputRules.ValidateSession(request, "new_project"));
+        }
+
         [Fact]
         public void Profiles_have_three_array_dimensions_and_categories_reject_ignored_fields()
         {

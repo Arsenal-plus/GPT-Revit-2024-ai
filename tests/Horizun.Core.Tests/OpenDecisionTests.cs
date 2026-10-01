@@ -429,5 +429,71 @@ namespace Horizun.Core.Tests
             Assert.Throws<ArgumentNullException>(() => OpenDecision.Decide(null, Intent()));
             Assert.Throws<ArgumentNullException>(() => OpenDecision.Decide(LocalFile("2026"), null));
         }
+
+        // ---- already open in this session: activation, not an open (defect #13) ----
+
+        private static OpenFacts AlreadyOpen(string diskVersion, string host = "2026", bool? central = false)
+        {
+            OpenFacts f = LocalFile(diskVersion, host, central);
+            f.AlreadyOpenInSession = true;
+            return f;
+        }
+
+        [Fact]
+        public void An_already_open_document_upgraded_in_memory_is_activated_without_allow_upgrade()
+        {
+            // The course dry run: a 2023 file opened on 2026 with allow_upgrade, not saved, so
+            // its disk header still says 2023. Activating it again asked for allow_upgrade.
+            OpenVerdict v = OpenDecision.Decide(AlreadyOpen("2023"), Intent());
+
+            Assert.True(v.Ok, v.Refusal);
+            Assert.True(v.ActivationOnly);
+            Assert.False(v.WillUpgrade);
+            Assert.Equal("not_applicable_already_open", v.VersionGuard);
+        }
+
+        [Fact]
+        public void The_same_file_not_yet_open_still_needs_allow_upgrade()
+        {
+            OpenVerdict v = OpenDecision.Decide(LocalFile("2023"), Intent());
+            Assert.False(v.Ok);
+            Assert.False(v.ActivationOnly);
+            Assert.Contains("allow_upgrade", v.Refusal);
+        }
+
+        [Theory]
+        [InlineData(true, false)]   // detach wants a detached COPY, not the document in memory
+        [InlineData(false, true)]   // audit is an open option an activation cannot apply
+        public void Detach_or_audit_on_an_already_open_path_is_a_real_open_and_keeps_the_guard(bool detach, bool audit)
+        {
+            OpenIntent i = Intent(detach: detach);
+            i.Audit = audit;
+            OpenVerdict v = OpenDecision.Decide(AlreadyOpen("2023"), i);
+            Assert.False(v.ActivationOnly);
+            Assert.False(v.Ok);
+            Assert.Contains("allow_upgrade", v.Refusal);
+        }
+
+        [Fact]
+        public void Activation_still_checks_the_bridge_and_the_central_guard()
+        {
+            // The wrong bridge is the wrong bridge whether or not the file is open there.
+            Assert.False(OpenDecision.Decide(AlreadyOpen("2023"), Intent(expected: "2025")).Ok);
+
+            // A central open in the session still needs the caller to say so.
+            OpenVerdict central = OpenDecision.Decide(AlreadyOpen("2026", central: true), Intent());
+            Assert.False(central.Ok);
+            Assert.Contains("CENTRAL", central.Refusal);
+            Assert.True(OpenDecision.Decide(AlreadyOpen("2026", central: true), Intent(openCentral: true)).Ok);
+        }
+
+        [Fact]
+        public void A_cloud_model_is_never_an_activation_by_path()
+        {
+            OpenFacts f = CloudModel();
+            f.AlreadyOpenInSession = true;
+            Assert.False(OpenDecision.IsActivationOnly(f, Intent(detach: true)));
+            Assert.Equal("not_applicable_cloud", OpenDecision.Decide(f, Intent(detach: true)).VersionGuard);
+        }
     }
 }

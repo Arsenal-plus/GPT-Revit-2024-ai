@@ -4,7 +4,7 @@
 
 Horizun Revit MCP is a free, open-source Windows MCP server and Revit add-in for
 **Autodesk Revit 2023–2027**. Its complete catalog contains **123 tools** <!--inventory:tools-->
-with **456 named suboperations and dispatch modes** <!--inventory:operations-->
+with **457 named suboperations and dispatch modes** <!--inventory:operations-->
 for architectural and structural modeling, MEP, parametric families, drawings,
 CAD-to-BIM, model audits, quantities, Excel, Power BI and exports.
 
@@ -30,7 +30,7 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 | Surface | What is available | Inspect it |
 |---|---|---|
 | MCP entry points | **123 tools** <!--inventory:tools-->, including **45 read-only** <!--inventory:reads--> and **78 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
-| Internal actions | **456 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
+| Internal actions | **457 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
 | Revit coverage | 2023, 2024, 2025, 2026 and 2027 | Five matching add-ins and versioned live reports |
 | New model content | 26 element kinds; parametric RFA authoring; structural and MEP planning | [Creation and family reference](docs/FAMILY-AUTHORING.md) |
 | Drawings and deliverables | 24 view/sheet actions, 10 annotation actions, native schedules and sheet layout | [Planimetry production](docs/PLANIMETRY-PRODUCTION.md) |
@@ -244,7 +244,7 @@ The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations
 | Tool | Capability |
 |---|---|
 | `get_document_info` | Inspect the open document's identity and element counts. |
-| `horizun_document_session` | Inspect, open, save, save-as and close documents through explicit session operations. |
+| `horizun_document_session` | Inspect, open, save, save-as and close documents, or create a blank project from a template, through explicit session operations. |
 | `horizun_file_info` | Read RVT/RFA headers, version and worksharing metadata without opening or upgrading them. |
 | `horizun_health` | Report bridge health, active document, Revit year, loaded version and commit. |
 | `horizun_job_status` | Read progress and recovery state while Revit is busy or after a process restart. |
@@ -388,7 +388,7 @@ The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations
 | `horizun_budget_compare` | Compare model quantities against an Excel baseline; optionally write approved Excel/Power BI outputs. |
 | `horizun_catalog_lookup` | Resolve items from a supplied catalog with leaf-status and file-hash provenance. |
 | `horizun_excel_read_rows` | Read XLSX rows, types and cached formula values without Excel or COM. |
-| `horizun_excel_write_rows` | Append XLSX rows, create a backup and re-read written cells without Excel or COM. |
+| `horizun_excel_write_rows` | Append XLSX rows (or start a new workbook), keep a backup in the Horizun state folder and re-read written cells without Excel or COM. |
 | `horizun_power_bi_push` | Send rows to a Power BI push semantic-model table with durable replay protection and destination receipts. |
 | `horizun_export` | Export PDF, DWG, IFC, NWC, FBX, images and schedule CSV with output-file verification. |
 | `horizun_link_schedule` | Import MS Project, Primavera or CSV schedules, link activities to elements, write dates and colour a 4D status view. |
@@ -420,7 +420,7 @@ A named MCP tool can dispatch many actions. For example, creating a wall, a pipe
 and a stair are choices under `horizun_create_elements`; creating a section and
 placing a schedule are different actions under `horizun_manage_views`.
 
-The table contains **456 named suboperations and dispatch modes** <!--inventory:operations-->
+The table contains **457 named suboperations and dispatch modes** <!--inventory:operations-->
 across 26 multi-operation tools. A choice is counted once per tool, selector
 property and value, including nested selectors. Repeated `oneOf` schema paths
 are deduplicated. Some selectors refine another action: these numbers describe
@@ -429,7 +429,7 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 <!-- BEGIN SUBOPERATIONS -->
 | Tool | Selector | Named suboperations and modes |
 |---|---|---|
-| `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect`, `sync_with_central` |
+| `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect`, `sync_with_central`, `new_project` |
 | `horizun_repair_memory` | `operation` | `list`, `advice`, `observe`, `remedy`, `quarantine`, `release` |
 | `horizun_selection_exchange` | `operation` | `publish`, `read`, `clear`, `capabilities` |
 | `horizun_audit_model` | `operation` | `save`, `save_as`, `sync_with_central`, `export`, `publish`, `close_with_save`, `batch_open_close` |
@@ -499,7 +499,7 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 
 Other typed options include the seven `horizun_export.format` values:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. The schema inventory
-also records **1589 enumerated argument occurrences** <!--inventory:enumerated_variants-->
+also records **1594 enumerated argument occurrences** <!--inventory:enumerated_variants-->
 across all properties and paths; that figure includes configuration choices and
 repeated paths, so it is not used as a tool count.
 

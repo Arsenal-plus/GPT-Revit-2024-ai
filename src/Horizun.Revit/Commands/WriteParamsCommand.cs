@@ -402,7 +402,11 @@ namespace Horizun.Revit.Commands
                     {
                         // Without this, Revit throws the "desagrupar" modal mid-batch in
                         // any model with groups — far from here, and with the batch open.
-                        if (allowVary && r.VariesBefore == false)
+                        // Only where it can apply (VaryBetweenGroupsRules): on Project
+                        // Information, a type or a built-in parameter the setter has nothing
+                        // to set and Revit answers with an exception that used to be printed
+                        // on every row of a write that succeeded.
+                        if (VaryBetweenGroupsRules.ShouldAttempt(VaryFacts(doc, r, allowVary)))
                         {
                             var def = SafeInternalDef(r.Parameter);
                             if (def != null)
@@ -1819,6 +1823,22 @@ namespace Horizun.Revit.Commands
         private static InternalDefinition SafeInternalDef(Parameter p)
         {
             try { return p.Definition as InternalDefinition; } catch { return null; }
+        }
+
+        /// <summary>The facts VaryBetweenGroupsRules decides on, read without throwing.</summary>
+        private static VaryStepFacts VaryFacts(Document doc, Row r, bool allowVary)
+        {
+            var f = new VaryStepFacts { AllowVary = allowVary, VariesBefore = r.VariesBefore, TargetKind = r.TargetKind };
+            var def = SafeInternalDef(r.Parameter);
+            if (def == null) return f;
+            try { f.IsBuiltIn = def.BuiltInParameter != BuiltInParameter.INVALID; } catch { }
+            try
+            {
+                Binding binding = doc.ParameterBindings.get_Item(def);
+                f.Binding = binding is InstanceBinding ? "instance" : binding is TypeBinding ? "type" : null;
+            }
+            catch { }
+            return f;
         }
 
         private static bool? ReadVaries(Parameter p)

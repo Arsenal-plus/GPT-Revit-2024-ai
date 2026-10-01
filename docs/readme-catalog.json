@@ -11,8 +11,8 @@
         ],
         [
           "horizun_document_session",
-          "Inspect, open, save, save-as and close documents through explicit session operations.",
-          "Inspeccionar, abrir, guardar, guardar como y cerrar documentos mediante operaciones explícitas."
+          "Inspect, open, save, save-as and close documents, or create a blank project from a template, through explicit session operations.",
+          "Inspeccionar, abrir, guardar, guardar como y cerrar documentos, o crear un proyecto en blanco desde una plantilla, mediante operaciones explícitas."
         ],
         [
           "horizun_file_info",
@@ -598,8 +598,8 @@
         ],
         [
           "horizun_excel_write_rows",
-          "Append XLSX rows, create a backup and re-read written cells without Excel or COM.",
-          "Añadir filas XLSX, crear respaldo y releer las celdas escritas sin Excel ni COM."
+          "Append XLSX rows (or start a new workbook), keep a backup in the Horizun state folder and re-read written cells without Excel or COM.",
+          "Añadir filas XLSX (o crear un libro nuevo), guardar un respaldo en la carpeta de estado de Horizun y releer las celdas escritas sin Excel ni COM."
         ],
         [
           "horizun_power_bi_push",

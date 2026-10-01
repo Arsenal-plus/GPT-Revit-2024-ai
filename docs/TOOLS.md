@@ -5,8 +5,8 @@ The [README](../README.md) has the short version; this page is the complete
 surface.
 
 This surface is **123 tools** <!--inventory:tools--> - **45** <!--inventory:reads--> of them
-read-only - dispatching **456 distinct suboperations and modes** <!--inventory:operations--> across
-**1589 enumerated argument values** <!--inventory:enumerated_variants-->.
+read-only - dispatching **457 distinct suboperations and modes** <!--inventory:operations--> across
+**1594 enumerated argument values** <!--inventory:enumerated_variants-->.
 
 Those numbers are GENERATED, never typed by hand. `scripts/generate-inventory.ps1`
 asks the built server for `tools/list` - the same call a client makes - and writes
@@ -55,7 +55,7 @@ and it is labelled as such everywhere it appears.
 | `horizun_model_scan` | The census, under the honesty contract. |
 | `horizun_write_params_verified` | Parameter writes, each re-read after commit. |
 | `horizun_delete_verified` | Deletion with the cascade counted, `dry_run` first. `mode` is mandatory: omitting it is refused and can never select `purge_unused`. |
-| `horizun_document_session` | Inspect, open, save, save-as or close a document through explicit session operations; file/document operations require the applicable permission profile. |
+| `horizun_document_session` | Inspect, open, save, save-as or close a document, or create a blank project from a template (`new_project`), through explicit session operations; file/document operations require the applicable permission profile. |
 | `horizun_audit_model` | Model checks with per-check pass/fail. |
 | `horizun_quantities` | Quantities, with input rejected rather than guessed. |
 | `horizun_clash` | Clash, where zero is a trustworthy zero. `plan_penetrations` turns each pipe-crossing into a wall-opening plan with per-row named refusals (structural hosts need the explicit opt-in); `record_findings` folds the run into the durable coordination ledger. |
@@ -132,7 +132,7 @@ instead, twice, is in `docs/WALL-LAYER-DECOMPOSITION.md`.
 | --- | --- |
 | `horizun_catalog_lookup` | Generic leaf resolution over a catalog file, `is_leaf` null ≠ false, sha256 provenance. |
 | `horizun_job_status` | How a long run is going, read from disk WITHOUT touching Revit — answers while Revit is busy inside the very command it describes, survives a crash, and says whether the process that claimed the job is still alive. |
-| `horizun_excel_write_rows` | Appends rows to `.xlsx` over the OPC package — no COM, no Excel installed. Backs the file up and re-reads every written cell. |
+| `horizun_excel_write_rows` | Appends rows to `.xlsx` over the OPC package — no COM, no Excel installed. `create_if_missing: true` starts a new workbook (never over an existing file). Backs an existing file up to `%USERPROFILE%\.horizun\backups\excel` (not beside it) and re-reads every written cell. |
 | `horizun_excel_read_rows` | Reads `.xlsx` over the OPC package — types preserved, dates never invented (a serial is a date only where the cell's format says so), cached formula values declared as cached, merged ranges declared, sha256 provenance; a corrupt workbook refuses whole. |
 | `horizun_power_bi_push` | Push up to 10,000 primitive rows directly into a Power BI push semantic-model table. Credentials stay in server environment variables; a durable key prevents duplicate rows after a lost response. Requires `full_write` or `unsafe_code`. |
 | `horizun_target` | Which Revit these tools are talking to, and how to change it. Two versions open at once is normal, and the expensive failure is a healthy bridge attached to the wrong instance. |
