@@ -55,6 +55,13 @@ namespace Horizun.Revit.Commands
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
+            // response_mode=summary is applied by the dispatcher after the run
+            // (ResponseSummaryRules); it is checked HERE so a bad value refuses before work.
+            string responseMode = ResponseSummaryRules.ParseMode(request, out string responseModeError);
+            if (responseModeError != null) return CommandResult.Fail(responseModeError);
+            string summaryProblem = ResponseSummaryRules.ClashRequestProblem(request, responseMode);
+            if (summaryProblem != null) return CommandResult.Fail(summaryProblem);
+
             var catsA = ParseCats(request["categories_a"] as JArray, out string errA);
             if (errA != null) return CommandResult.Fail(errA);
             var catsB = ParseCats(request["categories_b"] as JArray, out string errB);

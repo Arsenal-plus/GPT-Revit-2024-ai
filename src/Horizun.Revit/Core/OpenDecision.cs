@@ -21,6 +21,8 @@
 //   expected_version absent, and required        -> refuse
 //   expected_version present, != host            -> refuse (the wrong bridge)
 //   cloud model                                  -> version unknowable, guard skipped
+//   path ALREADY OPEN in this session, no detach
+//     and no audit                               -> activation only: no upgrade guard
 //   file version unreadable, no allow_upgrade    -> refuse (unknown is not a match)
 //   file NEWER than host                         -> refuse ALWAYS (no downgrade exists)
 //   file OLDER than host, no allow_upgrade       -> refuse (the irreversible upgrade)
@@ -68,6 +70,16 @@ namespace Horizun.Revit.Core
         /// alike (MEASURED 2026-09-27 in Revit 2026: IsCentral=true, IsLocal=false, IsCreatedLocal=false).
         /// </summary>
         public string CentralPath;
+
+        /// <summary>
+        /// The requested path is ALREADY OPEN in this Revit session (DocIdentity.SamePath against
+        /// the open documents). Then nothing is opened and nothing is upgraded by this call: the
+        /// document is activated as it is in memory. The disk header can still say an older year
+        /// - an earlier open upgraded it in memory and nobody saved - and asking for
+        /// allow_upgrade to ACTIVATE it (course dry run 2026-09-30, defect #13) asked permission
+        /// for an upgrade that had already happened and that this call could not cause.
+        /// </summary>
+        public bool AlreadyOpenInSession;
     }
 
     /// <summary>What the caller asked for, reduced to the flags that decide.</summary>
@@ -78,6 +90,9 @@ namespace Horizun.Revit.Core
         public bool AllowUpgrade;
         public bool Detach;
         public bool OpenCentral;
+
+        /// <summary>audit=true asks for an OPEN option, which an activation cannot apply.</summary>
+        public bool Audit;
     }
 
     public sealed class OpenVerdict
@@ -90,11 +105,20 @@ namespace Horizun.Revit.Core
         /// <summary>True when going ahead WILL upgrade the file. Never true for cloud: unknowable.</summary>
         public bool WillUpgrade { get; internal set; }
 
-        /// <summary>"checked" or "not_applicable_cloud". Never blank, never implied.</summary>
+        /// <summary>
+        /// "checked", "not_applicable_cloud" or "not_applicable_already_open". Never blank,
+        /// never implied.
+        /// </summary>
         public string VersionGuard { get; internal set; }
 
         /// <summary>How the central guard was satisfied, for the response to report.</summary>
         public string CentralGuard { get; internal set; }
+
+        /// <summary>
+        /// True when the path is already open and the request asks for nothing an open would
+        /// have to apply: the caller ACTIVATES that document instead of opening it again.
+        /// </summary>
+        public bool ActivationOnly { get; internal set; }
     }
 
     public static class OpenDecision
@@ -104,7 +128,14 @@ namespace Horizun.Revit.Core
             if (f == null) throw new ArgumentNullException(nameof(f));
             if (i == null) throw new ArgumentNullException(nameof(i));
 
-            var v = new OpenVerdict { VersionGuard = f.IsCloud ? "not_applicable_cloud" : "checked" };
+            bool activationOnly = IsActivationOnly(f, i);
+            var v = new OpenVerdict
+            {
+                VersionGuard = f.IsCloud ? "not_applicable_cloud"
+                             : activationOnly ? "not_applicable_already_open"
+                             : "checked",
+                ActivationOnly = activationOnly
+            };
             string name = string.IsNullOrEmpty(f.DisplayName) ? "this model" : f.DisplayName;
 
             // --- The stated belief, checked against the HOST first. ----------------
@@ -129,7 +160,9 @@ namespace Horizun.Revit.Core
                     "Revit " + expected + " - horizun_target lists the ones that are running.");
 
             // --- Guard 1: the irreversible upgrade. --------------------------------
-            if (!f.IsCloud)
+            // Not for an activation: the document is already in memory, and whatever its
+            // disk header says, this call opens nothing and so upgrades nothing.
+            if (!f.IsCloud && !activationOnly)
             {
                 bool versionKnown = !string.IsNullOrEmpty(f.FileVersion);
                 bool sameVersion = versionKnown && SameVersion(f.FileVersion, f.HostVersion);
@@ -222,6 +255,16 @@ namespace Horizun.Revit.Core
                            : "open_central";
             return v;
         }
+
+        /// <summary>
+        /// Is this request an ACTIVATION of a document already open in the session rather than
+        /// an open? Only a local path that is already open, and only when the caller asked for
+        /// nothing that exists solely as an open option: detach=true wants a detached COPY, and
+        /// audit=true an audited open - activating the document already in memory would hand back
+        /// something else, so those go through the full guard as before.
+        /// </summary>
+        public static bool IsActivationOnly(OpenFacts f, OpenIntent i)
+            => f != null && i != null && !f.IsCloud && f.AlreadyOpenInSession && !i.Detach && !i.Audit;
 
         // ------------------------------------------------------------------ small
         /// <summary>

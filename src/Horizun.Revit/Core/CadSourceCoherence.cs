@@ -87,7 +87,18 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static JObject Evaluate(Document doc, Element instance, CadInstanceFacts facts,
                                        bool fromSnapshot)
+            => Evaluate(doc, instance, facts, fromSnapshot, null);
+
+        /// <summary>
+        /// Judge one CAD instance FOR A PLAN made under <paramref name="set"/>. A set that reads nothing from
+        /// the drawing file is judged on the link and the host file alone when the source-set identity is
+        /// missing - see CadSourceCoherenceRules. Null set: the strict answer, as for a bare reading.
+        /// </summary>
+        public static JObject Evaluate(Document doc, Element instance, CadInstanceFacts facts,
+                                       bool fromSnapshot, CadRequirementSet set)
         {
+            List<string> fileReads = set == null ? null : CadSourceCoherenceRules.FileReadingRules(set);
+            bool readsOnlyTheLink = fileReads != null && fileReads.Count == 0;
             var o = new JObject();
             string uid = null;
             try { uid = instance?.UniqueId; } catch { }
@@ -168,7 +179,12 @@ namespace Horizun.Revit.Core
                     "with the link still fingerprinting as it did when it was loaded. Any change between " +
                     "the load and this read is inside that window and was not seen.";
             }
-            JObject decided = CadSourceCoherenceRules.Decide(record, setNow, fileSha, printNow, fromSnapshot);
+            JObject decided = CadSourceCoherenceRules.Decide(record, setNow, fileSha, printNow, fromSnapshot,
+                                                             readsOnlyTheLink);
+            if (fileReads != null)
+                o["file_readings"] = fileReads.Count == 0
+                    ? (JToken)"none - every action of this requirement set comes from the CAD link's geometry"
+                    : new JArray(fileReads);
             if (record != null)
             {
                 o["link_loaded"] = new JObject

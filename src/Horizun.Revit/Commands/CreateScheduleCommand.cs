@@ -18,10 +18,11 @@ namespace Horizun.Revit.Commands
 
         public string Description =>
             "Create one native Revit schedule for one category, optionally including elements from loaded RVT links. " +
-            "Dry-run is the default. The apply pass adds the requested fields by their Revit display names, groups by " +
-            "the requested non-Count fields when itemized=false, commits once, then re-reads the schedule, its fields, " +
-            "IncludeLinkedFiles flag and body row count. A category with zero host elements is valid: linked elements " +
-            "are exactly why this command exists.";
+            "Dry-run is the default. The apply pass adds the requested fields by their Revit display names; when " +
+            "itemized=false it groups by the IDENTITY fields only (never by a length, area, volume, count or other " +
+            "number) and totals the quantity fields, or groups exactly by group_by when given. It commits once, then " +
+            "re-reads the schedule, its fields, sort/group fields, totals, IncludeLinkedFiles flag and body row count. " +
+            "A category with zero host elements is valid: linked elements are exactly why this command exists.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -55,6 +56,10 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("A key schedule lists key elements of this document; include_links does not apply. Nothing was changed.");
             if (key && request["itemized"] != null)
                 return CommandResult.Fail("A key schedule is always one row per key; itemized does not apply. Nothing was changed.");
+            if (key && request["group_by"] != null)
+                return CommandResult.Fail("A key schedule is always one row per key; group_by does not apply. Nothing was changed.");
+            if (request["group_by"] != null && !(request["group_by"] is JArray groupByArray && groupByArray.All(t => t.Type == JTokenType.String)))
+                return CommandResult.Fail("group_by must be an array of field names (strings). Nothing was changed.");
 
             Category category = multi ? null : ResolveCategory(doc, categoryText);
             if (category == null && !multi)
@@ -77,8 +82,15 @@ namespace Horizun.Revit.Commands
             List<string> requestedFields = ReadFields(request["fields"] as JArray);
             if (requestedFields.Count == 0 && !key)
                 requestedFields.AddRange(new[] { "Count", "Family", "Type" });
+            // group_by is honoured EXACTLY when given (an empty array = group by nothing);
+            // absent, the grouping is derived from what each field IS - see
+            // ScheduleGroupingRules. Checked against the request now, so the rehearsal
+            // refuses exactly what the apply would.
+            List<string> groupBy = request["group_by"] == null ? null : ReadFields(request["group_by"] as JArray);
+            string groupByError = ScheduleGroupingRules.ValidateGroupBy(requestedFields, groupBy);
+            if (groupByError != null) return CommandResult.Fail(groupByError);
 
-            string planHash = DocumentGate.PlanHash(request, "category", "name", "fields", "include_links", "itemized", "key_schedule", "key_rows");
+            string planHash = DocumentGate.PlanHash(request, "category", "name", "fields", "include_links", "itemized", "key_schedule", "key_rows", "group_by");
 
             // ---- The MATERIALISED plan. One creation, but two ambient facts decide what
             // it produces, and neither is in the request: WHICH category the name resolved
@@ -105,7 +117,8 @@ namespace Horizun.Revit.Commands
                     { "kind", kind }, { "key_rows", keyRows.ToString(System.Globalization.CultureInfo.InvariantCulture) },
                     { "fields", string.Join(",", requestedFields) },
                     { "include_links", includeLinks ? "1" : "0" },
-                    { "itemized", itemized ? "1" : "0" }
+                    { "itemized", itemized ? "1" : "0" },
+                    { "group_by", groupBy == null ? "<derived>" : string.Join(",", groupBy) }
                 }
             });
 
@@ -123,6 +136,9 @@ namespace Horizun.Revit.Commands
                     ["fields_requested"] = new JArray(requestedFields),
                     ["include_links"] = includeLinks,
                     ["itemized"] = itemized,
+                    ["group_by"] = key ? JValue.CreateNull()
+                        : groupBy != null ? new JArray(groupBy)
+                        : (JToken)(itemized ? "none (itemized)" : "derived after creation: identity fields only; quantity fields are totalled"),
                     ["host_element_count"] = multi ? (JToken)JValue.CreateNull() : new FilteredElementCollector(doc).OfCategoryId(categoryId)
                         .WhereElementIsNotElementType().GetElementCount(),
                     ["note"] = "Nothing was written. Field availability and linked rows are verified after creation, not guessed from host elements."
@@ -153,6 +169,10 @@ namespace Horizun.Revit.Commands
             SilentRollbackException commitFailure = null;
             var missing = new List<string>();
             var expectedFields = new List<FieldIdentity>();
+            ScheduleGroupingPlan grouping = null;
+            var groupingFacts = new List<ScheduleGroupingField>();
+            var expectedSortIds = new List<int>();
+            var expectedTotalIds = new List<int>();
             using (var tx = new Transaction(doc, "Horizun: create schedule"))
             {
                 tx.Start();
@@ -210,10 +230,30 @@ namespace Horizun.Revit.Commands
                             body.InsertRow(at);
                         }
                     }
-                    else if (!itemized)
+                    else
                     {
-                        foreach (ScheduleField field in added.Where(f => f.FieldType != ScheduleFieldType.Count))
-                            definition.AddSortGroupField(new ScheduleSortGroupField(field.FieldId));
+                        // GROUP BY WHAT A FIELD IS, NOT BY WHERE IT SITS IN THE LIST. Grouping
+                        // by every non-Count field put Length/Area/Volume in the sort: 119
+                        // rows instead of 8 on a real model. Revit says what each field is;
+                        // ScheduleGroupingRules decides.
+                        for (int i = 0; i < added.Count; i++)
+                            groupingFacts.Add(GroupingFacts(requestedFields[i], added[i]));
+                        grouping = ScheduleGroupingRules.Plan(groupingFacts, itemized, groupBy);
+                        if (grouping.Error != null)
+                        {
+                            Guard.RollBack(tx);
+                            return CommandResult.Fail(grouping.Error);
+                        }
+                        foreach (int i in grouping.SortGroup)
+                        {
+                            definition.AddSortGroupField(new ScheduleSortGroupField(added[i].FieldId));
+                            expectedSortIds.Add(added[i].FieldId.IntegerValue);
+                        }
+                        foreach (int i in grouping.Totals)
+                        {
+                            added[i].DisplayType = ScheduleFieldDisplayType.Totals;
+                            expectedTotalIds.Add(added[i].FieldId.IntegerValue);
+                        }
                     }
 
                     createdId = schedule.Id;
@@ -284,7 +324,7 @@ namespace Horizun.Revit.Commands
             var postcondition = key
                 ? new PostconditionCheck("name", "category", "fields", "kind", "key_rows")
                 : new PostconditionCheck("name", "category", "fields",
-                                         "include_links", "itemized");
+                                         "include_links", "itemized", "sort_group", "totals");
 
             // (a) NAME.
             try { postcondition.Compare("name", scheduleName, verified.Name); }
@@ -347,6 +387,32 @@ namespace Horizun.Revit.Commands
 
                 try { postcondition.Compare("itemized", itemized, verified.Definition.IsItemized); }
                 catch (Exception ex) { postcondition.Unreadable("itemized", itemized, "could not be read: " + ex.Message); }
+
+                // (g) SORT/GROUP fields, in order, and (h) which fields TOTAL - both read off
+                // the committed definition. A schedule that groups by a quantity is the
+                // defect this pair exists to catch, so neither is taken from the plan.
+                try
+                {
+                    ScheduleDefinition def = verified.Definition;
+                    var sortIds = new List<int>();
+                    for (int i = 0; i < def.GetSortGroupFieldCount(); i++)
+                        sortIds.Add(def.GetSortGroupField(i).FieldId.IntegerValue);
+                    postcondition.Record("sort_group", FieldNames(verified, expectedSortIds), FieldNames(verified, sortIds),
+                                         sortIds.SequenceEqual(expectedSortIds));
+                }
+                catch (Exception ex) { postcondition.Unreadable("sort_group", new JArray(expectedSortIds), "could not be read: " + ex.Message); }
+
+                try
+                {
+                    ScheduleDefinition def = verified.Definition;
+                    var totalIds = def.GetFieldOrder().Select(id => def.GetField(id))
+                        .Where(f => f.DisplayType == ScheduleFieldDisplayType.Totals)
+                        .Select(f => f.FieldId.IntegerValue).OrderBy(i => i).ToList();
+                    var wantTotals = expectedTotalIds.OrderBy(i => i).ToList();
+                    postcondition.Record("totals", FieldNames(verified, wantTotals), FieldNames(verified, totalIds),
+                                         totalIds.SequenceEqual(wantTotals));
+                }
+                catch (Exception ex) { postcondition.Unreadable("totals", new JArray(expectedTotalIds), "could not be read: " + ex.Message); }
             }
 
             bool postconditionVerified = postcondition.AllVerified;
@@ -382,6 +448,7 @@ namespace Horizun.Revit.Commands
                     ["fields_verified"] = verifiedFields,
                     ["postcondition"] = postcondition.ToJson(),
                     ["fields_missing"] = new JArray(missing),
+                    ["grouping"] = GroupingJson(grouping, groupingFacts),
                     ["body_rows"] = bodyRows,
                     ["has_body_rows"] = bodyRows > 0,
                     ["federated_coverage"] = FederatedVisibility.Measure(doc, includeLinks)
@@ -408,6 +475,57 @@ namespace Horizun.Revit.Commands
                 : Rid.Value(scheduleId);
             return ApplicationOutcome.FailureAfterWrite(
                 "schedule_id", id, stage, status.ToString(), state, scheduleReread, postcondition);
+        }
+
+        /// <summary>What Revit says the field IS - each answer guarded, an unreadable one left null.</summary>
+        private static ScheduleGroupingField GroupingFacts(string requestedName, ScheduleField field)
+        {
+            var facts = new ScheduleGroupingField { RequestedName = requestedName };
+            try { facts.FieldType = field.FieldType.ToString(); } catch { }
+            try
+            {
+                ForgeTypeId spec = field.GetSpecTypeId();
+                facts.SpecTypeId = spec?.TypeId ?? "";
+                facts.IsMeasurable = spec != null && !string.IsNullOrEmpty(spec.TypeId) && UnitUtils.IsMeasurableSpec(spec);
+            }
+            catch { }
+            try { facts.CanTotal = field.CanTotal(); } catch { }
+            return facts;
+        }
+
+        private static JArray FieldNames(ViewSchedule schedule, IEnumerable<int> fieldIds)
+        {
+            var names = new JArray();
+            ScheduleDefinition def = schedule.Definition;
+            foreach (int id in fieldIds)
+            {
+                string name;
+                try { name = def.GetField(new ScheduleFieldId(id)).GetName(); } catch { name = "<field " + id + ">"; }
+                names.Add(name);
+            }
+            return names;
+        }
+
+        private static JToken GroupingJson(ScheduleGroupingPlan plan, List<ScheduleGroupingField> facts)
+        {
+            if (plan == null) return JValue.CreateNull();
+            var fields = new JArray();
+            for (int i = 0; i < facts.Count; i++)
+                fields.Add(new JObject
+                {
+                    ["field"] = facts[i].RequestedName,
+                    ["role"] = plan.Roles[i] == ScheduleFieldRole.Quantity ? "quantity" : "identity",
+                    ["why"] = plan.Reasons[i],
+                    ["sort_group"] = plan.SortGroup.Contains(i),
+                    ["totals"] = plan.Totals.Contains(i)
+                });
+            return new JObject
+            {
+                ["source"] = plan.Source,
+                ["sort_group"] = new JArray(plan.SortGroup.Select(i => (JToken)facts[i].RequestedName)),
+                ["totals"] = new JArray(plan.Totals.Select(i => (JToken)facts[i].RequestedName)),
+                ["fields"] = fields
+            };
         }
 
         private static List<string> ReadFields(JArray array)

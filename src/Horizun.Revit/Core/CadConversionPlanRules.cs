@@ -191,6 +191,65 @@ namespace Horizun.Revit.Core
             return true;
         }
 
+        /// <summary>
+        /// A PLAN DRAWING'S Z IS NOT A HEIGHT, so an element resolved to a storey stands ON that storey.
+        ///
+        /// MEASURED (dry run, class 4): a DWG linked into a plan of a level at +30 000 mm handed its
+        /// geometry over at Z = 0, and the plan emitted 75 walls with start/end Z = 0. horizun_create_elements
+        /// reads a wall's Z as its absolute base and derives the base offset from it (Z minus the level's
+        /// elevation), so applied as emitted every wall would have been built 30 m below its level - on top
+        /// of the storey underneath, and verified there.
+        ///
+        /// So for the kinds whose base create_elements takes from an absolute Z, the Z is set from the
+        /// storey: the level's elevation (internal origin, the plane create_elements measures against) plus
+        /// the rule's declared offset, and the drawing's own Z is not used. A row whose drawn Z differs along
+        /// its own geometry carries a slope somebody drew and is left as it is. MEP runs keep their own rule
+        /// (ResolveOffsetFromLevel); a point-placed family in level_offset mode is already relative.
+        ///
+        /// Returns true when the row was changed. <paramref name="drawnZ"/> is the Z the drawing gave, when
+        /// the row had a single one, so the caller can say how far the drawing was from the storey.
+        /// </summary>
+        public static bool PlaceOnStorey(JObject row, double levelElevationMm, out double? drawnZ)
+        {
+            drawnZ = null;
+            if (row == null) return false;
+            string kind = row.Value<string>("kind");
+            double offset = row.Value<double?>("offset") ?? row.Value<double?>("base_offset") ?? 0.0;
+            var points = new List<JArray>();
+            switch (kind)
+            {
+                case "wall":
+                    points.Add(row["start"] as JArray);
+                    points.Add(row["end"] as JArray);
+                    break;
+                case "floor":
+                case "ceiling":
+                case "roof":
+                    foreach (JToken loop in row["profile"] as JArray ?? new JArray())
+                        foreach (JToken p in loop as JArray ?? new JArray())
+                            points.Add(p as JArray);
+                    break;
+                case "family_instance":
+                case "structural_column":
+                    // Only an ABSOLUTE point carries the drawing's Z; level_offset is a height above the storey.
+                    if (!string.Equals(row.Value<string>("coordinate_mode"), "absolute", StringComparison.Ordinal))
+                        return false;
+                    points.Add(row["point"] as JArray);
+                    offset = 0.0;
+                    break;
+                default:
+                    return false;
+            }
+            if (points.Count == 0 || points.Any(p => p == null || p.Count < 3)) return false;
+            double z0 = points[0][2].Value<double>();
+            if (points.Any(p => Math.Abs(p[2].Value<double>() - z0) > 1e-6)) return false;
+            drawnZ = z0;
+            double z = Math.Round(levelElevationMm + offset, 4, MidpointRounding.AwayFromZero);
+            if (Math.Abs(z - z0) < 1e-9) return false;
+            foreach (JArray p in points) p[2] = z;
+            return true;
+        }
+
         /// <summary>The runs Revit carries a system and a bore on.</summary>
         private static readonly HashSet<string> MepKinds =
             new HashSet<string>(StringComparer.Ordinal) { "pipe", "duct", "conduit", "cable_tray" };
@@ -210,6 +269,30 @@ namespace Horizun.Revit.Core
         }
 
         private static double Round(double v) => Math.Round(v, 4, MidpointRounding.AwayFromZero);
+
+        /// <summary>
+        /// The area centroid of a ring (shoelace), at the ring's own Z. A closing vertex equal to the first is
+        /// ignored. Falls back to the mean of the vertices when the ring has no area.
+        /// </summary>
+        public static CadPoint RingCentre(List<CadPoint> ring)
+        {
+            var pts = ring.ToList();
+            if (pts.Count > 1 && Math.Abs(pts[0].X - pts[pts.Count - 1].X) < 1e-9 &&
+                Math.Abs(pts[0].Y - pts[pts.Count - 1].Y) < 1e-9)
+                pts.RemoveAt(pts.Count - 1);
+            double a2 = 0, cx = 0, cy = 0;
+            for (int i = 0; i < pts.Count; i++)
+            {
+                CadPoint p = pts[i], q = pts[(i + 1) % pts.Count];
+                double cross = p.X * q.Y - q.X * p.Y;
+                a2 += cross;
+                cx += (p.X + q.X) * cross;
+                cy += (p.Y + q.Y) * cross;
+            }
+            if (Math.Abs(a2) < 1e-9)
+                return new CadPoint(pts.Average(p => p.X), pts.Average(p => p.Y), pts[0].Z);
+            return new CadPoint(cx / (3 * a2), cy / (3 * a2), pts[0].Z);
+        }
 
         /// <summary>
         /// The two vertices of a ring that are farthest apart.
@@ -748,15 +831,34 @@ namespace Horizun.Revit.Core
                 case "family_instance":
                 case "structural_column":
                     o["coordinate_mode"] = "absolute";
-                    o["point"] = Pt(c.Geometry[0]);
+                    CadPoint placeAt = c.Geometry[0];
+                    // A COLUMN DRAWN AS A RING STANDS AT ITS CENTRE, not at the ring's first vertex. MEASURED
+                    // while fixing the column's top (dry run, class 4): a 300 mm column read from closed_loops
+                    // was emitted at its first corner, 150 mm off on both axes - the drawing's columns were
+                    // 61 rings of a round 300 mm section. A block or a point cluster carries one point and is
+                    // unchanged.
+                    CadRule placedRule = set?.Rules.FirstOrDefault(x => x.Id == c.RuleId);
+                    if (placedRule?.Geometry != null && placedRule.Geometry.Source == CadGeometrySource.ClosedLoops &&
+                        c.Geometry.Count >= 3)
+                        placeAt = RingCentre(c.Geometry);
+                    o["point"] = Pt(placeAt);
                     // A MOUNTING HEIGHT IS A HEIGHT ABOVE THE LEVEL, declared by the rule and
                     // never read from the plan: the row carries it as a level offset, and the
                     // command verifies the instance's origin at that height.
                     if (createKind == "family_instance" && c.OffsetMm.HasValue)
                     {
                         o["coordinate_mode"] = "level_offset";
-                        o["point"] = new JArray(Math.Round(c.Geometry[0].X, 3), Math.Round(c.Geometry[0].Y, 3),
+                        o["point"] = new JArray(Math.Round(placeAt.X, 3), Math.Round(placeAt.Y, 3),
                                                 Math.Round(c.OffsetMm.Value, 3));
+                    }
+
+                    // WHERE A COLUMN STOPS, when the rule says. A TwoLevelsBased column runs from its level
+                    // to a top level; the name travels like a shaft's and is resolved to top_level_id by the
+                    // command that has the document open, which also checks it is above the base.
+                    if (createKind == "structural_column")
+                    {
+                        CadRule columnRule = set?.Rules.FirstOrDefault(x => x.Id == c.RuleId);
+                        if (!string.IsNullOrWhiteSpace(columnRule?.TopLevel)) o["top_level_name"] = columnRule.TopLevel;
                     }
 
                     // A DOOR IS NOT A THING THAT STANDS IN A ROOM.

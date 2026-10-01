@@ -3,6 +3,97 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v2.1.5 — 2026-09-30
+
+Patch release over 2.1.4 (tool contract: new optional fields and one new operation; nothing removed; still 123 tools). It fixes the 18 defects found by an end-to-end dry run on 2026-09-30: seven course flows on copies of the Autodesk sample models in Revit 2026. Every item was built and unit-tested offline, then **replayed live in Revit 2026 on 2026-09-30** on fresh copies of the same Autodesk samples, through the installed build. The live replay found three more defects, fixed in this release:
+
+- **`horizun_verify_changes`: the capture view now draws every discipline.** The first fix (frame the camera on the box) did not cure the blank image. The structural sample's 3D view type is Structural, which does not draw non-structural walls. 68 such walls came back blank in top, isometric and front, while five beams of the same model captured fine. The temporary view now applies no template and uses the Coordination discipline. Measured after the fix: top 19,937 content pixels, isometric 70,009.
+- **`horizun_verify_changes`: the crop keeps Revit's depth.** Writing the framed box's depth into a 3D view's crop Z was part of the first fix; it is dropped. The rectangle is still fitted to the box.
+- **`horizun_model_scan`: placed schedules no longer count as off-sheet.** `ViewSheet.GetAllPlacedViews()` does not return schedules, so the scan listed placed schedules as off-sheet. The new reconciliation with `horizun_audit_model` exposed it (38 against 35). Schedule placement now comes from `ScheduleSheetInstance`, and the two tools reconcile exactly (34 ↔ 28).
+
+Measured live, per defect:
+
+| # | Result in Revit 2026 |
+|---|---|
+| 1 | units millimeter, link declares inch, DWG header millimetre: `units_check.verdict: agrees`, applied millimetre by `measured_scale` (0.977 mm per drawing unit) |
+| 2 | walls-only plan `applicable` on `link_geometry_only`; `apply_cad_plan` by `plan_id` created 68 walls, `verified_applied` |
+| 3 | all 68 walls at Z = 30,000 mm (drawn Z 0) |
+| 4 | `M_Concrete-Round-Column: 300mm` refused `column_top_unstated` without `top_level`, `usable_with_warnings` with it; 55 columns planned with `top_level_id` |
+| 5 | 10 body rows grouped by Type, Length/Area/Volume totalled (119 in the dry run) |
+| 6 | crop active and visible on a placed sheet |
+| 7 | the capture is no longer blank (see above) |
+| 8 | `cad_extract` with `view_id` answers |
+| 9 | 397 beams on 02/03/Roof through `INSTANCE_REFERENCE_LEVEL_PARAM` |
+| 10 | `HOST_AREA_COMPUTED` resolves; Type Name gives the 8 wall types with the dry run's totals |
+| 11 | sums carry `sum_unit`, metres and the display unit |
+| 12 | workbook created; the backup lands in `%USERPROFILE%\.horizun\backups\excel` |
+| 13 | `already_open_activated` without `allow_upgrade` on a 2023 header |
+| 14 | `horizun_health`: `suspected_instructions: 0` |
+| 15 | Project Information write: no `vary_between_groups_error` |
+| 16 | 34 ↔ 28 reconcile in both directions |
+| 17 | `plan_from_cad` 183 kB → 25 kB; `query_cad` profile 83 kB → 33 kB; `create_elements` summary 4,966 B for 20 walls |
+| 18 | `new_project` from Revit's default template, created, re-read and activated |
+
+Still open:
+- The clash summary's size is measured offline only: the live model had no clashes.
+- A `manage_views` batch that places a view and then crops it fails `place_view`'s centre check and rolls back whole. Cropping first works.
+- The `instance` block of a `manage_cad_links add` reply shows `applied_units: null`. `units_check` and every later read carry the applied unit.
+
+### DWG to model
+
+- **`horizun_apply_cad_plan` could never apply a walls-only DWG plan on a normal machine.** The source-set identity behind `sources_match_the_link` is written only by headless AutoCAD (accoreconsole), and only for `blocks`, `solid_hatch_layers` or `section` rules. The dry run's 75 walls were refused `coherence_unknown`, and neither `dwg_path` nor `horizun_cad_extract` could clear it. A plan whose requirement set reads nothing from the file is now judged on the link and the host DWG's hash. The link must have been loaded by this bridge and its geometry must be unchanged. New state `link_geometry_only`, `basis: link_geometry_and_host_file`, `references_checked: false`. A revised host is `revisions_not_aligned`. The strict refusal names what writes the set. The plan's binding records `link_geometry_fingerprint`, so a reload between plan and apply counts as drift. 12 Core tests; live probe `cad-plan-storey`.
+- **DWG plans put walls on their level, not on the drawing's Z.** On a level at +30,000 mm, the plan emitted Z = 0. `create_elements` derives the base offset from Z, so the walls would have been built 30 m low and verified there. Walls, floors, ceilings, roofs and absolute-mode families now stand at the resolved level's elevation plus the rule's offset (`storey_placement` in the reply). Creates from `plan_cad_update` follow the same path. 9 Core tests, including +30,000 mm = 98.4252 ft. Still open: flat MEP runs without `offset_mm`, room separators and `plan_cad_update`'s host search still read the drawing's Z.
+- **`structural_column` rules can declare `top_level`.** `catalog_check_only` refused `M_Concrete-Round-Column` (TwoLevelsBased) as "cannot be placed without a host", with no way to state its top. The plan now resolves `top_level` to `top_level_id` and refuses a top at or below the base. Without it, the rule is refused as `column_top_unstated`, which names the field. A top on a one-level family is refused rather than ignored. Columns read from closed loops were also placed at the ring's first corner, 150 mm off for a 300 mm column; they now stand at its centre. 8 Core tests.
+- **`horizun_manage_cad_links add` checks the unit by the linked geometry's scale instead of stamping `verified_applied` unchecked.** `units: millimeter` gave a link declaring `inch` (`IMPORT_DISPLAY_UNITS` ordinal 2), and the reply said verified because the stamp was a literal. That declaration cannot settle the question: it does not follow a forced unit (verify-dwg-cadlink W2), and on the dry run's drawing it did not match the DWG header either (INSUNITS 4, millimetres, extents 82.4 × 66.4 m). When a unit is asked for, `add` compares the placed geometry's XY diagonal with the drawing's own `$EXTMIN`/`$EXTMAX`, read by the headless reader: a cached extraction or a new header-only read, 5.1 s on that drawing. The new `units_check.verdict` is one of:
+  - `agrees` or `applied_header_differs`: verified;
+  - `not_applied`: a reused link type kept the header unit (W3); `units_not_applied`, partial;
+  - `unconfirmable`: no reader, degenerate extents, or a scale that matches neither; uncertain, never partial.
+
+  `units_check.applied` is kept in the machine's link load record and published per instance as `applied_units` / `applied_units_route`. A contradiction between the declaration and the drawing's INSUNITS is reported in `declared_contradicts_drawing`. 29 Core test cases.
+- **The DWG unit gate compares the unit Revit applied.** In the dry run, a link forced to millimetre that still declared inch was refused a millimetre set. `plan_from_cad`, `plan_cad_update` and `audit_cad_model` now use `applied_units` when present, fall back to the declared unit, and name the basis in `source.units_checked`. 5 Core tests.
+- **`horizun_cad_extract` with `view_id` no longer throws `DetailLevel is already set`.** The CAD harvest set `Options.DetailLevel` and then `Options.View`, and Revit accepts only one of the two. It now sets one or the other (`GeometryOptionsRules`). A source scan over all 34 `new Options` in the add-in found no other site that set both, and the scan stays as a test.
+- Live probe `cad-links-units-extract` (6 cases) covers the unit verdicts, the view-scoped extract and the compact profile. On a machine without AutoCAD the unit cases report `unverified`.
+
+### Documents, schedules and views
+
+- **`horizun_create_schedule` no longer groups a non-itemized schedule by its quantities.** Walls with Type/Count/Length/Area/Volume were sorted and grouped by every non-Count field, which gave 119 rows instead of 8. Fields are now classified from what Revit reports (field type, spec, `IsMeasurableSpec`, `CanTotal`). Identity fields are sorted and grouped in request order. Quantity fields that Revit can total, except Count, get Totals. A new optional `group_by` is honoured exactly; a name that is not one of the requested fields is refused in the rehearsal. The postcondition re-reads `sort_group` and `totals`, and the reply's `grouping` block names each field's role. 11 Core tests.
+- **`horizun_manage_views` `set_crop` verifies the crop that governs the view, not just the stored box.** It answered `verified: true` while the placed view still looked uncropped. `CropBoxActive` was already set; the verdict re-read only the CropBox, which Revit stores whether or not it governs the view. The verdict now needs `CropBoxActive`, the Crop View parameter (read independently), the CropBox and the drawn crop shape. A view template that controls the crop, a scope box that drives it, or a sketched crop is refused by name before any write. The row's `crop` block gives the crop's model corners and each viewport's sheet size against the crop. A larger viewport is the named finding `viewport_larger_than_crop`, which points at `set_annotation_crop`. Which of these caused the dry-run case is not yet measured. 11 Core tests.
+- **`horizun_verify_changes` frames the camera on the elements and no longer calls a blank image captured.** `orientation=top` on 75 walls at +30,000 mm returned a blank 7.7 KB PNG with `captured: true`. The view kept the default isometric eye and crop depth, both sized for the model as it was. The eye now stands outside the elements' box for every orientation, and the crop depth covers the box. The exported PNG is measured: fewer than max(25 px, 0.05 %) pixels that differ from the background gives `captured: false` with `finding: "blank_image"`. 13 Core tests.
+- **`horizun_document_session` `operation: "new_project"`** (improvement). It creates a blank project from `template_path`, or from Revit's `DefaultProjectTemplate` (named in `template_source`), at a `save_as_path` .rvt that must not exist; it never overwrites. It rehearses by default, with a token bound to the template's path, size and write time and to the target. The apply runs `NewProjectDocument` + `SaveAs`, re-reads the file and the document path, removes its own output on a mismatch, and reports `activated`. 25 tests.
+- **`horizun_open_document` activates an already-open document without `allow_upgrade`.** A 2023 model upgraded in memory on 2026 and not saved still has a 2023 header on disk, so activating it again demanded `allow_upgrade`. A path already open in the session, with no detach or audit, is now an activation: `version_guard: 'not_applicable_already_open'`. The wrong-bridge and central-model checks still apply. 6 Core tests.
+- Live probes `docs-dry-run` (top capture at +30 m, the dry run's wall schedule, set_crop on a placed view) and `document-session-new-project` (also covers the activation path).
+
+### Reading the model
+
+- **`horizun_query_model` resolves levels from where each category keeps them.** `group_by: level` put all 397 Structural Framing, 91 Rooms, 6 Roofs and 5 Stairs under "(no level)". The level read was a `??` chain that stopped at the first level parameter that *existed*, even when it held no level. The level now comes from an ordered list of sources (`LevelResolutionRules`): `Element.LevelId` first, then base and reference parameters including `INSTANCE_REFERENCE_LEVEL_PARAM`, `ROOF_BASE_LEVEL_PARAM`, `STAIRS_BASE_LEVEL_PARAM` and `ROOM_LEVEL_ID`, then a level host, and schedule levels last. A source counts only when it names a real Level. Summaries add `by_level_source`.
+- **`horizun_quantities` uses one parameter resolver with `query_model`.** `mode=takeoff` answered "absent" for `HOST_AREA_COMPUTED`, and `classification_parameter: "Type Name"` read "(empty)" on every instance. Both tools now accept BuiltInParameter tokens, GUIDs and names, reading the instance and then the type, with Type Name / Family Name read on the type first. An ambiguous display name is reported as unreadable instead of silently taking the first match.
+- **`horizun_query_model` sums name their unit.** `sum_parameters` returned Revit internal units with nothing saying so, so a 38.66 m² room read 416.16. `sum` is unchanged. Each sum adds `sum_unit`, `spec`, `quantity`, `value` + `unit` in m / m2 / m3, and the document's display unit when it can be read. Non-measurable specs are labelled unitless; mixed specs are never given a converted value.
+- **`horizun_audit_model` / `horizun_model_scan` view counts say what they count.** The two tools reported 28/36 views off sheets and 34/42 views without a template, with no explanation; schedules account for the difference. No count changed. Each finding adds its scope, a split by view type, what was left out, and the arithmetic that reconciles the two numbers.
+- 23 Core tests; four read-tier probes in `scripts/verify-live.ps1`.
+
+### Reply size
+
+- **Opt-in compact replies for the four tools that overflowed the client.** In the dry run `plan_from_cad` answered 232 kB, `create_elements` of 75 walls 262–276 kB, `query_cad` profile 78 kB and `clash` 58 kB, and the client cut each one to a file. `full` stays the default everywhere. Measured offline on synthetic replies:
+
+  | Tool | New option | What it keeps | Full → reduced |
+  |---|---|---|---|
+  | `horizun_plan_from_cad` | `response_mode: "summary"` | counts, coverage, warnings, coherence, `apply_binding` | 39.8 kB → 5.7 kB |
+  | `horizun_create_elements` | `response_mode: "summary"` | every failed or flagged row in full; clean rows as counts and ids | 198,370 B → 1,444 B |
+  | `horizun_clash` | `response_mode: "summary"` | totals by category pair and the 10 largest clashes | 51,545 B → 5,041 B |
+  | `horizun_query_cad` `mode=profile` | `response_mode: "compact"` | every number; drops the prose | 63 kB → 13 kB |
+
+  - Every DWG plan is now stored for 14 days under `plan_id`, which `horizun_apply_cad_plan` accepts in place of `apply_binding`/`actions`.
+  - Profile mode now honours the `layer` glob.
+  - Omissions are named in `response_omissions` / `omitted`.
+
+### Smaller fixes
+
+- **`horizun_excel_write_rows` can start a workbook, and its backup no longer lands in the user's folder.** Against a missing path it answered `Workbook not found`. `create_if_missing: true` creates an .xlsx, never replaces an existing file, and goes through the same lock and the same in-memory and on-disk read-back. The per-append backup now lives in `%USERPROFILE%\.horizun\backups\excel\` and is named in `backup_path`. A new workbook takes no backup. 10 server tests.
+- **`content_safety` no longer flags the bridge's own sentences.** `horizun_health`'s `recent_horizun_writes.note` and `horizun_audit_model`'s `finding_set_means` name Horizun tools and were reported as suspected instructions. Detection now skips exactly those (tool, path) pairs; the same sentence in an element name or comment is still flagged. 6 tests.
+- **`horizun_write_params_verified` stops reporting `vary_between_groups_error` on writes that succeeded.** Filling Project Information showed "does not support allowVaryBetweenGroups" on every row. `SetAllowVaryBetweenGroups` is now attempted only for instance-bound project/shared parameters on instances (`VaryBetweenGroupsRules`). 7 Core tests.
+
+tools/list grows by the new optional fields and the `new_project` operation; see `tests/Horizun.Server.Tests/tools-list-ledger.json`.
+
 ## v2.1.4 — 2026-09-27
 
 v2.1.3 was tagged but not released. Its Revit 2024 and 2025 live gates came back 584 passed, 0 failed, 0 unverified, with only the approved exemption not covered - and the gate script then checked the report a second time for not_covered = 0 and failed it. The named exemptions now live in one file, `scripts/release-gate-exemptions.json`, read by verify-live, the gate script, the stable-evidence job and the evidence tools; a report cannot widen it (name, reason and year must all match). Its 2023 gate had two more gaps: the panel-schedule probe now always stages its own panelboard from the year's template (every 2023 panel already had a schedule), and design options in Revit 2023 - which the API cannot create and whose only Autodesk sample has none - joins the list, approved by the project owner.

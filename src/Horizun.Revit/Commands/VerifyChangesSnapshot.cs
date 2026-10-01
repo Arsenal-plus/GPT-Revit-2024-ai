@@ -500,22 +500,19 @@ namespace Horizun.Revit.Commands
                             ?? throw new InvalidOperationException("the model has no 3D view type");
                         view = View3D.CreateIsometric(doc, vft.Id);
                         cap.ViewId = view.Id;
+                        ShowEveryDiscipline(view);
                         try { view.DisplayStyle = DisplayStyle.ShadingWithEdges; } catch { }
                         try { view.DetailLevel = ViewDetailLevel.Fine; } catch { }
-                        if (cam.Orientation != null) view.SetOrientation(cam.Orientation); else Orient(view, cam.OrientName);
+                        if (cam.Orientation != null) view.SetOrientation(cam.Orientation); else Orient(view, cam.OrientName, cam.Section);
                         if (cam.Section != null) { view.SetSectionBox(cam.Section); view.IsSectionBoxActive = true; }
                         doc.Regenerate();
                         if (cam.Crop != null) { view.CropBox = cam.Crop; view.CropBoxActive = true; view.CropBoxVisible = false; }
                         else if (cam.FitCropToSection && cam.Section != null)
                         {
-                            // Same crop fit as Picture(): the section box corners in view coordinates.
-                            BoundingBoxXYZ crop = view.CropBox;
-                            Transform toView = crop.Transform.Inverse;
-                            List<XYZ> pts = WorldCorners(cam.Section).Select(toView.OfPoint).ToList();
-                            double pad = 0.5;
-                            crop.Min = new XYZ(pts.Min(q => q.X) - pad, pts.Min(q => q.Y) - pad, crop.Min.Z);
-                            crop.Max = new XYZ(pts.Max(q => q.X) + pad, pts.Max(q => q.Y) + pad, crop.Max.Z);
-                            view.CropBox = crop; view.CropBoxActive = true; view.CropBoxVisible = false;
+                            // Same crop fit as Picture(): the section box corners in view
+                            // coordinates, depth range included.
+                            FitCropToBox(view, cam.Section);
+                            view.CropBoxActive = true; view.CropBoxVisible = false;
                         }
                         foreach (Category c in doc.Settings.Categories)
                             if (c.CategoryType == CategoryType.Annotation && view.CanCategoryBeHidden(c.Id))

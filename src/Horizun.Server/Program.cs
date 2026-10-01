@@ -1407,7 +1407,8 @@ namespace Horizun.Server
             if (def.ExternalContent)
                 safety = new ContentSafety.Report
                 {
-                    Origin = def.Host != null ? ContentSafety.OriginExternal : ContentSafety.OriginModel
+                    Origin = def.Host != null ? ContentSafety.OriginExternal : ContentSafety.OriginModel,
+                    Tool = name
                 };
 
             // Host-resident tool: answer in this process, never touch Revit. Same result shape
@@ -1611,7 +1612,7 @@ namespace Horizun.Server
             // phrasing in everything the add-in said, before any of it is rendered.
             if (safety != null)
             {
-                safety = ContentSafety.ScrubReply(reply, safety.Origin);
+                safety = ContentSafety.ScrubReply(reply, safety.Origin, name);
                 if (ok) ContentSafety.Attach(reply["data"], safety);
                 else if (safety.HasFindings)
                 {

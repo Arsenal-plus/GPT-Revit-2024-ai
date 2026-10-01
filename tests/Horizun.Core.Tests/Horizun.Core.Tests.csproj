@@ -44,6 +44,11 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\ModelExplainRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QueryResponseOptions.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QuerySummaryAccumulator.cs" />
+    <!-- Dry-run defects 9, 10, 11, 16: level sources, one parameter resolver, units on sums, view-count scopes. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\LevelResolutionRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ParameterResolutionRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SumUnitRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewCountScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BoundedReadCache.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ProgressiveResponse.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\FamilyRecipe.cs" />
@@ -326,6 +331,8 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadNetworkCache.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadInterpretationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadConversionPlanRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadPlanResponse.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadPlanUnits.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceRecord.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadAuditRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateRules.cs" />
@@ -356,6 +363,8 @@
          is null, and a profiler that guessed even once would be one organisation's
          layer convention compiled into a bridge that converts everybody's drawings. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CadLayerProfileRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadLinkUnitRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GeometryOptionsRules.cs" />
     <!-- Whether the values a rule declared actually LANDED. Two opposite mistakes
          shipped here - reading keys the writer does not emit, then demanding
          evidence a legitimate write cannot produce - and neither was reproducible
@@ -503,6 +512,12 @@
          strings and four booleans, and they lived in two large command files in two
          versions that had quietly diverged. Split out so the whole table is here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDecision.cs" />
+    <!-- When write_params_verified calls SetAllowVaryBetweenGroups (defect #15). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\VaryBetweenGroupsRules.cs" />
+    <!-- document_session new_project: target, template and token rules (defect #18). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\NewProjectRules.cs" />
+    <!-- response_mode=summary for create_elements and clash (defect #17). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ResponseSummaryRules.cs" />
     <!-- How on_open_dialog parses (5.22). The enum and the parse rule are Revit-free;
          the watcher that acts on the answer needs a Revit and is not here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDialogPolicy.cs" />
@@ -582,6 +597,9 @@
          name refusal, the closed operator table with value shapes, and the canonical
          definition snapshot a before/after diff hangs off. Pure, proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleEditRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleGroupingRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewCropRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CaptureFramingRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PhaseRules.cs" />
     <!-- Which dimension edits are eligible for which dimensions, and what the final
          state may claim once the transaction status is known. Depends only on

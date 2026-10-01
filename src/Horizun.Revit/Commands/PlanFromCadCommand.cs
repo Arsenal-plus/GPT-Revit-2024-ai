@@ -69,6 +69,10 @@ namespace Horizun.Revit.Commands
             CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
             if (wrongDocument != null) return wrongDocument;
 
+            string responseMode = request.Value<string>("response_mode");
+            string modeError = CadPlanResponse.ValidateMode(responseMode);
+            if (modeError != null) return CommandResult.Fail(modeError);
+
             // ---- the requirement set: whole, or refused whole ---------------------
             JObject setJson = request["requirement_set"] as JObject;
             if (setJson == null)
@@ -115,10 +119,15 @@ namespace Horizun.Revit.Commands
                                           "could read would be planning from nothing.");
 
             // ---- the unit check that stops a 200 becoming 200 metres ---------------
+            //
+            // THE UNIT THE GEOMETRY IS AT: the one this bridge measured Revit applied when it linked the
+            // drawing, when it did, and the link's declaration otherwise (Core/CadPlanUnits.cs). MEASURED in
+            // the dry run: a link forced to millimetre, geometry right in millimetres, still declared inch.
             string declared = facts.DeclaredUnits;
-            double? declaredToMm = CadUnits.MillimetresPer(declared);
-            bool unitsAgree = declaredToMm.HasValue &&
-                              Math.Abs(declaredToMm.Value - set.SourceUnitsToMm) < 1e-9;
+            CadUnitBasis unitBasis = CadPlanUnits.Decide(declared, facts.AppliedUnits, facts.AppliedUnitsRoute,
+                                                         set.SourceUnitsToMm);
+            double? declaredToMm = unitBasis.MmPerUnit;
+            bool unitsAgree = unitBasis.AgreesWithSet;
             bool acceptMismatch = request.Value<bool?>("accept_unit_mismatch") ?? false;
             if (!unitsAgree)
             {
@@ -138,14 +147,14 @@ namespace Horizun.Revit.Commands
                 // the geometry is trusted as handed over.
                 if (declaredToMm.HasValue)
                     return CommandResult.Fail(
-                        "unit_mismatch: the CAD link declares '" + declared + "' (" +
+                        "unit_mismatch: " + unitBasis.Says + " (" +
                         declaredToMm.Value.ToString("0.###", CultureInfo.InvariantCulture) +
                         " mm per unit) and the requirement set declares '" + set.SourceUnits + "' (" +
                         set.SourceUnitsToMm.ToString("0.###", CultureInfo.InvariantCulture) +
                         " mm per unit). Revit hands this geometry over ALREADY scaled by the link's unit, so " +
                         "nothing here can rescale it - and building anyway would put the model out by a factor " +
                         "of " + (declaredToMm.Value / set.SourceUnitsToMm).ToString("0.###", CultureInfo.InvariantCulture) +
-                        ". Correct the requirement set to say '" + declared + "', or re-link the DWG with the " +
+                        ". Correct the requirement set to say '" + unitBasis.Unit + "', or re-link the DWG with the " +
                         "unit it was drawn in. accept_unit_mismatch does NOT apply here: it cannot rescale " +
                         "anything, and it is only for a link that declares no unit at all.");
 
@@ -425,6 +434,7 @@ namespace Horizun.Revit.Commands
                 ["external_path"] = facts.ExternalPath,
                 ["linked_file_status"] = facts.LinkedFileStatus,
                 ["declared_units"] = declared,
+                ["units_checked"] = unitBasis.ToJson(),
                 ["transform_fingerprint"] = facts.TransformFingerprint,
                 ["units_agree_with_requirement_set"] = unitsAgree,
                 ["unit_mismatch_accepted"] = !unitsAgree,
@@ -439,7 +449,7 @@ namespace Horizun.Revit.Commands
             // the sizes are the file read now. Publishing both identities made a mismatch observable; it did
             // not make building from one safe. See Core/CadSourceCoherence.cs - only a state this bridge can
             // DEMONSTRATE grants applicable, and everything else keeps the diagnosis and withholds it.
-            JObject coherence = CadSourceCoherence.Evaluate(doc, element, facts, false);
+            JObject coherence = CadSourceCoherence.Evaluate(doc, element, facts, false, set);
             report["coherence"] = coherence;
             bool applicable = coherence.Value<bool?>("applicable") ?? false;
             report["applicable"] = applicable;
@@ -553,8 +563,19 @@ namespace Horizun.Revit.Commands
                 solidRead["pairs_without_hatched_material"] = interpretation.SolidVetoes;
                 report["solid_evidence"] = solidRead;
             }
-            unresolved = ResolveNames(doc, creates, request, resolved);
+            var storeyPlacement = new JObject();
+            unresolved = ResolveNames(doc, creates, request, resolved, storeyPlacement);
             if (unresolved != null) return CommandResult.Fail(unresolved);
+            if (storeyPlacement.Count > 0)
+                report["storey_placement"] = new JObject
+                {
+                    ["levels"] = storeyPlacement,
+                    ["means"] = "walls, floors, ceilings, roofs and absolutely-placed families stand ON the level " +
+                                "they resolved to: their Z is that level's elevation plus the rule's offset, never " +
+                                "the drawing's Z, because a plan drawing's Z is not a height. A non-zero " +
+                                "rows_whose_drawn_z_was_not_the_storey counts the rows that, taken at the drawing's " +
+                                "Z, would have been built that far off their storey."
+                };
 
             // THE TWO LEVELS A SHAFT RUNS BETWEEN, and the view a room separator
             // belongs to. Both are resolved here for the same reason the level and
@@ -774,6 +795,10 @@ namespace Horizun.Revit.Commands
                 // any other, and a plan made while the coherence could not be shown is not applied at all.
                 ["source_set_sha256"] = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
                 ["coherence_state"] = coherence.Value<string>("state"),
+                // THE GEOMETRY THIS PLAN WAS READ FROM. A reload moves none of the values above when the
+                // file's bytes are unchanged, and the link can still show something else afterwards; the
+                // apply compares this against the link as it is then (CadApplyGuard, "the link's geometry").
+                ["link_geometry_fingerprint"] = coherence["geometry_fingerprint"]?["now"],
                 ["target_document"] = target,
                 ["revit_version"] = SafeVersion(app),
                 ["means"] = "horizun_apply_cad_plan re-measures every one of these before writing and refuses " +
@@ -785,7 +810,30 @@ namespace Horizun.Revit.Commands
                             "is drift too - the same number pointing at a different thing is the one change a " +
                             "fingerprint over the actions cannot see."
             };
-            return CommandResult.Ok(report);
+
+            // THE WHOLE PLAN, KEPT. A summary leaves rows out of the reply, never out of the plan: the full
+            // report is kept on this machine under plan_id, and horizun_apply_cad_plan takes that id in place
+            // of the copied binding and actions. See Core/CadPlanResponse.cs.
+            string planId = CadPlanResponse.PlanId(plan.PlanFingerprint,
+                                                   CadConversionPlanRules.ActionsFingerprint(emittedActions));
+            report["plan_id"] = planId;
+            string keptAt = CadPlanStore.Save(CadPlanStore.DefaultRoot, planId, report);
+            report["stored_plan"] = new JObject
+            {
+                ["plan_id"] = planId,
+                ["kept"] = keptAt != null,
+                ["path"] = keptAt,
+                ["kept_for_days"] = (int)CadPlanStore.KeepFor.TotalDays,
+                ["apply_with"] = keptAt == null
+                    ? "the plan could not be kept on this machine: apply with apply_binding and actions copied " +
+                      "from a response_mode='full' reply."
+                    : "horizun_apply_cad_plan with target_document, instance_id, the same requirement_set and " +
+                      "plan_id - apply_binding, actions and candidate_index are then read from the kept plan, " +
+                      "and everything is re-measured exactly as when they are sent."
+            };
+            return CommandResult.Ok(responseMode == CadPlanResponse.Summary
+                ? CadPlanResponse.Summarize(report)
+                : report);
         }
 
         /// <summary>
@@ -952,6 +1000,16 @@ namespace Horizun.Revit.Commands
                 foreach (JObject row in ((JArray)c["elements"]).OfType<JObject>().ToList())
                 {
                     string kind = row.Value<string>("kind");
+                    if (kind == "structural_column")
+                    {
+                        JObject columnWithdrawal = ColumnTopWithdrawal(doc, row);
+                        if (columnWithdrawal != null)
+                        {
+                            withdrawn.Add(columnWithdrawal);
+                            ((JArray)c["elements"]).Remove(row);
+                        }
+                        continue;
+                    }
                     if (kind != "family_instance" || row["host_id"] != null) continue;
                     long? typeId = row.Value<long?>("type_id");
                     var symbol = typeId.HasValue ? doc.GetElement(Rid.Make(typeId.Value)) as FamilySymbol : null;
@@ -977,6 +1035,35 @@ namespace Horizun.Revit.Commands
                     });
                     ((JArray)c["elements"]).Remove(row);
                 }
+        }
+
+        /// <summary>
+        /// A COLUMN WHOSE TOP NOBODY STATED IS NOT PLANNED, and a top stated for a column that has none is not
+        /// dropped on the floor. The decision is CadCatalogCheck.ColumnTopProblem's, so the catalogue and the
+        /// plan answer the same rule the same way; null means the row may be built.
+        /// </summary>
+        private static JObject ColumnTopWithdrawal(Document doc, JObject row)
+        {
+            long? typeId = row.Value<long?>("type_id");
+            var symbol = typeId.HasValue ? doc.GetElement(Rid.Make(typeId.Value)) as FamilySymbol : null;
+            if (symbol == null) return null;
+            string placement;
+            try { placement = symbol.Family.FamilyPlacementType.ToString(); } catch { return null; }
+            string problem = CadCatalogCheck.ColumnTopProblem(placement, row["top_level_id"] != null);
+            if (problem == null) return null;
+            XYZ point = PlanPoint(row["point"]);
+            return new JObject
+            {
+                ["source_row"] = row["source_row"],
+                ["kind"] = "structural_column",
+                ["at_mm"] = point == null ? null
+                    : new JArray(Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1)),
+                ["reason"] = problem.Substring(0, problem.IndexOf(':')),
+                ["family"] = SafeName(symbol.Family),
+                ["type"] = SafeName(symbol),
+                ["placement_type"] = placement,
+                ["means"] = problem + ". It is NOT planned; the rows beside it are."
+            };
         }
 
         /// <summary>
@@ -1071,7 +1158,8 @@ namespace Horizun.Revit.Commands
                 }
         }
 
-        private static string ResolveNames(Document doc, List<JObject> creates, JObject request, JArray resolved)
+        private static string ResolveNames(Document doc, List<JObject> creates, JObject request, JArray resolved,
+                                           JObject storeyPlacement = null)
         {
             string defaultLevelName = request.Value<string>("level_name");
             long? defaultLevelId = request.Value<long?>("level_id");
@@ -1135,6 +1223,35 @@ namespace Horizun.Revit.Commands
                         double levelElevationMm = 0;
                         try { levelElevationMm = CadUnits.FeetToMm(level.Elevation); } catch { }
                         CadConversionPlanRules.ResolveOffsetFromLevel(row, levelElevationMm);
+
+                        // A WALL, A SLAB OR A COLUMN STANDS ON ITS STOREY, not at the drawing's Z. The
+                        // elevation is the one create_elements derives the base offset against (the
+                        // level's ProjectElevation), so the offset it derives is the rule's and nothing
+                        // else. See CadConversionPlanRules.PlaceOnStorey for the measurement.
+                        double levelProjectMm = levelElevationMm;
+                        try { levelProjectMm = CadUnits.FeetToMm(level.ProjectElevation); } catch { }
+                        double? drawnZ;
+                        bool moved = CadConversionPlanRules.PlaceOnStorey(row, levelProjectMm, out drawnZ);
+                        if (storeyPlacement != null && drawnZ.HasValue)
+                        {
+                            string key = SafeName(level) ?? ("level " + Rid.Value(level.Id));
+                            var entry = storeyPlacement[key] as JObject;
+                            if (entry == null)
+                                storeyPlacement[key] = entry = new JObject
+                                {
+                                    ["level_id"] = Rid.Value(level.Id),
+                                    ["level_elevation_mm"] = Math.Round(levelProjectMm, 1),
+                                    ["rows"] = 0,
+                                    ["rows_whose_drawn_z_was_not_the_storey"] = 0
+                                };
+                            entry["rows"] = entry.Value<int>("rows") + 1;
+                            if (moved)
+                            {
+                                entry["rows_whose_drawn_z_was_not_the_storey"] =
+                                    entry.Value<int>("rows_whose_drawn_z_was_not_the_storey") + 1;
+                                entry["drawn_z_mm"] = Math.Round(drawnZ.Value, 1);
+                            }
+                        }
                         if (seen.Add("level:" + Rid.Value(level.Id)))
                             resolved.Add(Resolved("level", level,
                                 want ?? (defaultLevelId.HasValue ? "level_id " + defaultLevelId.Value : null)));
@@ -1706,6 +1823,32 @@ namespace Horizun.Revit.Commands
                             return "shaft_inverted: top level " + Quote(SafeName(top)) + " sits at or below " +
                                    "base level " + Quote(SafeName(bottom)) + ". A shaft runs upward, and one " +
                                    "that does not cuts nothing. NOTHING was planned.";
+                    }
+
+                    // WHERE A COLUMN STOPS: the rule's top_level, resolved like a shaft's. The base is the
+                    // row's level_id, which ResolveNames has already settled; a top at or below it is refused
+                    // here rather than left to Revit, which would build a column of no height or none at all.
+                    if (kind == "structural_column" && row["top_level_name"] != null)
+                    {
+                        if (levels == null)
+                            levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().ToList();
+                        string want = row.Value<string>("top_level_name");
+                        row.Remove("top_level_name");
+                        Level top = levels.FirstOrDefault(l => string.Equals(SafeName(l), want, StringComparison.Ordinal))
+                                 ?? levels.FirstOrDefault(l => string.Equals(SafeName(l), want, StringComparison.OrdinalIgnoreCase));
+                        if (top == null)
+                            return "level_not_found: no level in " + Quote(SafeTitle(doc)) + " is named " +
+                                   Quote(want) + ", which a structural column rule names as its top_level. NOTHING " +
+                                   "was planned. The levels there are: " + Names(levels) + ".";
+                        long baseId = row.Value<long?>("level_id") ?? -1;
+                        Level bottom = levels.FirstOrDefault(l => Rid.Value(l.Id) == baseId);
+                        if (bottom != null && top.ProjectElevation <= bottom.ProjectElevation)
+                            return "column_inverted: top_level " + Quote(SafeName(top)) + " sits at or below the " +
+                                   "column's base level " + Quote(SafeName(bottom)) + ". A column runs upward from " +
+                                   "its level to its top. NOTHING was planned.";
+                        row["top_level_id"] = Rid.Value(top.Id);
+                        if (seen.Add("level:" + Rid.Value(top.Id)))
+                            resolved.Add(Resolved("level", top, want));
                     }
 
                     if (kind == "room_separator" && row["view_id"] == null)

@@ -70,6 +70,13 @@ namespace Horizun.Revit.Core
 
         public string DeclaredUnits;            // off the TYPE, by built-in parameter ordinal
         public string DeclaredUnitsRoute;       // HOW it was read, so a reader knows what they are trusting
+        // THE UNIT THE GEOMETRY IS AT, when this bridge established it (horizun_manage_cad_links add, by the
+        // geometry's scale or a header that matched the request). DeclaredUnits is the drawing's HEADER
+        // (measured: IMPORT_DISPLAY_UNITS does not follow a forced unit), so a link forced to the right unit
+        // under a wrong header declares one thing and is placed at another. Null when nothing established it:
+        // links made elsewhere, links on another machine (the record is local, see CadLinkLoads), repoints.
+        public string AppliedUnits;
+        public string AppliedUnitsRoute;
         public double? ScaleFactor;
         public double? InstanceScale;
         public string BaseLevel;
@@ -106,6 +113,8 @@ namespace Horizun.Revit.Core
                 ["linked_file_status"] = LinkedFileStatus,
                 ["declared_units"] = DeclaredUnits,
                 ["declared_units_route"] = DeclaredUnitsRoute,
+                ["applied_units"] = AppliedUnits,
+                ["applied_units_route"] = AppliedUnitsRoute,
                 ["scale_factor"] = ScaleFactor.HasValue ? (JToken)ScaleFactor.Value : JValue.CreateNull(),
                 ["instance_scale"] = InstanceScale.HasValue ? (JToken)InstanceScale.Value : JValue.CreateNull(),
                 ["base_level"] = BaseLevel,
@@ -189,9 +198,35 @@ namespace Horizun.Revit.Core
                 ReadTypeAndInstanceParameters(doc, e, f);
                 ReadTransform(e, f);
                 ReadFileFacts(f);
+                ReadAppliedUnits(doc, f);
                 facts.Add(f);
             }
             return facts;
+        }
+
+        /// <summary>
+        /// The unit this bridge established the geometry is AT, from the load record written when it made
+        /// the link. Trusted only while the link still points at the file the record names: a link aimed
+        /// elsewhere since is a drawing whose scale nobody measured.
+        /// </summary>
+        private static void ReadAppliedUnits(Document doc, CadInstanceFacts f)
+        {
+            try
+            {
+                JObject record = CadLinkLoads.Read(doc, f.UniqueId);
+                var units = record?["units_applied"] as JObject;
+                string unit = (string)units?["unit"];
+                if (string.IsNullOrWhiteSpace(unit)) return;
+                string recordedPath = (string)record["external_path"];
+                if (string.IsNullOrWhiteSpace(f.ExternalPath) || string.IsNullOrWhiteSpace(recordedPath) ||
+                    !string.Equals(System.IO.Path.GetFullPath(recordedPath), System.IO.Path.GetFullPath(f.ExternalPath),
+                                   StringComparison.OrdinalIgnoreCase))
+                    return;
+                f.AppliedUnits = unit;
+                f.AppliedUnitsRoute = "this bridge's load record (" + ((string)units["route"] ?? "unknown route") +
+                                      ", verdict " + ((string)units["verdict"] ?? "?") + ") - kept on this machine";
+            }
+            catch { /* no record, no applied unit: the declaration stands alone and says what it is */ }
         }
 
         private static void ReadExternalReference(Document doc, Element e, CadInstanceFacts f)

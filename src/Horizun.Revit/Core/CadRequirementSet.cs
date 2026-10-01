@@ -1473,6 +1473,20 @@ namespace Horizun.Revit.Core
                         "rule '" + rule.Id + "': base_level and top_level are both '" + rule.BaseLevel +
                         "', so the shaft would have no height and cut nothing.");
             }
+            else if (rule.Produces == "structural_column" && string.IsNullOrWhiteSpace(rule.BaseLevel) &&
+                     !string.IsNullOrWhiteSpace(rule.TopLevel))
+            {
+                // A STRUCTURAL COLUMN RUNS FROM ITS LEVEL TO A TOP. Revit's own structural columns are
+                // TwoLevelsBased, and with no top stated Revit picks one - whatever level happens to be above,
+                // or none useful. MEASURED (dry run, class 4): M_Concrete-Round-Column was refused with no
+                // documented way to say where it stops. The base is the rule's 'level' (or the call's
+                // level_name), so only the top is declared here.
+                if (!string.IsNullOrWhiteSpace(rule.Level) &&
+                    string.Equals(rule.Level, rule.TopLevel, StringComparison.Ordinal))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': level and top_level are both '" + rule.Level + "', so the column " +
+                        "would have no height. top_level names the storey the column stops at.");
+            }
             else if (!string.IsNullOrWhiteSpace(rule.BaseLevel) || !string.IsNullOrWhiteSpace(rule.TopLevel))
             {
                 throw new CadRequirementSetException(

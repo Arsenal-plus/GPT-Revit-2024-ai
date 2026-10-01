@@ -1695,12 +1695,27 @@ namespace Horizun.Revit.Commands
         {
             int unreadable = 0;
             var bare = new List<View>();
+            // WHAT THIS COUNT COUNTS, by view type, and what horizun_model_scan's wider
+            // views_no_template would add (Core/ViewCountScopeRules) - so 34 here and 42
+            // there reconcile by addition, not by guessing.
+            var tally = new ViewCountTally();
             foreach (View view in new FilteredElementCollector(doc).OfClass(typeof(View)).OfType<View>())
             {
                 try
                 {
-                    if (view.IsTemplate || !view.CanBePrinted) continue;
-                    if (view.ViewTemplateId == ElementId.InvalidElementId) bare.Add(view);
+                    if (view.IsTemplate) continue;
+                    string kind = view.ViewType.ToString();
+                    bool noTemplate = view.ViewTemplateId == ElementId.InvalidElementId;
+                    if (!view.CanBePrinted)
+                    {
+                        if (noTemplate && ViewCountScopeRules.ScanListsViewType(kind)) tally.Excluded(kind);
+                        continue;
+                    }
+                    if (noTemplate)
+                    {
+                        bare.Add(view);
+                        tally.Counted(kind, ViewCountScopeRules.ScanListsViewType(kind));
+                    }
                 }
                 catch { unreadable++; }
             }
@@ -1718,12 +1733,16 @@ namespace Horizun.Revit.Commands
                               "element with inputs: {template_view_id: <the template's element id>}."
                 }
             }));
-            return Finding(AuditCheckNames.ViewsWithoutTemplate, bare.Count > 0, bare.Count,
+            JObject finding = Finding(AuditCheckNames.ViewsWithoutTemplate, bare.Count > 0, bare.Count,
                 bare.Count == 0
                     ? "Every printable view follows a template."
                     : bare.Count + " printable view(s) follow no template; each row names the typed correction " +
-                      "and the input it requires - which template is the person's explicit choice.",
+                      "and the input it requires - which template is the person's explicit choice. Schedules " +
+                      "and other non-printable views are not counted (see count_scope).",
                 items, bare.Count, unreadable);
+            finding["count_scope"] = ViewCountScopeRules.Describe(ViewCountScopeRules.AuditNoTemplateScope, tally,
+                "horizun_model_scan (documentation.views_no_template)");
+            return finding;
         }
 
         private static string SafeCategoryName(Element element)
@@ -1778,6 +1797,18 @@ namespace Horizun.Revit.Commands
             {
                 try { onSheet.Add(vp.ViewId); } catch { unreadable++; }
             }
+            // Schedules are placed by ScheduleSheetInstance, not Viewport. Read ONLY to tally
+            // the excluded schedules horizun_model_scan would call off-sheet; the check
+            // itself still leaves schedules out. A read that fails here changes no count.
+            var schedulesOnSheet = new HashSet<ElementId>();
+            try
+            {
+                foreach (var ssi in new FilteredElementCollector(doc).OfClass(typeof(ScheduleSheetInstance))
+                                                                        .Cast<ScheduleSheetInstance>())
+                    try { schedulesOnSheet.Add(ssi.ScheduleId); } catch { }
+            }
+            catch { }
+            var tally = new ViewCountTally();
 
             var candidates = new FilteredElementCollector(doc)
                 .OfClass(typeof(View))
@@ -1788,11 +1819,19 @@ namespace Horizun.Revit.Commands
                     {
                         if (v.IsTemplate) return false;
                         if (v is ViewSheet) return false;
+                        string kind = v.ViewType.ToString();
                         // Schedules and legends can legitimately live off-sheet mid-project;
                         // 3D/plan/section views off-sheet are the ones that pile up.
-                        if (v.ViewType == ViewType.Legend || v.ViewType == ViewType.Schedule) return false;
+                        if (v.ViewType == ViewType.Legend || v.ViewType == ViewType.Schedule)
+                        {
+                            // Left out here, counted by horizun_model_scan when on no sheet.
+                            if (!onSheet.Contains(v.Id) && !schedulesOnSheet.Contains(v.Id)) tally.Excluded(kind);
+                            return false;
+                        }
                         if (v.ViewType == ViewType.DrawingSheet || v.ViewType == ViewType.Internal) return false;
-                        return !onSheet.Contains(v.Id);
+                        if (onSheet.Contains(v.Id)) return false;
+                        tally.Counted(kind, ViewCountScopeRules.ScanListsViewType(kind));
+                        return true;
                     }
                     catch { unreadable++; return false; }
                 })
@@ -1805,7 +1844,7 @@ namespace Horizun.Revit.Commands
                 ["type"] = v.ViewType.ToString()
             }));
 
-            return Finding(AuditCheckNames.ViewsOffSheets, candidates.Count > 0, candidates.Count,
+            JObject finding = Finding(AuditCheckNames.ViewsOffSheets, candidates.Count > 0, candidates.Count,
                 candidates.Count == 0
                     ? "Every non-legend, non-schedule view is placed on a sheet."
                     : $"{candidates.Count} view(s) are on no sheet. Some are working views and that is fine — " +
@@ -1817,6 +1856,9 @@ namespace Horizun.Revit.Commands
                             "contain views that are placed."
                           : ""),
                 items, candidates.Count, unreadable);
+            finding["count_scope"] = ViewCountScopeRules.Describe(ViewCountScopeRules.AuditOffSheetScope, tally,
+                "horizun_model_scan (documentation.views_not_on_sheet)");
+            return finding;
         }
 
         // ---- Rooms: unplaced and redundant both corrupt area takeoffs. ----

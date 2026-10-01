@@ -76,6 +76,26 @@ namespace Horizun.Revit.Core
             return "no type of family '" + family + "' is loaded";
         }
 
+        /// <summary>
+        /// WHERE A COLUMN STOPS, decided once for the catalogue and the plan. A TwoLevelsBased family runs from its
+        /// level to a top level, and Revit's default top is whatever level happens to be above; a family of any
+        /// other placement stands on one level and a top stated for it would reach a builder that ignores it.
+        /// Null when the row may be built; otherwise "reason: sentence".
+        /// </summary>
+        public static string ColumnTopProblem(string placementType, bool topLevelStated)
+        {
+            bool twoLevels = string.Equals(placementType, "TwoLevelsBased", StringComparison.Ordinal);
+            if (twoLevels && !topLevelStated)
+                return "column_top_unstated: a TwoLevelsBased family runs from its base level to a top level, and " +
+                       "this rule states no top. Declare top_level (the name of the level the column stops at) on a " +
+                       "rule that produces structural_column; Revit's default top is whatever level happens to be " +
+                       "above, which nobody chose";
+            if (!twoLevels && topLevelStated && placementType != null)
+                return "top_level_not_applicable: a " + placementType + " family stands on ONE level, so a top_level " +
+                       "would reach a builder that ignores it. Remove top_level, or name a TwoLevelsBased column type";
+            return null;
+        }
+
         public static JObject Check(CadRequirementSet set, Func<string, CadTypeFacts> type, ICollection<string> levels,
                                     Func<string, List<string>> typesOfKind = null)
         {
@@ -134,7 +154,22 @@ namespace Horizun.Revit.Core
                         if (!string.IsNullOrWhiteSpace(rule.Category) && !string.IsNullOrWhiteSpace(f.Category) &&
                             !string.Equals(rule.Category, f.Category, StringComparison.OrdinalIgnoreCase))
                             problems.Add("category_differs: the rule says " + rule.Category + ", the type is " + f.Category);
-                        if (f.PlacementType != null)
+                        bool twoLevels = string.Equals(f.PlacementType, "TwoLevelsBased", StringComparison.Ordinal);
+                        bool columnTopApplies = f.PlacementType != null &&
+                            ((twoLevels && string.IsNullOrWhiteSpace(rule.HostedOn)) ||
+                             (!twoLevels && rule.Produces == "structural_column" && !string.IsNullOrWhiteSpace(rule.TopLevel)));
+                        if (columnTopApplies)
+                        {
+                            // A COLUMN RUNS FROM ITS LEVEL TO A TOP, and Revit's structural columns are
+                            // TwoLevelsBased. MEASURED (dry run, class 4): M_Concrete-Round-Column was refused here
+                            // as "cannot be placed without a host", with no way offered to state the top.
+                            row["top_level"] = rule.TopLevel;
+                            string columnProblem = ColumnTopProblem(f.PlacementType, !string.IsNullOrWhiteSpace(rule.TopLevel));
+                            if (columnProblem != null) problems.Add(columnProblem);
+                            else if (levels != null && !levels.Contains(rule.TopLevel))
+                                problems.Add("level_not_found: no level is named '" + rule.TopLevel + "' (top_level)");
+                        }
+                        else if (f.PlacementType != null)
                         {
                             string mode = string.IsNullOrWhiteSpace(rule.HostedOn) ? "(none)" : rule.HostedOn.ToLowerInvariant();
                             string[] can;

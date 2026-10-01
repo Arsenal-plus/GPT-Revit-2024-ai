@@ -270,6 +270,19 @@ styles. Visibility is not a precedence: any layer that hides wins.
   category and inserts that many key rows. The re-read checks `IsKeySchedule` and
   counts the key elements owned by the schedule. `include_links` and `itemized` do
   not apply to key schedules and are refused when sent.
+- **Grouping of a non-itemized schedule.** Without `group_by`, the schedule sorts
+  and groups by the IDENTITY fields only (type, family, level, mark, text, yes/no)
+  in the order they were requested, never by a QUANTITY: the Count field, a
+  material quantity, percentage or formula, a measurable spec (length, area,
+  volume...), an integer or number, or any field Revit can total. The quantity
+  fields Revit can total (except Count) get `Totals`, so a grouped row shows the
+  sum instead of a blank cell. Measured on a real model: walls with
+  Type/Count/Length/Area/Volume grouped by every non-Count field gave 119 rows
+  instead of 8. `group_by: [...]` (names from `fields`) is honoured exactly, in
+  order, also on an itemized schedule; `[]` groups by nothing; a name that is not
+  a requested field is refused in the rehearsal. The re-read covers `sort_group`
+  (the committed sort/group field ids, in order) and `totals`, and the reply's
+  `grouping` block says which role each field got and why.
 
 ### `horizun_export` — the DWG layer table
 
@@ -881,6 +894,36 @@ asociación, y verifica cada copia contra la fórmula. Todo en ensayo por defect
 con token y rollback si la relectura no coincide.
 
 
+
+## Smaller replies: `response_mode: "summary"` for `horizun_create_elements` and `horizun_clash`
+
+Course dry run 2026-09-30 (defect #17): `horizun_create_elements` of 75 walls answered
+262-276 kB and `horizun_clash` with 165 interferences 58 kB, over the client's limit, so
+the reply was truncated to a file. Both now take the `response_mode` the reads already
+use (`full`, the default, changes nothing). It is presentation only: the measured verdict,
+counts, coverage and headline are untouched, and every shortened array is named in
+`response_omissions` (`json_pointer`, `returned_items_before_summary`, `shown`,
+`omitted`) with `response_detail_complete`, as `horizun_model_scan` does.
+
+- **create_elements** (`rows`, and `api_rehearsal.provisional_verification` of a
+  `revit_rollback` rehearsal): a row that did not verify, whose postconditions did not
+  all verify, whose source comparison did not match, that carries an error or warnings,
+  or whose element the `spatial_check` names stays IN FULL. The rest collapse into
+  `rows_summary` - `total`, `by_status` (`verified_clean`, `verified_with_findings`,
+  `not_verified`), `by_kind` and `collapsed_element_ids`. Re-read any of them with
+  `horizun_query_model element_ids`. Shaped by the dispatcher after the spatial check,
+  so the rows it names are known. The confirmation token does not bind
+  `response_mode`: a summary rehearsal can be applied in full, and the other way round.
+- **clash**: `clash_summary` with totals by category pair and source model
+  (`by_pair`), the total intersection volume and the cross-model count, plus the 10
+  largest clashes by volume in full, each with its `clash_index` in the full list. The
+  rest: `horizun_coordination` (with `record_findings: true`) or the same request with
+  `response_mode: "full"` - `expand` names which. Refused with `plan_penetrations`,
+  whose plan cites clashes by index.
+
+MEASURED offline on synthetic replies shaped like the real ones
+(`ResponseSummaryRulesTests`): 75 clean walls 198,370 -> 1,444 bytes; 165 clashes in the
+course run's category mix 51,545 -> 5,041 bytes. Not yet measured on a live reply.
 
 ## Clash resolution and batch undo
 
@@ -1777,6 +1820,16 @@ group that is always rolled back (`image.temporary_view_rollback = RolledBack`).
 it after a modelling batch and look at the image: the check sees solids, not intent (a
 wrong level or room, or a missing element, needs the picture).
 
+The camera is framed on the elements for every `orientation` (isometric, top, front,
+right): the eye stands outside their box on the viewer side and the crop's depth range
+(a 3D view's near/far clip) covers the whole box. It used to keep the eye and depth of
+the default isometric view, and 75 walls on a level at +30 m seen from `top` came back
+as a blank image. The exported PNG is then MEASURED: `image.content` gives the
+background colour and how many pixels differ from it, and an image that is effectively
+all background (fewer than max(25 px, 0.05 %) content pixels) is reported as
+`captured: false` with `finding: "blank_image"` and no attached image, never as a
+capture. An image that cannot be decoded says `content.measured: false`.
+
 - `scope` (default `last_write`): the previous behaviour, unchanged — only the most
   recent Horizun write in this document (kept in memory since Revit started).
   `scope=session` instead unions every write's added/modified ids since Revit started
@@ -2618,6 +2671,24 @@ no sample (a curtain wall, a ceiling, an element without location) is `unlocatab
 counted as unassigned. A floor whose top face lies below its room's base (a structural slab
 under a finish floor) is unassigned.
 
+## horizun_manage_views: `set_crop` (what makes a crop real)
+
+`set_crop` writes the rectangle `box` (view plane, the call's units) and turns the crop
+on. Its verdict no longer rests on the stored CropBox alone, which Revit keeps whether or
+not it governs the view (reported: `verified: true` while the placed view still looked
+uncropped). It now needs, before the commit and again after it: `CropBoxActive` true, the
+"Crop View" parameter (`VIEWER_CROP_REGION`) on, read independently, the CropBox equal to
+the request within 1 mm, and the crop SHAPE Revit draws (`GetCropShape`, projected on the
+view plane) spanning the request. An unreadable shape is a note in `crop.notes`, not a
+pass of its own. Refused by name before anything is written: a view template that controls
+the crop (clear it with `set_template_controls` or remove the template), a scope box
+driving it, and a sketched (non-rectangular) crop, over which the API ignores a crop box.
+The row's `crop` block reports the facts, the crop's corners in model coordinates, and every
+viewport showing the view with its size on the sheet against the crop at the view's scale;
+a viewport larger than its crop is a named finding (`viewport_larger_than_crop`, usually
+grids, levels or tags outside the crop while the annotation crop is off -
+`set_annotation_crop`), reported without changing the verdict.
+
 ## horizun_manage_views: `renumber_sheets` (a register-wide map)
 
 `renumber_sheets` renumbers many sheets at once from a map `old number -> new
@@ -3100,6 +3171,37 @@ names the active project position, the file is rewritten through its inverse so 
 at the probe's own X, and the case records the position it used (an identity one leaves the
 rotated-position sign unexercised); in 2023 a `landxml_path` row must bring the same named
 refusal. Everything is deleted with `horizun_delete_verified` `mode: "ids"`; nothing is saved.
+
+## horizun_document_session — operation `new_project`
+
+Creates a blank project from a template and saves it: `save_as_path` (required, an
+absolute `.rvt` that must **not** exist) and `template_path` (optional `.rte`). Without
+`template_path` it uses this Revit's own `Application.DefaultProjectTemplate` (Options >
+File Locations, set per locale by the installer) and says so in `template_source`; when
+none is configured, or it is not on disk, the call is refused and names where Autodesk's
+templates usually live. A project with no template is never created in its place.
+
+- **Never overwrites.** There is no `overwrite` for this operation; an existing file, or a
+  path whose existence cannot be tested, is refused. A template from a newer Revit is
+  refused; an older one is upgraded in memory only and the template file is never written.
+- **Rehearses by default.** `dry_run` defaults to true (as for `sync_with_central`): the
+  rehearsal reads both paths and the template header and returns a `confirmation_token`
+  bound to the template (path, size, write time) and the target. Apply with the same
+  arguments, `dry_run: false`, that token and a new `idempotency_key`.
+- **Verified by re-reading.** `Application.NewProjectDocument(template)` then `SaveAs`
+  with `OverwriteExistingFile = false`; afterwards the file must exist with a size and a
+  header that reads this host's Revit year, and the document's `PathName` must be the
+  requested path. Either check failing closes the document without saving and deletes the
+  file this call wrote, so the path is empty again.
+- **Activation is reported, not assumed.** The API activates a document only through
+  `UIApplication.OpenAndActivateDocument`; the operation uses the same bare-path call as an
+  `open` of an already-open document and re-reads the active document. `activated: false`
+  (with `activation_note`) means the project is created, saved and open in the background.
+
+Course dry run 2026-09-30 (defect #18): without this the run fell back to a copy of
+another model plus a new level, which modified 172 unrelated elements. Live probe:
+`scripts/live-probes/document-session-new-project.probes.ps1` (offline tests in its
+`.tests.ps1`); not yet run in Revit.
 
 ## horizun_document_session — operation `sync_with_central`
 

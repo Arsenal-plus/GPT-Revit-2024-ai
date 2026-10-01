@@ -599,7 +599,9 @@ namespace Horizun.Contracts
                     "the version is read from the file itself (BasicFileInfo), before anything is opened. REFUSES a " +
                     "NEWER file outright, because no flag can downgrade one. REFUSES a workshared CENTRAL model " +
                     "unless detach=true or open_central=true - and a CLOUD MODEL IS A CENTRAL MODEL, so the same " +
-                    "flag is required for it. " +
+                    "flag is required for it. A path ALREADY OPEN in this session is ACTIVATED, not reopened, and " +
+                    "needs no allow_upgrade (version_guard='not_applicable_already_open'), unless detach or audit asks " +
+                    "for a real open. " +
                     "BY GUID (cloud_project_guid + cloud_model_guid): the upgrade guard CANNOT RUN, because a " +
                     "cloud model has no local file whose version could be read before opening it - the response " +
                     "reports version_guard='not_applicable_cloud' and a null version rather than letting an " +
@@ -713,8 +715,8 @@ namespace Horizun.Contracts
                 Description =
                     "Create one native Revit schedule for one category, optionally including elements from loaded RVT links; " +
                     "also multi-category (category=OST_MultiCategory) and key schedules (key_schedule, key_rows re-read as key elements). " +
-                    "Dry-run is the default. Resolves fields by Revit display name or stable token, groups non-itemized schedules, commits once, " +
-                    "then re-reads the schedule, fields, IncludeLinkedFiles flag and body row count. Zero host elements is valid: " +
+                    "Dry-run is the default. Resolves fields by Revit display name or stable token, groups non-itemized schedules by identity fields, commits once, " +
+                    "then re-reads the schedule, fields, sort/group, totals, IncludeLinkedFiles flag and body row count. Zero host elements is valid: " +
                     "the linked elements are included by Revit itself when include_links=true.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
@@ -724,7 +726,8 @@ namespace Horizun.Contracts
     ""name"": { ""type"": ""string"", ""description"": ""Name of the new schedule. An existing name is refused, never overwritten."" },
     ""fields"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Fields to add: localized Revit display names, Count/Family/Type aliases, or BuiltInParameter tokens. Defaults to Count, Family, Type."" },
     ""include_links"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Set Revit's Include elements in links option."" },
-    ""itemized"": { ""type"": ""boolean"", ""default"": false, ""description"": ""List every element when true; otherwise group by the requested non-Count fields."" },
+    ""itemized"": { ""type"": ""boolean"", ""default"": false, ""description"": ""List every element when true; otherwise group by the identity fields (never a length, area, volume, count or number) and total the quantities."" },
+    ""group_by"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Sort/group exactly by these requested fields, in order; [] groups by nothing. Omitted: derived as above."" },
     ""key_schedule"": { ""type"": ""boolean"", ""default"": false },
     ""key_rows"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 500 },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Validate category and scope without opening a transaction."" },
@@ -886,7 +889,8 @@ namespace Horizun.Contracts
     }},
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },
     ""confirmation_token"": { ""type"": ""string"" },
-    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: create elements"" }
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: create elements"" },
+    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""summary""], ""default"": ""full"", ""description"": ""summary: rows that verified cleanly collapse to counts by status/kind plus their element ids; failed rows, rows with findings and elements the spatial_check names stay in full. Presentation only; response_omissions names what was left out."" }
   }, ""additionalProperties"": false
 }")
             },
@@ -2132,7 +2136,9 @@ namespace Horizun.Contracts
     ""outfall_tolerance_mm"": { ""type"": ""number"", ""minimum"": 0, ""default"": 50.0,
       ""description"": ""How close a junction must be to the outfall point to BE it. Nothing within this distance is a REFUSAL, not a reason to take the nearest node: an outfall on the wrong node inverts an entire layout while looking plausible."" },
     ""outfall_invert_mm"": { ""type"": ""number"", ""default"": 0,
-      ""description"": ""The INVERT - inside bottom - at the outfall, in millimetres, in the same datum the requirement set's elevations use. Every other invert is this plus the fall along the network. Each planned run is then placed on its CENTRELINE, at the invert plus half its declared bore, and a run with no declared bore takes no fall at all rather than being placed half a diameter wrong."" }
+      ""description"": ""The INVERT - inside bottom - at the outfall, in millimetres, in the same datum the requirement set's elevations use. Every other invert is this plus the fall along the network. Each planned run is then placed on its CENTRELINE, at the invert plus half its declared bore, and a run with no declared bore takes no fall at all rather than being placed half a diameter wrong."" },
+    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""summary""], ""default"": ""full"",
+      ""description"": ""summary keeps counts, coverage, warnings, coherence and apply_binding whole and cuts each row list to a sample, named in response_omissions. The whole plan is kept under plan_id for horizun_apply_cad_plan."" }
   },
   ""additionalProperties"": false
 }")
@@ -2358,9 +2364,11 @@ namespace Horizun.Contracts
                     "reports a partial honestly and never claims an atomicity it does not have.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
-  ""required"": [""target_document"", ""instance_id"", ""requirement_set"", ""apply_binding"", ""actions""],
+  ""required"": [""target_document"", ""instance_id"", ""requirement_set""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
+    ""plan_id"": { ""type"": ""string"",
+      ""description"": ""The plan_id horizun_plan_from_cad returned: apply_binding, actions and candidate_index are read from the plan kept on this machine. Without it, send apply_binding and actions."" },
     ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD instance the plan was read from."" },
     ""requirement_set"": { ""type"": ""object"", ""description"": ""The SAME artefact the plan was made from; its hash is re-checked."" },
     ""apply_binding"": { ""type"": ""object"", ""description"": ""Copied verbatim from the plan reply: plan_fingerprint, source_fingerprint, requirement_set_sha256."",
@@ -2413,7 +2421,9 @@ namespace Horizun.Contracts
     ""instance_id"": { ""type"": ""integer"",
       ""description"": ""Required for layers and geometry. There is no default CAD instance; list them with mode=instances first."" },
     ""layer"": { ""type"": ""string"",
-      ""description"": ""geometry mode: a GLOB over layer names (A-WALL*, *-DEMO). Globs, not regex - a stray bracket in a layer filter should be a character, not a crash."" },
+      ""description"": ""geometry and profile modes: a GLOB over layer names (A-WALL*, *-DEMO). Globs, not regex - a stray bracket in a layer filter should be a character, not a crash."" },
+    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""compact""], ""default"": ""full"",
+      ""description"": ""profile mode only: compact keeps every count, chosen reading, range and skeleton rule and drops the per-layer prose (a 27-layer profile goes from ~78 kB to well under 20 kB); omitted names what was left out. Other modes refuse compact."" },
     ""arc_sagitta_mm"": { ""type"": ""number"", ""default"": 5.0, ""minimum"": 0.001,
       ""description"": ""How far a chord may depart from the arc it replaces. Arcs and splines are APPROXIMATED and every segment from one says so."" },
     ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000,
@@ -4432,13 +4442,16 @@ namespace Horizun.Contracts
                     "Saving reports bytes/mtime/format re-read from " +
                     "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
                     "so audit_ran only ever describes the open. sync_with_central is OFF until the machine owner enables it " +
-                    "in Revit (Advanced options); an omitted dry_run is an ESTIMATE whose token the apply needs.",
+                    "in Revit (Advanced options); an omitted dry_run is an ESTIMATE whose token the apply needs. " +
+                    "new_project creates a blank project from template_path (or Revit's DefaultProjectTemplate) at a .rvt " +
+                    "save_as_path that must NOT exist - never overwrites; rehearses by default, applies with the token, " +
+                    "re-reads file and document, and reports whether it was activated.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect"", ""sync_with_central""],
-                     ""description"": ""inspect reads a file's version off disk unopened. sync_with_central is owner-gated; preview is an estimate."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect"", ""sync_with_central"", ""new_project""],
+                     ""description"": ""inspect reads a file's version off disk unopened. sync_with_central is owner-gated; preview is an estimate. new_project creates a blank project from a template."" },
     ""file_path"": { ""type"": ""string"",
                      ""description"": ""open/inspect: the file to read. For save/save_as/close it is an ALIAS of target_document, kept for compatibility - it no longer defaults to the active document."" },
     ""target_document"": { ""type"": ""string"",
@@ -4463,7 +4476,8 @@ namespace Horizun.Contracts
                       ""description"": ""open only: exact user-workset names to keep CLOSED while every other user workset opens. Resolved from the unopened file before opening; a missing or ambiguous name refuses. After opening, every requested name and every other user workset are re-read from the Document; workset_configuration_applied is true only when that observed state proves the exact plan. Mutually exclusive with open_all_worksets=true. This is for honest partial-load audits: the reply can measure which content was unavailable instead of accidentally opening all and testing the wrong condition."" },
     ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss""], ""default"": ""cancel"",
                      ""description"": ""open only: how a modal dialog raised WHILE opening is answered unattended. 'cancel' (default) presses Cancel; 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort, recorded in revit_said; scoped to the open call - every other dialog still cancels."" },
-    ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path."" },
+    ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path. new_project: the new .rvt, which must NOT exist (never overwritten)."" },
+    ""template_path"": { ""type"": ""string"", ""description"": ""new_project: absolute path of the .rte to create from. Omitted: this Revit's DefaultProjectTemplate (Options > File Locations), named in the reply as template_source; none configured is a refusal, never a template-less project."" },
     ""compact"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save/save_as: pass Compact to the API. The response reports the byte delta it actually produced."" },
     ""comment"": { ""type"": ""string"", ""description"": ""sync_with_central: stored in central; at most 30000 chars."" },
     ""relinquish"": { ""type"": ""string"", ""enum"": [""all"", ""keep_borrowed"", ""none""], ""default"": ""all"", ""description"": ""sync_with_central: ownership to give back."" },
@@ -4479,7 +4493,7 @@ namespace Horizun.Contracts
     ""activate_other"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""close: Revit's API cannot close the ACTIVE document, so closing the last document of a batch used to need a decoy opened by hand (and a relaunched batch SKIPPED the model that stayed open). With this true, the command activates another open document first - or opens the bridge's own empty anchor project when nothing else qualifies - then closes the target, and REPORTS which document it activated. Off by default because activation changes what the user is looking at; it must be asked for, never a side effect."" },
     ""confirmation_token"": { ""type"": ""string"",
-                     ""description"": ""close: the token from a dry_run, required alongside discard_unsaved=true. Single use, expires, and bound to THIS document and THIS request - if either changes it is refused and nothing is closed."" }
+                     ""description"": ""new_project: the token from its rehearsal. close: the token from a dry_run, required alongside discard_unsaved=true. Single use, expires, and bound to THIS document and THIS request - if either changes it is refused and nothing is closed."" }
   }
 }")
             },
@@ -4768,7 +4782,9 @@ namespace Horizun.Contracts
     ""cluster_radius_mm"": { ""type"": ""number"", ""default"": 0, ""minimum"": 0, ""maximum"": 5000,
                              ""description"": ""Crossings of ONE host within this radius fold into one opening (transitive). 0 = every crossing is its own opening."" },
     ""record_findings"": { ""type"": ""boolean"", ""default"": false,
-                           ""description"": ""Fold this run into the document's durable coordination ledger: stable order-normalized pair identities, open/persisting/regression accounting, and resolved_by_model ONLY when this run's coverage is complete for its scope. Work the ledger with horizun_coordination."" }
+                           ""description"": ""Fold this run into the document's durable coordination ledger: stable order-normalized pair identities, open/persisting/regression accounting, and resolved_by_model ONLY when this run's coverage is complete for its scope. Work the ledger with horizun_coordination."" },
+    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""summary""], ""default"": ""full"",
+                         ""description"": ""summary: clash_summary (totals by category pair and source model) plus the 10 largest clashes with their clash_index; counts, coverage and headline still describe every clash. The rest: horizun_coordination (with record_findings) or response_mode=full. Not with plan_penetrations."" }
   }
 }")
             },
@@ -6342,8 +6358,9 @@ namespace Horizun.Contracts
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
                 Description =
                     "Append rows to a worksheet of an existing .xlsx, preserving the rest of the workbook (every other " +
-                    "sheet, all styles, tables and formatting). HONESTY: the original is BACKED UP first (file_path + " +
-                    "'.horizunbak'); a file that is not a valid .xlsx (a zip carrying xl/workbook.xml) is REFUSED, never " +
+                    "sheet, all styles, tables and formatting); create_if_missing=true starts a new .xlsx when the path holds " +
+                    "nothing, never replacing a file. HONESTY: an existing original is BACKED UP first (to backup_path " +
+                    "in the Horizun state folder, not beside the file); a file that is not a valid .xlsx (a zip carrying xl/workbook.xml) is REFUSED, never " +
                     "written into corruption; and after the new workbook is built it is RE-OPENED and every appended cell " +
                     "is read back and compared to what you asked before it replaces the original â€” rows_written is what the " +
                     "file holds on re-read, not a count of calls. Text is written as inline strings, numbers as numbers. v1 " +
@@ -6358,7 +6375,9 @@ namespace Horizun.Contracts
   ""properties"": {
     ""format"": { ""type"": ""string"", ""enum"": [""xlsx"", ""csv""], ""default"": ""xlsx"", ""description"": ""csv appends RFC-4180 rows to a plain text file (created when absent - an xlsx never is) under the same at-most-once ledger, re-reading bytes/sha/line count as its evidence."" },
     ""file_path"": { ""type"": ""string"",
-      ""description"": ""Absolute path to an existing .xlsx. It is backed up to <file_path>.horizunbak before any write. A file that is not a valid .xlsx package is an ERROR, never overwritten."" },
+      ""description"": ""Absolute path to an existing .xlsx (or a new one with create_if_missing). An existing file is backed up to the Horizun state folder (reply: backup_path) before any write. A file that is not a valid .xlsx package is an ERROR, never overwritten."" },
+    ""create_if_missing"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""true: when file_path does not exist, create a new .xlsx whose first worksheet is 'sheet' (default Sheet1) and append the rows to it; reply created=true, no backup. An existing file is appended to, never replaced."" },
     ""sheet"": { ""type"": ""string"",
       ""description"": ""Worksheet name to append to (case-insensitive). Omit to use the FIRST sheet in workbook order. A name matching no sheet is an error; the response lists the sheets that do exist."" },
     ""rows"": {
@@ -7334,7 +7353,8 @@ namespace Horizun.Contracts
             ["save"] = new[] { "target_document", "file_path", "compact", "force_workshared" },
             ["save_as"] = new[] { "target_document", "file_path", "compact", "force_workshared", "save_as_path", "overwrite", "max_backups" },
             ["close"] = new[] { "target_document", "file_path", "save_on_close", "discard_unsaved", "activate_other", "force_workshared", "confirmation_token" },
-            ["sync_with_central"] = new[] { "target_document", "comment", "relinquish", "compact", "confirmation_token" }
+            ["sync_with_central"] = new[] { "target_document", "comment", "relinquish", "compact", "confirmation_token" },
+            ["new_project"] = new[] { "save_as_path", "template_path", "confirmation_token" }
         };
         private static HashSet<string> AllowedSession(string operation)
         {
@@ -7347,7 +7367,7 @@ namespace Horizun.Contracts
         public static string ValidateSession(JObject request, string operation)
         {
             var allowed = AllowedSession(operation);
-            if (allowed == null) return "operation must be inspect, open, save, save_as, close or sync_with_central.";
+            if (allowed == null) return "operation must be inspect, open, save, save_as, close, sync_with_central or new_project.";
             foreach (var p in request.Properties())
                 if (!allowed.Contains(p.Name)) return p.Name + " is not applicable to operation '" + operation + "'. Nothing ran.";
             JToken dry = request["dry_run"];
@@ -7379,8 +7399,10 @@ namespace Horizun.Contracts
                 if (operation == "open") props["dry_run"] = new JObject { ["const"] = false };
                 // A sync previews when dry_run is omitted (DocumentSessionSync.cs), unlike the shared default.
                 if (operation == "sync_with_central") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
+                // new_project rehearses when dry_run is omitted, like a sync (DocumentSessionNewProject.cs).
+                if (operation == "new_project") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
                 var required = new JArray("operation");
-                if (operation == "save_as") required.Add("save_as_path");
+                if (operation == "save_as" || operation == "new_project") required.Add("save_as_path");
                 if (operation == "open") required.Add("expected_version");
                 if (operation == "inspect") required.Add("file_path");
                 if (operation == "sync_with_central") required.Add("target_document");

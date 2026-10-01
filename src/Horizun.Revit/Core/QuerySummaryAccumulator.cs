@@ -18,9 +18,15 @@ namespace Horizun.Revit.Core
         readonly Dictionary<string, Bucket> categories = new Dictionary<string, Bucket>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, Bucket> levels = new Dictionary<string, Bucket>(StringComparer.OrdinalIgnoreCase);
         readonly Dictionary<string, Bucket> sources = new Dictionary<string, Bucket>(StringComparer.OrdinalIgnoreCase);
+        // Which LevelResolutionRules source named each level. Only kept when a caller
+        // passes one, so a summary built without sources keeps its old shape exactly.
+        readonly Dictionary<string, Bucket> levelSources = new Dictionary<string, Bucket>(StringComparer.OrdinalIgnoreCase);
         public int Count { get; private set; }
-        public void Add(string category, string level, string sourceKind, string sourceModel, long? linkId = null, long id = 0)
+        public void Add(string category, string level, string sourceKind, string sourceModel, long? linkId = null, long id = 0,
+                        string levelSource = null)
         {
+            if (levelSource != null)
+                Increment(levelSources, levelSource, sourceKind, sourceModel, linkId ?? -1, id);
             Increment(categories, category ?? "(no category)", sourceKind, sourceModel, linkId ?? -1, id);
             Increment(levels, level ?? "(no level)", sourceKind, sourceModel, linkId ?? -1, id);
             Increment(sources, sourceKind + ":" + (sourceModel ?? "(unknown)"), sourceKind, sourceModel, linkId ?? -1, id);
@@ -44,6 +50,11 @@ namespace Horizun.Revit.Core
             foreach (var bucket in counts.Values.OrderBy(p => p.Label, StringComparer.OrdinalIgnoreCase)) result[bucket.Label] = bucket.Count;
             return result;
         }
-        public JObject ToJson() => new JObject { ["by_category"] = Json(categories), ["by_level"] = Json(levels), ["by_source"] = Json(sources) };
+        public JObject ToJson()
+        {
+            var json = new JObject { ["by_category"] = Json(categories), ["by_level"] = Json(levels), ["by_source"] = Json(sources) };
+            if (levelSources.Count > 0) json["by_level_source"] = Json(levelSources);
+            return json;
+        }
     }
 }

@@ -176,11 +176,14 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("cooperative: " + cooperative.Refusal);
             // ONE budget for the whole read, host and links together.
             CooperativeRead.Scope coopScope = cooperative.Begin("query_model", 0);
+            // The summed parameters whose SPEC each row records, so a sum can name its unit.
+            HashSet<string> sumSet = sumParameters.Count > 0
+                ? new HashSet<string>(sumParameters, StringComparer.OrdinalIgnoreCase) : null;
 
             Collect(host, "host", host.Title, null, Transform.Identity, viewId, categories, request,
                     predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
                     fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
-                    coopScope, cooperative, rooms);
+                    coopScope, cooperative, rooms, sumSet);
 
             if (includeLinks)
             {
@@ -214,7 +217,7 @@ namespace Horizun.Revit.Commands
                     Collect(linked, "link", linked.Title, Rid.Value(link.Id), transform, null, categories, request,
                             predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
                             fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
-                            coopScope, cooperative, rooms);
+                            coopScope, cooperative, rooms, sumSet);
                 }
             }
 
@@ -258,14 +261,15 @@ namespace Horizun.Revit.Commands
             if (groupBy.Count > 0)
             {
                 JObject aggCoverage = FederatedVisibility.Measure(host, includeLinks);
-                return Finish(new JObject
+                var aggregated = new JObject
                 {
                     ["document"] = host.Title,
                     ["scope"] = scope,
                     ["include_links"] = includeLinks,
                     ["matched_total"] = matched.Count,
                     ["group_by"] = new JArray(groupBy),
-                    ["groups"] = Aggregate(matched, groupBy, sumParameters, out bool groupsTruncated),
+                    ["groups"] = Aggregate(matched, groupBy, sumParameters, out bool groupsTruncated,
+                                           specKey => DisplayUnit(host, specKey)),
                     ["groups_truncated"] = groupsTruncated,
                     // The same honesty block a row answer carries: a histogram over a
                     // model with five links unloaded is a histogram of what was VISIBLE.
@@ -276,7 +280,13 @@ namespace Horizun.Revit.Commands
                     ["unreadable"] = unreadable,
                     ["federated_coverage"] = aggCoverage,
                     ["note"] = "Aggregated server-side; no rows were returned. Drop group_by to page through rows."
-                }, request, timer, collectMs, cacheStatus, cacheKey, cacheEpoch);
+                };
+                // Which source named each level (Core/LevelResolutionRules): the "(no level)"
+                // group is exactly the "(none)" count here, nothing else. Present only when
+                // the caller grouped by level, so other aggregate replies are unchanged.
+                if (groupBy.Contains("level"))
+                    aggregated["level_sources"] = Counts(matched, r => r.LevelSource ?? LevelResolutionRules.NoSourceLabel);
+                return Finish(aggregated, request, timer, collectMs, cacheStatus, cacheKey, cacheEpoch);
             }
 
             List<Row> page = matched.Skip(offset).Take(maxRows).ToList();
@@ -374,7 +384,8 @@ namespace Horizun.Revit.Commands
                                     ref int unreadableTotal, QuerySummaryAccumulator summary = null,
                                     CooperativeRead.Scope coopScope = null,
                                     CooperativeOptions cooperative = null,
-                                    RoomMembershipReader rooms = null)
+                                    RoomMembershipReader rooms = null,
+                                    HashSet<string> sumSpecs = null)
         {
             HashSet<long> categoryIds = ResolveCategories(source, categories, unreadable, ref unreadableTotal, sourceName);
             FilteredElementCollector collector = viewId == null
@@ -440,7 +451,7 @@ namespace Horizun.Revit.Commands
             // same name - and this method runs once per document, so resuming a federated
             // read would skip the same count again inside every link.
             var typeCache = new Dictionary<long, Element>();
-            var levelCache = new Dictionary<long, string>();
+            var levels = new ElementLevelReader(source);
             foreach (Element element in candidates)
             {
                 // Between elements. A query that stopped early says so; one that stopped
@@ -467,7 +478,9 @@ namespace Horizun.Revit.Commands
                         ? Safe(() => element.Name) : null;
                     string family = type is ElementType et ? Safe(() => et.FamilyName) : null;
                     string typeName = type == null ? null : Safe(() => type.Name);
-                    string level = LevelName(source, element, levelCache);
+                    LevelResolution levelRead = levels.Resolve(element);
+                    string level = levelRead.LevelName;
+                    string levelSource = LevelResolutionRules.SourceKey(levelRead);
 
                     if (!Contains(elementName, request.Value<string>("name")) ||
                         !Contains(family, request.Value<string>("family")) ||
@@ -502,7 +515,7 @@ namespace Horizun.Revit.Commands
                     // and at ~741 measured characters per row they were most of the bill.
                     if (summary != null)
                     {
-                        summary.Add(CategoryName(source, element), level, sourceKind, sourceName, linkId, id);
+                        summary.Add(CategoryName(source, element), level, sourceKind, sourceName, linkId, id, levelSource);
                         continue;
                     }
                     var json = new JObject { ["element_id"] = id };
@@ -593,10 +606,13 @@ namespace Horizun.Revit.Commands
                             };
                         }
                     }
+                    Dictionary<string, SumSpec> specs = null;
                     if (returnParameters.Count > 0)
                     {
                         List<string> projectionErrors;
-                        JObject full = ProjectParameters(source, element, type, returnParameters, out projectionErrors);
+                        if (sumSpecs != null) specs = new Dictionary<string, SumSpec>(StringComparer.OrdinalIgnoreCase);
+                        JObject full = ProjectParameters(source, element, type, returnParameters, out projectionErrors,
+                                                         sumSpecs, specs);
                         foreach (string projectionError in projectionErrors)
                             AddUnreadable(unreadable, ref unreadableTotal,
                                 Error(sourceName, linkId, id, projectionError));
@@ -605,9 +621,10 @@ namespace Horizun.Revit.Commands
 
                     rows.Add(new Row
                     {
+                        Specs = specs,
                         Id = id, SourceKind = sourceKind, SourceModel = sourceName,
                         LinkInstanceId = linkId, Category = categoryName,
-                        TypeName = typeName, Family = family, Level = level, Json = json
+                        TypeName = typeName, Family = family, Level = level, LevelSource = levelSource, Json = json
                     });
                 }
                 catch (Exception ex)
@@ -699,46 +716,11 @@ namespace Horizun.Revit.Commands
             return true;
         }
 
+        // One lookup for every reader that takes a parameter name: see
+        // Commands/ParameterResolver.cs and Core/ParameterResolutionRules.cs.
         private static Parameter ResolveParameter(Element element, Element type, string spec,
                                                    out string scope, out string error)
-        {
-            scope = null; error = null;
-            Parameter p = ResolveOn(element, spec, out error);
-            if (error != null) return null;
-            if (p != null) { scope = "instance"; return p; }
-            if (type != null && type.Id != element.Id)
-            {
-                p = ResolveOn(type, spec, out error);
-                if (p != null) scope = "type";
-            }
-            return p;
-        }
-
-        private static Parameter ResolveOn(Element element, string spec, out string error)
-        {
-            error = null;
-            if (element == null || string.IsNullOrWhiteSpace(spec)) return null;
-            BuiltInParameter bip;
-            if (Enum.TryParse(spec, true, out bip))
-                try { return element.get_Parameter(bip); }
-                catch (Exception ex) { error = "BuiltInParameter '" + spec + "' could not be read: " + ex.Message; return null; }
-            Guid guid;
-            if (Guid.TryParse(spec, out guid))
-                try { return element.get_Parameter(guid); }
-                catch (Exception ex) { error = "shared parameter '" + spec + "' could not be read: " + ex.Message; return null; }
-            try
-            {
-                IList<Parameter> found = element.GetParameters(spec);
-                if (found.Count > 1)
-                {
-                    error = "parameter name '" + spec + "' is ambiguous on element " + Rid.Value(element.Id) +
-                            " (" + found.Count + " parameters share it); use a BuiltInParameter token or GUID";
-                    return null;
-                }
-                return found.Count == 1 ? found[0] : null;
-            }
-            catch (Exception ex) { error = "parameter '" + spec + "' could not be read: " + ex.Message; return null; }
-        }
+            => ParameterResolver.Resolve(element, type, spec, out scope, out error);
 
         private static bool Compare(Parameter p, string op, JToken expected, out string error)
         {
@@ -816,7 +798,9 @@ namespace Horizun.Revit.Commands
         }
 
         private static JObject ProjectParameters(Document doc, Element element, Element type, List<string> specs,
-                                                  out List<string> errors)
+                                                  out List<string> errors,
+                                                  HashSet<string> recordSpecFor = null,
+                                                  Dictionary<string, SumSpec> recordedSpecs = null)
         {
             errors = new List<string>();
             var result = new JObject();
@@ -830,13 +814,63 @@ namespace Horizun.Revit.Commands
                     result[spec] = new JObject { ["read_error"] = error };
                 }
                 else if (p == null) result[spec] = new JObject { ["exists"] = false };
-                else result[spec] = new JObject
+                else
                 {
-                    ["exists"] = true, ["scope"] = scope, ["storage_type"] = p.StorageType.ToString(),
-                    ["raw"] = Raw(p), ["display"] = Safe(() => p.AsValueString())
-                };
+                    result[spec] = new JObject
+                    {
+                        ["exists"] = true, ["scope"] = scope, ["storage_type"] = p.StorageType.ToString(),
+                        ["raw"] = Raw(p), ["display"] = Safe(() => p.AsValueString())
+                    };
+                    if (recordedSpecs != null && recordSpecFor != null && recordSpecFor.Contains(spec))
+                        recordedSpecs[spec] = SpecOf(p);
+                }
             }
             return result;
+        }
+
+        /// <summary>A summed value's spec, classified for Core/SumUnitRules.</summary>
+        private sealed class SumSpec
+        {
+            public string Key;       // the spec TypeId; "" when it could not be read
+            public string Quantity;  // SumUnitRules.Length / Area / Volume / Measurable / Unitless / Identifier / Unknown
+        }
+
+        private static SumSpec SpecOf(Parameter p)
+        {
+            ForgeTypeId spec = null;
+            try { spec = p.Definition?.GetDataType(); } catch { spec = null; }
+            string key = spec == null ? "" : (spec.TypeId ?? "");
+            if (p.StorageType == StorageType.ElementId) return new SumSpec { Key = key, Quantity = SumUnitRules.Identifier };
+            if (key.Length == 0) return new SumSpec { Key = key, Quantity = SumUnitRules.Unknown };
+            // The same spec tests horizun_quantities' takeoff converts with.
+            if (spec == SpecTypeId.Length) return new SumSpec { Key = key, Quantity = SumUnitRules.Length };
+            if (spec == SpecTypeId.Area) return new SumSpec { Key = key, Quantity = SumUnitRules.Area };
+            if (spec == SpecTypeId.Volume) return new SumSpec { Key = key, Quantity = SumUnitRules.Volume };
+            bool measurable;
+            try { measurable = UnitUtils.IsMeasurableSpec(spec); }
+            catch { return new SumSpec { Key = key, Quantity = SumUnitRules.Unknown }; }
+            return new SumSpec { Key = key, Quantity = measurable ? SumUnitRules.Measurable : SumUnitRules.Unitless };
+        }
+
+        /// <summary>
+        /// The host document's display unit for a spec, or null when it cannot be read.
+        /// Factor and offset are measured with ConvertFromInternalUnits, so an affine unit
+        /// (a temperature) is recognised rather than assumed linear.
+        /// </summary>
+        private static DisplayUnitFact DisplayUnit(Document doc, string specKey)
+        {
+            if (doc == null || string.IsNullOrEmpty(specKey)) return null;
+            try
+            {
+                var spec = new ForgeTypeId(specKey);
+                ForgeTypeId unit = doc.GetUnits().GetFormatOptions(spec).GetUnitTypeId();
+                double zero = UnitUtils.ConvertFromInternalUnits(0, unit);
+                double one = UnitUtils.ConvertFromInternalUnits(1, unit);
+                string label;
+                try { label = LabelUtils.GetLabelForUnit(unit); } catch { label = unit.TypeId; }
+                return new DisplayUnitFact { UnitTypeId = unit.TypeId, Label = label, Factor = one - zero, Offset = zero };
+            }
+            catch { return null; }
         }
 
         private static JToken Raw(Parameter p)
@@ -1041,8 +1075,9 @@ namespace Horizun.Revit.Commands
         /// that would have shown the gap are exactly what the caller asked not to see.
         /// </summary>
         private static JArray Aggregate(List<Row> rows, List<string> groupBy, List<string> sums,
-                                        out bool truncated)
+                                        out bool truncated, Func<string, DisplayUnitFact> displayUnit = null)
         {
+            var displayCache = new Dictionary<string, DisplayUnitFact>(StringComparer.Ordinal);
             var groups = rows.GroupBy(r => string.Join("\u001f", groupBy.Select(g => KeyOf(r, g))))
                              .OrderByDescending(g => g.Count())
                              .ThenBy(g => g.Key, StringComparer.Ordinal)
@@ -1065,6 +1100,7 @@ namespace Horizun.Revit.Commands
                     foreach (string param in sums)
                     {
                         double total = 0; int summed = 0, absent = 0, unreadable = 0, nonNumeric = 0;
+                        var quantityBySpec = new Dictionary<string, string>(StringComparer.Ordinal);
                         foreach (Row r in g)
                         {
                             JObject cell = r.Json?["parameters"]?[param] as JObject;
@@ -1075,8 +1111,18 @@ namespace Horizun.Revit.Commands
                                 (raw.Type != JTokenType.Float && raw.Type != JTokenType.Integer))
                             { nonNumeric++; continue; }
                             total += raw.Value<double>(); summed++;
+                            SumSpec seen = null;
+                            if (r.Specs != null) r.Specs.TryGetValue(param, out seen);
+                            quantityBySpec[seen?.Key ?? ""] = seen?.Quantity ?? SumUnitRules.Unknown;
                         }
-                        sumBlock[param] = new JObject
+                        DisplayUnitFact display = null;
+                        if (quantityBySpec.Count == 1 && displayUnit != null)
+                        {
+                            string onlyKey = quantityBySpec.Keys.First();
+                            if (!displayCache.TryGetValue(onlyKey, out display))
+                                displayCache[onlyKey] = display = displayUnit(onlyKey);
+                        }
+                        var described = new JObject
                         {
                             ["sum"] = total, ["summed"] = summed, ["absent"] = absent,
                             ["unreadable"] = unreadable, ["non_numeric"] = nonNumeric,
@@ -1084,6 +1130,11 @@ namespace Horizun.Revit.Commands
                             // caller can branch on without re-doing the arithmetic.
                             ["complete"] = summed == g.Count()
                         };
+                        // WHAT `sum` IS IN. `sum` stays the Revit-internal total it always was;
+                        // beside it, its unit and the converted value (Core/SumUnitRules).
+                        foreach (JProperty unitField in SumUnitRules.Describe(total, summed, quantityBySpec, display).Properties())
+                            described[unitField.Name] = unitField.Value;
+                        sumBlock[param] = described;
                     }
                     entry["sums"] = sumBlock;
                 }
@@ -1112,7 +1163,9 @@ namespace Horizun.Revit.Commands
             {
                 ["by_category"] = Counts(rows, r => r.Category ?? "(no category)"),
                 ["by_level"] = Counts(rows, r => r.Level ?? "(no level)"),
-                ["by_source"] = Counts(rows, r => r.SourceKind + ":" + (r.SourceModel ?? "(unknown)"))
+                ["by_source"] = Counts(rows, r => r.SourceKind + ":" + (r.SourceModel ?? "(unknown)")),
+                // HOW each level was found. "(none)" is the only bucket that means "(no level)".
+                ["by_level_source"] = Counts(rows, r => r.LevelSource ?? LevelResolutionRules.NoSourceLabel)
             };
         }
 
@@ -1150,34 +1203,6 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { error = "cursor is invalid: " + ex.Message + ". Re-run without cursor."; return false; }
         }
 
-        private static string LevelName(Document doc, Element element, Dictionary<long, string> cache)
-        {
-            // The order is: where the category ACTUALLY keeps its level, most specific
-            // first. Walls carry theirs in WALL_BASE_CONSTRAINT and expose no LEVEL_PARAM
-            // at all - measured in the field 2026-08-04, where by_level answered
-            // '"(no level)": 2616' over a tower of walls: a falsehood with the shape of a
-            // fact, in the summary of a tool whose contract is to never report what it
-            // did not verify. The same read feeds the `level:` filter, which therefore
-            // also did not work for walls without insider knowledge of the constraint
-            // parameter. Base/start constraints are used, not tops: "the level of a wall"
-            // means where it stands, which is also what Revit's own schedules mean by it.
-            Parameter p = element.get_Parameter(BuiltInParameter.LEVEL_PARAM) ??
-                          element.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT) ??
-                          element.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM) ??
-                          element.get_Parameter(BuiltInParameter.RBS_START_LEVEL_PARAM) ??
-                          element.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM) ??
-                          element.get_Parameter(BuiltInParameter.SCHEDULE_LEVEL_PARAM);
-            if (p == null) return null;
-            if (p.StorageType == StorageType.ElementId)
-            {
-                long key = Rid.Value(p.AsElementId());
-                if (cache.TryGetValue(key, out string cached)) return cached;
-                Element level = doc.GetElement(p.AsElementId());
-                if (level != null) { string name = Safe(() => level.Name); cache[key] = name; return name; }
-            }
-            return Safe(() => p.AsValueString());
-        }
-
         private static bool Contains(string have, string want) =>
             string.IsNullOrWhiteSpace(want) || (have != null && have.IndexOf(want, StringComparison.OrdinalIgnoreCase) >= 0);
         private static List<string> Strings(JArray a) => a == null ? new List<string>() :
@@ -1193,6 +1218,10 @@ namespace Horizun.Revit.Commands
             public string TypeName; public string Family;
             public long Id; public string SourceKind; public string SourceModel; public long? LinkInstanceId;
             public string Category; public string Level; public JObject Json;
+            /// <summary>Summed parameter -> its spec; null when the query sums nothing.</summary>
+            public Dictionary<string, SumSpec> Specs;
+            /// <summary>Which LevelResolutionRules source named the level; "(none)" when none did.</summary>
+            public string LevelSource;
         }
 
         private sealed class Box

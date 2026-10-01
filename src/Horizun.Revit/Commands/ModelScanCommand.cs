@@ -1100,6 +1100,26 @@ namespace Horizun.Revit.Commands
                     });
                 }
             }
+            // GetAllPlacedViews() does NOT return schedules. Measured in Revit 2026 on
+            // 2026-09-30 (the dry-run architecture sample): 12 schedules read as off-sheet
+            // while 3 of them sat on sheets, and the reconciliation with horizun_audit_model
+            // came out 38 against 35. A schedule is on a sheet when a ScheduleSheetInstance
+            // places it.
+            try
+            {
+                foreach (var ssi in new FilteredElementCollector(doc).OfClass(typeof(ScheduleSheetInstance))
+                                                                        .Cast<ScheduleSheetInstance>())
+                    try { placed.Add(ssi.ScheduleId.ToString()); } catch { }
+            }
+            catch (Exception ex)
+            {
+                unreadable.Add(new JObject
+                {
+                    ["id"] = null,
+                    ["error"] = "ScheduleSheetInstance unreadable: " + ex.Message,
+                    ["consequence"] = "Schedules placed on sheets are listed in views_not_on_sheet as if they were off-sheet."
+                });
+            }
 
             var noTemplate = new List<JToken>();
             var notOnSheet = new List<JToken>();
@@ -1111,6 +1131,13 @@ namespace Horizun.Revit.Commands
             // the same two reads and had a caveat only for views_not_on_sheet.
             int viewsClassifyUnreadable = 0;   // in NEITHER list: we never got past IsTemplate/ViewType
             int viewTemplateUnreadable = 0;    // in the model, template state unknown
+            // WHAT EACH LIST COUNTS, by view type, and how much of it horizun_audit_model's
+            // narrower checks leave out (Core/ViewCountScopeRules): 36 here and 28 there
+            // reconcile by subtraction instead of by guessing. Here the tallies run the
+            // other way round: "excluded" is nothing (this is the wider list) and
+            // "counted only here" is what the audit does not count.
+            var noTemplateTally = new ViewCountTally();
+            var notOnSheetTally = new ViewCountTally();
 
             foreach (var v in new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>())
             {
@@ -1132,7 +1159,21 @@ namespace Horizun.Revit.Commands
                 if (isTpl) continue;
                 if (vt == ViewType.ProjectBrowser || vt == ViewType.SystemBrowser ||
                     vt == ViewType.Internal || vt == ViewType.Undefined || vt == ViewType.DrawingSheet)
+                {
+                    // Not listed here - but horizun_audit_model may count it (a sheet is a
+                    // printable view with no template). Tallied only, so the two counts
+                    // reconcile; a read that fails here changes no list.
+                    try
+                    {
+                        string skipped = vt.ToString();
+                        if (v.CanBePrinted && v.ViewTemplateId == ElementId.InvalidElementId)
+                            noTemplateTally.Excluded(skipped);
+                        if (ViewCountScopeRules.AuditOffSheetConsidersViewType(skipped) && !placed.Contains(v.Id.ToString()))
+                            notOnSheetTally.Excluded(skipped);
+                    }
+                    catch { }
                     continue;
+                }
 
                 var rec = new JObject
                 {
@@ -1146,7 +1187,14 @@ namespace Horizun.Revit.Commands
                     var t = v.ViewTemplateId;
                     // Returned, not discarded. s_views computed exactly this list and
                     // dropped it on the floor, leaving the correction step with no ids.
-                    if (t == null || t == ElementId.InvalidElementId) noTemplate.Add(rec.DeepClone());
+                    if (t == null || t == ElementId.InvalidElementId)
+                    {
+                        noTemplate.Add(rec.DeepClone());
+                        // The audit counts printable views only.
+                        bool printable;
+                        try { printable = v.CanBePrinted; } catch { printable = true; }
+                        noTemplateTally.Counted(vt.ToString(), printable);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1162,7 +1210,11 @@ namespace Horizun.Revit.Commands
                     });
                 }
 
-                if (!placed.Contains(v.Id.ToString())) notOnSheet.Add(rec.DeepClone());
+                if (!placed.Contains(v.Id.ToString()))
+                {
+                    notOnSheet.Add(rec.DeepClone());
+                    notOnSheetTally.Counted(vt.ToString(), ViewCountScopeRules.AuditOffSheetConsidersViewType(vt.ToString()));
+                }
             }
 
             var missingTb = new List<JToken>();
@@ -1213,6 +1265,11 @@ namespace Horizun.Revit.Commands
                 ["views_no_template_note"] = NoTemplateNote(viewTemplateUnreadable, viewsClassifyUnreadable),
                 ["views_not_on_sheet"] = paging.Bucket(notOnSheet, "documentation", "views_not_on_sheet"),
                 ["views_not_on_sheet_note"] = NotOnSheetNote(sheetsPlacementUnreadable, viewsClassifyUnreadable),
+                // What each count counts and how it reconciles with horizun_audit_model.
+                ["views_no_template_scope"] = ViewCountScopeRules.Describe(ViewCountScopeRules.ScanNoTemplateScope,
+                    noTemplateTally, "horizun_audit_model (views_without_template)"),
+                ["views_not_on_sheet_scope"] = ViewCountScopeRules.Describe(ViewCountScopeRules.ScanNotOnSheetScope,
+                    notOnSheetTally, "horizun_audit_model (views_off_sheets)"),
                 ["sheets_missing_titleblock"] = paging.Bucket(missingTb, "documentation", "sheets_missing_titleblock"),
                 ["sheets_missing_titleblock_note"] = MissingTitleblockNote(sheetsTitleblockUnreadable),
                 // Error records, one per failed READ, over a mix of views and sheets —
@@ -1226,8 +1283,8 @@ namespace Horizun.Revit.Commands
                                           "sheets_titleblock_unreadable for counts.",
                 ["unreadable"] = paging.Bucket(unreadable, "documentation", "unreadable"),
                 ["note"] = "views_not_on_sheet is a review list, not a defect list — working views legitimately " +
-                           "live off-sheet. Placement is read from ViewSheet.GetAllPlacedViews(), so schedules " +
-                           "count as placed."
+                           "live off-sheet. Placement is read from ViewSheet.GetAllPlacedViews() and, for " +
+                           "schedules (which it does not return), from ScheduleSheetInstance."
             };
         }
 
