@@ -599,7 +599,9 @@ namespace Horizun.Contracts
                     "the version is read from the file itself (BasicFileInfo), before anything is opened. REFUSES a " +
                     "NEWER file outright, because no flag can downgrade one. REFUSES a workshared CENTRAL model " +
                     "unless detach=true or open_central=true - and a CLOUD MODEL IS A CENTRAL MODEL, so the same " +
-                    "flag is required for it. " +
+                    "flag is required for it. A path ALREADY OPEN in this session is ACTIVATED, not reopened, and " +
+                    "needs no allow_upgrade (version_guard='not_applicable_already_open'), unless detach or audit asks " +
+                    "for a real open. " +
                     "BY GUID (cloud_project_guid + cloud_model_guid): the upgrade guard CANNOT RUN, because a " +
                     "cloud model has no local file whose version could be read before opening it - the response " +
                     "reports version_guard='not_applicable_cloud' and a null version rather than letting an " +
