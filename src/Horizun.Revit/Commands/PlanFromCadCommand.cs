@@ -119,10 +119,15 @@ namespace Horizun.Revit.Commands
                                           "could read would be planning from nothing.");
 
             // ---- the unit check that stops a 200 becoming 200 metres ---------------
+            //
+            // THE UNIT THE GEOMETRY IS AT: the one this bridge measured Revit applied when it linked the
+            // drawing, when it did, and the link's declaration otherwise (Core/CadPlanUnits.cs). MEASURED in
+            // the dry run: a link forced to millimetre, geometry right in millimetres, still declared inch.
             string declared = facts.DeclaredUnits;
-            double? declaredToMm = CadUnits.MillimetresPer(declared);
-            bool unitsAgree = declaredToMm.HasValue &&
-                              Math.Abs(declaredToMm.Value - set.SourceUnitsToMm) < 1e-9;
+            CadUnitBasis unitBasis = CadPlanUnits.Decide(declared, facts.AppliedUnits, facts.AppliedUnitsRoute,
+                                                         set.SourceUnitsToMm);
+            double? declaredToMm = unitBasis.MmPerUnit;
+            bool unitsAgree = unitBasis.AgreesWithSet;
             bool acceptMismatch = request.Value<bool?>("accept_unit_mismatch") ?? false;
             if (!unitsAgree)
             {
@@ -142,14 +147,14 @@ namespace Horizun.Revit.Commands
                 // the geometry is trusted as handed over.
                 if (declaredToMm.HasValue)
                     return CommandResult.Fail(
-                        "unit_mismatch: the CAD link declares '" + declared + "' (" +
+                        "unit_mismatch: " + unitBasis.Says + " (" +
                         declaredToMm.Value.ToString("0.###", CultureInfo.InvariantCulture) +
                         " mm per unit) and the requirement set declares '" + set.SourceUnits + "' (" +
                         set.SourceUnitsToMm.ToString("0.###", CultureInfo.InvariantCulture) +
                         " mm per unit). Revit hands this geometry over ALREADY scaled by the link's unit, so " +
                         "nothing here can rescale it - and building anyway would put the model out by a factor " +
                         "of " + (declaredToMm.Value / set.SourceUnitsToMm).ToString("0.###", CultureInfo.InvariantCulture) +
-                        ". Correct the requirement set to say '" + declared + "', or re-link the DWG with the " +
+                        ". Correct the requirement set to say '" + unitBasis.Unit + "', or re-link the DWG with the " +
                         "unit it was drawn in. accept_unit_mismatch does NOT apply here: it cannot rescale " +
                         "anything, and it is only for a link that declares no unit at all.");
 
@@ -429,6 +434,7 @@ namespace Horizun.Revit.Commands
                 ["external_path"] = facts.ExternalPath,
                 ["linked_file_status"] = facts.LinkedFileStatus,
                 ["declared_units"] = declared,
+                ["units_checked"] = unitBasis.ToJson(),
                 ["transform_fingerprint"] = facts.TransformFingerprint,
                 ["units_agree_with_requirement_set"] = unitsAgree,
                 ["unit_mismatch_accepted"] = !unitsAgree,

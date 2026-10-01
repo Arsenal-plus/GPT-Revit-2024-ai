@@ -132,7 +132,9 @@ $script:HzProbeModules += [pscustomobject]@{
                 for ($i = 1; $i -le 4; $i++) { Out-Case $i 'unverified' ('the link has no readable instance facts or no WALL layer: ' + (Short $lay)) }
             }
             else {
-                $set = & $self.WallSet ([string]$wallLayer.layer) ([string]$facts.declared_units) $levelBName
+                # The unit the gate compares: the one this bridge measured Revit applied, when it did (#unit basis).
+                $units = if ($facts.applied_units) { [string]$facts.applied_units } else { [string]$facts.declared_units }
+                $set = & $self.WallSet ([string]$wallLayer.layer) $units $levelBName
                 $full = & $Ctx.Call 'horizun_plan_from_cad' @{ target_document = $doc; instance_id = $instance; requirement_set = $set }
                 if ($full.isError -or -not $full.data) {
                     for ($i = 1; $i -le 4; $i++) { Out-Case $i 'fail' ('plan_from_cad: ' + (Short $full)) }

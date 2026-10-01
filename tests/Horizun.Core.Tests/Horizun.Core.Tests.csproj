@@ -327,6 +327,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadInterpretationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadConversionPlanRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadPlanResponse.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadPlanUnits.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceRecord.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadAuditRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateRules.cs" />

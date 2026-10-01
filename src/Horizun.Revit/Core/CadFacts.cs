@@ -70,6 +70,13 @@ namespace Horizun.Revit.Core
 
         public string DeclaredUnits;            // off the TYPE, by built-in parameter ordinal
         public string DeclaredUnitsRoute;       // HOW it was read, so a reader knows what they are trusting
+        // THE UNIT THE GEOMETRY IS AT, when this bridge established it (horizun_manage_cad_links add, by the
+        // geometry's scale or a header that matched the request). DeclaredUnits is the drawing's HEADER
+        // (measured: IMPORT_DISPLAY_UNITS does not follow a forced unit), so a link forced to the right unit
+        // under a wrong header declares one thing and is placed at another. Null when nothing established it:
+        // links made elsewhere, links on another machine (the record is local, see CadLinkLoads), repoints.
+        public string AppliedUnits;
+        public string AppliedUnitsRoute;
         public double? ScaleFactor;
         public double? InstanceScale;
         public string BaseLevel;

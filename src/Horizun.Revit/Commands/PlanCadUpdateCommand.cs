@@ -89,10 +89,14 @@ namespace Horizun.Revit.Commands
             CadSourceIdentity identity = CadPlacementRules.Identity(placement);
             List<CadPlacement> placementsInModel = allFacts.Select(CadFacts.Placement).Where(p => p != null).ToList();
 
-            double? declaredToMm = CadUnits.MillimetresPer(facts.DeclaredUnits);
-            if (!declaredToMm.HasValue || Math.Abs(declaredToMm.Value - set.SourceUnitsToMm) > 1e-9)
+            // The same basis horizun_plan_from_cad uses (Core/CadPlanUnits.cs): the applied unit this bridge
+            // measured when it linked the drawing, else the declaration. Two answers to "what unit is this
+            // link in" between the conversion and its update would refuse one and accept the other.
+            CadUnitBasis unitBasis = CadPlanUnits.Decide(facts.DeclaredUnits, facts.AppliedUnits,
+                                                         facts.AppliedUnitsRoute, set.SourceUnitsToMm);
+            if (!unitBasis.AgreesWithSet)
                 return CommandResult.Fail(
-                    "unit_mismatch: the link declares '" + (facts.DeclaredUnits ?? "(nothing)") + "' and the set " +
+                    "unit_mismatch: " + unitBasis.Says + " and the set " +
                     "declares '" + set.SourceUnits + "'. Read at the wrong scale every element would look moved " +
                     "and this plan would propose to move all of them. Nothing was read.");
 

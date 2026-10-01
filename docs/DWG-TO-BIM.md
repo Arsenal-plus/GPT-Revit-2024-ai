@@ -137,6 +137,14 @@ corridor look exactly like one wall with a wide opening, and only somebody who
 knows the building can say which. **The number is that judgement, written down**,
 and every gap it crosses is named in the candidate's assumptions.
 
+**Which unit the unit gate compares.** `horizun_plan_from_cad`, `horizun_plan_cad_update` and
+`horizun_audit_cad_model` refuse `unit_mismatch` when the link's unit is not the set's, because
+Revit hands the geometry over already scaled. The unit compared is the one this bridge MEASURED
+Revit applied when `horizun_manage_cad_links add` linked the drawing (`applied_units` on the
+instance row), and the link's declaration only when nothing on this machine measured it — a
+link forced to millimetre was measured still declaring inch. The reply's `source.units_checked`
+names the basis (`applied_units` or `declared_units`).
+
 **A plan drawing's Z is not a height.** Walls, floors, ceilings, roofs and
 absolutely-placed families stand ON the level they resolved to: the emitted Z is
 that level's elevation plus the rule's `offset_mm`, never the drawing's own Z.

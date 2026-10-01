@@ -85,12 +85,12 @@ namespace Horizun.Revit.Commands
             // The unit check that stops a 200 becoming 200 metres applies to an
             // audit too: read at the wrong scale, nothing matches by position and
             // every entity reads as missing.
-            string declaredUnits = facts.DeclaredUnits;
-            double? declaredToMm = CadUnits.MillimetresPer(declaredUnits);
-            if (!declaredToMm.HasValue ||
-                Math.Abs(declaredToMm.Value - set.SourceUnitsToMm) > 1e-9)
+            // The same basis horizun_plan_from_cad uses (Core/CadPlanUnits.cs).
+            CadUnitBasis unitBasis = CadPlanUnits.Decide(facts.DeclaredUnits, facts.AppliedUnits,
+                                                         facts.AppliedUnitsRoute, set.SourceUnitsToMm);
+            if (!unitBasis.AgreesWithSet)
                 return CommandResult.Fail(
-                    "unit_mismatch: the CAD link declares '" + (declaredUnits ?? "(nothing)") + "' and the " +
+                    "unit_mismatch: " + unitBasis.Says + " and the " +
                     "requirement set declares '" + set.SourceUnits + "'. Read at the wrong scale nothing matches " +
                     "by position and every entity reads as missing, which is a false report rather than a " +
                     "finding. Nothing was examined.");
