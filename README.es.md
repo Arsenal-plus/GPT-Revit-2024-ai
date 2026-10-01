@@ -4,7 +4,7 @@
 
 Horizun Revit MCP es un servidor MCP y add-in de Windows gratuito y de código
 abierto para **Autodesk Revit 2023–2027**. Su catálogo completo contiene
-**123 herramientas** <!--inventory:tools--> con **456 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+**123 herramientas** <!--inventory:tools--> con **457 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 para modelado arquitectónico y estructural, MEP, familias paramétricas, planos,
 CAD a BIM, auditoría, cantidades, Excel, Power BI y exportación.
 
@@ -31,7 +31,7 @@ el runtime del servidor y los add-ins.
 | Superficie | Qué ofrece | Dónde comprobarlo |
 |---|---|---|
 | Entradas MCP | **123 herramientas** <!--inventory:tools-->, incluidas **45 de solo lectura** <!--inventory:reads--> y **78 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
-| Acciones internas | **456 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
+| Acciones internas | **457 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
 | Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
 | Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
 | Planos y entregables | 24 acciones de vistas/láminas, 10 acciones de anotación, tablas nativas y distribución de láminas | [Producción de planos](docs/PLANIMETRY-PRODUCTION.md) |
@@ -254,7 +254,7 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 | Herramienta | Capacidad |
 |---|---|
 | `get_document_info` | Consultar identidad y cantidades de elementos del documento abierto. |
-| `horizun_document_session` | Inspeccionar, abrir, guardar, guardar como y cerrar documentos mediante operaciones explícitas. |
+| `horizun_document_session` | Inspeccionar, abrir, guardar, guardar como y cerrar documentos, o crear un proyecto en blanco desde una plantilla, mediante operaciones explícitas. |
 | `horizun_file_info` | Leer cabeceras RVT/RFA, versión y datos de trabajo compartido sin abrirlos ni actualizarlos. |
 | `horizun_health` | Consultar estado del puente, documento activo, año de Revit, versión y commit cargados. |
 | `horizun_job_status` | Consultar progreso y estado de recuperación mientras Revit está ocupado o después de reiniciar un proceso. |
@@ -398,7 +398,7 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 | `horizun_budget_compare` | Comparar cantidades del modelo con una base Excel; escribir salidas aprobadas a Excel/Power BI de forma opcional. |
 | `horizun_catalog_lookup` | Resolver elementos de un catálogo proporcionado con estado de hoja y hash del archivo de origen. |
 | `horizun_excel_read_rows` | Leer filas XLSX, tipos y valores de fórmulas en caché sin Excel ni COM. |
-| `horizun_excel_write_rows` | Añadir filas XLSX, crear respaldo y releer las celdas escritas sin Excel ni COM. |
+| `horizun_excel_write_rows` | Añadir filas XLSX (o crear un libro nuevo), guardar un respaldo en la carpeta de estado de Horizun y releer las celdas escritas sin Excel ni COM. |
 | `horizun_power_bi_push` | Enviar filas a una tabla de un modelo semántico push de Power BI con protección frente a reintentos y recibos de destino. |
 | `horizun_export` | Exportar PDF, DWG, IFC, NWC, FBX, imágenes y CSV de tablas verificando los archivos resultantes. |
 | `horizun_link_schedule` | Importar cronogramas de MS Project, Primavera o CSV, vincular actividades a elementos, escribir fechas y colorear una vista de estado 4D. |
@@ -430,7 +430,7 @@ Una herramienta MCP puede ejecutar muchas acciones. Crear un muro, una tubería
 y una escalera son opciones de `horizun_create_elements`; crear una sección y
 colocar una tabla son acciones diferentes de `horizun_manage_views`.
 
-La tabla contiene **456 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+La tabla contiene **457 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 en 26 herramientas compuestas. Cada opción se cuenta una vez por herramienta,
 propiedad selectora y valor, incluidos selectores anidados. Las rutas repetidas
 del esquema `oneOf` se cuentan una sola vez. Algunos selectores afinan otra
@@ -440,7 +440,7 @@ herramientas MCP adicionales de primer nivel.
 <!-- BEGIN SUBOPERATIONS -->
 | Herramienta | Selector | Suboperaciones y modos nombrados |
 |---|---|---|
-| `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect`, `sync_with_central` |
+| `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect`, `sync_with_central`, `new_project` |
 | `horizun_repair_memory` | `operation` | `list`, `advice`, `observe`, `remedy`, `quarantine`, `release` |
 | `horizun_selection_exchange` | `operation` | `publish`, `read`, `clear`, `capabilities` |
 | `horizun_audit_model` | `operation` | `save`, `save_as`, `sync_with_central`, `export`, `publish`, `close_with_save`, `batch_open_close` |
@@ -510,7 +510,7 @@ herramientas MCP adicionales de primer nivel.
 
 Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
-registra **1589 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+registra **1594 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
 entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
 por lo que esa cifra no se utiliza como número de herramientas.
 
