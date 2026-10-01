@@ -139,17 +139,21 @@ namespace Horizun.Revit.Commands
                                         r.Facts != null ? r.Facts.FileSha256 : null,
                                         version);
 
-            // THE DRAWING'S DECLARED UNIT, when the LINK carries one. It is not
-            // the file's own header - Revit keeps what the import was told - but
-            // it is the only unit statement available from inside, and saying
-            // where it came from is the difference between a fact and a guess.
+            // THE DRAWING'S DECLARED UNIT, when the LINK carries one. MEASURED
+            // (verify-dwg-cadlink.ps1 W2, 2026-08-27): it follows the DWG's own
+            // header, NOT the unit the import was forced to - a link created with
+            // units=millimeter over an inch drawing declares inch. It is still the
+            // only unit statement available from inside, and saying where it came
+            // from is the difference between a fact and a guess. This text used to
+            // claim the opposite; the measurement overturned it.
             if (r.Facts != null && !string.IsNullOrWhiteSpace(r.Facts.DeclaredUnits))
             {
                 r.Ir.DeclaredUnits = r.Facts.DeclaredUnits;
                 r.Ir.UnitScaleSource =
-                    "the CAD LINK declares '" + r.Facts.DeclaredUnits + "'. That is what the import was told " +
-                    "the drawing is in, not what the DWG header says - a link created with the wrong unit " +
-                    "declares the wrong unit here too, consistently and undetectably from inside Revit.";
+                    "the CAD LINK declares '" + r.Facts.DeclaredUnits + "'. Revit records the DRAWING'S OWN " +
+                    "unit there (measured), not the unit the import was forced to: a link created with a " +
+                    "different units argument still declares this, while its geometry sits at the forced unit. " +
+                    "horizun_manage_cad_links add reports that disagreement in units_check when it creates the link.";
             }
             return r;
         }

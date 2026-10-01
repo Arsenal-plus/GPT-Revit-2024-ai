@@ -247,6 +247,13 @@ namespace Horizun.Revit.Commands
                                          ["view_type"] = SafeViewType(view) },
                 ["options"] = declared,
                 ["already_linked"] = new JArray(already.Select(a => (JToken)a.ElementId)),
+                ["units_will_be_checked"] = CadLinkUnitRules.IsRequested(declared.Value<string>("units"))
+                    ? "the apply compares the requested unit with the unit the link declares afterwards, and " +
+                      "withholds verified when they differ. Revit records the DRAWING'S OWN unit on the link " +
+                      "type (measured), so a drawing whose header says another unit will read as a disagreement" +
+                      (already.Count > 0 ? "; and this file is already linked, so Revit reuses that link's type " +
+                                           "and its options - the requested unit will change nothing." : ".")
+                    : "no unit was asked for: Revit reads the drawing's header, and there is nothing to compare.",
                 ["would_create"] = "one ImportInstance, linked (not imported): the drawing stays a reference to " +
                                    "the file on disk, and reload picks up a new issue of it.",
                 ["api_limits"] = ApiLimits()
@@ -297,6 +304,17 @@ namespace Horizun.Revit.Commands
                     "the link committed as element " + Rid.Value(created) + " and then could not be re-read (" +
                     verifyError + "). It is IN the model; this command cannot tell you what it points at.");
 
+            // THE UNIT THAT WAS ASKED FOR, AGAINST THE UNIT THE LINK DECLARES. The reply used to say
+            // verified_applied without comparing them, and a units=millimeter link that declared inch read as
+            // done. Revit records the drawing's OWN unit on the type, so a disagreement does not prove the
+            // option was ignored - it proves the requested unit is not CONFIRMED, which is what verified means.
+            // See Core/CadLinkUnitRules.cs. The link stays committed (it may be exactly right, when the header
+            // is what is wrong) and the verdict is withheld by name rather than rolled back into nothing.
+            string requestedUnits = declared.Value<string>("units");
+            string declaredUnits = verified.Value<string>("declared_units");
+            CadLinkUnitVerdict unitVerdict = CadLinkUnitRules.Compare(requestedUnits, declaredUnits);
+            bool unitsHold = CadLinkUnitRules.Verifies(unitVerdict);
+
             var result = new JObject
             {
                 ["operation"] = "add",
@@ -305,19 +323,29 @@ namespace Horizun.Revit.Commands
                 ["element_id"] = Rid.Value(created),
                 ["instance"] = verified,
                 ["requested"] = new JObject { ["file"] = fileFacts, ["options"] = declared },
-                ["host_verified"] = true,
+                ["units_check"] = CadLinkUnitRules.Describe(requestedUnits, declaredUnits,
+                                                            verified.Value<string>("declared_units_route")),
+                ["host_verified"] = unitsHold,
                 ["verified_by"] = "the ImportInstance was re-read from the model after the commit: its resolved " +
                                   "path, the SHA-256 of the file THAT path names, whether it is linked or " +
-                                  "imported, its owner view and its declared units.",
+                                  "imported, its owner view and its declared units - compared with the units " +
+                                  "that were asked for (units_check).",
                 ["api_limits"] = ApiLimits()
             };
+            if (!unitsHold)
+                result["failed_postconditions"] = new JArray(
+                    unitVerdict == CadLinkUnitVerdict.Disagrees ? "units_disagree" : "units_unconfirmable");
             JObject drift = ComparePathAndHash(fileFacts, verified);
             if (drift != null) result["disagreement"] = drift;
             // WHAT THIS LINK WAS LOADED FROM. Revit records no moment for the load, so the one chance to
             // know which issue of the drawing is in the model is to write it down while doing the loading.
             // See Core/CadLinkLoads.cs; a plan asks this question of every instance it reads.
             result["load_recorded"] = RecordLoad(doc, Rid.Value(created), verified, "horizun_manage_cad_links add");
-            ApplicationOutcome.StampApplied(result, "Committed", 1, 1, 1, 0, 0, 0);
+            // A disagreement is a FAILED postcondition (partial); a unit that cannot be read back is an
+            // UNKNOWN one (uncertain). Neither reaches verified_applied.
+            ApplicationOutcome.StampApplied(result, "Committed", 1, 1, unitsHold ? 1 : 0, 0,
+                                            unitVerdict == CadLinkUnitVerdict.Disagrees ? 1 : 0,
+                                            unitVerdict == CadLinkUnitVerdict.Unconfirmable ? 1 : 0);
             DocumentGate.StampConfirmation(result, gate, ToolName, hash, false);
             return CommandResult.Ok(result);
         }
