@@ -53,7 +53,7 @@ namespace Horizun.Server.Tests
             Assert.Equal(new[]
             {
                 "horizun_create_elements /properties/elements/items kind 33",
-                "horizun_document_session  operation 6"
+                "horizun_document_session  operation 7"
             }, sites);
             foreach (VariantSite s in ContractVariants.All)
                 Assert.All(s.Values, v => Assert.Matches("^[a-z0-9_]+$", v));
