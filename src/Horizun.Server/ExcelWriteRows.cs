@@ -7,7 +7,12 @@
 // under the honesty contract:
 //
 //   * BACKUP first. The original is copied aside before a single byte is rewritten,
-//     so a failure can never leave the caller with less than they started with.
+//     so a failure can never leave the caller with less than they started with. The
+//     copy goes to the Horizun state folder (%USERPROFILE%\.horizun\backups\excel),
+//     never beside the user's file, and the reply names it.
+//   * CREATE only when asked. create_if_missing: true starts a new .xlsx from the
+//     MinimalWorkbook package when the path holds nothing; an existing file is
+//     appended to, never replaced, through that flag. A new workbook needs no backup.
 //   * REFUSE what is not an .xlsx. A file that is not a valid OPC package (a zip
 //     carrying xl/workbook.xml) is rejected — never "written" into corruption.
 //   * VERIFY by RE-READING. After the new workbook is produced it is re-opened and
@@ -280,8 +285,8 @@ namespace Horizun.Server
         /// and this file's own reader all accept. It exists so a host-resident tool can
         /// CREATE a report workbook and then append to it through Handle, inheriting the
         /// lock, the re-read verification and the durable ledger instead of growing a
-        /// second writer. Nothing about the append path changed: it still refuses to
-        /// invent an xlsx that is not there - this is the caller inventing one on purpose.
+        /// second writer. The append path itself starts from this package only when the
+        /// caller asks for it with create_if_missing: true - never by default.
         /// </summary>
         internal static byte[] MinimalWorkbook(string sheetName)
         {
@@ -534,8 +539,26 @@ namespace Horizun.Server
             if (format != "xlsx")
                 throw new ArgumentException("format must be xlsx or csv.");
 
+            // create_if_missing is OPT-IN and only ever creates: an existing file is
+            // appended to exactly as without it, never replaced. The new workbook is the
+            // MinimalWorkbook package, and the rows reach it through the same append,
+            // lock, in-memory and on-disk read-back and ledger as any other call.
+            bool createIfMissing = args["create_if_missing"] != null &&
+                                   args["create_if_missing"].Type == JTokenType.Boolean &&
+                                   (bool)args["create_if_missing"];
+            string newSheetName = string.IsNullOrEmpty(sheetName) ? DefaultNewSheetName : sheetName;
             if (!File.Exists(filePath))
-                throw new FileNotFoundException("Workbook not found: " + filePath);
+            {
+                if (!createIfMissing)
+                    throw new FileNotFoundException(
+                        "Workbook not found: " + filePath + ". Nothing was created. To start a new workbook, send " +
+                        "create_if_missing: true (with sheet to name its first worksheet; default '" +
+                        DefaultNewSheetName + "'). An existing file is never replaced through that flag.");
+                string problem = NewWorkbookProblem(filePath, newSheetName);
+                if (problem != null) throw new ArgumentException(problem);
+                string parent = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
+            }
 
             // ---- Exclusive, uniquely named, and verified against DISK. ----
             //
@@ -557,7 +580,7 @@ namespace Horizun.Server
             string stamp = System.Diagnostics.Process.GetCurrentProcess().Id + "-" +
                            Guid.NewGuid().ToString("N").Substring(0, 8);
             string lockPath = filePath + ".horizunlock";
-            string backupPath = filePath + "." + stamp + ".horizunbak";
+            string backupPath = BackupPathFor(filePath, stamp);
             string tmp = filePath + "." + stamp + ".horizuntmp";
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -571,6 +594,7 @@ namespace Horizun.Server
             string replaceNote;
             DurableCommandDecision decision = null;
             bool writeStarted = false;
+            bool created = false;
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -586,7 +610,12 @@ namespace Horizun.Server
                 if (decision.Outcome == DurableCommandOutcome.Replay) return Replay(decision.ReplayResult);
                 if (!decision.IsFresh) throw new ToolRefusal(decision.Message);
 
-                original = File.ReadAllBytes(filePath);
+                // Decided again UNDER THE LOCK: the file may have appeared since the
+                // check above, and then this call appends to it rather than creating.
+                created = !File.Exists(filePath);
+                if (created && !createIfMissing)
+                    throw new FileNotFoundException("Workbook not found: " + filePath + ". Nothing was created.");
+                original = created ? MinimalWorkbook(newSheetName) : File.ReadAllBytes(filePath);
                 if (original.Length < 4 || original[0] != 0x50 || original[1] != 0x4B) // "PK"
                     throw new InvalidDataException("Not an .xlsx (OPC/zip) file — refusing to write. First bytes are not a zip signature.");
 
@@ -621,16 +650,42 @@ namespace Horizun.Server
                 // Once replacement starts the operation must run through verification
                 // and durable completion; aborting there would manufacture ambiguity.
                 cancellationToken.ThrowIfCancellationRequested();
-                File.Copy(filePath, backupPath, true);
-                File.WriteAllBytes(tmp, produced);
-                cancellationToken.ThrowIfCancellationRequested();
+                if (created)
+                {
+                    // Nothing to back up: there was no file. The move refuses an existing
+                    // destination, so a file that appeared from outside Horizun since the
+                    // check under the lock is left exactly as it is.
+                    backupPath = null;
+                    File.WriteAllBytes(tmp, produced);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try { File.Move(tmp, filePath); }
+                    catch (IOException ex)
+                    {
+                        throw new IOException(
+                            "A file appeared at " + filePath + " while the new workbook was being prepared, and it " +
+                            "was NOT overwritten (" + ex.Message + "). Nothing was written; send the call again " +
+                            "with a new idempotency_key to append to that file instead.", ex);
+                    }
+                    writeStarted = true;
+                    replaceNote = "File.Move of a new file (create_if_missing: nothing existed to replace)";
+                }
+                else
+                {
+                    // The backup lives in the Horizun state folder, not beside the user's
+                    // file: it is Horizun's recovery copy, and keeping it in the user's
+                    // folder left a stray .horizunbak next to every workbook appended to.
+                    Directory.CreateDirectory(Path.GetDirectoryName(backupPath));
+                    File.Copy(filePath, backupPath, true);
+                    File.WriteAllBytes(tmp, produced);
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                // From here the original may already have been replaced. Everything above
-                // is a read or a write to a file nobody else is going to open, so a failure
-                // there is safely terminal; a failure from here on is not knowable, and the
-                // ledger must be left in doubt rather than recording an outcome.
-                writeStarted = true;
-                replaceNote = ReplaceFile(tmp, filePath);
+                    // From here the original may already have been replaced. Everything above
+                    // is a read or a write to a file nobody else is going to open, so a failure
+                    // there is safely terminal; a failure from here on is not knowable, and the
+                    // ledger must be left in doubt rather than recording an outcome.
+                    writeStarted = true;
+                    replaceNote = ReplaceFile(tmp, filePath);
+                }
 
                 // THE FILE, not the bytes we hoped we wrote. VerifyReadBack above proved
                 // the produced package was correct IN MEMORY; it says nothing about what
@@ -640,7 +695,7 @@ namespace Horizun.Server
                 if (Sha256Hex(onDisk) != Sha256Hex(produced))
                     throw new IOException(
                         "The workbook on disk is NOT the package that was verified: its SHA-256 differs from the " +
-                        "bytes this call produced." + RestoreFromBackup(backupPath, filePath) + " Nothing about the " +
+                        "bytes this call produced." + Undo(created, backupPath, filePath) + " Nothing about the " +
                         "rows can be claimed - the check passed against the package in memory, and something else " +
                         "ended up in the file.");
 
@@ -654,7 +709,7 @@ namespace Horizun.Server
                 {
                     throw new IOException(
                         "The workbook on disk did not read back as intended: " + ex.Message +
-                        RestoreFromBackup(backupPath, filePath), ex);
+                        Undo(created, backupPath, filePath), ex);
                 }
             }
             catch (Exception ex) when (!writeStarted && decision != null && decision.IsFresh)
@@ -681,9 +736,14 @@ namespace Horizun.Server
                 ["last_new_row"] = rep.LastNewRow,
                 ["verified"] = true,
                 ["verified_means"] = "Twice: the produced package was re-opened in memory and every appended cell read back and matched the value requested, and then THE FILE ON DISK was re-read after the replace, its SHA-256 compared against the package that was verified, and every appended cell read back again from those bytes. The second check is the one that speaks about the file you are going to open.",
-                ["backup_path"] = backupPath,
+                ["created"] = created,
+                ["backup_path"] = backupPath == null ? JValue.CreateNull() : (JToken)backupPath,
+                ["backup_note"] = created
+                    ? "No backup: this call created the workbook, so there was no earlier file to preserve."
+                    : "The workbook as it was before this append was copied to backup_path, in the Horizun state " +
+                      "folder rather than beside your file. Copy it back over file_path to undo the append.",
                 ["replace_method"] = replaceNote,
-                ["bytes_before"] = original.Length,
+                ["bytes_before"] = created ? 0 : original.Length,
                 ["bytes_after"] = onDisk.Length,
                 ["sha256_after"] = Sha256Hex(onDisk),
                 ["sheet_has_table"] = hasTable,
@@ -807,6 +867,64 @@ namespace Horizun.Server
             {
                 File.Copy(tmp, destination, true);
                 return "File.Copy fallback, because File.Replace was not permitted: " + ex.Message;
+            }
+        }
+
+        /// <summary>The first worksheet's name when create_if_missing makes a workbook and no sheet is named.</summary>
+        internal const string DefaultNewSheetName = "Sheet1";
+
+        /// <summary>
+        /// Why a NEW workbook cannot be created at this path with this sheet name, or null.
+        /// Only .xlsx is created: an .xlsm or .xltx holding this package would carry the
+        /// wrong content type and open as a repair.
+        /// </summary>
+        internal static string NewWorkbookProblem(string filePath, string sheetName)
+        {
+            if (!string.Equals(Path.GetExtension(filePath), ".xlsx", StringComparison.OrdinalIgnoreCase))
+                return "create_if_missing creates .xlsx workbooks only; '" + filePath + "' does not end in .xlsx. Nothing was created.";
+            string sheetProblem = SheetNameProblem(sheetName);
+            return sheetProblem == null ? null : sheetProblem + " Nothing was created.";
+        }
+
+        /// <summary>
+        /// Where the pre-append copy of a workbook goes: backups\excel under the Horizun data
+        /// root (%USERPROFILE%\.horizun, or HORIZUN_DATA_ROOT). The name keeps the workbook's
+        /// file name for a person looking for it, a hash of its full path so two Book1.xlsx in
+        /// different folders never share a name, and the per-call stamp so a later append
+        /// never overwrites an earlier call's copy.
+        /// </summary>
+        internal static string BackupPathFor(string filePath, string stamp)
+        {
+            string full;
+            try { full = Path.GetFullPath(filePath); } catch (Exception) { full = filePath; }
+            string pathHash = Sha256Hex(Encoding.UTF8.GetBytes(full.ToLowerInvariant())).Substring(0, 8);
+            return Path.Combine(BackupDirectory(), Path.GetFileName(filePath) + "." + pathHash + "." + stamp + ".horizunbak");
+        }
+
+        internal static string BackupDirectory() => Path.Combine(HorizunPaths.DataRoot(), "backups", "excel");
+
+        /// <summary>Undo a failed write: restore the backup, or remove the workbook this call created.</summary>
+        private static string Undo(bool created, string backupPath, string filePath)
+            => created ? RemoveCreated(filePath) : RestoreFromBackup(backupPath, filePath);
+
+        /// <summary>
+        /// A workbook this call created and could not verify is removed, which is exactly the
+        /// state before the call: no file. Said either way.
+        /// </summary>
+        private static string RemoveCreated(string filePath)
+        {
+            try
+            {
+                File.Delete(filePath);
+                return " The workbook this call created was REMOVED again, so the path is as it was: no file.";
+            }
+            catch (IOException ex)
+            {
+                return " The workbook this call created could NOT be removed (" + ex.Message + "); delete " + filePath + " by hand.";
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return " The workbook this call created could NOT be removed (" + ex.Message + "); delete " + filePath + " by hand.";
             }
         }
 

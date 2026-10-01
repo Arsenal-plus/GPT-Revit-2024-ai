@@ -6342,8 +6342,9 @@ namespace Horizun.Contracts
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
                 Description =
                     "Append rows to a worksheet of an existing .xlsx, preserving the rest of the workbook (every other " +
-                    "sheet, all styles, tables and formatting). HONESTY: the original is BACKED UP first (file_path + " +
-                    "'.horizunbak'); a file that is not a valid .xlsx (a zip carrying xl/workbook.xml) is REFUSED, never " +
+                    "sheet, all styles, tables and formatting); create_if_missing=true starts a new .xlsx when the path holds " +
+                    "nothing, never replacing a file. HONESTY: an existing original is BACKED UP first (to backup_path " +
+                    "in the Horizun state folder, not beside the file); a file that is not a valid .xlsx (a zip carrying xl/workbook.xml) is REFUSED, never " +
                     "written into corruption; and after the new workbook is built it is RE-OPENED and every appended cell " +
                     "is read back and compared to what you asked before it replaces the original â€” rows_written is what the " +
                     "file holds on re-read, not a count of calls. Text is written as inline strings, numbers as numbers. v1 " +
@@ -6358,7 +6359,9 @@ namespace Horizun.Contracts
   ""properties"": {
     ""format"": { ""type"": ""string"", ""enum"": [""xlsx"", ""csv""], ""default"": ""xlsx"", ""description"": ""csv appends RFC-4180 rows to a plain text file (created when absent - an xlsx never is) under the same at-most-once ledger, re-reading bytes/sha/line count as its evidence."" },
     ""file_path"": { ""type"": ""string"",
-      ""description"": ""Absolute path to an existing .xlsx. It is backed up to <file_path>.horizunbak before any write. A file that is not a valid .xlsx package is an ERROR, never overwritten."" },
+      ""description"": ""Absolute path to an existing .xlsx (or a new one with create_if_missing). An existing file is backed up to the Horizun state folder (reply: backup_path) before any write. A file that is not a valid .xlsx package is an ERROR, never overwritten."" },
+    ""create_if_missing"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""true: when file_path does not exist, create a new .xlsx whose first worksheet is 'sheet' (default Sheet1) and append the rows to it; reply created=true, no backup. An existing file is appended to, never replaced."" },
     ""sheet"": { ""type"": ""string"",
       ""description"": ""Worksheet name to append to (case-insensitive). Omit to use the FIRST sheet in workbook order. A name matching no sheet is an error; the response lists the sheets that do exist."" },
     ""rows"": {

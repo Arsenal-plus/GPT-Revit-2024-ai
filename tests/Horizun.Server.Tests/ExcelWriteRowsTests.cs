@@ -163,8 +163,11 @@ namespace Horizun.Server.Tests
             "<sheetData>" + sheetDataInner + "</sheetData></worksheet>";
     }
 
-    public sealed class ExcelWriteRowsHandleTests
+    public sealed class ExcelWriteRowsHandleTests : IDisposable
     {
+        private readonly ExcelBackupRoot _backupRoot = new ExcelBackupRoot();
+        public void Dispose() => _backupRoot.Dispose();
+
         [Fact]
         public void Handle_AppendsRows_BacksUp_AndVerifiesReadBack()
         {

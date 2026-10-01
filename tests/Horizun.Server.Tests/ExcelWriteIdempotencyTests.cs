@@ -31,6 +31,7 @@ namespace Horizun.Server.Tests
     public sealed class ExcelWriteIdempotencyTests : IDisposable
     {
         private readonly List<string> _cleanup = new List<string>();
+        private readonly ExcelBackupRoot _backupRoot = new ExcelBackupRoot();
 
         private static readonly XNamespace Main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 
@@ -228,6 +229,7 @@ namespace Horizun.Server.Tests
 
         public void Dispose()
         {
+            _backupRoot.Dispose();
             foreach (string p in _cleanup)
             {
                 try

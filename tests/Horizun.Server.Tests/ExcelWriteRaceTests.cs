@@ -32,8 +32,11 @@ namespace Horizun.Server.Tests
     /// "no" loses nothing. Silently reporting success for a row that is not in the file
     /// is the whole defect.
     /// </summary>
-    public class ExcelWriteRaceTests
+    public class ExcelWriteRaceTests : IDisposable
     {
+        private readonly ExcelBackupRoot _backupRoot = new ExcelBackupRoot();
+        public void Dispose() => _backupRoot.Dispose();
+
         /// <summary>
         /// A workbook with enough existing rows that reading and rewriting the package
         /// takes real time.

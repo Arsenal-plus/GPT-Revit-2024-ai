@@ -22,8 +22,11 @@ namespace Horizun.Server.Tests
     /// Now: unique names, and an exclusive lock that REFUSES the second writer instead
     /// of interleaving with it.
     /// </summary>
-    public class ExcelConcurrencyTests
+    public class ExcelConcurrencyTests : IDisposable
     {
+        private readonly ExcelBackupRoot _backupRoot = new ExcelBackupRoot();
+        public void Dispose() => _backupRoot.Dispose();
+
         private static string MakeBook()
         {
             string path = Path.Combine(Path.GetTempPath(), "hz_conc_" + Guid.NewGuid().ToString("N") + ".xlsx");

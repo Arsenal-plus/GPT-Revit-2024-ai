@@ -132,7 +132,7 @@ instead, twice, is in `docs/WALL-LAYER-DECOMPOSITION.md`.
 | --- | --- |
 | `horizun_catalog_lookup` | Generic leaf resolution over a catalog file, `is_leaf` null ≠ false, sha256 provenance. |
 | `horizun_job_status` | How a long run is going, read from disk WITHOUT touching Revit — answers while Revit is busy inside the very command it describes, survives a crash, and says whether the process that claimed the job is still alive. |
-| `horizun_excel_write_rows` | Appends rows to `.xlsx` over the OPC package — no COM, no Excel installed. Backs the file up and re-reads every written cell. |
+| `horizun_excel_write_rows` | Appends rows to `.xlsx` over the OPC package — no COM, no Excel installed. `create_if_missing: true` starts a new workbook (never over an existing file). Backs an existing file up to `%USERPROFILE%\.horizun\backups\excel` (not beside it) and re-reads every written cell. |
 | `horizun_excel_read_rows` | Reads `.xlsx` over the OPC package — types preserved, dates never invented (a serial is a date only where the cell's format says so), cached formula values declared as cached, merged ranges declared, sha256 provenance; a corrupt workbook refuses whole. |
 | `horizun_power_bi_push` | Push up to 10,000 primitive rows directly into a Power BI push semantic-model table. Credentials stay in server environment variables; a durable key prevents duplicate rows after a lost response. Requires `full_write` or `unsafe_code`. |
 | `horizun_target` | Which Revit these tools are talking to, and how to change it. Two versions open at once is normal, and the expensive failure is a healthy bridge attached to the wrong instance. |
