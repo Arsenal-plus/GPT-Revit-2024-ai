@@ -16,7 +16,7 @@ namespace Horizun.Core.Tests
 {
     public class NewProjectRulesTests
     {
-        private const string Target = @"C:\Proyectos\Mirador\Mirador - CAD.rvt";
+        private const string Target = @"C:\Proyectos\Edificio\Edificio - CAD.rvt";
 
         // ---- the target --------------------------------------------------------
 
@@ -44,9 +44,9 @@ namespace Horizun.Core.Tests
         [Theory]
         [InlineData(null, "required")]
         [InlineData("", "required")]
-        [InlineData(@"relative\Mirador.rvt", "absolute")]
-        [InlineData(@"C:\Proyectos\Mirador.rfa", ".rvt")]
-        [InlineData(@"C:\Proyectos\Mirador.rte", ".rvt")]
+        [InlineData(@"relative\Edificio.rvt", "absolute")]
+        [InlineData(@"C:\Proyectos\Edificio.rfa", ".rvt")]
+        [InlineData(@"C:\Proyectos\Edificio.rte", ".rvt")]
         public void The_target_must_be_an_absolute_rvt(string target, string expected)
         {
             Assert.Contains(expected, NewProjectRules.TargetProblem(target, exists: false, folderExists: true));

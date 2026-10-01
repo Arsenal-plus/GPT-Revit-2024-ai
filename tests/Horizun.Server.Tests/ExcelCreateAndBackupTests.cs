@@ -150,7 +150,7 @@ namespace Horizun.Server.Tests
         [Fact]
         public void The_backup_of_an_existing_workbook_goes_to_the_state_folder_not_beside_the_file()
         {
-            string path = Path.Combine(_dir, "Cantidades muros - Mirador.xlsx");
+            string path = Path.Combine(_dir, "Cantidades muros - Sample.xlsx");
             ExcelWriteRows.Handle(Args(path, Rows(new object[] { "encabezado" }), create: true), ExcelTestLedger.New());
             byte[] before = File.ReadAllBytes(path);
 

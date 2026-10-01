@@ -189,11 +189,11 @@ namespace Horizun.Core.Tests
             var rows = new JArray();
             void Add(int n, string a, string sa, string b, string sb, double v0)
             { for (int i = 0; i < n; i++) rows.Add(Clash(a, sa, b, sb, v0 + i * 0.0001, sa != sb)); }
-            Add(127, "Ducts", "Mirador - MEP.rvt", "Structural Framing", "host", 0.01);
-            Add(15, "Ducts", "Mirador - MEP.rvt", "Structural Columns", "host", 0.02);
-            Add(16, "Pipes", "Mirador - MEP.rvt", "Structural Framing", "host", 0.001);
-            Add(3, "Pipes", "Mirador - MEP.rvt", "Structural Columns", "host", 0.002);
-            Add(4, "Ducts", "Mirador - MEP.rvt", "Structural Columns", "Mirador - MEP.rvt", 0.05);
+            Add(127, "Ducts", "Sample - MEP.rvt", "Structural Framing", "host", 0.01);
+            Add(15, "Ducts", "Sample - MEP.rvt", "Structural Columns", "host", 0.02);
+            Add(16, "Pipes", "Sample - MEP.rvt", "Structural Framing", "host", 0.001);
+            Add(3, "Pipes", "Sample - MEP.rvt", "Structural Columns", "host", 0.002);
+            Add(4, "Ducts", "Sample - MEP.rvt", "Structural Columns", "Sample - MEP.rvt", 0.05);
             ((JObject)rows[60])["intersection_volume_m3"] = 0.52;   // the largest, mid-list
             var data = new JObject
             {

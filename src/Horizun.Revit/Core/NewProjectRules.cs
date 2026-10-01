@@ -130,8 +130,28 @@ namespace Horizun.Revit.Core
                 "template_stamp=" + (templateStamp ?? "-"),
                 "target=" + (DocIdentity.NormalizePath(targetPath) ?? "-"));
 
-        private static bool SafeRooted(string p) { try { return Path.IsPathRooted(p); } catch { return false; } }
-        private static string SafeExtension(string p) { try { return Path.GetExtension(p); } catch { return null; } }
-        private static string SafeDirectory(string p) { try { return Path.GetDirectoryName(p); } catch { return null; } }
+        // WINDOWS PATHS ON ANY HOST. Revit runs on Windows, but these rules are also tested on
+        // the Linux CI runner, where Path treats "C:\x\y.rvt" as one relative file name: rooted
+        // false, no directory. A drive letter or a UNC prefix is rooted here wherever this runs.
+        private static bool SafeRooted(string p)
+        {
+            if (string.IsNullOrEmpty(p)) return false;
+            if (p.Length >= 3 && char.IsLetter(p[0]) && p[1] == ':' && (p[2] == '\\' || p[2] == '/')) return true;
+            if (p.StartsWith(@"\\", StringComparison.Ordinal)) return true;
+            try { return Path.IsPathRooted(p); } catch { return false; }
+        }
+        private static string SafeExtension(string p)
+        {
+            if (string.IsNullOrEmpty(p)) return null;
+            int sep = Math.Max(p.LastIndexOf('\\'), p.LastIndexOf('/'));
+            int dot = p.LastIndexOf('.');
+            return dot > sep ? p.Substring(dot) : "";
+        }
+        private static string SafeDirectory(string p)
+        {
+            if (string.IsNullOrEmpty(p)) return null;
+            int sep = Math.Max(p.LastIndexOf('\\'), p.LastIndexOf('/'));
+            return sep > 0 ? p.Substring(0, sep) : null;
+        }
     }
 }
