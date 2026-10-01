@@ -237,14 +237,17 @@ namespace Horizun.Core.Tests
             // comparison fails coverage instead of passing on the ones that remain.
             Assert.Matches(new Regex(
                 @"new PostconditionCheck\(\s*""name"",\s*""category"",\s*""fields"",\s*" +
-                @"\r?\n?\s*""include_links"",\s*""itemized""\s*\)"), src);
+                @"\r?\n?\s*""include_links"",\s*""itemized"",\s*""sort_group"",\s*""totals""\s*\)"), src);
 
-            // All five are MEASURED. Compare/Record only - deliberately not Unreadable,
+            // All of them are MEASURED. Compare/Record only - deliberately not Unreadable,
             // which is the catch-path call every one of them also has. Measured: accepting
             // Unreadable as evidence let three of these mutations survive, because renaming
-            // the happy-path key still left the catch matching the pattern.
+            // the happy-path key still left the catch matching the pattern. sort_group and
+            // totals joined on 2026-09-30: a non-itemized schedule grouped by Length, Area
+            // and Volume (119 rows instead of 8) passed every check that existed.
             foreach (string property in new[] { "\"name\"", "\"category\"", "\"fields\"",
-                                                "\"include_links\"", "\"itemized\"" })
+                                                "\"include_links\"", "\"itemized\"",
+                                                "\"sort_group\"", "\"totals\"" })
                 Assert.Matches(new Regex(@"postcondition\.(Compare|Record)\(\s*" + Regex.Escape(property)), src);
 
             // And the two that were missing are compared against a READ of the committed
@@ -275,6 +278,51 @@ namespace Horizun.Core.Tests
 
             // And the checklist travels with the answer.
             Assert.Contains("[\"postcondition\"] = postcondition.ToJson()", src);
+        }
+
+        [Fact]
+        public void Create_schedule_groups_from_the_field_roles_not_from_every_non_count_field()
+        {
+            // 2026-09-30: OST_Walls Type/Count/Length/Area/Volume, itemized=false, came out
+            // with 119 rows instead of 8 - the sort/group list was every non-Count field.
+            string src = CommandSources()["CreateScheduleCommand.cs"];
+            Assert.DoesNotContain("added.Where(f => f.FieldType != ScheduleFieldType.Count)", src);
+            Assert.Contains("ScheduleGroupingRules.Plan(groupingFacts, itemized, groupBy)", src);
+            Assert.Contains("foreach (int i in grouping.SortGroup)", src);
+            Assert.Contains("added[i].DisplayType = ScheduleFieldDisplayType.Totals;", src);
+            // And the sort list it verifies is read off the committed definition.
+            Assert.Contains("def.GetSortGroupField(i).FieldId.IntegerValue", src);
+        }
+
+        [Fact]
+        public void Set_crop_verifies_through_the_crop_rules_never_on_the_box_alone()
+        {
+            // 2026-09-30: set_crop said verified=true and the viewport still looked uncropped.
+            string src = CommandSources()["ManageViewsCommand.cs"];
+            int verify = src.IndexOf("private static bool Verify(Document doc, Applied a, Element e)", StringComparison.Ordinal);
+            int crop = src.IndexOf("case \"set_crop\":", verify, StringComparison.Ordinal);
+            int next = src.IndexOf("case \"set_annotation_crop\":", crop, StringComparison.Ordinal);
+            Assert.True(verify > 0 && crop > verify && next > crop);
+            Assert.Contains("ReadCrop(cropped, a).Verified", src.Substring(crop, next - crop));
+            Assert.Contains("ViewCropRules.Evaluate(r)", src);
+            Assert.Contains("BuiltInParameter.VIEWER_CROP_REGION", src);
+            Assert.Contains("CropShapeRect(view)", src);
+            // The owners of a crop are refused before a write: in the rehearsal and in Apply.
+            Assert.Equal(2, Regex.Matches(src, @"ViewCropRules\.Refusal\(CropPreflight\(doc, ").Count);
+        }
+
+        [Fact]
+        public void Verify_changes_frames_the_camera_on_the_box_and_measures_the_picture()
+        {
+            // 2026-09-30: orientation=top on walls at +30 m returned a blank PNG with captured=true.
+            string src = CommandSources()["VerifyChangesCommand.cs"];
+            Assert.Contains("Orient(view, orientation, box);", src);
+            Assert.Contains("CaptureFramingRules.Eye(", src);
+            Assert.Contains("FitCropToBox(view, box);", src);
+            int measure = src.IndexOf("ImageContent measured = MeasureImage(produced, out content);", StringComparison.Ordinal);
+            int captured = src.IndexOf("[\"captured\"] = true", measure, StringComparison.Ordinal);
+            Assert.True(measure > 0 && captured > measure, "the picture must be measured before it is called captured");
+            Assert.Contains("[\"finding\"] = \"blank_image\"", src);
         }
 
         [Fact]

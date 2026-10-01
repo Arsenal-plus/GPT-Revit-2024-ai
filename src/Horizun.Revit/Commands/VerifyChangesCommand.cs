@@ -303,7 +303,10 @@ namespace Horizun.Revit.Commands
                             view = View3D.CreateIsometric(doc, vft.Id);
                             try { view.DisplayStyle = DisplayStyle.ShadingWithEdges; } catch { }
                             try { view.DetailLevel = ViewDetailLevel.Fine; } catch { }
-                            Orient(view, orientation);
+                            // The eye stands OUTSIDE the framed box on the viewer side: the
+                            // default isometric eye was placed for the model as it was, and
+                            // 75 walls at +30 m looked at "top" from it came back blank.
+                            Orient(view, orientation, box);
                             view.SetSectionBox(box);
                             view.IsSectionBoxActive = true;
                             // FRAME THE PICTURE TO THE BOX. ZoomFitType.FitToPage fits the view's
@@ -314,17 +317,7 @@ namespace Horizun.Revit.Commands
                             try
                             {
                                 doc.Regenerate();
-                                BoundingBoxXYZ crop = view.CropBox;
-                                Transform toView = crop.Transform.Inverse;
-                                var pts = new List<XYZ>();
-                                for (int c = 0; c < 8; c++)
-                                    pts.Add(toView.OfPoint(new XYZ((c & 1) == 0 ? box.Min.X : box.Max.X,
-                                                                   (c & 2) == 0 ? box.Min.Y : box.Max.Y,
-                                                                   (c & 4) == 0 ? box.Min.Z : box.Max.Z)));
-                                double pad = 0.5;
-                                crop.Min = new XYZ(pts.Min(q => q.X) - pad, pts.Min(q => q.Y) - pad, crop.Min.Z);
-                                crop.Max = new XYZ(pts.Max(q => q.X) + pad, pts.Max(q => q.Y) + pad, crop.Max.Z);
-                                view.CropBox = crop;
+                                FitCropToBox(view, box);
                                 view.CropBoxActive = true;
                                 view.CropBoxVisible = false;
                             }
@@ -365,13 +358,31 @@ namespace Horizun.Revit.Commands
                     o["image"] = new JObject { ["captured"] = false, ["why"] = "ExportImage produced no file", ["temporary_view_rollback"] = rollback };
                     return o;
                 }
+                // A FILE IS NOT A PICTURE. A blank export (measured: 7.7 KB, orientation=top,
+                // walls at +30 m) used to say captured=true. The pixels are measured now, and
+                // an image that is all background is reported as not captured, by name.
+                JObject content;
+                ImageContent measured = MeasureImage(produced, out content);
+                if (measured != null && measured.IsBlank)
+                {
+                    o["image"] = new JObject
+                    {
+                        ["captured"] = false, ["finding"] = "blank_image",
+                        ["why"] = "the exported image is blank: " + measured.ContentPixels + " of " +
+                                  ((long)measured.Width * measured.Height) + " pixels differ from the background colour. " +
+                                  "The elements were not drawn from this camera; try another orientation or look in Revit.",
+                        ["content"] = content, ["blank_image_path"] = produced, ["bytes"] = new FileInfo(produced).Length,
+                        ["orientation"] = orientation, ["temporary_view_rollback"] = rollback
+                    };
+                    return o;
+                }
                 // image_path at the top level is what the server attaches as an image block.
                 o["image_path"] = produced;
                 o["image"] = new JObject
                 {
                     ["captured"] = true, ["bytes"] = new FileInfo(produced).Length,
                     ["legend"] = "blue = changed elements without findings, red = in an error finding, orange = in a warning finding; annotations hidden; section box around them",
-                    ["orientation"] = orientation, ["temporary_view_rollback"] = rollback
+                    ["orientation"] = orientation, ["content"] = content, ["temporary_view_rollback"] = rollback
                 };
             }
             catch (Exception ex)
@@ -394,18 +405,86 @@ namespace Horizun.Revit.Commands
             return g;
         }
 
-        private static void Orient(View3D v, string orientation)
+        private static void Orient(View3D v, string orientation) => Orient(v, orientation, null);
+
+        /// <summary>
+        /// Aims the view. With a box, the eye stands outside it on the viewer side
+        /// (CaptureFramingRules.Eye) so every element framed is in front of the camera;
+        /// without one the view keeps its own eye, as before.
+        /// </summary>
+        private static void Orient(View3D v, string orientation, BoundingBoxXYZ frame)
         {
-            XYZ forward, up;
-            switch (orientation)
+            double[] f, u;
+            CaptureFramingRules.Directions(orientation, out f, out u);
+            XYZ forward = new XYZ(f[0], f[1], f[2]), up = new XYZ(u[0], u[1], u[2]);
+            XYZ eye = v.GetOrientation().EyePosition;
+            if (frame != null)
             {
-                case "top": forward = -XYZ.BasisZ; up = XYZ.BasisY; break;
-                case "front": forward = XYZ.BasisY; up = XYZ.BasisZ; break;
-                case "right": forward = -XYZ.BasisX; up = XYZ.BasisZ; break;
-                case "isometric": forward = new XYZ(-1, 1, -1).Normalize(); up = new XYZ(-1, 1, 2).Normalize(); break;
-                default: throw new ArgumentException("orientation must be isometric, top, front or right.");
+                double[] e = CaptureFramingRules.Eye(new[] { frame.Min.X, frame.Min.Y, frame.Min.Z },
+                                                     new[] { frame.Max.X, frame.Max.Y, frame.Max.Z }, f);
+                eye = new XYZ(e[0], e[1], e[2]);
             }
-            v.SetOrientation(new ViewOrientation3D(v.GetOrientation().EyePosition, up, forward));
+            v.SetOrientation(new ViewOrientation3D(eye, up, forward));
+        }
+
+        /// <summary>
+        /// FRAME THE PICTURE TO THE BOX, depth included. The section box corners in the
+        /// crop's own frame give the crop rectangle AND its Z range: a 3D view's crop Z is
+        /// its near/far clip, and the range kept from the default view was built for the
+        /// model as it was, not for elements 30 m above it.
+        /// </summary>
+        private static void FitCropToBox(View3D view, BoundingBoxXYZ box)
+        {
+            BoundingBoxXYZ crop = view.CropBox;
+            Transform toView = crop.Transform.Inverse;
+            var local = CaptureFramingRules.Corners(new[] { box.Min.X, box.Min.Y, box.Min.Z }, new[] { box.Max.X, box.Max.Y, box.Max.Z })
+                .Select(c => toView.OfPoint(new XYZ(c[0], c[1], c[2])))
+                .Select(p => new[] { p.X, p.Y, p.Z });
+            double[] min, max;
+            CaptureFramingRules.CropAround(local, 0.5, out min, out max);
+            double keptMinZ = crop.Min.Z, keptMaxZ = crop.Max.Z;
+            try
+            {
+                crop.Min = new XYZ(min[0], min[1], min[2]);
+                crop.Max = new XYZ(max[0], max[1], max[2]);
+                view.CropBox = crop;
+            }
+            catch
+            {
+                // A depth Revit will not take must not cost the rectangle: the section
+                // box and the eye outside it already keep the elements in front.
+                crop.Min = new XYZ(min[0], min[1], keptMinZ);
+                crop.Max = new XYZ(max[0], max[1], keptMaxZ);
+                view.CropBox = crop;
+            }
+        }
+
+        /// <summary>
+        /// Decodes the exported PNG and measures how much of it is not background. Null
+        /// (with content saying why) when it cannot be decoded: unmeasured is said, not
+        /// promoted to "has content".
+        /// </summary>
+        private static ImageContent MeasureImage(string path, out JObject content)
+        {
+            try
+            {
+                int[] pixels; int width, height;
+                DecodePng(path, out pixels, out width, out height);
+                ImageContent m = ImageBlankness.Measure(pixels, width, height);
+                content = new JObject
+                {
+                    ["measured"] = true, ["width"] = m.Width, ["height"] = m.Height,
+                    ["background_argb"] = m.BackgroundArgb.ToString("X8"),
+                    ["content_pixels"] = m.ContentPixels, ["content_ratio"] = Math.Round(m.ContentRatio, 6),
+                    ["blank"] = m.IsBlank
+                };
+                return m;
+            }
+            catch (Exception ex)
+            {
+                content = new JObject { ["measured"] = false, ["why"] = "the image could not be decoded to measure it: " + ex.Message };
+                return null;
+            }
         }
 
         private static BoundingBoxXYZ Frame(IEnumerable<Element> elements)

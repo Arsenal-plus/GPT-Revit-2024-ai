@@ -270,6 +270,19 @@ styles. Visibility is not a precedence: any layer that hides wins.
   category and inserts that many key rows. The re-read checks `IsKeySchedule` and
   counts the key elements owned by the schedule. `include_links` and `itemized` do
   not apply to key schedules and are refused when sent.
+- **Grouping of a non-itemized schedule.** Without `group_by`, the schedule sorts
+  and groups by the IDENTITY fields only (type, family, level, mark, text, yes/no)
+  in the order they were requested, never by a QUANTITY: the Count field, a
+  material quantity, percentage or formula, a measurable spec (length, area,
+  volume...), an integer or number, or any field Revit can total. The quantity
+  fields Revit can total (except Count) get `Totals`, so a grouped row shows the
+  sum instead of a blank cell. Measured on a real model: walls with
+  Type/Count/Length/Area/Volume grouped by every non-Count field gave 119 rows
+  instead of 8. `group_by: [...]` (names from `fields`) is honoured exactly, in
+  order, also on an itemized schedule; `[]` groups by nothing; a name that is not
+  a requested field is refused in the rehearsal. The re-read covers `sort_group`
+  (the committed sort/group field ids, in order) and `totals`, and the reply's
+  `grouping` block says which role each field got and why.
 
 ### `horizun_export` — the DWG layer table
 
@@ -1777,6 +1790,16 @@ group that is always rolled back (`image.temporary_view_rollback = RolledBack`).
 it after a modelling batch and look at the image: the check sees solids, not intent (a
 wrong level or room, or a missing element, needs the picture).
 
+The camera is framed on the elements for every `orientation` (isometric, top, front,
+right): the eye stands outside their box on the viewer side and the crop's depth range
+(a 3D view's near/far clip) covers the whole box. It used to keep the eye and depth of
+the default isometric view, and 75 walls on a level at +30 m seen from `top` came back
+as a blank image. The exported PNG is then MEASURED: `image.content` gives the
+background colour and how many pixels differ from it, and an image that is effectively
+all background (fewer than max(25 px, 0.05 %) content pixels) is reported as
+`captured: false` with `finding: "blank_image"` and no attached image, never as a
+capture. An image that cannot be decoded says `content.measured: false`.
+
 - `scope` (default `last_write`): the previous behaviour, unchanged — only the most
   recent Horizun write in this document (kept in memory since Revit started).
   `scope=session` instead unions every write's added/modified ids since Revit started
@@ -2617,6 +2640,24 @@ unassigned too; their sides are read with From/To room by `room_finishes`. An el
 no sample (a curtain wall, a ceiling, an element without location) is `unlocatable`, never
 counted as unassigned. A floor whose top face lies below its room's base (a structural slab
 under a finish floor) is unassigned.
+
+## horizun_manage_views: `set_crop` (what makes a crop real)
+
+`set_crop` writes the rectangle `box` (view plane, the call's units) and turns the crop
+on. Its verdict no longer rests on the stored CropBox alone, which Revit keeps whether or
+not it governs the view (reported: `verified: true` while the placed view still looked
+uncropped). It now needs, before the commit and again after it: `CropBoxActive` true, the
+"Crop View" parameter (`VIEWER_CROP_REGION`) on, read independently, the CropBox equal to
+the request within 1 mm, and the crop SHAPE Revit draws (`GetCropShape`, projected on the
+view plane) spanning the request. An unreadable shape is a note in `crop.notes`, not a
+pass of its own. Refused by name before anything is written: a view template that controls
+the crop (clear it with `set_template_controls` or remove the template), a scope box
+driving it, and a sketched (non-rectangular) crop, over which the API ignores a crop box.
+The row's `crop` block reports the facts, the crop's corners in model coordinates, and every
+viewport showing the view with its size on the sheet against the crop at the view's scale;
+a viewport larger than its crop is a named finding (`viewport_larger_than_crop`, usually
+grids, levels or tags outside the crop while the annotation crop is off -
+`set_annotation_crop`), reported without changing the verdict.
 
 ## horizun_manage_views: `renumber_sheets` (a register-wide map)
 
