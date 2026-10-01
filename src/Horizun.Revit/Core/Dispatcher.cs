@@ -748,6 +748,8 @@ namespace Horizun.Revit.Core
                     if (request.Value<bool?>("dry_run") == true) return false;
                     // sync_with_central previews when dry_run is omitted; only false syncs.
                     if (operation == "sync_with_central" && request["dry_run"] == null) return false;
+                    // new_project rehearses when dry_run is omitted, the same way.
+                    if (operation == "new_project" && request["dry_run"] == null) return false;
                     return true;
                 default:
                     return false;

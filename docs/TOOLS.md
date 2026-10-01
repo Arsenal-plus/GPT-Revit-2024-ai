@@ -55,7 +55,7 @@ and it is labelled as such everywhere it appears.
 | `horizun_model_scan` | The census, under the honesty contract. |
 | `horizun_write_params_verified` | Parameter writes, each re-read after commit. |
 | `horizun_delete_verified` | Deletion with the cascade counted, `dry_run` first. `mode` is mandatory: omitting it is refused and can never select `purge_unused`. |
-| `horizun_document_session` | Inspect, open, save, save-as or close a document through explicit session operations; file/document operations require the applicable permission profile. |
+| `horizun_document_session` | Inspect, open, save, save-as or close a document, or create a blank project from a template (`new_project`), through explicit session operations; file/document operations require the applicable permission profile. |
 | `horizun_audit_model` | Model checks with per-check pass/fail. |
 | `horizun_quantities` | Quantities, with input rejected rather than guessed. |
 | `horizun_clash` | Clash, where zero is a trustworthy zero. `plan_penetrations` turns each pipe-crossing into a wall-opening plan with per-row named refusals (structural hosts need the explicit opt-in); `record_findings` folds the run into the durable coordination ledger. |

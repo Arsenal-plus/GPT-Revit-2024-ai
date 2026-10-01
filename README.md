@@ -244,7 +244,7 @@ The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations
 | Tool | Capability |
 |---|---|
 | `get_document_info` | Inspect the open document's identity and element counts. |
-| `horizun_document_session` | Inspect, open, save, save-as and close documents through explicit session operations. |
+| `horizun_document_session` | Inspect, open, save, save-as and close documents, or create a blank project from a template, through explicit session operations. |
 | `horizun_file_info` | Read RVT/RFA headers, version and worksharing metadata without opening or upgrading them. |
 | `horizun_health` | Report bridge health, active document, Revit year, loaded version and commit. |
 | `horizun_job_status` | Read progress and recovery state while Revit is busy or after a process restart. |
@@ -429,7 +429,7 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 <!-- BEGIN SUBOPERATIONS -->
 | Tool | Selector | Named suboperations and modes |
 |---|---|---|
-| `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect`, `sync_with_central` |
+| `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect`, `sync_with_central`, `new_project` |
 | `horizun_repair_memory` | `operation` | `list`, `advice`, `observe`, `remedy`, `quarantine`, `release` |
 | `horizun_selection_exchange` | `operation` | `publish`, `read`, `clear`, `capabilities` |
 | `horizun_audit_model` | `operation` | `save`, `save_as`, `sync_with_central`, `export`, `publish`, `close_with_save`, `batch_open_close` |

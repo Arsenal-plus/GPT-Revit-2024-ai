@@ -4434,13 +4434,16 @@ namespace Horizun.Contracts
                     "Saving reports bytes/mtime/format re-read from " +
                     "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
                     "so audit_ran only ever describes the open. sync_with_central is OFF until the machine owner enables it " +
-                    "in Revit (Advanced options); an omitted dry_run is an ESTIMATE whose token the apply needs.",
+                    "in Revit (Advanced options); an omitted dry_run is an ESTIMATE whose token the apply needs. " +
+                    "new_project creates a blank project from template_path (or Revit's DefaultProjectTemplate) at a .rvt " +
+                    "save_as_path that must NOT exist - never overwrites; rehearses by default, applies with the token, " +
+                    "re-reads file and document, and reports whether it was activated.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect"", ""sync_with_central""],
-                     ""description"": ""inspect reads a file's version off disk unopened. sync_with_central is owner-gated; preview is an estimate."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""open"", ""save"", ""save_as"", ""close"", ""inspect"", ""sync_with_central"", ""new_project""],
+                     ""description"": ""inspect reads a file's version off disk unopened. sync_with_central is owner-gated; preview is an estimate. new_project creates a blank project from a template."" },
     ""file_path"": { ""type"": ""string"",
                      ""description"": ""open/inspect: the file to read. For save/save_as/close it is an ALIAS of target_document, kept for compatibility - it no longer defaults to the active document."" },
     ""target_document"": { ""type"": ""string"",
@@ -4465,7 +4468,8 @@ namespace Horizun.Contracts
                       ""description"": ""open only: exact user-workset names to keep CLOSED while every other user workset opens. Resolved from the unopened file before opening; a missing or ambiguous name refuses. After opening, every requested name and every other user workset are re-read from the Document; workset_configuration_applied is true only when that observed state proves the exact plan. Mutually exclusive with open_all_worksets=true. This is for honest partial-load audits: the reply can measure which content was unavailable instead of accidentally opening all and testing the wrong condition."" },
     ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss""], ""default"": ""cancel"",
                      ""description"": ""open only: how a modal dialog raised WHILE opening is answered unattended. 'cancel' (default) presses Cancel; 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort, recorded in revit_said; scoped to the open call - every other dialog still cancels."" },
-    ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path."" },
+    ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path. new_project: the new .rvt, which must NOT exist (never overwritten)."" },
+    ""template_path"": { ""type"": ""string"", ""description"": ""new_project: absolute path of the .rte to create from. Omitted: this Revit's DefaultProjectTemplate (Options > File Locations), named in the reply as template_source; none configured is a refusal, never a template-less project."" },
     ""compact"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save/save_as: pass Compact to the API. The response reports the byte delta it actually produced."" },
     ""comment"": { ""type"": ""string"", ""description"": ""sync_with_central: stored in central; at most 30000 chars."" },
     ""relinquish"": { ""type"": ""string"", ""enum"": [""all"", ""keep_borrowed"", ""none""], ""default"": ""all"", ""description"": ""sync_with_central: ownership to give back."" },
@@ -4481,7 +4485,7 @@ namespace Horizun.Contracts
     ""activate_other"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""close: Revit's API cannot close the ACTIVE document, so closing the last document of a batch used to need a decoy opened by hand (and a relaunched batch SKIPPED the model that stayed open). With this true, the command activates another open document first - or opens the bridge's own empty anchor project when nothing else qualifies - then closes the target, and REPORTS which document it activated. Off by default because activation changes what the user is looking at; it must be asked for, never a side effect."" },
     ""confirmation_token"": { ""type"": ""string"",
-                     ""description"": ""close: the token from a dry_run, required alongside discard_unsaved=true. Single use, expires, and bound to THIS document and THIS request - if either changes it is refused and nothing is closed."" }
+                     ""description"": ""new_project: the token from its rehearsal. close: the token from a dry_run, required alongside discard_unsaved=true. Single use, expires, and bound to THIS document and THIS request - if either changes it is refused and nothing is closed."" }
   }
 }")
             },
@@ -7339,7 +7343,8 @@ namespace Horizun.Contracts
             ["save"] = new[] { "target_document", "file_path", "compact", "force_workshared" },
             ["save_as"] = new[] { "target_document", "file_path", "compact", "force_workshared", "save_as_path", "overwrite", "max_backups" },
             ["close"] = new[] { "target_document", "file_path", "save_on_close", "discard_unsaved", "activate_other", "force_workshared", "confirmation_token" },
-            ["sync_with_central"] = new[] { "target_document", "comment", "relinquish", "compact", "confirmation_token" }
+            ["sync_with_central"] = new[] { "target_document", "comment", "relinquish", "compact", "confirmation_token" },
+            ["new_project"] = new[] { "save_as_path", "template_path", "confirmation_token" }
         };
         private static HashSet<string> AllowedSession(string operation)
         {
@@ -7352,7 +7357,7 @@ namespace Horizun.Contracts
         public static string ValidateSession(JObject request, string operation)
         {
             var allowed = AllowedSession(operation);
-            if (allowed == null) return "operation must be inspect, open, save, save_as, close or sync_with_central.";
+            if (allowed == null) return "operation must be inspect, open, save, save_as, close, sync_with_central or new_project.";
             foreach (var p in request.Properties())
                 if (!allowed.Contains(p.Name)) return p.Name + " is not applicable to operation '" + operation + "'. Nothing ran.";
             JToken dry = request["dry_run"];
@@ -7384,8 +7389,10 @@ namespace Horizun.Contracts
                 if (operation == "open") props["dry_run"] = new JObject { ["const"] = false };
                 // A sync previews when dry_run is omitted (DocumentSessionSync.cs), unlike the shared default.
                 if (operation == "sync_with_central") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
+                // new_project rehearses when dry_run is omitted, like a sync (DocumentSessionNewProject.cs).
+                if (operation == "new_project") props["dry_run"] = new JObject { ["type"] = "boolean", ["default"] = true };
                 var required = new JArray("operation");
-                if (operation == "save_as") required.Add("save_as_path");
+                if (operation == "save_as" || operation == "new_project") required.Add("save_as_path");
                 if (operation == "open") required.Add("expected_version");
                 if (operation == "inspect") required.Add("file_path");
                 if (operation == "sync_with_central") required.Add("target_document");

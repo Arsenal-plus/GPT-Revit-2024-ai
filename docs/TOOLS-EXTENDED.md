@@ -3101,6 +3101,37 @@ at the probe's own X, and the case records the position it used (an identity one
 rotated-position sign unexercised); in 2023 a `landxml_path` row must bring the same named
 refusal. Everything is deleted with `horizun_delete_verified` `mode: "ids"`; nothing is saved.
 
+## horizun_document_session — operation `new_project`
+
+Creates a blank project from a template and saves it: `save_as_path` (required, an
+absolute `.rvt` that must **not** exist) and `template_path` (optional `.rte`). Without
+`template_path` it uses this Revit's own `Application.DefaultProjectTemplate` (Options >
+File Locations, set per locale by the installer) and says so in `template_source`; when
+none is configured, or it is not on disk, the call is refused and names where Autodesk's
+templates usually live. A project with no template is never created in its place.
+
+- **Never overwrites.** There is no `overwrite` for this operation; an existing file, or a
+  path whose existence cannot be tested, is refused. A template from a newer Revit is
+  refused; an older one is upgraded in memory only and the template file is never written.
+- **Rehearses by default.** `dry_run` defaults to true (as for `sync_with_central`): the
+  rehearsal reads both paths and the template header and returns a `confirmation_token`
+  bound to the template (path, size, write time) and the target. Apply with the same
+  arguments, `dry_run: false`, that token and a new `idempotency_key`.
+- **Verified by re-reading.** `Application.NewProjectDocument(template)` then `SaveAs`
+  with `OverwriteExistingFile = false`; afterwards the file must exist with a size and a
+  header that reads this host's Revit year, and the document's `PathName` must be the
+  requested path. Either check failing closes the document without saving and deletes the
+  file this call wrote, so the path is empty again.
+- **Activation is reported, not assumed.** The API activates a document only through
+  `UIApplication.OpenAndActivateDocument`; the operation uses the same bare-path call as an
+  `open` of an already-open document and re-reads the active document. `activated: false`
+  (with `activation_note`) means the project is created, saved and open in the background.
+
+Course dry run 2026-09-30 (defect #18): without this the run fell back to a copy of
+another model plus a new level, which modified 172 unrelated elements. Live probe:
+`scripts/live-probes/document-session-new-project.probes.ps1` (offline tests in its
+`.tests.ps1`); not yet run in Revit.
+
 ## horizun_document_session — operation `sync_with_central`
 
 Synchronizes a workshared **local** with its central: `target_document` (required),

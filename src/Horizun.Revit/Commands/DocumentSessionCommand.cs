@@ -68,7 +68,7 @@ namespace Horizun.Revit.Commands
         public string Name => "horizun_document_session";
 
         public string Description =>
-            "Open / save / save_as / close a Revit document, guarded against the irreversible. Before opening it " +
+            "Open / save / save_as / close a Revit document, or create one from a template (new_project), guarded against the irreversible. Before opening it " +
             "reads the file's own Revit version off disk (BasicFileInfo, WITHOUT opening it) and the host's " +
             "version, and refuses unless both match the REQUIRED expected_version — because opening a 2025 file " +
             "on a 2026 host upgrades it and there is no downgrade. Saving reports bytes/mtime/format re-read from " +
@@ -130,9 +130,10 @@ namespace Horizun.Revit.Commands
                 case "save_as": return Save(app, request, true);
                 case "close": return Close(app, request);
                 case "sync_with_central": return SyncWithCentral(app, request);
+                case "new_project": return NewProject(app, request);
                 default:
                     return CommandResult.Fail(
-                        "operation is required and must be one of: inspect, open, save, save_as, close, sync_with_central.");
+                        "operation is required and must be one of: inspect, open, save, save_as, close, sync_with_central, new_project.");
             }
         }
 
