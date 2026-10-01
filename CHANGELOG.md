@@ -26,7 +26,7 @@ Measured live, per defect:
 | 9 | 397 beams on 02/03/Roof through `INSTANCE_REFERENCE_LEVEL_PARAM` |
 | 10 | `HOST_AREA_COMPUTED` resolves; Type Name gives the 8 wall types with the dry run's totals |
 | 11 | sums carry `sum_unit`, metres and the display unit |
-| 12 | workbook created; the backup lands in `%USERPROFILE%\.horizunackups\excel` |
+| 12 | workbook created; the backup lands in `%USERPROFILE%\.horizunbackups\excel` |
 | 13 | `already_open_activated` without `allow_upgrade` on a 2023 header |
 | 14 | `horizun_health`: `suspected_instructions: 0` |
 | 15 | Project Information write: no `vary_between_groups_error` |
