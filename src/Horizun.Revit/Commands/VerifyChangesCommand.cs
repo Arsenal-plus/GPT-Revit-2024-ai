@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP - original Horizun code.
 //
 // horizun_verify_changes - look at what was just modelled, the way an expert would.
@@ -301,6 +301,7 @@ namespace Horizun.Revit.Commands
                                 .FirstOrDefault(t => t.ViewFamily == ViewFamily.ThreeDimensional)
                                 ?? throw new InvalidOperationException("the model has no 3D view type");
                             view = View3D.CreateIsometric(doc, vft.Id);
+                            ShowEveryDiscipline(view);
                             try { view.DisplayStyle = DisplayStyle.ShadingWithEdges; } catch { }
                             try { view.DetailLevel = ViewDetailLevel.Fine; } catch { }
                             // The eye stands OUTSIDE the framed box on the viewer side: the
@@ -403,6 +404,19 @@ namespace Horizun.Revit.Commands
                 g.SetCutForegroundPatternId(solid); g.SetCutForegroundPatternColor(c);
             }
             return g;
+        }
+
+        /// <summary>
+        /// THE TEMPORARY VIEW DRAWS EVERYTHING IT FRAMES. A 3D view type can carry a
+        /// template and a discipline: measured in Revit 2026 on 2026-09-30, the structural
+        /// sample's 3D view is Structural, which does not draw non-structural walls, and 68
+        /// such walls came back as a blank picture in every orientation while beams in the
+        /// same model drew. No template, Coordination discipline.
+        /// </summary>
+        internal static void ShowEveryDiscipline(View3D view)
+        {
+            try { if (view.ViewTemplateId != ElementId.InvalidElementId) view.ViewTemplateId = ElementId.InvalidElementId; } catch { }
+            try { view.Discipline = ViewDiscipline.Coordination; } catch { }
         }
 
         private static void Orient(View3D v, string orientation) => Orient(v, orientation, null);

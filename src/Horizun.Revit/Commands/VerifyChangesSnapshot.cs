@@ -500,6 +500,7 @@ namespace Horizun.Revit.Commands
                             ?? throw new InvalidOperationException("the model has no 3D view type");
                         view = View3D.CreateIsometric(doc, vft.Id);
                         cap.ViewId = view.Id;
+                        ShowEveryDiscipline(view);
                         try { view.DisplayStyle = DisplayStyle.ShadingWithEdges; } catch { }
                         try { view.DetailLevel = ViewDetailLevel.Fine; } catch { }
                         if (cam.Orientation != null) view.SetOrientation(cam.Orientation); else Orient(view, cam.OrientName, cam.Section);

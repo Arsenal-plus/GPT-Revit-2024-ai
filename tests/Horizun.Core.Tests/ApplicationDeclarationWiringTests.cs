@@ -326,6 +326,23 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Verify_changes_temporary_views_draw_every_discipline()
+        {
+            // Measured 2026-09-30: the structural sample's 3D view type is Structural, which
+            // does not draw non-structural walls - 68 walls came back blank in every orientation.
+            var sources = CommandSources();
+            foreach (string file in new[] { "VerifyChangesCommand.cs", "VerifyChangesSnapshot.cs" })
+            {
+                string src = sources[file];
+                int create = src.IndexOf("View3D.CreateIsometric(doc, vft.Id);", StringComparison.Ordinal);
+                int show = src.IndexOf("ShowEveryDiscipline(view);", create, StringComparison.Ordinal);
+                Assert.True(create > 0 && show > create, file + " must clear the template and discipline of its capture view");
+            }
+            Assert.Contains("view.Discipline = ViewDiscipline.Coordination;", sources["VerifyChangesCommand.cs"]);
+            Assert.Contains("view.ViewTemplateId = ElementId.InvalidElementId;", sources["VerifyChangesCommand.cs"]);
+        }
+
+        [Fact]
         public void Set_keynote_reports_write_failures_from_the_post_commit_read_alone()
         {
             // writes_failed was verifyFailed + failed.Count, which double-counted a refused
