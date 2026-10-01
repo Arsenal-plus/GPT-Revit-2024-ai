@@ -271,6 +271,9 @@
          a query reads only the models it names, and compact values say their unit. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ExportIsolationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ClashNoSolidLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DatumGeometryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QuerySourceFilterRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CompactUnitRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\EnergyReadinessRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\HeadroomRules.cs" />
 
