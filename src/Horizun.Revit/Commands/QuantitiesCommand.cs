@@ -908,7 +908,11 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
-        /// A named parameter, instance first then type. A dimensioned parameter (Length,
+        /// A named parameter, read through the SAME resolver horizun_query_model uses
+        /// (Commands/ParameterResolver.cs): a BuiltInParameter token, a shared-parameter
+        /// GUID or a display name, instance first then type, a type-level name through the
+        /// type. MEASURED (dry run 2026-09): HOST_AREA_COMPUTED answered "absent" here and
+        /// a number in query_model, because this read looked tokens up as names. A dimensioned parameter (Length,
         /// Area, Volume) is converted from Revit's internal feet to m / m2 / m3 and the
         /// declared unit must be that one - a Volume read in m3 and labelled ft3 would be
         /// a number wearing the wrong unit, which the comparison downstream cannot see.
@@ -919,12 +923,10 @@ namespace Horizun.Revit.Commands
             Parameter p;
             try
             {
-                p = e.LookupParameter(d.Parameter);
-                if (p == null)
-                {
-                    Element t = owner.GetElement(e.GetTypeId());
-                    p = t == null ? null : t.LookupParameter(d.Parameter);
-                }
+                Element t = owner.GetElement(e.GetTypeId());
+                string scope, lookupError;
+                p = ParameterResolver.Resolve(e, t, d.Parameter, out scope, out lookupError);
+                if (lookupError != null) return TakeoffReading.Not(QuantityState.Unreadable, lookupError);
             }
             catch (Exception ex) { return TakeoffReading.Not(QuantityState.Unreadable, "parameter lookup threw: " + ex.Message); }
             if (p == null) return TakeoffReading.Not(QuantityState.Absent, "no parameter '" + d.Parameter + "' on the instance or its type.");
@@ -1211,7 +1213,10 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
-        /// The element's budget code: instance parameter first, then its type. The three
+        /// The element's budget code, through the shared resolver (Commands/ParameterResolver.cs):
+        /// BuiltInParameter tokens and GUIDs as well as names, instance first then type, and a
+        /// type-level name such as "Type Name" read on the type - MEASURED (dry run 2026-09),
+        /// "Type Name" read "(empty)" on every instance because the instance answered first. The three
         /// non-values stay distinct - "(no such parameter)", "(empty)", "(unreadable)" -
         /// because a rollup that pooled them would hide exactly the elements a budget
         /// review needs to see, under a key that looks like a finding.
@@ -1220,12 +1225,12 @@ namespace Horizun.Revit.Commands
         {
             try
             {
-                Parameter p = e.LookupParameter(parameterName);
-                if (p == null)
-                {
-                    Element t = doc.GetElement(e.GetTypeId());
-                    p = t == null ? null : t.LookupParameter(parameterName);
-                }
+                Element t = doc.GetElement(e.GetTypeId());
+                string scope, lookupError;
+                Parameter p = ParameterResolver.Resolve(e, t, parameterName, out scope, out lookupError);
+                // An ambiguous name or a read that threw: we could not tell which value is
+                // the code, which is not the same as there being none.
+                if (lookupError != null) return "(unreadable)";
                 if (p == null) return "(no such parameter)";
                 string v;
                 try { v = p.StorageType == StorageType.String ? p.AsString() : p.AsValueString(); }

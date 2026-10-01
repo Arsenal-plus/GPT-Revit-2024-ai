@@ -1214,6 +1214,76 @@ if ($Document) {
                             # never travel without saying how much of the model it is over.
                             (& $coverageShape $d.visibility_coverage) } }
 
+    # DRY RUN 2026-09, defect 9: group_by level grouped 397 beams, 91 rooms, 6 roofs and
+    # 5 stairs under "(no level)". Every level now names the source that resolved it,
+    # and the "(no level)" group must be EXACTLY the elements no source resolved.
+    $probes += @{ Name = 'query_model group_by level names its level sources; (no level) is exactly the unresolved'
+                  Tool = 'horizun_query_model'
+                  Args = @{ target_document = $Document; group_by = @('level'); include_links = $false }
+                  Check = { param($d)
+                            if ($null -eq $d.level_sources) { return $false }
+                            $noLevel = @($d.groups | Where-Object { $_.key.level -eq '(no level)' })
+                            $none = $d.level_sources.'(none)'
+                            $sourced = 0; foreach ($p in $d.level_sources.PSObject.Properties) { $sourced += [int]$p.Value }
+                            ($sourced -eq $d.matched_total) -and
+                            (($noLevel.Count -eq 0 -and $null -eq $none) -or
+                             ($noLevel.Count -eq 1 -and [int]$noLevel[0].count -eq [int]$none)) } }
+
+    # Defect 11: sum_parameters summed ft2 and said nothing. Every sum that summed
+    # something now names its unit, and an area carries its m2 value beside the raw ft2.
+    $probes += @{ Name = ("query_model sum_parameters names the unit of every sum (" + $QuantityCategory + ", HOST_AREA_COMPUTED)")
+                  Tool = 'horizun_query_model'
+                  Args = @{ target_document = $Document; categories = @($QuantityCategory); include_links = $false
+                            group_by = @('type'); sum_parameters = @('HOST_AREA_COMPUTED') }
+                  Check = { param($d)
+                            $cells = @($d.groups | ForEach-Object { $_.sums.HOST_AREA_COMPUTED } |
+                                       Where-Object { $_ -and [int]$_.summed -gt 0 })
+                            if ($cells.Count -eq 0) { return $false }
+                            @($cells | Where-Object {
+                                $_.quantity -ne 'area' -or $_.unit -ne 'm2' -or $_.sum_unit -ne 'ft2 (Revit internal)' -or
+                                [math]::Abs([double]$_.value - [double]$_.sum * 0.09290304) -gt 1e-3 * [math]::Max(1, [math]::Abs([double]$_.value)) }).Count -eq 0 } }
+
+    # Defect 10: takeoff read HOST_AREA_COMPUTED as a display name ("absent") and
+    # "Type Name" on the instance ("(empty)"). Both now go through query_model's resolver.
+    $probes += @{ Name = ("quantities takeoff reads BuiltInParameter tokens and Type Name through the type (" + $QuantityCategory + ")")
+                  Tool = 'horizun_quantities'
+                  Args = @{ target_document_title = $Document; mode = 'takeoff'; category = $QuantityCategory; top = 50
+                            classification_parameter = 'Type Name'
+                            quantities = @(@{ name = 'area'; source = 'parameter'; parameter = 'HOST_AREA_COMPUTED'; unit = 'm2' }) }
+                  Check = { param($d)
+                            $rows = @($d.rows)
+                            $rows.Count -gt 0 -and
+                            @($rows | Where-Object { $_.classification_code -eq '(empty)' -or $_.classification_code -eq '(no such parameter)' }).Count -eq 0 -and
+                            @($rows | Where-Object { $_.quantities.area.state -eq 'absent' }).Count -eq 0 } }
+
+    # Defect 16: audit_model and model_scan counted views off sheets / without template
+    # differently with nothing saying why. Both now publish what they count, and the
+    # audit's reconcile arithmetic must land on model_scan's number.
+    $script:scanViewScopes = $null
+    $probes += @{ Name = 'model_scan publishes the scope of its view counts'
+                  Tool = 'horizun_model_scan'
+                  Args = @{ target_document_title = $Document; sections = @('documentation'); top = 1 }
+                  Check = { param($d)
+                            $doc = $d.sections.documentation
+                            $script:scanViewScopes = $doc
+                            $doc.views_not_on_sheet_scope.scope -and $doc.views_no_template_scope.scope -and
+                            $null -ne $doc.views_not_on_sheet_scope.by_view_type } }
+    $probes += @{ Name = 'audit_model view counts reconcile with model_scan by their published scope'
+                  Tool = 'horizun_audit_model'; Args = @{ target_document = $Document; top = 1 }
+                  Check = { param($d)
+                            if (-not $script:scanViewScopes) { return $false }   # the scan probe must have run first
+                            $ok = $true
+                            foreach ($pair in @(@('views_off_sheets', 'views_not_on_sheet'), @('views_without_template', 'views_no_template'))) {
+                                $f = @($d.findings | Where-Object { $_.check -eq $pair[0] })
+                                if ($f.Count -ne 1 -or -not $f[0].count_scope.scope) { $ok = $false; continue }
+                                $s = $f[0].count_scope
+                                $excluded = 0; foreach ($p in $s.excluded_by_view_type.PSObject.Properties) { $excluded += [int]$p.Value }
+                                $onlyHere = 0; foreach ($p in $s.counted_only_here_by_view_type.PSObject.Properties) { $onlyHere += [int]$p.Value }
+                                $scanTotal = [int]$script:scanViewScopes.($pair[1]).total
+                                if ([int]$f[0].count + $excluded - $onlyHere -ne $scanTotal) { $ok = $false }
+                            }
+                            $ok } }
+
     if ($InactiveDocument) {
         # The verifier itself, exercised negatively: the money tool must refuse to
         # measure when the caller names a document that is NOT the active one.
