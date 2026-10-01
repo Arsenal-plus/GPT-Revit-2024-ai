@@ -5,7 +5,39 @@ assumed. Dates are the day the work landed.
 
 ## v2.1.5 — 2026-09-30
 
-Patch release over 2.1.4 (tool contract: new optional fields and one new operation; nothing removed; still 123 tools). It fixes the 18 defects found by an end-to-end dry run on 2026-09-30: seven course flows on copies of the Autodesk sample models in Revit 2026. All changes are built and unit-tested offline (Revit 2026 and 2023/2024 add-ins and the server build warning-clean). The new live probes are listed per item, and none has been run in Revit yet: each item below says what stays unverified until it is.
+Patch release over 2.1.4 (tool contract: new optional fields and one new operation; nothing removed; still 123 tools). It fixes the 18 defects found by an end-to-end dry run on 2026-09-30: seven course flows on copies of the Autodesk sample models in Revit 2026. Every item was built and unit-tested offline, then **replayed live in Revit 2026 on 2026-09-30** on fresh copies of the same Autodesk samples, through the installed build. The live replay found three more defects, fixed in this release:
+
+- **`horizun_verify_changes`: the capture view now draws every discipline.** The first fix (frame the camera on the box) did not cure the blank image. The structural sample's 3D view type is Structural, which does not draw non-structural walls. 68 such walls came back blank in top, isometric and front, while five beams of the same model captured fine. The temporary view now applies no template and uses the Coordination discipline. Measured after the fix: top 19,937 content pixels, isometric 70,009.
+- **`horizun_verify_changes`: the crop keeps Revit's depth.** Writing the framed box's depth into a 3D view's crop Z was part of the first fix; it is dropped. The rectangle is still fitted to the box.
+- **`horizun_model_scan`: placed schedules no longer count as off-sheet.** `ViewSheet.GetAllPlacedViews()` does not return schedules, so the scan listed placed schedules as off-sheet. The new reconciliation with `horizun_audit_model` exposed it (38 against 35). Schedule placement now comes from `ScheduleSheetInstance`, and the two tools reconcile exactly (34 ↔ 28).
+
+Measured live, per defect:
+
+| # | Result in Revit 2026 |
+|---|---|
+| 1 | units millimeter, link declares inch, DWG header millimetre: `units_check.verdict: agrees`, applied millimetre by `measured_scale` (0.977 mm per drawing unit) |
+| 2 | walls-only plan `applicable` on `link_geometry_only`; `apply_cad_plan` by `plan_id` created 68 walls, `verified_applied` |
+| 3 | all 68 walls at Z = 30,000 mm (drawn Z 0) |
+| 4 | `M_Concrete-Round-Column: 300mm` refused `column_top_unstated` without `top_level`, `usable_with_warnings` with it; 55 columns planned with `top_level_id` |
+| 5 | 10 body rows grouped by Type, Length/Area/Volume totalled (119 in the dry run) |
+| 6 | crop active and visible on a placed sheet |
+| 7 | the capture is no longer blank (see above) |
+| 8 | `cad_extract` with `view_id` answers |
+| 9 | 397 beams on 02/03/Roof through `INSTANCE_REFERENCE_LEVEL_PARAM` |
+| 10 | `HOST_AREA_COMPUTED` resolves; Type Name gives the 8 wall types with the dry run's totals |
+| 11 | sums carry `sum_unit`, metres and the display unit |
+| 12 | workbook created; the backup lands in `%USERPROFILE%\.horizunackups\excel` |
+| 13 | `already_open_activated` without `allow_upgrade` on a 2023 header |
+| 14 | `horizun_health`: `suspected_instructions: 0` |
+| 15 | Project Information write: no `vary_between_groups_error` |
+| 16 | 34 ↔ 28 reconcile in both directions |
+| 17 | `plan_from_cad` 183 kB → 25 kB; `query_cad` profile 83 kB → 33 kB; `create_elements` summary 4,966 B for 20 walls |
+| 18 | `new_project` from Revit's default template, created, re-read and activated |
+
+Still open:
+- The clash summary's size is measured offline only: the live model had no clashes.
+- A `manage_views` batch that places a view and then crops it fails `place_view`'s centre check and rolls back whole. Cropping first works.
+- The `instance` block of a `manage_cad_links add` reply shows `applied_units: null`. `units_check` and every later read carry the applied unit.
 
 ### DWG to model
 
