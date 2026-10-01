@@ -248,11 +248,14 @@ namespace Horizun.Revit.Commands
                 ["options"] = declared,
                 ["already_linked"] = new JArray(already.Select(a => (JToken)a.ElementId)),
                 ["units_will_be_checked"] = CadLinkUnitRules.IsRequested(declared.Value<string>("units"))
-                    ? "the apply compares the requested unit with the unit the link declares afterwards, and " +
-                      "withholds verified when they differ. Revit records the DRAWING'S OWN unit on the link " +
-                      "type (measured), so a drawing whose header says another unit will read as a disagreement" +
-                      (already.Count > 0 ? "; and this file is already linked, so Revit reuses that link's type " +
-                                           "and its options - the requested unit will change nothing." : ".")
+                    ? "the apply checks which unit the placed geometry is AT: it measures the geometry's scale " +
+                      "against the drawing's own extents and INSUNITS, read from the DWG by the headless AutoCAD " +
+                      "reader (a cached extraction, or a header-only read of seconds). The link's declared unit " +
+                      "is not evidence - it does not follow the forced unit (measured). Without the reader the " +
+                      "unit is confirmed only when the declaration equals the request on a new link, and reads " +
+                      "as unconfirmed otherwise, never as failed" +
+                      (already.Count > 0 ? ". This file is already linked: Revit reuses that link's type and its " +
+                                           "options, so the requested unit will probably not be applied." : ".")
                     : "no unit was asked for: Revit reads the drawing's header, and there is nothing to compare.",
                 ["would_create"] = "one ImportInstance, linked (not imported): the drawing stays a reference to " +
                                    "the file on disk, and reload picks up a new issue of it.",
@@ -304,16 +307,25 @@ namespace Horizun.Revit.Commands
                     "the link committed as element " + Rid.Value(created) + " and then could not be re-read (" +
                     verifyError + "). It is IN the model; this command cannot tell you what it points at.");
 
-            // THE UNIT THAT WAS ASKED FOR, AGAINST THE UNIT THE LINK DECLARES. The reply used to say
-            // verified_applied without comparing them, and a units=millimeter link that declared inch read as
-            // done. Revit records the drawing's OWN unit on the type, so a disagreement does not prove the
-            // option was ignored - it proves the requested unit is not CONFIRMED, which is what verified means.
-            // See Core/CadLinkUnitRules.cs. The link stays committed (it may be exactly right, when the header
-            // is what is wrong) and the verdict is withheld by name rather than rolled back into nothing.
+            // WHICH UNIT THE GEOMETRY IS AT. The reply used to say verified_applied without looking, and a
+            // units=millimeter link declaring inch read as done. The declaration cannot answer it either way:
+            // it does not follow the forced unit (measured, W2), and on the dry run's drawing it did not match
+            // the DWG's own INSUNITS either, so comparing it with the request fails legitimate forced units.
+            // The scale of the placed geometry against the drawing's
+            // own extents answers it - see Core/CadLinkUnitRules.cs. The link stays committed whatever the
+            // verdict (it may be exactly right); a unit not applied is a named failed postcondition, a unit
+            // nothing could measure is an unknown.
             string requestedUnits = declared.Value<string>("units");
             string declaredUnits = verified.Value<string>("declared_units");
-            CadLinkUnitVerdict unitVerdict = CadLinkUnitRules.Compare(requestedUnits, declaredUnits);
+            bool alreadyLinked = already.Count > 0;
+            CadLinkScaleEvidence scale = CadLinkUnitRules.NeedsMeasurement(requestedUnits, declaredUnits, alreadyLinked)
+                ? MeasureScale(doc, Rid.Value(created), view, verified.Value<string>("external_path") ?? path)
+                : null;
+            CadLinkUnitCheck unitCheck = CadLinkUnitRules.Decide(requestedUnits, declaredUnits, scale, alreadyLinked);
+            CadLinkUnitVerdict unitVerdict = unitCheck.Verdict;
             bool unitsHold = CadLinkUnitRules.Verifies(unitVerdict);
+            JObject unitsJson = CadLinkUnitRules.Describe(requestedUnits, declaredUnits,
+                                                          verified.Value<string>("declared_units_route"), scale, unitCheck);
 
             var result = new JObject
             {
@@ -323,28 +335,30 @@ namespace Horizun.Revit.Commands
                 ["element_id"] = Rid.Value(created),
                 ["instance"] = verified,
                 ["requested"] = new JObject { ["file"] = fileFacts, ["options"] = declared },
-                ["units_check"] = CadLinkUnitRules.Describe(requestedUnits, declaredUnits,
-                                                            verified.Value<string>("declared_units_route")),
+                ["units_check"] = unitsJson,
                 ["host_verified"] = unitsHold,
                 ["verified_by"] = "the ImportInstance was re-read from the model after the commit: its resolved " +
                                   "path, the SHA-256 of the file THAT path names, whether it is linked or " +
-                                  "imported, its owner view and its declared units - compared with the units " +
-                                  "that were asked for (units_check).",
+                                  "imported, its owner view and its declared units; when a unit was asked for " +
+                                  "and the header does not settle it, the SCALE of the placed geometry against " +
+                                  "the drawing's own extents (units_check).",
                 ["api_limits"] = ApiLimits()
             };
             if (!unitsHold)
                 result["failed_postconditions"] = new JArray(
-                    unitVerdict == CadLinkUnitVerdict.Disagrees ? "units_disagree" : "units_unconfirmable");
+                    unitVerdict == CadLinkUnitVerdict.NotApplied ? "units_not_applied" : "units_unconfirmable");
             JObject drift = ComparePathAndHash(fileFacts, verified);
             if (drift != null) result["disagreement"] = drift;
             // WHAT THIS LINK WAS LOADED FROM. Revit records no moment for the load, so the one chance to
             // know which issue of the drawing is in the model is to write it down while doing the loading.
-            // See Core/CadLinkLoads.cs; a plan asks this question of every instance it reads.
-            result["load_recorded"] = RecordLoad(doc, Rid.Value(created), verified, "horizun_manage_cad_links add");
-            // A disagreement is a FAILED postcondition (partial); a unit that cannot be read back is an
+            // See Core/CadLinkLoads.cs; a plan asks this question of every instance it reads. The APPLIED
+            // unit rides along: it is what CadFacts publishes as applied_units for every later reader.
+            result["load_recorded"] = RecordLoad(doc, Rid.Value(created), verified, "horizun_manage_cad_links add",
+                                                 unitsApplied: CadLinkLoads.UnitsAppliedRecord(unitsJson));
+            // A unit not applied is a FAILED postcondition (partial); a unit nothing could measure is an
             // UNKNOWN one (uncertain). Neither reaches verified_applied.
             ApplicationOutcome.StampApplied(result, "Committed", 1, 1, unitsHold ? 1 : 0, 0,
-                                            unitVerdict == CadLinkUnitVerdict.Disagrees ? 1 : 0,
+                                            unitVerdict == CadLinkUnitVerdict.NotApplied ? 1 : 0,
                                             unitVerdict == CadLinkUnitVerdict.Unconfirmable ? 1 : 0);
             DocumentGate.StampConfirmation(result, gate, ToolName, hash, false);
             return CommandResult.Ok(result);
@@ -468,7 +482,8 @@ namespace Horizun.Revit.Commands
                                       "implying work happened.",
                 ["api_limits"] = ApiLimits()
             };
-            result["load_recorded"] = RecordLoad(doc, facts.ElementId, after, "horizun_manage_cad_links reload", afterPrint);
+            result["load_recorded"] = RecordLoad(doc, facts.ElementId, after, "horizun_manage_cad_links reload", afterPrint,
+                                                 carryUnits: true);
             bool reloadVerified = committed && loaded && afterPrint != null;
             ApplicationOutcome.StampApplied(result, committed ? ApplicationOutcome.Committed : commitStatus.ToString(), 1,
                                             loaded ? 1 : 0, reloadVerified ? 1 : 0, 0,
@@ -830,12 +845,17 @@ namespace Horizun.Revit.Commands
         /// the answer becomes "unknown" rather than a disagreement nobody measured.
         /// </summary>
         private static JObject RecordLoad(Document doc, long instanceId, JObject verified, string by,
-                                          string knownFingerprint = null)
+                                          string knownFingerprint = null, JObject unitsApplied = null,
+                                          bool carryUnits = false)
         {
             try
             {
                 Element e = doc.GetElement(Rid.Make(instanceId));
                 string uid = e?.UniqueId;
+                // A RELOAD KEEPS THE TYPE'S IMPORT OPTIONS, so the unit measured at add still holds and is
+                // carried over. A repoint is a different file whose scale nobody measured: not carried.
+                if (unitsApplied == null && carryUnits)
+                    unitsApplied = CadLinkLoads.Read(doc, uid)?["units_applied"] as JObject;
                 // THE CANONICAL ONE, not the reload's own: the reload fingerprints with its own parameters
                 // to answer "did the geometry change", and a record written from that number could not be
                 // compared with what a plan computes later. Measured: that mismatch read as "somebody
@@ -843,7 +863,7 @@ namespace Horizun.Revit.Commands
                 string print = CadSourceCoherence.GeometryFingerprint(doc, e);
                 string path = verified?.Value<string>("external_path");
                 string sha = verified?.Value<string>("file_sha256");
-                CadLinkLoads.Record(doc, uid, instanceId, path, sha, print, by);
+                CadLinkLoads.Record(doc, uid, instanceId, path, sha, print, by, unitsApplied);
                 JObject back = CadLinkLoads.Read(doc, uid);
                 return new JObject
                 {
@@ -863,6 +883,55 @@ namespace Horizun.Revit.Commands
             {
                 return new JObject { ["recorded"] = false, ["error"] = ex.Message };
             }
+        }
+
+        /// <summary>
+        /// The two diagonals a unit is decided from: the placed geometry in millimetres (harvested in the
+        /// view it was linked into - a current-view-only link gives a view-less read nothing) and the
+        /// drawing's own $EXTMIN..$EXTMAX in drawing units, from the DWG reader. Every reason there is no
+        /// measurement is kept, because "unconfirmable" without a reason is a guess about a guess.
+        /// </summary>
+        private static CadLinkScaleEvidence MeasureScale(Document doc, long instanceId, View view, string dwgPath)
+        {
+            var e = new CadLinkScaleEvidence();
+            try
+            {
+                Element element = doc.GetElement(Rid.Make(instanceId));
+                CadHarvest harvest = element == null ? null : CadGeometryHarvest.Harvest(doc, element, 5.0, 200000, view);
+                if (harvest == null || harvest.Segments.Count == 0)
+                    e.Unavailable = "the placed link gave no geometry to measure";
+                else if (harvest.Truncated)
+                    e.Unavailable = "the placed link's geometry walk stopped at its bound, so its extent is partial";
+                else
+                {
+                    Tuple<CadPoint, CadPoint> box = CadTopologyRules.BoundingBox(harvest.Segments.SelectMany(s => new[] { s.A, s.B }));
+                    if (box != null)
+                    {
+                        double dx = box.Item2.X - box.Item1.X, dy = box.Item2.Y - box.Item1.Y;
+                        e.LinkDiagonalMm = Math.Sqrt(dx * dx + dy * dy);
+                    }
+                }
+            }
+            catch (Exception ex) { e.Unavailable = "the placed link could not be measured: " + ex.Message; }
+            if (e.Unavailable != null) return e;
+
+            CadDwgRunResult read;
+            try { read = CadDwgReader.ReadExtents(dwgPath); }
+            catch (Exception ex) { e.Unavailable = "the drawing's own extents could not be read: " + ex.Message; return e; }
+            if (!read.Ok)
+            {
+                e.Unavailable = read.Refusal == "no_dwg_engine"
+                    ? "no headless AutoCAD (accoreconsole) on this machine, so the drawing's own extents cannot be " +
+                      "read and the link's scale has nothing to be compared with"
+                    : "the drawing's own extents could not be read (" + (read.Refusal ?? "no reading") + ")";
+                return e;
+            }
+            e.DrawingRoute = read.FromCache ? "cached DWG extraction ($EXTMIN/$EXTMAX)" : "header-only DWG read ($EXTMIN/$EXTMAX)";
+            e.DrawingHeaderUnit = CadLinkUnitRules.HeaderUnitOfInsUnits(read.Reading?.InsUnits);
+            e.DrawingDiagonalUnits = CadDwgExtract.DrawingDiagonalUnits(read.Reading);
+            if (!e.DrawingDiagonalUnits.HasValue)
+                e.Unavailable = "the drawing declares no usable extents ($EXTMIN/$EXTMAX empty or inverted)";
+            return e;
         }
 
         private static string Fingerprint(Document doc, long instanceId)

@@ -1,9 +1,13 @@
 #Requires -Version 5.1
 # Exercises cad-links-units-extract.probes.ps1 WITHOUT Revit. The fakes follow the reply
-# shapes the code builds (ManageCadLinksCommand add: element_id, instance.declared_units,
-# units_check {verdict}, host_verified, application.state, failed_postconditions;
-# QueryCadCommand profile: response_mode, layers_profiled; the compact refusal text) -
-# shapes from the code, to be held against the first live run.
+# shapes the code builds (ManageCadLinksCommand add: element_id, units_check {verdict,
+# applied}, host_verified, application.state, failed_postconditions; QueryCadCommand profile:
+# response_mode, layers_profiled; the compact refusal text) - shapes from the code, to be
+# held against the first live run.
+#
+# The fake bridge models what was measured: the drawing is drawn in inch (header), a NEW link
+# type takes the forced unit (W1), a link of an already-linked file keeps the first type's unit
+# (W3), and with no DWG reader nothing can be measured.
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'cad-links-units-extract.probes.ps1')
@@ -13,9 +17,10 @@ if (-not $module) { 'module did not register'; exit 1 }
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('hz-cu-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 
-# fixed: the bridge as it is after the fix. legacy: as it was (literal verified, extract throws, no compact).
+# fixed: the bridge after the fix. legacy: as it was (literal verified, extract throws, no compact).
+# noreader: fixed, on a runner with no accoreconsole.
 function New-Ctx([bool]$gate, [string]$behaviour = 'fixed', [bool]$exportWorks = $true) {
-    $state = @{ applies = New-Object System.Collections.Generic.List[string]; nextId = 7000 }
+    $state = @{ applies = New-Object System.Collections.Generic.List[string]; nextId = 7000; linkedFiles = @{} }
     $call = {
         param($tool, $arguments)
         if ($tool -eq 'horizun_query_planimetry') {
@@ -48,19 +53,26 @@ function New-Ctx([bool]$gate, [string]$behaviour = 'fixed', [bool]$exportWorks =
         if ($tool -eq 'horizun_delete_verified') { return @{ stage = 'apply'; answer = @{ isError = $false; data = [pscustomobject]@{}; text = 'ok' } } }
         if ($tool -eq 'horizun_manage_cad_links') {
             $state.nextId++
+            $path = [string]$arguments.file_path
             $asked = $arguments.units
-            $verdict = if (-not $asked) { 'not_requested' } elseif ($asked -eq 'inch') { 'agrees' } else { 'disagrees' }
-            $holds = $verdict -ne 'disagrees'
+            $reused = $state.linkedFiles.ContainsKey($path)
+            $typeUnit = if ($reused) { $state.linkedFiles[$path] } elseif ($asked) { $asked } else { 'inch' }
+            if (-not $reused) { $state.linkedFiles[$path] = $typeUnit }
             if ($behaviour -eq 'legacy') {
-                $data = [pscustomobject]@{ element_id = $state.nextId; instance = [pscustomobject]@{ declared_units = 'inch' }
-                                           host_verified = $true; application = [pscustomobject]@{ state = 'verified_applied' } }
-            } else {
-                $data = [pscustomobject]@{ element_id = $state.nextId; instance = [pscustomobject]@{ declared_units = 'inch' }
-                                           units_check = [pscustomobject]@{ verdict = $verdict; requested = $asked; declared_by_link = 'inch' }
-                                           host_verified = $holds
-                                           failed_postconditions = $(if ($holds) { $null } else { @('units_disagree') })
-                                           application = [pscustomobject]@{ state = $(if ($holds) { 'verified_applied' } else { 'partial' }) } }
+                $data = [pscustomobject]@{ element_id = $state.nextId; host_verified = $true; application = [pscustomobject]@{ state = 'verified_applied' } }
+                return @{ stage = 'apply'; answer = @{ isError = $false; data = $data } }
             }
+            if (-not $asked) { $verdict = 'not_requested'; $applied = 'inch' }
+            elseif ($behaviour -eq 'noreader') { $verdict = 'unconfirmable'; $applied = $null }
+            elseif ($typeUnit -eq $asked) { $verdict = $(if ($asked -eq 'inch') { 'agrees' } else { 'applied_header_differs' }); $applied = $asked }
+            else { $verdict = 'not_applied'; $applied = 'inch' }
+            $holds = @('not_requested', 'agrees', 'applied_header_differs') -contains $verdict
+            $failed = if ($verdict -eq 'not_applied') { @('units_not_applied') } elseif (-not $holds) { @('units_unconfirmable') } else { $null }
+            $st = if ($holds) { 'verified_applied' } elseif ($verdict -eq 'not_applied') { 'partial' } else { 'uncertain' }
+            $data = [pscustomobject]@{ element_id = $state.nextId
+                                       units_check = [pscustomobject]@{ verdict = $verdict; requested = $asked; applied = $applied; declared_by_link = 'inch' }
+                                       host_verified = $holds; failed_postconditions = $failed
+                                       application = [pscustomobject]@{ state = $st } }
             return @{ stage = 'apply'; answer = @{ isError = $false; data = $data } }
         }
         return @{ stage = 'apply'; answer = @{ isError = $true; text = 'unexpected tool ' + $tool } }
@@ -76,25 +88,30 @@ function Expect($label, $cond) { if (-not $cond) { Write-Host "FAIL: $label"; $s
 try {
     $ctx = New-Ctx $false 'fixed'
     $r = @(& $module.Run $ctx)
-    Expect 'five cases, named as catalogued' ($r.Count -eq 5 -and @($r | Where-Object { $module.Catalog.Name -notcontains $_.Name }).Count -eq 0)
+    Expect 'six cases, named as catalogued' ($r.Count -eq 6 -and @($r | Where-Object { $module.Catalog.Name -notcontains $_.Name }).Count -eq 0)
     Expect 'all pass against the fixed bridge' (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0)
-    Expect 'the forced link asks for millimeter on an inch link' ($ctx.State.applies -contains 'cu-add-forced')
-    Expect 'both links are deleted' ($ctx.State.applies -contains 'cu-cleanup')
+    Expect 'a fresh copy and a reused original were both linked forced' ($ctx.State.applies -contains 'cu-add-forced-new' -and $ctx.State.applies -contains 'cu-add-forced-reused')
+    Expect 'every link is deleted' ($ctx.State.applies -contains 'cu-cleanup')
 
     $ctx = New-Ctx $false 'legacy'
     $r = @(& $module.Run $ctx)
-    Expect 'legacy: the literal verified_applied over a unit disagreement FAILS' ($r[1].Outcome -eq 'fail')
-    Expect 'legacy: the view-scoped extract that throws FAILS' ($r[2].Outcome -eq 'fail' -and $r[2].Detail -match 'DetailLevel')
-    Expect 'legacy: an oversized profile FAILS' ($r[3].Outcome -eq 'fail')
-    Expect 'legacy: compact not refused by name FAILS' ($r[4].Outcome -eq 'fail')
+    Expect 'legacy: a literal verified with no units_check FAILS the applied case' ($r[1].Outcome -eq 'fail')
+    Expect 'legacy: a literal verified_applied on a reused type FAILS' ($r[2].Outcome -eq 'fail')
+    Expect 'legacy: the view-scoped extract that throws FAILS' ($r[3].Outcome -eq 'fail' -and $r[3].Detail -match 'DetailLevel')
+    Expect 'legacy: an oversized profile FAILS' ($r[4].Outcome -eq 'fail')
+    Expect 'legacy: compact not refused by name FAILS' ($r[5].Outcome -eq 'fail')
+
+    $ctx = New-Ctx $false 'noreader'
+    $r = @(& $module.Run $ctx)
+    Expect 'no DWG reader: the two forced cases are unverified, never pass or fail' ($r[1].Outcome -eq 'unverified' -and $r[2].Outcome -eq 'unverified' -and $r[0].Outcome -eq 'pass')
 
     $ctx = New-Ctx $false 'fixed' $false
     $r = @(& $module.Run $ctx)
-    Expect 'no DWG exported: four not_covered and the refusal still measured' ($r.Count -eq 5 -and @($r[0..3] | Where-Object { $_.Outcome -ne 'not_covered' }).Count -eq 0 -and $r[4].Outcome -eq 'pass')
+    Expect 'no DWG exported: five not_covered and the refusal still measured' ($r.Count -eq 6 -and @($r[0..4] | Where-Object { $_.Outcome -ne 'not_covered' }).Count -eq 0 -and $r[5].Outcome -eq 'pass')
 
     $ctx = New-Ctx $true
     $r = @(& $module.Run $ctx)
-    Expect 'closed write tier: nothing applied, refusal still measured' ($r.Count -eq 5 -and $ctx.State.applies.Count -eq 0 -and @($r[0..3] | Where-Object { $_.Outcome -ne 'not_covered' }).Count -eq 0 -and $r[4].Outcome -eq 'pass')
+    Expect 'closed write tier: nothing applied, refusal still measured' ($r.Count -eq 6 -and $ctx.State.applies.Count -eq 0 -and @($r[0..4] | Where-Object { $_.Outcome -ne 'not_covered' }).Count -eq 0 -and $r[5].Outcome -eq 'pass')
 }
 finally { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
 

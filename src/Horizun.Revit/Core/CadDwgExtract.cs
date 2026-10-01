@@ -95,6 +95,26 @@ namespace Horizun.Revit.Core
             }
         }
 
+        /// <summary>
+        /// The XY diagonal of $EXTMIN..$EXTMAX in the DRAWING'S OWN units - what a link's scale is measured
+        /// against (CadLinkUnitRules). The reading stores the extents already multiplied by MmPerUnit (1 when
+        /// the drawing is unitless), so that factor is divided back out. Null when either corner is missing,
+        /// inverted, or AutoCAD's empty-drawing sentinel (+/-1e20): an empty extent measures nothing.
+        /// </summary>
+        public static double? DrawingDiagonalUnits(CadDwgReading r)
+        {
+            if (r == null || !r.ExtMin.HasValue || !r.ExtMax.HasValue) return null;
+            double s = r.MmPerUnit ?? 1.0;
+            if (s <= 0) return null;
+            CadPoint a = r.ExtMin.Value, b = r.ExtMax.Value;
+            foreach (double v in new[] { a.X, a.Y, b.X, b.Y })
+                if (double.IsNaN(v) || double.IsInfinity(v) || Math.Abs(v / s) >= 1e19) return null;
+            double dx = (b.X - a.X) / s, dy = (b.Y - a.Y) / s;
+            if (dx < 0 || dy < 0) return null;
+            double d = Math.Sqrt(dx * dx + dy * dy);
+            return d > 0 ? (double?)d : null;
+        }
+
         private static string Unescape(string s)
         {
             if (string.IsNullOrEmpty(s)) return s;

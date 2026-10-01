@@ -140,20 +140,21 @@ namespace Horizun.Revit.Commands
                                         version);
 
             // THE DRAWING'S DECLARED UNIT, when the LINK carries one. MEASURED
-            // (verify-dwg-cadlink.ps1 W2, 2026-08-27): it follows the DWG's own
-            // header, NOT the unit the import was forced to - a link created with
-            // units=millimeter over an inch drawing declares inch. It is still the
-            // only unit statement available from inside, and saying where it came
-            // from is the difference between a fact and a guess. This text used to
-            // claim the opposite; the measurement overturned it.
+            // twice that it does NOT follow the unit the import was forced to: an
+            // inch fixture forced to millimetre declared inch (verify-dwg-cadlink
+            // W2), and the 2026-09-30 dry run's drawing - INSUNITS millimetres -
+            // linked with units=millimeter also declared inch. This text used to say
+            // it is "what the import was told"; both measurements overturn that. It
+            // is still reported, with where it came from, because it is a fact about
+            // the link - just not the unit the geometry is at.
             if (r.Facts != null && !string.IsNullOrWhiteSpace(r.Facts.DeclaredUnits))
             {
                 r.Ir.DeclaredUnits = r.Facts.DeclaredUnits;
                 r.Ir.UnitScaleSource =
-                    "the CAD LINK declares '" + r.Facts.DeclaredUnits + "'. Revit records the DRAWING'S OWN " +
-                    "unit there (measured), not the unit the import was forced to: a link created with a " +
-                    "different units argument still declares this, while its geometry sits at the forced unit. " +
-                    "horizun_manage_cad_links add reports that disagreement in units_check when it creates the link.";
+                    "the CAD LINK declares '" + r.Facts.DeclaredUnits + "'. That declaration does NOT follow " +
+                    "the unit the import was forced to (measured), so it is not necessarily the unit the " +
+                    "geometry sits at. When horizun_manage_cad_links made the link it measured that unit by " +
+                    "the geometry's scale, and horizun_query_cad mode=instances publishes it as applied_units.";
             }
             return r;
         }

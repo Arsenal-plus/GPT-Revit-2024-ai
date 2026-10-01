@@ -357,6 +357,11 @@ namespace Horizun.Revit.Commands
             ["declared_units"] = CadProvenanceKind.Native,
             ["declared_units_route"] = "the CADLinkType's 'Import Units' parameter - MEASURED: the instance's " +
                                        "IMPORT_DISPLAY_UNITS reads null",
+            ["applied_units"] = CadProvenanceKind.Derived,
+            ["applied_units_route"] = "the unit the geometry is AT, measured by horizun_manage_cad_links add from the " +
+                                      "placed geometry's scale against the DWG's own extents and kept in this " +
+                                      "machine's load record; null for links made elsewhere. declared_units does " +
+                                      "not follow a forced unit (measured), so prefer this one.",
             ["external_path"] = CadProvenanceKind.Native,
             ["file_sha256"] = CadProvenanceKind.Native,
             ["lines_and_polylines"] = CadProvenanceKind.Native,
