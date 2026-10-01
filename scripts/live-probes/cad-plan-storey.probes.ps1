@@ -104,7 +104,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $dwg = $null
         if ($planA -and $walls.Count -eq 2) {
             $out = Join-Path $Ctx.ScratchRoot "HZ_CPS_$tag.dwg"
-            $x = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg'; view_ids = @($planA); output_path = $out } 'cps-export'
+            $x = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg'; view_ids = @($planA); output_path = $out; dwg_xrefs = 'bound' } 'cps-export'
             $made = @(Get-ChildItem -LiteralPath $Ctx.ScratchRoot -Filter "HZ_CPS_$tag*.dwg" -ErrorAction SilentlyContinue)
             if ((Applied $x) -and $made.Count -ge 1) { $dwg = $made[0].FullName }
             # THE DRAWING IS A PICTURE: the walls it was drawn from go, or the plan would see them standing.

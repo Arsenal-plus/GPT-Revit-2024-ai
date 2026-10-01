@@ -77,7 +77,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $viewId = [long]$plan.view_id
         $stem = 'HZ_PROBE_CU_' + $Ctx.RunId
         $dwg = Join-Path $Ctx.ScratchRoot ($stem + '.dwg')
-        $ex = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg'; view_ids = @($viewId); output_path = $dwg } 'cu-export'
+        $ex = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg'; view_ids = @($viewId); output_path = $dwg; dwg_xrefs = 'bound' } 'cu-export'
         $file = @(Get-ChildItem -LiteralPath $Ctx.ScratchRoot -Filter ($stem + '*.dwg') -ErrorAction SilentlyContinue)[0]
         if (-not $file) { Rest 0 ('no DWG was exported to link: ' + (Why $ex)); return (Finish) }
         $copy = Join-Path $Ctx.ScratchRoot ('HZ_PROBE_CUCOPY_' + $Ctx.RunId + '.dwg')

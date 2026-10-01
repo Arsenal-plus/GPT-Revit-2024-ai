@@ -455,6 +455,12 @@ namespace Horizun.Revit.Commands
                         format + "; measured " + produced.Count + "." +
                         (missing.Count > 0 ? " Missing: " + string.Join(", ", missing) + "." : "") +
                         (extra.Count > 0 ? " Unexpected: " + string.Join(", ", extra) + "." : "") +
+                        // Measured 2026-09-30: a plan showing loaded RVT links exports each link
+                        // as its own <stem>-...rvt-N-... file beside the drawing. That is Revit's
+                        // xref output, and dwg_xrefs is the argument that accounts for it.
+                        (format == "dwg" && extra.Count > 0 && missing.Count == 0 && extra.All(p => MatchesOutput(format, output, p))
+                            ? " Every unexpected file is named as a companion of this drawing: Revit writes the loaded RVT links a view shows (and a sheet's views) as separate xref files. Re-run with dwg_xrefs='bound' for one self-contained file, or 'linked' to keep the companions and have them verified."
+                            : "") +
                         " Success is not claimed.",
                         new JObject { ["external_files_may_exist"] = true, ["rollback_available"] = false,
                             ["planned_files"] = new JArray(new[] { output }), ["produced_files"] = new JArray(produced),
