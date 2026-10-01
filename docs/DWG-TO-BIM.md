@@ -318,6 +318,13 @@ run, a curved run or a ring. Hatching and annotation land there — something wi
 always claim a mark, so what says a layer carries no building is that flag rather
 than an absence.
 
+The full profile is large: measured at 78 kB for 27 layers and 8,719 segments,
+past what a desktop client keeps inline. `response_mode: "compact"` returns the
+same counts, chosen readings, ranges and skeleton rules without the per-layer
+prose (about 13 kB for a drawing that size) and names what it left out in
+`omitted`. To see some layers in full, ask again with `response_mode: "full"` and
+`layer` set to a glob over just those layers.
+
 ---
 
 ## More than one drawing

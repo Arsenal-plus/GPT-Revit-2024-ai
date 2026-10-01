@@ -134,6 +134,105 @@ namespace Horizun.Revit.Core
             };
         }
 
+        /// <summary>
+        /// THE SAME PROFILE, SMALL ENOUGH TO READ. response_mode=compact.
+        ///
+        /// MEASURED in the 2026-09-30 dry run: a profile of 27 layers and 8,719
+        /// segments came back at 78 kB, past what a desktop client keeps inline -
+        /// it was cut to a file and the conversation lost the reading. Most of
+        /// those bytes were the same explanation repeated per layer and per source
+        /// (chosen_because, structure_means, the five would_read rows), not
+        /// measurements.
+        ///
+        /// What compact KEEPS is every number a requirement set is written from:
+        /// per layer its segment counts, whether structure was found, the chosen
+        /// reading with its candidates, coverage and observed ranges, the
+        /// candidate count of EVERY source (so "which readers found something" is
+        /// still answered), any reader that threw, and the skeleton's rules. The
+        /// counts that say what was left out are kept verbatim. What it DROPS is
+        /// named in `omitted`, with how to get it back. Default replies are
+        /// unchanged: compact is opt-in, like response_mode everywhere else.
+        /// </summary>
+        public static JObject Compact(JObject profile)
+        {
+            if (profile == null) return null;
+            var rows = new JArray();
+            foreach (JObject row in (profile["layers"] as JArray ?? new JArray()).OfType<JObject>())
+            {
+                var compact = new JObject
+                {
+                    ["layer"] = row["layer"],
+                    ["segments"] = row["segments"],
+                    ["from_curves"] = row["from_curves"],
+                    ["structure_found"] = row["structure_found"]
+                };
+                var best = row["best_reading"] as JObject;
+                if (best != null)
+                {
+                    var b = new JObject
+                    {
+                        ["from"] = best["from"],
+                        ["candidates"] = best["candidates"],
+                        ["covers_layer"] = best["covers_layer"]
+                    };
+                    foreach (string range in new[] { "thickness_mm", "area_mm2", "length_mm" })
+                    {
+                        var r = best[range] as JObject;
+                        if (r != null) b[range] = new JArray(r["min"], r["max"]);
+                    }
+                    compact["best"] = b;
+                }
+                else compact["best"] = null;
+
+                var bySource = new JObject();
+                var unreadable = new JArray();
+                foreach (JObject reading in (row["would_read"] as JArray ?? new JArray()).OfType<JObject>())
+                {
+                    string from = (string)reading["from"];
+                    if (from == null) continue;
+                    bySource[from] = reading.Value<int?>("candidates") ?? 0;
+                    if (reading.Value<bool?>("unreadable") == true) unreadable.Add(from);
+                }
+                compact["candidates_by_source"] = bySource;
+                if (unreadable.Count > 0) compact["unreadable_sources"] = unreadable;
+                rows.Add(compact);
+            }
+
+            JObject skeleton = profile["requirement_set_skeleton"] is JObject sk ? (JObject)sk.DeepClone() : null;
+            if (skeleton?["rules"] is JArray rules)
+                foreach (JObject rule in rules.OfType<JObject>()) rule.Remove("_measured");
+
+            var o = new JObject
+            {
+                ["response_mode"] = "compact",
+                ["layers_profiled"] = profile["layers_profiled"],
+                ["layers_in_drawing"] = profile["layers_in_drawing"],
+                ["layers_not_profiled"] = profile["layers_not_profiled"],
+                ["layers_not_profiled_means"] = profile["layers_not_profiled_means"],
+                ["segments_without_a_layer"] = profile["segments_without_a_layer"],
+                ["layers"] = rows,
+                ["requirement_set_skeleton"] = skeleton,
+                ["you_must_supply"] = profile["you_must_supply"],
+                ["refuses_to_say"] = "WHAT EACH LAYER MEANS: every `produces` is null and stays null.",
+                ["legend"] = new JObject
+                {
+                    ["best"] = "the reading that consumed the most of the layer in the fewest candidates - a " +
+                               "ranking over measurements, not a statement of what the layer is. Ranges are [min, max].",
+                    ["candidates_by_source"] = "what each geometry source found on the layer, counted by the same " +
+                                               "reader the conversion runs.",
+                    ["structure_found"] = "false when nothing reads as a run, a curved run or a ring."
+                },
+                ["omitted"] = new JObject
+                {
+                    ["what"] = "per-layer extents, each source's own ranges and segments_consumed, the per-row " +
+                               "explanations, and the skeleton's _measured notes.",
+                    ["how_to_get_it"] = "repeat with response_mode='full' - narrowed with layer='<glob>' to the " +
+                                        "layers you need, so the full reading stays small."
+                }
+            };
+            return o;
+        }
+
         private static JObject ProfileOne(string layer, List<CadSegment> segments, string units)
         {
             double minX = segments.Min(s => Math.Min(s.A.X, s.B.X));
