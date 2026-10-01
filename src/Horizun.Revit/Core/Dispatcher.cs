@@ -619,6 +619,9 @@ namespace Horizun.Revit.Core
                         // What the command left changed in the model gets the spatial
                         // coherence check (Core/SpatialAfterWrite.cs); reads cost nothing.
                         SpatialAfterWrite.Attach(req.Name, changes, req.Result);
+                        // response_mode=summary (create_elements, clash): shaped only after
+                        // the spatial check, so the rows it names stay whole.
+                        ResponseSummaryRules.ApplyToResult(req.Name, req.ParamsJson, req.Result);
                     }
                     finally
                     {
@@ -855,7 +858,7 @@ namespace Horizun.Revit.Core
                         Job.Ambient = work.Record;
                         using (var changes = new ChangeWatch(app?.Application))
                         {
-                            try { result = cmd.Execute(app, work.ParamsJson); SpatialAfterWrite.Attach(work.Command, changes, result); }
+                            try { result = cmd.Execute(app, work.ParamsJson); SpatialAfterWrite.Attach(work.Command, changes, result); ResponseSummaryRules.ApplyToResult(work.Command, work.ParamsJson, result); }
                         finally
                         {
                             Job.Ambient = null;

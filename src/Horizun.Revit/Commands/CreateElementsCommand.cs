@@ -30,6 +30,8 @@ namespace Horizun.Revit.Commands
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
             Document doc = gate.Document;
+            ResponseSummaryRules.ParseMode(request, out string responseModeError);
+            if (responseModeError != null) return CommandResult.Fail(responseModeError);
             string validationMode = request.Value<string>("validation_mode") ?? "arguments";
             if (validationMode != "arguments" && validationMode != "revit_rollback") return CommandResult.Fail("validation_mode must be arguments or revit_rollback.");
 

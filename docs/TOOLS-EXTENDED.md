@@ -882,6 +882,36 @@ con token y rollback si la relectura no coincide.
 
 
 
+## Smaller replies: `response_mode: "summary"` for `horizun_create_elements` and `horizun_clash`
+
+Course dry run 2026-09-30 (defect #17): `horizun_create_elements` of 75 walls answered
+262-276 kB and `horizun_clash` with 165 interferences 58 kB, over the client's limit, so
+the reply was truncated to a file. Both now take the `response_mode` the reads already
+use (`full`, the default, changes nothing). It is presentation only: the measured verdict,
+counts, coverage and headline are untouched, and every shortened array is named in
+`response_omissions` (`json_pointer`, `returned_items_before_summary`, `shown`,
+`omitted`) with `response_detail_complete`, as `horizun_model_scan` does.
+
+- **create_elements** (`rows`, and `api_rehearsal.provisional_verification` of a
+  `revit_rollback` rehearsal): a row that did not verify, whose postconditions did not
+  all verify, whose source comparison did not match, that carries an error or warnings,
+  or whose element the `spatial_check` names stays IN FULL. The rest collapse into
+  `rows_summary` - `total`, `by_status` (`verified_clean`, `verified_with_findings`,
+  `not_verified`), `by_kind` and `collapsed_element_ids`. Re-read any of them with
+  `horizun_query_model element_ids`. Shaped by the dispatcher after the spatial check,
+  so the rows it names are known. The confirmation token does not bind
+  `response_mode`: a summary rehearsal can be applied in full, and the other way round.
+- **clash**: `clash_summary` with totals by category pair and source model
+  (`by_pair`), the total intersection volume and the cross-model count, plus the 10
+  largest clashes by volume in full, each with its `clash_index` in the full list. The
+  rest: `horizun_coordination` (with `record_findings: true`) or the same request with
+  `response_mode: "full"` - `expand` names which. Refused with `plan_penetrations`,
+  whose plan cites clashes by index.
+
+MEASURED offline on synthetic replies shaped like the real ones
+(`ResponseSummaryRulesTests`): 75 clean walls 198,370 -> 1,444 bytes; 165 clashes in the
+course run's category mix 51,545 -> 5,041 bytes. Not yet measured on a live reply.
+
 ## Clash resolution and batch undo
 
 ### horizun_resolve_clash

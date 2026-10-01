@@ -888,7 +888,8 @@ namespace Horizun.Contracts
     }},
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },
     ""confirmation_token"": { ""type"": ""string"" },
-    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: create elements"" }
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: create elements"" },
+    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""summary""], ""default"": ""full"", ""description"": ""summary: rows that verified cleanly collapse to counts by status/kind plus their element ids; failed rows, rows with findings and elements the spatial_check names stay in full. Presentation only; response_omissions names what was left out."" }
   }, ""additionalProperties"": false
 }")
             },
@@ -4774,7 +4775,9 @@ namespace Horizun.Contracts
     ""cluster_radius_mm"": { ""type"": ""number"", ""default"": 0, ""minimum"": 0, ""maximum"": 5000,
                              ""description"": ""Crossings of ONE host within this radius fold into one opening (transitive). 0 = every crossing is its own opening."" },
     ""record_findings"": { ""type"": ""boolean"", ""default"": false,
-                           ""description"": ""Fold this run into the document's durable coordination ledger: stable order-normalized pair identities, open/persisting/regression accounting, and resolved_by_model ONLY when this run's coverage is complete for its scope. Work the ledger with horizun_coordination."" }
+                           ""description"": ""Fold this run into the document's durable coordination ledger: stable order-normalized pair identities, open/persisting/regression accounting, and resolved_by_model ONLY when this run's coverage is complete for its scope. Work the ledger with horizun_coordination."" },
+    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""summary""], ""default"": ""full"",
+                         ""description"": ""summary: clash_summary (totals by category pair and source model) plus the 10 largest clashes with their clash_index; counts, coverage and headline still describe every clash. The rest: horizun_coordination (with record_findings) or response_mode=full. Not with plan_penetrations."" }
   }
 }")
             },
