@@ -1,4 +1,4 @@
-# Live probe module: the three documentation defects of the "Revit con agentes" dry run
+# Live probe module: the three documentation defects of the 2026-09-30 dry run
 # (2026-09-30), each measured on an OWN level at +30,000 mm (see README.md):
 #   * horizun_verify_changes orientation=top on walls at +30 m returned a blank image with
 #     captured=true. The camera now frames the elements' box; the PNG is measured.
