@@ -71,11 +71,42 @@ namespace Horizun.Revit.Commands
             Document doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No document is open.");
 
+            // ---- A KEPT PLAN, by its id ------------------------------------------
+            //
+            // horizun_plan_from_cad keeps every plan whole under plan_id, so a client that took the summary
+            // (MEASURED: the full reply was 232 kB for 75 walls and overflowed the client) can still apply it.
+            // The kept plan supplies ONLY what the caller would otherwise have copied - the binding, the
+            // actions and the candidate index - and only where the request does not carry them. Everything
+            // below re-measures the world against that binding exactly as it does for a copied one.
+            string planId = request.Value<string>("plan_id");
+            if (!string.IsNullOrWhiteSpace(planId))
+            {
+                JObject kept = CadPlanStore.Load(CadPlanStore.DefaultRoot, planId);
+                if (kept == null)
+                    return CommandResult.Fail(
+                        "plan_not_kept: no plan is kept on this machine under plan_id '" + planId + "' - it was " +
+                        "made on another machine, more than " + (int)CadPlanStore.KeepFor.TotalDays + " days ago, " +
+                        "or could not be written. NOTHING was written. Re-run horizun_plan_from_cad and apply the " +
+                        "plan_id it returns, or send apply_binding and actions from a response_mode='full' reply.");
+                if (request["apply_binding"] == null) request["apply_binding"] = kept["apply_binding"]?.DeepClone();
+                if (request["actions"] == null)
+                    request["actions"] = kept["execute_plan_request"]?["actions"]?.DeepClone();
+                if (request["candidate_index"] == null && kept["candidate_index"] != null)
+                    request["candidate_index"] = kept["candidate_index"].DeepClone();
+                long? keptInstance = kept.Value<long?>("instance_id");
+                long? askedInstance = request.Value<long?>("instance_id");
+                if (keptInstance.HasValue && askedInstance.HasValue && keptInstance.Value != askedInstance.Value)
+                    return CommandResult.Fail(
+                        "plan_id_mismatch: plan '" + planId + "' was read from CAD instance " + keptInstance.Value +
+                        " and this call names instance " + askedInstance.Value + ". NOTHING was written.");
+            }
+
             // ---- what the plan claims it was made against -------------------------
             JObject binding = request["apply_binding"] as JObject;
             if (binding == null)
                 return CommandResult.Fail(
-                    "apply_binding is required - copy it verbatim from the horizun_plan_from_cad reply. It names " +
+                    "apply_binding is required - copy it verbatim from the horizun_plan_from_cad reply, or pass " +
+                    "that reply's plan_id. It names " +
                     "the drawing, the transform and the requirement set this plan was made against, and without " +
                     "it there is nothing to check the model against before writing.");
             string expectedPlan = binding.Value<string>("plan_fingerprint");
@@ -90,6 +121,14 @@ namespace Horizun.Revit.Commands
                     "apply_binding needs plan_fingerprint, actions_fingerprint, source_fingerprint and " +
                     "requirement_set_sha256. A binding missing actions_fingerprint came from a build whose plans " +
                     "did not cover what they were about to build; re-run horizun_plan_from_cad.");
+
+            // NO ACTIONS IS NOT DRIFT. Without this, a missing list was fingerprinted as the empty one and
+            // reported as "the actions moved between the plan and this apply" - true of nothing.
+            if (request["actions"] == null || request["actions"].Type == JTokenType.Null)
+                return CommandResult.Fail(
+                    "actions is required: the execute_plan_request.actions the plan produced, unchanged - or pass " +
+                    "the plan's plan_id instead and they are read from the plan kept on this machine. NOTHING was " +
+                    "written.");
 
             long instanceId = request.Value<long?>("instance_id") ?? -1;
             if (instanceId < 0 || !Rid.CanRepresent(instanceId))

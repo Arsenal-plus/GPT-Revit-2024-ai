@@ -69,6 +69,10 @@ namespace Horizun.Revit.Commands
             CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
             if (wrongDocument != null) return wrongDocument;
 
+            string responseMode = request.Value<string>("response_mode");
+            string modeError = CadPlanResponse.ValidateMode(responseMode);
+            if (modeError != null) return CommandResult.Fail(modeError);
+
             // ---- the requirement set: whole, or refused whole ---------------------
             JObject setJson = request["requirement_set"] as JObject;
             if (setJson == null)
@@ -800,7 +804,30 @@ namespace Horizun.Revit.Commands
                             "is drift too - the same number pointing at a different thing is the one change a " +
                             "fingerprint over the actions cannot see."
             };
-            return CommandResult.Ok(report);
+
+            // THE WHOLE PLAN, KEPT. A summary leaves rows out of the reply, never out of the plan: the full
+            // report is kept on this machine under plan_id, and horizun_apply_cad_plan takes that id in place
+            // of the copied binding and actions. See Core/CadPlanResponse.cs.
+            string planId = CadPlanResponse.PlanId(plan.PlanFingerprint,
+                                                   CadConversionPlanRules.ActionsFingerprint(emittedActions));
+            report["plan_id"] = planId;
+            string keptAt = CadPlanStore.Save(CadPlanStore.DefaultRoot, planId, report);
+            report["stored_plan"] = new JObject
+            {
+                ["plan_id"] = planId,
+                ["kept"] = keptAt != null,
+                ["path"] = keptAt,
+                ["kept_for_days"] = (int)CadPlanStore.KeepFor.TotalDays,
+                ["apply_with"] = keptAt == null
+                    ? "the plan could not be kept on this machine: apply with apply_binding and actions copied " +
+                      "from a response_mode='full' reply."
+                    : "horizun_apply_cad_plan with target_document, instance_id, the same requirement_set and " +
+                      "plan_id - apply_binding, actions and candidate_index are then read from the kept plan, " +
+                      "and everything is re-measured exactly as when they are sent."
+            };
+            return CommandResult.Ok(responseMode == CadPlanResponse.Summary
+                ? CadPlanResponse.Summarize(report)
+                : report);
         }
 
         /// <summary>

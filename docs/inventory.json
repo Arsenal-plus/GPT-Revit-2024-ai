@@ -20,7 +20,7 @@
     "writes": 78,
     "destructive": 20,
     "operations": 456,
-    "enumerated_variants": 1589
+    "enumerated_variants": 1591
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -603,7 +603,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 2,
       "operation_detail": []
     },
     {

@@ -499,7 +499,7 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 
 Other typed options include the seven `horizun_export.format` values:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. The schema inventory
-also records **1589 enumerated argument occurrences** <!--inventory:enumerated_variants-->
+also records **1591 enumerated argument occurrences** <!--inventory:enumerated_variants-->
 across all properties and paths; that figure includes configuration choices and
 repeated paths, so it is not used as a tool count.
 
