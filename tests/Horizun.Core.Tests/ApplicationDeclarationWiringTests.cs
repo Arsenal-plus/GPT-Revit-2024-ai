@@ -312,6 +312,20 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Verify_changes_frames_the_camera_on_the_box_and_measures_the_picture()
+        {
+            // 2026-09-30: orientation=top on walls at +30 m returned a blank PNG with captured=true.
+            string src = CommandSources()["VerifyChangesCommand.cs"];
+            Assert.Contains("Orient(view, orientation, box);", src);
+            Assert.Contains("CaptureFramingRules.Eye(", src);
+            Assert.Contains("FitCropToBox(view, box);", src);
+            int measure = src.IndexOf("ImageContent measured = MeasureImage(produced, out content);", StringComparison.Ordinal);
+            int captured = src.IndexOf("[\"captured\"] = true", measure, StringComparison.Ordinal);
+            Assert.True(measure > 0 && captured > measure, "the picture must be measured before it is called captured");
+            Assert.Contains("[\"finding\"] = \"blank_image\"", src);
+        }
+
+        [Fact]
         public void Set_keynote_reports_write_failures_from_the_post_commit_read_alone()
         {
             // writes_failed was verifyFailed + failed.Count, which double-counted a refused

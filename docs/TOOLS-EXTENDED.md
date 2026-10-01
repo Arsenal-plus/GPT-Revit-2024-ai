@@ -1790,6 +1790,16 @@ group that is always rolled back (`image.temporary_view_rollback = RolledBack`).
 it after a modelling batch and look at the image: the check sees solids, not intent (a
 wrong level or room, or a missing element, needs the picture).
 
+The camera is framed on the elements for every `orientation` (isometric, top, front,
+right): the eye stands outside their box on the viewer side and the crop's depth range
+(a 3D view's near/far clip) covers the whole box. It used to keep the eye and depth of
+the default isometric view, and 75 walls on a level at +30 m seen from `top` came back
+as a blank image. The exported PNG is then MEASURED: `image.content` gives the
+background colour and how many pixels differ from it, and an image that is effectively
+all background (fewer than max(25 px, 0.05 %) content pixels) is reported as
+`captured: false` with `finding: "blank_image"` and no attached image, never as a
+capture. An image that cannot be decoded says `content.measured: false`.
+
 - `scope` (default `last_write`): the previous behaviour, unchanged — only the most
   recent Horizun write in this document (kept in memory since Revit started).
   `scope=session` instead unions every write's added/modified ids since Revit started
