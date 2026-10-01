@@ -3,6 +3,14 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased — Comité de obra fixes (2026-10-01)
+
+Five defects found by a live run of the «Comité de obra» exercise in Revit 2026.4 on 2026-10-01. Built for 2023–2027 and unit-tested offline; **not yet measured live**. Tool contract: new optional arguments on `horizun_query_model` (`source_models`, `link_instance_ids`) and new reply fields; nothing removed.
+
+- **`horizun_export` never writes.** The NWC export of a structural model returned `model_changes.modified = 11` (rebar the Navisworks exporter regenerated and committed). NWC and IFC now export inside a transaction group that is rolled back once the file is on disk; `model_isolation` reports what the exporter committed and what is left, with an `attention` line when anything was rolled back or the model was left modified.
+- **`horizun_clash`:** every full-mode row carries `clash_index`; `coverage.pairs_without_solid` names the elements behind `pairs.skipped_no_solids` (487 pairs with an empty `unresolved_pairs` in the run) and what their geometry held instead.
+- **`horizun_query_model`:** grids and levels carry a `datum` block (grid line, plan angle, length; level elevation) in host coordinates, and a grid's `bounding_box` is the box of its curve; `source_models` / `link_instance_ids` read only the named documents; `compact` converts measurable numbers to the host's display units and names them in `parameter_units` (it returned raw ft³ before). **Behaviour change:** callers that converted compact values themselves must stop; `parameter_format=full` still returns `raw`.
+
 ## v2.1.5 — 2026-09-30
 
 Patch release over 2.1.4 (tool contract: new optional fields and one new operation; nothing removed; still 123 tools). It fixes the 18 defects found by an end-to-end dry run on 2026-09-30: seven course flows on copies of the Autodesk sample models in Revit 2026. Every item was built and unit-tested offline, then **replayed live in Revit 2026 on 2026-09-30** on fresh copies of the same Autodesk samples, through the installed build. The live replay found three more defects, fixed in this release:
