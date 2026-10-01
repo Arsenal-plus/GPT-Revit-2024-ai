@@ -356,6 +356,7 @@
          is null, and a profiler that guessed even once would be one organisation's
          layer convention compiled into a bridge that converts everybody's drawings. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CadLayerProfileRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GeometryOptionsRules.cs" />
     <!-- Whether the values a rule declared actually LANDED. Two opposite mistakes
          shipped here - reading keys the writer does not emit, then demanding
          evidence a legitimate write cannot produce - and neither was reproducible
