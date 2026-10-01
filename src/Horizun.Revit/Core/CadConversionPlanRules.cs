@@ -271,6 +271,30 @@ namespace Horizun.Revit.Core
         private static double Round(double v) => Math.Round(v, 4, MidpointRounding.AwayFromZero);
 
         /// <summary>
+        /// The area centroid of a ring (shoelace), at the ring's own Z. A closing vertex equal to the first is
+        /// ignored. Falls back to the mean of the vertices when the ring has no area.
+        /// </summary>
+        public static CadPoint RingCentre(List<CadPoint> ring)
+        {
+            var pts = ring.ToList();
+            if (pts.Count > 1 && Math.Abs(pts[0].X - pts[pts.Count - 1].X) < 1e-9 &&
+                Math.Abs(pts[0].Y - pts[pts.Count - 1].Y) < 1e-9)
+                pts.RemoveAt(pts.Count - 1);
+            double a2 = 0, cx = 0, cy = 0;
+            for (int i = 0; i < pts.Count; i++)
+            {
+                CadPoint p = pts[i], q = pts[(i + 1) % pts.Count];
+                double cross = p.X * q.Y - q.X * p.Y;
+                a2 += cross;
+                cx += (p.X + q.X) * cross;
+                cy += (p.Y + q.Y) * cross;
+            }
+            if (Math.Abs(a2) < 1e-9)
+                return new CadPoint(pts.Average(p => p.X), pts.Average(p => p.Y), pts[0].Z);
+            return new CadPoint(cx / (3 * a2), cy / (3 * a2), pts[0].Z);
+        }
+
+        /// <summary>
         /// The two vertices of a ring that are farthest apart.
         ///
         /// For a rectangle at any angle that is a diagonal, and its projection onto
@@ -807,15 +831,34 @@ namespace Horizun.Revit.Core
                 case "family_instance":
                 case "structural_column":
                     o["coordinate_mode"] = "absolute";
-                    o["point"] = Pt(c.Geometry[0]);
+                    CadPoint placeAt = c.Geometry[0];
+                    // A COLUMN DRAWN AS A RING STANDS AT ITS CENTRE, not at the ring's first vertex. MEASURED
+                    // while fixing the column's top (dry run, class 4): a 300 mm column read from closed_loops
+                    // was emitted at its first corner, 150 mm off on both axes - the drawing's columns were
+                    // 61 rings of a round 300 mm section. A block or a point cluster carries one point and is
+                    // unchanged.
+                    CadRule placedRule = set?.Rules.FirstOrDefault(x => x.Id == c.RuleId);
+                    if (placedRule?.Geometry != null && placedRule.Geometry.Source == CadGeometrySource.ClosedLoops &&
+                        c.Geometry.Count >= 3)
+                        placeAt = RingCentre(c.Geometry);
+                    o["point"] = Pt(placeAt);
                     // A MOUNTING HEIGHT IS A HEIGHT ABOVE THE LEVEL, declared by the rule and
                     // never read from the plan: the row carries it as a level offset, and the
                     // command verifies the instance's origin at that height.
                     if (createKind == "family_instance" && c.OffsetMm.HasValue)
                     {
                         o["coordinate_mode"] = "level_offset";
-                        o["point"] = new JArray(Math.Round(c.Geometry[0].X, 3), Math.Round(c.Geometry[0].Y, 3),
+                        o["point"] = new JArray(Math.Round(placeAt.X, 3), Math.Round(placeAt.Y, 3),
                                                 Math.Round(c.OffsetMm.Value, 3));
+                    }
+
+                    // WHERE A COLUMN STOPS, when the rule says. A TwoLevelsBased column runs from its level
+                    // to a top level; the name travels like a shaft's and is resolved to top_level_id by the
+                    // command that has the document open, which also checks it is above the base.
+                    if (createKind == "structural_column")
+                    {
+                        CadRule columnRule = set?.Rules.FirstOrDefault(x => x.Id == c.RuleId);
+                        if (!string.IsNullOrWhiteSpace(columnRule?.TopLevel)) o["top_level_name"] = columnRule.TopLevel;
                     }
 
                     // A DOOR IS NOT A THING THAT STANDS IN A ROOM.

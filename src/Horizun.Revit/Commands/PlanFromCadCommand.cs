@@ -967,6 +967,16 @@ namespace Horizun.Revit.Commands
                 foreach (JObject row in ((JArray)c["elements"]).OfType<JObject>().ToList())
                 {
                     string kind = row.Value<string>("kind");
+                    if (kind == "structural_column")
+                    {
+                        JObject columnWithdrawal = ColumnTopWithdrawal(doc, row);
+                        if (columnWithdrawal != null)
+                        {
+                            withdrawn.Add(columnWithdrawal);
+                            ((JArray)c["elements"]).Remove(row);
+                        }
+                        continue;
+                    }
                     if (kind != "family_instance" || row["host_id"] != null) continue;
                     long? typeId = row.Value<long?>("type_id");
                     var symbol = typeId.HasValue ? doc.GetElement(Rid.Make(typeId.Value)) as FamilySymbol : null;
@@ -992,6 +1002,35 @@ namespace Horizun.Revit.Commands
                     });
                     ((JArray)c["elements"]).Remove(row);
                 }
+        }
+
+        /// <summary>
+        /// A COLUMN WHOSE TOP NOBODY STATED IS NOT PLANNED, and a top stated for a column that has none is not
+        /// dropped on the floor. The decision is CadCatalogCheck.ColumnTopProblem's, so the catalogue and the
+        /// plan answer the same rule the same way; null means the row may be built.
+        /// </summary>
+        private static JObject ColumnTopWithdrawal(Document doc, JObject row)
+        {
+            long? typeId = row.Value<long?>("type_id");
+            var symbol = typeId.HasValue ? doc.GetElement(Rid.Make(typeId.Value)) as FamilySymbol : null;
+            if (symbol == null) return null;
+            string placement;
+            try { placement = symbol.Family.FamilyPlacementType.ToString(); } catch { return null; }
+            string problem = CadCatalogCheck.ColumnTopProblem(placement, row["top_level_id"] != null);
+            if (problem == null) return null;
+            XYZ point = PlanPoint(row["point"]);
+            return new JObject
+            {
+                ["source_row"] = row["source_row"],
+                ["kind"] = "structural_column",
+                ["at_mm"] = point == null ? null
+                    : new JArray(Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1)),
+                ["reason"] = problem.Substring(0, problem.IndexOf(':')),
+                ["family"] = SafeName(symbol.Family),
+                ["type"] = SafeName(symbol),
+                ["placement_type"] = placement,
+                ["means"] = problem + ". It is NOT planned; the rows beside it are."
+            };
         }
 
         /// <summary>
@@ -1751,6 +1790,32 @@ namespace Horizun.Revit.Commands
                             return "shaft_inverted: top level " + Quote(SafeName(top)) + " sits at or below " +
                                    "base level " + Quote(SafeName(bottom)) + ". A shaft runs upward, and one " +
                                    "that does not cuts nothing. NOTHING was planned.";
+                    }
+
+                    // WHERE A COLUMN STOPS: the rule's top_level, resolved like a shaft's. The base is the
+                    // row's level_id, which ResolveNames has already settled; a top at or below it is refused
+                    // here rather than left to Revit, which would build a column of no height or none at all.
+                    if (kind == "structural_column" && row["top_level_name"] != null)
+                    {
+                        if (levels == null)
+                            levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().ToList();
+                        string want = row.Value<string>("top_level_name");
+                        row.Remove("top_level_name");
+                        Level top = levels.FirstOrDefault(l => string.Equals(SafeName(l), want, StringComparison.Ordinal))
+                                 ?? levels.FirstOrDefault(l => string.Equals(SafeName(l), want, StringComparison.OrdinalIgnoreCase));
+                        if (top == null)
+                            return "level_not_found: no level in " + Quote(SafeTitle(doc)) + " is named " +
+                                   Quote(want) + ", which a structural column rule names as its top_level. NOTHING " +
+                                   "was planned. The levels there are: " + Names(levels) + ".";
+                        long baseId = row.Value<long?>("level_id") ?? -1;
+                        Level bottom = levels.FirstOrDefault(l => Rid.Value(l.Id) == baseId);
+                        if (bottom != null && top.ProjectElevation <= bottom.ProjectElevation)
+                            return "column_inverted: top_level " + Quote(SafeName(top)) + " sits at or below the " +
+                                   "column's base level " + Quote(SafeName(bottom)) + ". A column runs upward from " +
+                                   "its level to its top. NOTHING was planned.";
+                        row["top_level_id"] = Rid.Value(top.Id);
+                        if (seen.Add("level:" + Rid.Value(top.Id)))
+                            resolved.Add(Resolved("level", top, want));
                     }
 
                     if (kind == "room_separator" && row["view_id"] == null)

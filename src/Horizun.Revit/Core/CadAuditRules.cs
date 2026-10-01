@@ -1239,6 +1239,16 @@ namespace Horizun.Revit.Core
             // line to be off, so the whole difference is offset.
             if (c.Geometry.Count == 1 || s.Geometry.Count == 1)
             {
+                // A COLUMN DRAWN AS A RING is built at the ring's centre (CadConversionPlanRules.RingCentre), so
+                // that is where it is measured from - not from the ring's first corner, which is where the plan
+                // used to put it.
+                if (s.Geometry.Count == 1 && c.Geometry.Count >= 3 &&
+                    (c.ProposedKind == "structural_column" || c.ProposedKind == "column"))
+                {
+                    d.Offset = CadConversionPlanRules.RingCentre(c.Geometry).PlanDistanceTo(s.Geometry[0]);
+                    d.Measured = true;
+                    return d;
+                }
                 d.Offset = c.Geometry[0].PlanDistanceTo(s.Geometry[0]);
                 d.Measured = true;
                 return d;
