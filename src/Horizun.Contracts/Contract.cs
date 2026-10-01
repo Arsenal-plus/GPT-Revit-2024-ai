@@ -2136,7 +2136,9 @@ namespace Horizun.Contracts
     ""outfall_tolerance_mm"": { ""type"": ""number"", ""minimum"": 0, ""default"": 50.0,
       ""description"": ""How close a junction must be to the outfall point to BE it. Nothing within this distance is a REFUSAL, not a reason to take the nearest node: an outfall on the wrong node inverts an entire layout while looking plausible."" },
     ""outfall_invert_mm"": { ""type"": ""number"", ""default"": 0,
-      ""description"": ""The INVERT - inside bottom - at the outfall, in millimetres, in the same datum the requirement set's elevations use. Every other invert is this plus the fall along the network. Each planned run is then placed on its CENTRELINE, at the invert plus half its declared bore, and a run with no declared bore takes no fall at all rather than being placed half a diameter wrong."" }
+      ""description"": ""The INVERT - inside bottom - at the outfall, in millimetres, in the same datum the requirement set's elevations use. Every other invert is this plus the fall along the network. Each planned run is then placed on its CENTRELINE, at the invert plus half its declared bore, and a run with no declared bore takes no fall at all rather than being placed half a diameter wrong."" },
+    ""response_mode"": { ""type"": ""string"", ""enum"": [""full"", ""summary""], ""default"": ""full"",
+      ""description"": ""summary keeps counts, coverage, warnings, coherence and apply_binding whole and cuts each row list to a sample, named in response_omissions. The whole plan is kept under plan_id for horizun_apply_cad_plan."" }
   },
   ""additionalProperties"": false
 }")
@@ -2362,9 +2364,11 @@ namespace Horizun.Contracts
                     "reports a partial honestly and never claims an atomicity it does not have.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
-  ""required"": [""target_document"", ""instance_id"", ""requirement_set"", ""apply_binding"", ""actions""],
+  ""required"": [""target_document"", ""instance_id"", ""requirement_set""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
+    ""plan_id"": { ""type"": ""string"",
+      ""description"": ""The plan_id horizun_plan_from_cad returned: apply_binding, actions and candidate_index are read from the plan kept on this machine. Without it, send apply_binding and actions."" },
     ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD instance the plan was read from."" },
     ""requirement_set"": { ""type"": ""object"", ""description"": ""The SAME artefact the plan was made from; its hash is re-checked."" },
     ""apply_binding"": { ""type"": ""object"", ""description"": ""Copied verbatim from the plan reply: plan_fingerprint, source_fingerprint, requirement_set_sha256."",

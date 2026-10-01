@@ -216,7 +216,11 @@ namespace Horizun.Revit.Commands
                                                     new JObject { ["refused"] = "stale_plan", ["drift"] = drift });
             }
 
-            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceNow, factsNow, false);
+            // The set, when the caller sent it: a set that reads nothing from the drawing file is judged on the
+            // link and the host file (CadSourceCoherenceRules.LinkGeometryOnly). Without it, the strict answer.
+            CadRequirementSet setNow = null;
+            try { if (request["requirement_set"] is JObject sj) setNow = CadRequirementSet.Load(sj); } catch { }
+            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceNow, factsNow, false, setNow);
             string coherenceMessage;
             JObject notApplicable = CadApplyGuard.CoherenceRefusal(binding, coherenceNow, out coherenceMessage);
             if (notApplicable != null)

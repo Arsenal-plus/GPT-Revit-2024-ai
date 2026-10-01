@@ -137,6 +137,41 @@ corridor look exactly like one wall with a wide opening, and only somebody who
 knows the building can say which. **The number is that judgement, written down**,
 and every gap it crosses is named in the candidate's assumptions.
 
+**Which unit the unit gate compares.** `horizun_plan_from_cad`, `horizun_plan_cad_update` and
+`horizun_audit_cad_model` refuse `unit_mismatch` when the link's unit is not the set's, because
+Revit hands the geometry over already scaled. The unit compared is the one this bridge MEASURED
+Revit applied when `horizun_manage_cad_links add` linked the drawing (`applied_units` on the
+instance row), and the link's declaration only when nothing on this machine measured it — a
+link forced to millimetre was measured still declaring inch. The reply's `source.units_checked`
+names the basis (`applied_units` or `declared_units`).
+
+**A plan drawing's Z is not a height.** Walls, floors, ceilings, roofs and
+absolutely-placed families stand ON the level they resolved to: the emitted Z is
+that level's elevation plus the rule's `offset_mm`, never the drawing's own Z.
+Measured on a dry run: a DWG linked into a plan of a level at +30 000 mm handed
+its geometry over at Z = 0, and the plan emitted every wall at Z = 0 —
+`horizun_create_elements` reads a wall's Z as its absolute base, so all 75 walls
+would have been built 30 m below their level and verified there. The reply's
+`storey_placement` counts, per level, the rows whose drawn Z was not the storey.
+A row whose own geometry rises (a drawn slope) is left as drawn; MEP runs keep
+their own rule (`offset_mm` above the storey, or the fall from an outfall).
+
+**A structural column runs from its level to a top.** Revit's structural columns
+are `TwoLevelsBased` families. A rule that produces `structural_column` with one
+of them must say where it stops with `top_level` (a level name); the base is the
+rule's `level`. Without it the rule is refused (`column_top_unstated`) by
+`catalog_check_only` and the plan withdraws the column under that reason —
+Revit's own default top is whatever level happens to be above. A `top_level` on a
+one-level family is refused too (`top_level_not_applicable`) rather than ignored.
+A column drawn as a ring (`closed_loops`) stands at the ring's centre.
+
+```jsonc
+{ "id": "columns", "layers": ["S-COLS-*"], "produces": "structural_column",
+  "family_type": "M_Concrete-Round-Column: 300mm",
+  "level": "Level 2", "top_level": "Level 3",
+  "geometry": { "from": "closed_loops" } }
+```
+
 ---
 
 ## What the drawing cannot tell you
@@ -447,13 +482,39 @@ Every reading and every plan now carries `coherence`, in one of four states, and
 |---|---|
 | `sources_match_the_link` | this bridge loaded the link, nothing has touched it since, and the drawing and every reference still hash as they did then. **Applicable.** |
 | `revisions_not_aligned` | the sources changed since: the geometry is the older issue. Reload and plan again. |
+| `link_geometry_only` | the requirement set reads NOTHING from the drawing file (no `blocks`, `solid_hatch_layers` or `section` rule), this bridge loaded the link, nothing has touched it since, and the host DWG still hashes as it did. **Applicable**, on that narrower basis — `basis: link_geometry_and_host_file`, `references_checked: false`. |
 | `coherence_unknown` | no record of this bridge loading it, or the link changed after that record, or the set identity could not be computed. |
 | `continued_snapshot` | the reading continued a snapshot and deliberately checked nothing. |
+
+**The set identity is written only by the text extractor** — AutoCAD's headless
+`accoreconsole.exe` (found under `Program Files\Autodesk\AutoCAD*`, or named by
+`HORIZUN_ACCORECONSOLE`), which runs only for a rule that reads the file. A
+walls-only set never starts it, so on a machine with no AutoCAD — or simply no
+such rule — `sources_match_the_link` can never be shown. Measured on a dry run:
+75 walls planned from a Revit-exported DWG were refused `coherence_unknown`, and
+neither re-planning with `dwg_path` nor `horizun_cad_extract` cleared it,
+because neither runs the extractor. Such a plan has only one half — every action
+comes from the link — so it is judged on what it is made of
+(`link_geometry_only`). The way there is the ordinary one: link the drawing with
+`horizun_manage_cad_links add` (or `reload` it), plan, apply. A host DWG revised
+after the load is `revisions_not_aligned` and asks for a reload; a reference
+revised after the load is NOT seen on this basis, and the reply says so.
 
 `horizun_apply_cad_plan` re-checks it before writing and refuses `plan_not_applicable` — a plan
 made while the correspondence could not be shown is not applied because the model looks
 unchanged; it is not applied because nobody measured it. A source set that moved between the
-plan and the apply is `stale_plan` drift naming *the drawing's references*.
+plan and the apply is `stale_plan` drift naming *the drawing's references*; a link reloaded
+between the two is drift naming *the link's geometry* (the plan's binding records it).
+
+**A plan the client can read.** A full plan reply carries every row — measured at 232 kB for
+75 walls, which a client truncates to a file. `response_mode: "summary"` keeps every count, the
+coverage, the warnings, the coherence and `apply_binding` whole, keeps up to 25 deferred and
+withdrawn rows, cuts every other list of rows to three, and names each cut in
+`response_omissions` with its real length. Every plan, in either mode, is kept whole on this
+machine under its `plan_id` (14 days, `%USERPROFILE%\.horizun\cad-plans`), and
+`horizun_apply_cad_plan` takes `plan_id` in place of `apply_binding` and `actions`: the binding,
+the actions and the candidate index are read from the kept plan, and everything is re-measured
+exactly as when they are sent.
 
 The record lives with this bridge on this machine and does not travel with the model: elsewhere
 the answer is `coherence_unknown`, which withholds permission rather than granting it, and one
