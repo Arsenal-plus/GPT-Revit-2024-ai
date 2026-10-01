@@ -6,7 +6,7 @@ surface.
 
 This surface is **123 tools** <!--inventory:tools--> - **45** <!--inventory:reads--> of them
 read-only - dispatching **457 distinct suboperations and modes** <!--inventory:operations--> across
-**1594 enumerated argument values** <!--inventory:enumerated_variants-->.
+**1598 enumerated argument values** <!--inventory:enumerated_variants-->.
 
 Those numbers are GENERATED, never typed by hand. `scripts/generate-inventory.ps1`
 asks the built server for `tools/list` - the same call a client makes - and writes
