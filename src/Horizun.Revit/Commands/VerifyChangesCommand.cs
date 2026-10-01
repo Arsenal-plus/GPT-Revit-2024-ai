@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP - original Horizun code.
 //
 // horizun_verify_changes - look at what was just modelled, the way an expert would.
@@ -428,10 +428,9 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
-        /// FRAME THE PICTURE TO THE BOX, depth included. The section box corners in the
-        /// crop's own frame give the crop rectangle AND its Z range: a 3D view's crop Z is
-        /// its near/far clip, and the range kept from the default view was built for the
-        /// model as it was, not for elements 30 m above it.
+        /// FRAME THE PICTURE TO THE BOX. The section box corners in the crop's own frame
+        /// give the crop rectangle; the crop's Z range (the view's depth) is left as Revit
+        /// made it.
         /// </summary>
         private static void FitCropToBox(View3D view, BoundingBoxXYZ box)
         {
@@ -442,21 +441,13 @@ namespace Horizun.Revit.Commands
                 .Select(p => new[] { p.X, p.Y, p.Z });
             double[] min, max;
             CaptureFramingRules.CropAround(local, 0.5, out min, out max);
-            double keptMinZ = crop.Min.Z, keptMaxZ = crop.Max.Z;
-            try
-            {
-                crop.Min = new XYZ(min[0], min[1], min[2]);
-                crop.Max = new XYZ(max[0], max[1], max[2]);
-                view.CropBox = crop;
-            }
-            catch
-            {
-                // A depth Revit will not take must not cost the rectangle: the section
-                // box and the eye outside it already keep the elements in front.
-                crop.Min = new XYZ(min[0], min[1], keptMinZ);
-                crop.Max = new XYZ(max[0], max[1], keptMaxZ);
-                view.CropBox = crop;
-            }
+            // THE DEPTH IS REVIT'S. Measured in Revit 2026 (2026-09-30): writing the box's
+            // depth into the crop's Z blanked EVERY orientation, isometric included, on 68
+            // walls at +30 m. The rectangle is ours; the depth stays the view's own, and the
+            // eye outside the box (Orient) is what keeps the elements in front of it.
+            crop.Min = new XYZ(min[0], min[1], crop.Min.Z);
+            crop.Max = new XYZ(max[0], max[1], crop.Max.Z);
+            view.CropBox = crop;
         }
 
         /// <summary>

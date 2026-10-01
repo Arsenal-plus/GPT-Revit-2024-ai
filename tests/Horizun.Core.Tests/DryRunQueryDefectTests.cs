@@ -424,5 +424,18 @@ namespace Horizun.Core.Tests
             Assert.Contains("[\"views_not_on_sheet_scope\"]", scan);
             Assert.Contains("[\"views_no_template_scope\"]", scan);
         }
+
+        [Fact]
+        public void The_scan_reads_schedule_placement_from_ScheduleSheetInstance()
+        {
+            // Measured live 2026-09-30: GetAllPlacedViews() does not return schedules, so the
+            // scan listed placed schedules as off-sheet and its count missed the audit's by 3.
+            string scan = File.ReadAllText(Path.Combine(Root(), "src", "Horizun.Revit", "Commands", "ModelScanCommand.cs"));
+            int doc = scan.IndexOf("private static JObject DocumentationSection", StringComparison.Ordinal);
+            int next = scan.IndexOf("private static JObject ", doc + 10, StringComparison.Ordinal);
+            string section = scan.Substring(doc, next - doc);
+            Assert.Contains("OfClass(typeof(ScheduleSheetInstance))", section);
+            Assert.Contains("placed.Add(ssi.ScheduleId", section);
+        }
     }
 }

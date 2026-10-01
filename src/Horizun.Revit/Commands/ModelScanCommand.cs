@@ -1100,6 +1100,26 @@ namespace Horizun.Revit.Commands
                     });
                 }
             }
+            // GetAllPlacedViews() does NOT return schedules. Measured in Revit 2026 on
+            // 2026-09-30 (the dry-run architecture sample): 12 schedules read as off-sheet
+            // while 3 of them sat on sheets, and the reconciliation with horizun_audit_model
+            // came out 38 against 35. A schedule is on a sheet when a ScheduleSheetInstance
+            // places it.
+            try
+            {
+                foreach (var ssi in new FilteredElementCollector(doc).OfClass(typeof(ScheduleSheetInstance))
+                                                                        .Cast<ScheduleSheetInstance>())
+                    try { placed.Add(ssi.ScheduleId.ToString()); } catch { }
+            }
+            catch (Exception ex)
+            {
+                unreadable.Add(new JObject
+                {
+                    ["id"] = null,
+                    ["error"] = "ScheduleSheetInstance unreadable: " + ex.Message,
+                    ["consequence"] = "Schedules placed on sheets are listed in views_not_on_sheet as if they were off-sheet."
+                });
+            }
 
             var noTemplate = new List<JToken>();
             var notOnSheet = new List<JToken>();
@@ -1263,8 +1283,8 @@ namespace Horizun.Revit.Commands
                                           "sheets_titleblock_unreadable for counts.",
                 ["unreadable"] = paging.Bucket(unreadable, "documentation", "unreadable"),
                 ["note"] = "views_not_on_sheet is a review list, not a defect list — working views legitimately " +
-                           "live off-sheet. Placement is read from ViewSheet.GetAllPlacedViews(), so schedules " +
-                           "count as placed."
+                           "live off-sheet. Placement is read from ViewSheet.GetAllPlacedViews() and, for " +
+                           "schedules (which it does not return), from ScheduleSheetInstance."
             };
         }
 
