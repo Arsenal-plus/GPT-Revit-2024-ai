@@ -439,7 +439,7 @@ namespace Horizun.Revit.Commands
             // the sizes are the file read now. Publishing both identities made a mismatch observable; it did
             // not make building from one safe. See Core/CadSourceCoherence.cs - only a state this bridge can
             // DEMONSTRATE grants applicable, and everything else keeps the diagnosis and withholds it.
-            JObject coherence = CadSourceCoherence.Evaluate(doc, element, facts, false);
+            JObject coherence = CadSourceCoherence.Evaluate(doc, element, facts, false, set);
             report["coherence"] = coherence;
             bool applicable = coherence.Value<bool?>("applicable") ?? false;
             report["applicable"] = applicable;
@@ -553,8 +553,19 @@ namespace Horizun.Revit.Commands
                 solidRead["pairs_without_hatched_material"] = interpretation.SolidVetoes;
                 report["solid_evidence"] = solidRead;
             }
-            unresolved = ResolveNames(doc, creates, request, resolved);
+            var storeyPlacement = new JObject();
+            unresolved = ResolveNames(doc, creates, request, resolved, storeyPlacement);
             if (unresolved != null) return CommandResult.Fail(unresolved);
+            if (storeyPlacement.Count > 0)
+                report["storey_placement"] = new JObject
+                {
+                    ["levels"] = storeyPlacement,
+                    ["means"] = "walls, floors, ceilings, roofs and absolutely-placed families stand ON the level " +
+                                "they resolved to: their Z is that level's elevation plus the rule's offset, never " +
+                                "the drawing's Z, because a plan drawing's Z is not a height. A non-zero " +
+                                "rows_whose_drawn_z_was_not_the_storey counts the rows that, taken at the drawing's " +
+                                "Z, would have been built that far off their storey."
+                };
 
             // THE TWO LEVELS A SHAFT RUNS BETWEEN, and the view a room separator
             // belongs to. Both are resolved here for the same reason the level and
@@ -774,6 +785,10 @@ namespace Horizun.Revit.Commands
                 // any other, and a plan made while the coherence could not be shown is not applied at all.
                 ["source_set_sha256"] = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
                 ["coherence_state"] = coherence.Value<string>("state"),
+                // THE GEOMETRY THIS PLAN WAS READ FROM. A reload moves none of the values above when the
+                // file's bytes are unchanged, and the link can still show something else afterwards; the
+                // apply compares this against the link as it is then (CadApplyGuard, "the link's geometry").
+                ["link_geometry_fingerprint"] = coherence["geometry_fingerprint"]?["now"],
                 ["target_document"] = target,
                 ["revit_version"] = SafeVersion(app),
                 ["means"] = "horizun_apply_cad_plan re-measures every one of these before writing and refuses " +
@@ -1071,7 +1086,8 @@ namespace Horizun.Revit.Commands
                 }
         }
 
-        private static string ResolveNames(Document doc, List<JObject> creates, JObject request, JArray resolved)
+        private static string ResolveNames(Document doc, List<JObject> creates, JObject request, JArray resolved,
+                                           JObject storeyPlacement = null)
         {
             string defaultLevelName = request.Value<string>("level_name");
             long? defaultLevelId = request.Value<long?>("level_id");
@@ -1135,6 +1151,35 @@ namespace Horizun.Revit.Commands
                         double levelElevationMm = 0;
                         try { levelElevationMm = CadUnits.FeetToMm(level.Elevation); } catch { }
                         CadConversionPlanRules.ResolveOffsetFromLevel(row, levelElevationMm);
+
+                        // A WALL, A SLAB OR A COLUMN STANDS ON ITS STOREY, not at the drawing's Z. The
+                        // elevation is the one create_elements derives the base offset against (the
+                        // level's ProjectElevation), so the offset it derives is the rule's and nothing
+                        // else. See CadConversionPlanRules.PlaceOnStorey for the measurement.
+                        double levelProjectMm = levelElevationMm;
+                        try { levelProjectMm = CadUnits.FeetToMm(level.ProjectElevation); } catch { }
+                        double? drawnZ;
+                        bool moved = CadConversionPlanRules.PlaceOnStorey(row, levelProjectMm, out drawnZ);
+                        if (storeyPlacement != null && drawnZ.HasValue)
+                        {
+                            string key = SafeName(level) ?? ("level " + Rid.Value(level.Id));
+                            var entry = storeyPlacement[key] as JObject;
+                            if (entry == null)
+                                storeyPlacement[key] = entry = new JObject
+                                {
+                                    ["level_id"] = Rid.Value(level.Id),
+                                    ["level_elevation_mm"] = Math.Round(levelProjectMm, 1),
+                                    ["rows"] = 0,
+                                    ["rows_whose_drawn_z_was_not_the_storey"] = 0
+                                };
+                            entry["rows"] = entry.Value<int>("rows") + 1;
+                            if (moved)
+                            {
+                                entry["rows_whose_drawn_z_was_not_the_storey"] =
+                                    entry.Value<int>("rows_whose_drawn_z_was_not_the_storey") + 1;
+                                entry["drawn_z_mm"] = Math.Round(drawnZ.Value, 1);
+                            }
+                        }
                         if (seen.Add("level:" + Rid.Value(level.Id)))
                             resolved.Add(Resolved("level", level,
                                 want ?? (defaultLevelId.HasValue ? "level_id " + defaultLevelId.Value : null)));

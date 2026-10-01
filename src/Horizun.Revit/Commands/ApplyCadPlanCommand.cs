@@ -115,8 +115,15 @@ namespace Horizun.Revit.Commands
             // Core/CadApplyGuard.cs and both call them, because two copies of a rule this important is
             // how one of them quietly stops being true. What stays here is what only THIS command has:
             // the ids its plan resolved for levels and types.
+            //
+            // The coherence is evaluated FIRST because it carries the link's geometry fingerprint as it is
+            // now, which the drift below compares against the one the plan recorded - one harvest, not two.
+            Element instanceElement = null;
+            try { instanceElement = doc.GetElement(Rid.Make(instanceId)); } catch { }
+            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceElement, facts, false, set);
             var guardNow = new CadApplyNow
             {
+                LinkGeometryFingerprint = (string)coherenceNow["geometry_fingerprint"]?["now"],
                 ActionsFingerprint = null,          // filled in below, once the actions have been shaped
                 SourceFingerprint = CadFacts.SourceFingerprint(facts),
                 SourceSetSha256 = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
@@ -203,40 +210,12 @@ namespace Horizun.Revit.Commands
             // the correspondence. Re-evaluated HERE, because a link can be reloaded between the two calls
             // (which is the remedy) and because a plan carried from another session must not be taken on
             // trust. See Core/CadSourceCoherence.cs.
-            Element instanceElement = null;
-            try { instanceElement = doc.GetElement(Rid.Make(instanceId)); } catch { }
-            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceElement, facts, false);
-            string statePlanned = binding.Value<string>("coherence_state");
-            bool applicableNow = coherenceNow.Value<bool?>("applicable") ?? false;
-            if (!applicableNow)
-                return CommandResult.FailWithDetail(
-                    "plan_not_applicable: " + coherenceNow.Value<string>("state") + ". " +
-                    coherenceNow.Value<string>("means") + " NOTHING WAS WRITTEN. " +
-                    coherenceNow.Value<string>("remedy"),
-                    new JObject
-                    {
-                        ["refused"] = "plan_not_applicable",
-                        ["coherence_now"] = coherenceNow,
-                        ["coherence_when_planned"] = statePlanned,
-                        ["means"] = "a plan is applied only when this bridge can SHOW that the geometry it was " +
-                                    "made of and the files its sizes came from are the same issue of the " +
-                                    "drawing. Warning and writing anyway would put one issue's runs in the " +
-                                    "model with another issue's sizes, and the model would look finished."
-                    });
-            if (!string.IsNullOrWhiteSpace(statePlanned) &&
-                !string.Equals(statePlanned, CadSourceCoherence.Aligned, StringComparison.Ordinal))
-                return CommandResult.FailWithDetail(
-                    "plan_not_applicable: this plan was made while the coherence of its sources was '" +
-                    statePlanned + "', so its actions were read from a state nobody could vouch for. The link " +
-                    "is coherent NOW - plan again against it and apply that plan. NOTHING WAS WRITTEN.",
-                    new JObject
-                    {
-                        ["refused"] = "plan_not_applicable",
-                        ["coherence_when_planned"] = statePlanned,
-                        ["coherence_now"] = coherenceNow,
-                        ["means"] = "the remedy was applied after the plan was made, which fixes the model's " +
-                                    "state and not the plan: the actions still describe what was read earlier."
-                    });
+            // ONE GUARD, the same text horizun_apply_cad_update refuses with: this used to be a second copy
+            // of CadApplyGuard.CoherenceRefusal, and the copy is where an accepted state would be forgotten.
+            string coherenceMessage;
+            JObject notApplicable = CadApplyGuard.CoherenceRefusal(binding, coherenceNow, out coherenceMessage);
+            if (notApplicable != null)
+                return CommandResult.FailWithDetail(coherenceMessage, notApplicable);
 
 
             // ---- the actions, exactly as the plan produced them -------------------

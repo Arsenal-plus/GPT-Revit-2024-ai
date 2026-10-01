@@ -403,7 +403,7 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("resolve_refused: " + string.Join("; ", decisionErrors) +
                                           ". Nothing was planned: a decision that cannot stand is not skipped.");
             // ONE EVALUATION, used by the reply and by the binding the apply re-measures.
-            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, element, facts, false);
+            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, element, facts, false, set);
             JArray migrations = MigrationPlans(doc, update);
 
             // ---------------------------------------------------------- actions

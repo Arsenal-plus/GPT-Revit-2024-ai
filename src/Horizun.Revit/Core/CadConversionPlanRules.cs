@@ -191,6 +191,65 @@ namespace Horizun.Revit.Core
             return true;
         }
 
+        /// <summary>
+        /// A PLAN DRAWING'S Z IS NOT A HEIGHT, so an element resolved to a storey stands ON that storey.
+        ///
+        /// MEASURED (dry run, class 4): a DWG linked into a plan of a level at +30 000 mm handed its
+        /// geometry over at Z = 0, and the plan emitted 75 walls with start/end Z = 0. horizun_create_elements
+        /// reads a wall's Z as its absolute base and derives the base offset from it (Z minus the level's
+        /// elevation), so applied as emitted every wall would have been built 30 m below its level - on top
+        /// of the storey underneath, and verified there.
+        ///
+        /// So for the kinds whose base create_elements takes from an absolute Z, the Z is set from the
+        /// storey: the level's elevation (internal origin, the plane create_elements measures against) plus
+        /// the rule's declared offset, and the drawing's own Z is not used. A row whose drawn Z differs along
+        /// its own geometry carries a slope somebody drew and is left as it is. MEP runs keep their own rule
+        /// (ResolveOffsetFromLevel); a point-placed family in level_offset mode is already relative.
+        ///
+        /// Returns true when the row was changed. <paramref name="drawnZ"/> is the Z the drawing gave, when
+        /// the row had a single one, so the caller can say how far the drawing was from the storey.
+        /// </summary>
+        public static bool PlaceOnStorey(JObject row, double levelElevationMm, out double? drawnZ)
+        {
+            drawnZ = null;
+            if (row == null) return false;
+            string kind = row.Value<string>("kind");
+            double offset = row.Value<double?>("offset") ?? row.Value<double?>("base_offset") ?? 0.0;
+            var points = new List<JArray>();
+            switch (kind)
+            {
+                case "wall":
+                    points.Add(row["start"] as JArray);
+                    points.Add(row["end"] as JArray);
+                    break;
+                case "floor":
+                case "ceiling":
+                case "roof":
+                    foreach (JToken loop in row["profile"] as JArray ?? new JArray())
+                        foreach (JToken p in loop as JArray ?? new JArray())
+                            points.Add(p as JArray);
+                    break;
+                case "family_instance":
+                case "structural_column":
+                    // Only an ABSOLUTE point carries the drawing's Z; level_offset is a height above the storey.
+                    if (!string.Equals(row.Value<string>("coordinate_mode"), "absolute", StringComparison.Ordinal))
+                        return false;
+                    points.Add(row["point"] as JArray);
+                    offset = 0.0;
+                    break;
+                default:
+                    return false;
+            }
+            if (points.Count == 0 || points.Any(p => p == null || p.Count < 3)) return false;
+            double z0 = points[0][2].Value<double>();
+            if (points.Any(p => Math.Abs(p[2].Value<double>() - z0) > 1e-6)) return false;
+            drawnZ = z0;
+            double z = Math.Round(levelElevationMm + offset, 4, MidpointRounding.AwayFromZero);
+            if (Math.Abs(z - z0) < 1e-9) return false;
+            foreach (JArray p in points) p[2] = z;
+            return true;
+        }
+
         /// <summary>The runs Revit carries a system and a bore on.</summary>
         private static readonly HashSet<string> MepKinds =
             new HashSet<string>(StringComparer.Ordinal) { "pipe", "duct", "conduit", "cable_tray" };

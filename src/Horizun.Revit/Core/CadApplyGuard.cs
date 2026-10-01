@@ -176,8 +176,7 @@ namespace Horizun.Revit.Core
                                 "another issue's sizes, and the model would look finished."
                 };
             }
-            if (!string.IsNullOrWhiteSpace(planned) &&
-                !string.Equals(planned, CadSourceCoherenceRules.Aligned, StringComparison.Ordinal))
+            if (!string.IsNullOrWhiteSpace(planned) && !CadSourceCoherenceRules.IsApplicableState(planned))
             {
                 message = "plan_not_applicable: this plan was made while the coherence of its sources was '" +
                           planned + "', so its actions were read from a state nobody could vouch for. The link " +
