@@ -270,6 +270,19 @@ styles. Visibility is not a precedence: any layer that hides wins.
   category and inserts that many key rows. The re-read checks `IsKeySchedule` and
   counts the key elements owned by the schedule. `include_links` and `itemized` do
   not apply to key schedules and are refused when sent.
+- **Grouping of a non-itemized schedule.** Without `group_by`, the schedule sorts
+  and groups by the IDENTITY fields only (type, family, level, mark, text, yes/no)
+  in the order they were requested, never by a QUANTITY: the Count field, a
+  material quantity, percentage or formula, a measurable spec (length, area,
+  volume...), an integer or number, or any field Revit can total. The quantity
+  fields Revit can total (except Count) get `Totals`, so a grouped row shows the
+  sum instead of a blank cell. Measured on a real model: walls with
+  Type/Count/Length/Area/Volume grouped by every non-Count field gave 119 rows
+  instead of 8. `group_by: [...]` (names from `fields`) is honoured exactly, in
+  order, also on an itemized schedule; `[]` groups by nothing; a name that is not
+  a requested field is refused in the rehearsal. The re-read covers `sort_group`
+  (the committed sort/group field ids, in order) and `totals`, and the reply's
+  `grouping` block says which role each field got and why.
 
 ### `horizun_export` — the DWG layer table
 

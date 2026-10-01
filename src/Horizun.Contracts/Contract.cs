@@ -713,8 +713,8 @@ namespace Horizun.Contracts
                 Description =
                     "Create one native Revit schedule for one category, optionally including elements from loaded RVT links; " +
                     "also multi-category (category=OST_MultiCategory) and key schedules (key_schedule, key_rows re-read as key elements). " +
-                    "Dry-run is the default. Resolves fields by Revit display name or stable token, groups non-itemized schedules, commits once, " +
-                    "then re-reads the schedule, fields, IncludeLinkedFiles flag and body row count. Zero host elements is valid: " +
+                    "Dry-run is the default. Resolves fields by Revit display name or stable token, groups non-itemized schedules by identity fields, commits once, " +
+                    "then re-reads the schedule, fields, sort/group, totals, IncludeLinkedFiles flag and body row count. Zero host elements is valid: " +
                     "the linked elements are included by Revit itself when include_links=true.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
@@ -724,7 +724,8 @@ namespace Horizun.Contracts
     ""name"": { ""type"": ""string"", ""description"": ""Name of the new schedule. An existing name is refused, never overwritten."" },
     ""fields"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Fields to add: localized Revit display names, Count/Family/Type aliases, or BuiltInParameter tokens. Defaults to Count, Family, Type."" },
     ""include_links"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Set Revit's Include elements in links option."" },
-    ""itemized"": { ""type"": ""boolean"", ""default"": false, ""description"": ""List every element when true; otherwise group by the requested non-Count fields."" },
+    ""itemized"": { ""type"": ""boolean"", ""default"": false, ""description"": ""List every element when true; otherwise group by the identity fields (never a length, area, volume, count or number) and total the quantities."" },
+    ""group_by"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Sort/group exactly by these requested fields, in order; [] groups by nothing. Omitted: derived as above."" },
     ""key_schedule"": { ""type"": ""boolean"", ""default"": false },
     ""key_rows"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 500 },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Validate category and scope without opening a transaction."" },
