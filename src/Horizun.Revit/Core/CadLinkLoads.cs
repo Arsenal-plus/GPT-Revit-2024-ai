@@ -69,7 +69,8 @@ namespace Horizun.Revit.Core
         }
 
         public static void Record(Document doc, string instanceUniqueId, long instanceId, string externalPath,
-                                  string fileSha256, string geometryFingerprint, string by)
+                                  string fileSha256, string geometryFingerprint, string by,
+                                  JObject unitsApplied = null)
         {
             if (doc == null || string.IsNullOrWhiteSpace(instanceUniqueId)) return;
             var o = new JObject
@@ -86,6 +87,7 @@ namespace Horizun.Revit.Core
                 ["loaded_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                 ["by"] = by
             };
+            if (unitsApplied != null) o["units_applied"] = unitsApplied;
             try { File.WriteAllText(PathFor(doc, instanceUniqueId), o.ToString(Formatting.Indented)); }
             catch { /* a record that cannot be written leaves the answer unknown, which is the safe one */ }
         }
@@ -109,6 +111,27 @@ namespace Horizun.Revit.Core
                 File.WriteAllText(PathFor(doc, instanceUniqueId), o.ToString(Formatting.Indented));
             }
             catch { }
+        }
+
+        /// <summary>
+        /// The part of a units_check worth keeping: WHICH UNIT THE GEOMETRY IS AT and how that is known.
+        /// Null when nothing established it - an unconfirmed unit is not recorded, so a later reader falls
+        /// back to the declaration and says so rather than inheriting a guess.
+        /// </summary>
+        public static JObject UnitsAppliedRecord(JObject unitsCheck)
+        {
+            string applied = (string)unitsCheck?["applied"];
+            if (string.IsNullOrWhiteSpace(applied)) return null;
+            return new JObject
+            {
+                ["unit"] = applied,
+                ["route"] = unitsCheck["applied_route"],
+                ["verdict"] = unitsCheck["verdict"],
+                ["requested"] = unitsCheck["requested"],
+                ["declared_header"] = unitsCheck["declared_by_link"],
+                ["measured_mm_per_drawing_unit"] = unitsCheck["scale_evidence"]?["measured_mm_per_drawing_unit"],
+                ["recorded_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture)
+            };
         }
 
         public static JObject Read(Document doc, string instanceUniqueId)

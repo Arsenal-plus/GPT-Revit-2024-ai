@@ -70,6 +70,16 @@ namespace Horizun.Revit.Commands
                 mode != "profile" && mode != "blocks")
                 return CommandResult.Fail("mode must be instances, layers, geometry, coverage, profile or blocks.");
 
+            // RESPONSE SIZE IS OPT-IN, as everywhere else (Core/QueryResponseOptions.cs): the default reply keeps
+            // its full shape. Only the profile has a compact shape; asking another mode for one is refused rather
+            // than ignored, so a caller never believes a reply was shaped when it was not.
+            string responseMode = (request.Value<string>("response_mode") ?? "full").Trim().ToLowerInvariant();
+            if (responseMode != "full" && responseMode != "compact")
+                return CommandResult.Fail("response_mode must be full or compact.");
+            if (responseMode == "compact" && mode != "profile")
+                return CommandResult.Fail("response_mode=compact applies to mode=profile only; mode='" + mode +
+                                          "' already bounds its reply (max_rows, offset). Nothing was read.");
+
             // A count of CAD over a half-loaded model is the canonical example of
             // a true-but-misleading answer, so coverage rides on every reply.
             DocumentVisibilityCoverage visibility = DocumentVisibility.Measure(doc);
@@ -167,7 +177,15 @@ namespace Horizun.Revit.Commands
             if (mode == "profile")
             {
                 int maxLayers = Math.Max(1, Math.Min(200, request.Value<int?>("max_layers") ?? 40));
-                JObject profile = CadLayerProfiler.Profile(harvest.Segments, facts?.DeclaredUnits, maxLayers);
+                // layer narrows the profile to the layers a caller needs in FULL - the way back from a compact
+                // reply without paying for every layer again. Same glob as geometry mode.
+                string profileLayers = request.Value<string>("layer");
+                List<CadSegment> profiled = profileLayers == null
+                    ? harvest.Segments
+                    : harvest.Segments.Where(s => CadGlob.IsMatch(s.Layer ?? "", profileLayers, false)).ToList();
+                JObject profile = CadLayerProfiler.Profile(profiled, facts?.DeclaredUnits, maxLayers);
+                if (responseMode == "compact") profile = CadLayerProfiler.Compact(profile);
+                if (profileLayers != null) profile["layer_filter"] = profileLayers;
                 profile["mode"] = "profile";
                 profile["document"] = SafeTitle(doc);
                 profile["instance_id"] = instanceId;
@@ -176,7 +194,8 @@ namespace Horizun.Revit.Commands
                 profile["harvest_coverage"] = harvest.CoverageJson(sagitta);
                 profile["visibility_coverage"] = visibility.ToJson();
                 profile["read_only"] = true;
-                profile["provenance"] = ProvenanceBlock();
+                // Compact keeps every classification and drops only the prose; mode=coverage has it in full.
+                profile["provenance"] = responseMode == "compact" ? ProvenanceKinds(ProvenanceBlock()) : ProvenanceBlock();
                 return CommandResult.Ok(profile);
             }
 
@@ -324,6 +343,12 @@ namespace Horizun.Revit.Commands
         /// the difference between "Revit said so" and "we computed it" is the
         /// difference between evidence and inference.
         /// </summary>
+        /// <summary>The provenance block without its *_means / *_route prose: every fact keeps its classification.</summary>
+        private static JObject ProvenanceKinds(JObject block) => new JObject(block.Properties()
+            .Where(p => !p.Name.EndsWith("_means", StringComparison.Ordinal) &&
+                        !p.Name.EndsWith("_route", StringComparison.Ordinal))
+            .Select(p => new JProperty(p.Name, p.Value)));
+
         private static JObject ProvenanceBlock() => new JObject
         {
             ["layer_names"] = CadProvenanceKind.Native,
@@ -332,6 +357,11 @@ namespace Horizun.Revit.Commands
             ["declared_units"] = CadProvenanceKind.Native,
             ["declared_units_route"] = "the CADLinkType's 'Import Units' parameter - MEASURED: the instance's " +
                                        "IMPORT_DISPLAY_UNITS reads null",
+            ["applied_units"] = CadProvenanceKind.Derived,
+            ["applied_units_route"] = "the unit the geometry is AT, measured by horizun_manage_cad_links add from the " +
+                                      "placed geometry's scale against the DWG's own extents and kept in this " +
+                                      "machine's load record; null for links made elsewhere. declared_units does " +
+                                      "not follow a forced unit (measured), so prefer this one.",
             ["external_path"] = CadProvenanceKind.Native,
             ["file_sha256"] = CadProvenanceKind.Native,
             ["lines_and_polylines"] = CadProvenanceKind.Native,

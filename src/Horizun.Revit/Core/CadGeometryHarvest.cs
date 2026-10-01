@@ -111,13 +111,18 @@ namespace Horizun.Revit.Core
             h.PrimitiveBound = maxPrimitives;
             if (doc == null || instance == null) return h;
 
+            // A VIEW OR A DETAIL LEVEL, NEVER BOTH. Revit refuses the second of the
+            // two with InvalidOperationException ("DetailLevel is already set"), in
+            // either order: a view-scoped read takes the view's own detail level.
+            // Measured in the 2026-09-30 dry run - horizun_cad_extract with view_id
+            // threw on every call, because this set Fine first and the view after.
             var options = new Options
             {
                 ComputeReferences = false,
-                IncludeNonVisibleObjects = false,
-                DetailLevel = ViewDetailLevel.Fine
+                IncludeNonVisibleObjects = false
             };
-            if (view != null) options.View = view;
+            if (GeometryOptionsRules.DetailLevelApplies(view != null)) options.DetailLevel = ViewDetailLevel.Fine;
+            else options.View = view;
 
             GeometryElement root = null;
             try { root = instance.get_Geometry(options); }

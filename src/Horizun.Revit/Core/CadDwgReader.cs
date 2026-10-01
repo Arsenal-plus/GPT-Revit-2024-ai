@@ -129,6 +129,118 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// A script that writes ONLY the header the link-scale check needs - INSUNITS, $EXTMIN, $EXTMAX -
+        /// and the end marker. Seconds rather than the minutes a full extraction takes, and it reuses the
+        /// extractor's own string, number and point formatting so CadDwgExtract.Parse reads it unchanged.
+        /// Its report is never stored in the cache: it has no entities, and a cached reading without them
+        /// would be served to every later reader as the whole drawing.
+        /// </summary>
+        public static string BuildHeaderScript(string outputPath)
+        {
+            var sb = new StringBuilder();
+            foreach (string form in CadDwgScript.Forms)
+                if (form.StartsWith("(defun hz-esc ", StringComparison.Ordinal) ||
+                    form.StartsWith("(defun hz-num ", StringComparison.Ordinal) ||
+                    form.StartsWith("(defun hz-pt ", StringComparison.Ordinal))
+                    sb.Append(form).Append("\r\n");
+            sb.Append(@"(defun hz-head (path / f) (setq f (open path ""w"")) " +
+                      @"(write-line (strcat ""H\tdwg\t"" (hz-esc (getvar ""DWGNAME""))) f) " +
+                      @"(write-line (strcat ""H\tinsunits\t"" (itoa (getvar ""INSUNITS""))) f) " +
+                      @"(write-line (strcat ""H\textmin\t"" (hz-pt (getvar ""EXTMIN""))) f) " +
+                      @"(write-line (strcat ""H\textmax\t"" (hz-pt (getvar ""EXTMAX""))) f) " +
+                      @"(write-line ""H\tdone\t1"" f) (close f) (princ ""\nHZ-HEAD-OK\n"") (princ))").Append("\r\n");
+            sb.Append("(hz-head \"").Append(outputPath.Replace('\\', '/')).Append("\")\r\n");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// The drawing's own unit and extents, for checking the scale a link was placed at. A complete
+        /// cached extraction of these exact bytes answers first; otherwise a header-only read runs. Never
+        /// writes the cache, never writes beside the drawing.
+        /// </summary>
+        public static CadDwgRunResult ReadExtents(string dwgPath, int timeoutSeconds = 120)
+        {
+            var result = new CadDwgRunResult();
+            if (string.IsNullOrWhiteSpace(dwgPath) || !File.Exists(dwgPath))
+            {
+                result.Refusal = "drawing_not_found";
+                return result;
+            }
+            string engine = FindEngine();
+            if (engine == null) { result.Refusal = "no_dwg_engine"; return result; }
+            result.EnginePath = engine;
+            result.EngineVersion = EngineVersionOf(engine);
+
+            try
+            {
+                CadDwgCacheEntry cached = CadDwgCache.Lookup(dwgPath, CadDwgCache.Sha256(dwgPath), result.EngineVersion,
+                                                             "mm_per_unit=(none)");
+                if (cached != null && cached.Hit)
+                {
+                    CadDwgReading hit = CadDwgExtract.Parse(File.ReadLines(cached.TsvPath));
+                    if (hit.Complete && hit.ExtMin.HasValue && hit.ExtMax.HasValue)
+                    {
+                        result.Reading = hit;
+                        result.FromCache = true;
+                        result.CacheDetail = new JObject { ["state"] = "hit", ["key"] = cached.Key };
+                        return result;
+                    }
+                }
+            }
+            catch { /* a cache that cannot answer is a miss */ }
+
+            string work = Path.Combine(Path.GetTempPath(), "horizun-dwg", Guid.NewGuid().ToString("N"));
+            var clock = Stopwatch.StartNew();
+            try
+            {
+                Directory.CreateDirectory(work);
+                string scriptPath = Path.Combine(work, "header.scr");
+                string outPath = Path.Combine(work, "header.tsv");
+                File.WriteAllText(scriptPath, BuildHeaderScript(outPath), new UTF8Encoding(false));
+                var psi = new ProcessStartInfo
+                {
+                    FileName = engine,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    WorkingDirectory = work,
+                    Arguments = "/i \"" + dwgPath + "\" /s \"" + scriptPath + "\" /l en-US"
+                };
+                using (var p = Process.Start(psi))
+                {
+                    // Drained, not kept: a console whose pipes fill up stops writing and never exits.
+                    p.OutputDataReceived += (s, e) => { };
+                    p.ErrorDataReceived += (s, e) => { };
+                    p.BeginOutputReadLine();
+                    p.BeginErrorReadLine();
+                    if (!p.WaitForExit(Math.Max(5, timeoutSeconds) * 1000))
+                    {
+                        try { p.Kill(); } catch { }
+                        result.Refusal = "extraction_timed_out";
+                        return result;
+                    }
+                    result.ExitCode = p.ExitCode;
+                }
+                if (!File.Exists(outPath)) { result.Refusal = "extraction_produced_nothing"; return result; }
+                result.Reading = CadDwgExtract.Parse(File.ReadLines(outPath));
+                if (!result.Reading.Complete) result.Refusal = "extraction_incomplete";
+                result.CacheDetail = new JObject { ["state"] = "header_only_read", ["stored"] = false };
+                return result;
+            }
+            catch (Exception ex)
+            {
+                result.Refusal = "engine_would_not_start: " + ex.Message;
+                return result;
+            }
+            finally
+            {
+                result.Seconds = clock.Elapsed.TotalSeconds;
+                try { if (Directory.Exists(work)) Directory.Delete(work, true); } catch { }
+            }
+        }
+
+        /// <summary>
         /// Read one DWG. The file is opened WHERE IT LIVES - see the header - and
         /// nothing is written to its folder.
         /// </summary>
