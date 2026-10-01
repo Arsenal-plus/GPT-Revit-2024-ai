@@ -223,9 +223,51 @@ namespace Horizun.Server
 
         // ---- the walk --------------------------------------------------------------
 
+        // ---- what the bridge itself wrote -------------------------------------------
+
+        /// <summary>
+        /// Explanation fields the BRIDGE authors, by tool and by path under the reply's data.
+        ///
+        /// The detector exists for text that came out of a model or a file. These fields are
+        /// fixed sentences in the add-in's own source that explain a block to the caller - and
+        /// because they explain Horizun, they name Horizun's tools ("...for
+        /// horizun_apply_corrections", "...or an execute_python script"), which is exactly
+        /// what tool_invocation and python_execution look for. Flagging them told a viewer of
+        /// horizun_health and horizun_audit_model that the model held a suspected injection
+        /// when it held none (course dry run 2026-09-30, defect #14).
+        ///
+        /// Deliberately an exact (tool, path) list, not a rule like "every *_means key": a
+        /// field is listed only after reading its source and confirming no model text is
+        /// interpolated into it. A listed path is still NEUTRALISED; only the instruction
+        /// tripwire skips it, and only at that exact path - the same sentence in an element
+        /// name, a parameter value or any other field is flagged as before.
+        /// </summary>
+        internal static readonly IReadOnlyDictionary<string, string[]> BridgeAuthoredPaths =
+            new Dictionary<string, string[]>(StringComparer.Ordinal)
+            {
+                // HealthCommand.RecentWritesBlock: "'tool' is the Horizun command name ..." + RevitUndoDisclaimer.
+                { "horizun_health", new[] { "recent_horizun_writes.note" } },
+                // AuditModelCommand: constant sentence + FindingIdentity.TopMeans.
+                { "horizun_audit_model", new[] { "finding_set_means" } }
+            };
+
         internal sealed class Report
         {
             public string Origin = OriginModel;
+
+            /// <summary>
+            /// The tool whose reply this is, for <see cref="BridgeAuthoredPaths"/>. Null - the
+            /// default - exempts nothing.
+            /// </summary>
+            public string Tool;
+
+            /// <summary>Is the string at this path (relative to the reply's data) bridge-authored?</summary>
+            internal bool IsBridgeAuthored(string dataRelativePath)
+            {
+                if (Tool == null || dataRelativePath == null) return false;
+                return BridgeAuthoredPaths.TryGetValue(Tool, out string[] paths) &&
+                       Array.IndexOf(paths, dataRelativePath) >= 0;
+            }
             public int NeutralizedCharacters;
             public int NeutralizedStrings;
             public int SuspectedInstructions;
@@ -290,9 +332,17 @@ namespace Horizun.Server
         /// <paramref name="token"/>, in place. Numbers, booleans and structure are never
         /// touched. Safe on null.
         /// </summary>
-        public static void Scrub(JToken token, Report report)
+        public static void Scrub(JToken token, Report report) => Scrub(token, report, isData: true);
+
+        /// <summary>
+        /// <paramref name="isData"/> says the token is the reply's data payload, the only
+        /// place <see cref="BridgeAuthoredPaths"/> are looked up; an error, a failure detail
+        /// or any other part is scanned in full.
+        /// </summary>
+        internal static void Scrub(JToken token, Report report, bool isData)
         {
             if (token == null || report == null) return;
+            string rootPath = token.Path;
             var stack = new Stack<JToken>();
             stack.Push(token);
             while (stack.Count > 0)
@@ -335,6 +385,7 @@ namespace Horizun.Server
                             v.Value = clean;
                             report.Neutralized(replaced, v.Path);
                         }
+                        if (isData && report.IsBridgeAuthored(RelativeTo(rootPath, v.Path))) break;
                         string pattern = SuspectedInstruction(clean);
                         if (pattern != null) report.Flag(pattern, v.Path);
                         break;
@@ -342,14 +393,21 @@ namespace Horizun.Server
             }
         }
 
+        /// <summary>The path of a descendant relative to the scrubbed root ("" root -> unchanged).</summary>
+        private static string RelativeTo(string rootPath, string path)
+        {
+            if (string.IsNullOrEmpty(rootPath)) return path;
+            return path.StartsWith(rootPath + ".", StringComparison.Ordinal) ? path.Substring(rootPath.Length + 1) : null;
+        }
+
         /// <summary>
         /// Scrub the parts of an add-in reply that carry its words: data, error, what Revit
         /// raised, the failure detail. The fallback block and capability gaps are written by
         /// the bridge and are scrubbed too - harmlessly - because a gap can quote an argument.
         /// </summary>
-        public static Report ScrubReply(JObject reply, string origin = OriginModel)
+        public static Report ScrubReply(JObject reply, string origin = OriginModel, string tool = null)
         {
-            var report = new Report { Origin = origin };
+            var report = new Report { Origin = origin, Tool = tool };
             if (reply == null) return report;
             foreach (string key in new[] { "data", "error", "revit_said", "detail", "fallback", "capability_gaps" })
             {
@@ -363,7 +421,7 @@ namespace Horizun.Server
                     string pattern = SuspectedInstruction(clean);
                     if (pattern != null) report.Flag(pattern, key);
                 }
-                else Scrub(part, report);
+                else Scrub(part, report, isData: key == "data");
             }
             return report;
         }

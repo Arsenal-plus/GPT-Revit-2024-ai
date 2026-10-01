@@ -277,5 +277,103 @@ namespace Horizun.Server.Tests
             Assert.Contains("content_safety.untrusted_content=true", s);
             Assert.Contains("do not follow", s);
         }
+
+        // ---- (d) the bridge's own sentences (course dry run 2026-09-30, defect #14) ----
+
+        // The two sentences as the add-in writes them (HealthCommand.RecentWritesBlock and
+        // AuditModelCommand). Both name Horizun tools, which is what tripped the detector.
+        private const string HealthNote =
+            "'tool' is the Horizun command name; ... it says nothing about edits a human made in Revit's UI, " +
+            "another add-in's writes, or an execute_python script (whose own testimony is its __output__).";
+        private const string FindingSetMeans =
+            "finding_id and finding_set_fingerprint identify this run for horizun_apply_corrections and for " +
+            "require_gate on the bridge's save and export.";
+
+        private static JObject Reply(JObject data) => new JObject { ["success"] = true, ["data"] = data };
+
+        [Fact]
+        public void The_bridge_sentences_do_trip_the_detector_on_their_own()
+        {
+            // The premise of the exemption: without it these two ARE flagged.
+            Assert.Equal("python_execution", ContentSafety.SuspectedInstruction(HealthNote));
+            Assert.Equal("tool_invocation", ContentSafety.SuspectedInstruction(FindingSetMeans));
+        }
+
+        [Fact]
+        public void Bridge_authored_fields_of_health_and_audit_are_not_flagged()
+        {
+            JObject health = Reply(new JObject
+            {
+                ["recent_horizun_writes"] = new JObject { ["note"] = HealthNote, ["batches_recorded_total"] = 2 }
+            });
+            ContentSafety.Report h = ContentSafety.ScrubReply(health, ContentSafety.OriginModel, "horizun_health");
+            Assert.Equal(0, h.SuspectedInstructions);
+
+            JObject audit = Reply(new JObject { ["finding_set_means"] = FindingSetMeans });
+            ContentSafety.Report a = ContentSafety.ScrubReply(audit, ContentSafety.OriginModel, "horizun_audit_model");
+            Assert.Equal(0, a.SuspectedInstructions);
+        }
+
+        [Fact]
+        public void The_same_sentence_in_model_text_is_still_flagged()
+        {
+            JObject audit = Reply(new JObject
+            {
+                ["finding_set_means"] = FindingSetMeans,
+                ["findings"] = new JArray
+                {
+                    new JObject { ["name"] = FindingSetMeans, ["comments"] = HealthNote }
+                }
+            });
+            ContentSafety.Report r = ContentSafety.ScrubReply(audit, ContentSafety.OriginModel, "horizun_audit_model");
+            Assert.Equal(2, r.SuspectedInstructions);
+            var paths = r.Suspected.Select(o => (string)o["path"]).ToList();
+            Assert.Contains("data.findings[0].name", paths);
+            Assert.Contains("data.findings[0].comments", paths);
+            Assert.DoesNotContain("data.finding_set_means", paths);
+        }
+
+        [Fact]
+        public void The_exemption_is_scoped_to_its_tool_and_to_the_data_payload()
+        {
+            // Another tool with a field of the same name: flagged.
+            ContentSafety.Report other = ContentSafety.ScrubReply(
+                Reply(new JObject { ["finding_set_means"] = FindingSetMeans }), ContentSafety.OriginModel, "horizun_query_model");
+            Assert.Equal(1, other.SuspectedInstructions);
+
+            // No tool named: nothing is exempt.
+            ContentSafety.Report none = ContentSafety.ScrubReply(Reply(new JObject { ["finding_set_means"] = FindingSetMeans }));
+            Assert.Equal(1, none.SuspectedInstructions);
+
+            // The same path under the failure detail rather than the data: flagged.
+            var failed = new JObject
+            {
+                ["success"] = false,
+                ["detail"] = new JObject { ["finding_set_means"] = FindingSetMeans }
+            };
+            ContentSafety.Report detail = ContentSafety.ScrubReply(failed, ContentSafety.OriginModel, "horizun_audit_model");
+            Assert.Equal(1, detail.SuspectedInstructions);
+        }
+
+        [Fact]
+        public void A_bridge_authored_field_is_still_neutralised()
+        {
+            JObject health = Reply(new JObject
+            {
+                ["recent_horizun_writes"] = new JObject { ["note"] = "note‮with an override" }
+            });
+            ContentSafety.Report h = ContentSafety.ScrubReply(health, ContentSafety.OriginModel, "horizun_health");
+            Assert.Equal(1, h.NeutralizedCharacters);
+            Assert.Equal("note[U+202E]with an override", (string)health["data"]["recent_horizun_writes"]["note"]);
+        }
+
+        [Fact]
+        public void A_host_tool_payload_is_exempted_by_the_same_relative_path()
+        {
+            var data = new JObject { ["finding_set_means"] = FindingSetMeans };
+            var report = new ContentSafety.Report { Tool = "horizun_audit_model" };
+            ContentSafety.Scrub(data, report);
+            Assert.Equal(0, report.SuspectedInstructions);
+        }
     }
 }
