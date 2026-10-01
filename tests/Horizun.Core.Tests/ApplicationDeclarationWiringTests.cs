@@ -295,6 +295,23 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Set_crop_verifies_through_the_crop_rules_never_on_the_box_alone()
+        {
+            // 2026-09-30: set_crop said verified=true and the viewport still looked uncropped.
+            string src = CommandSources()["ManageViewsCommand.cs"];
+            int verify = src.IndexOf("private static bool Verify(Document doc, Applied a, Element e)", StringComparison.Ordinal);
+            int crop = src.IndexOf("case \"set_crop\":", verify, StringComparison.Ordinal);
+            int next = src.IndexOf("case \"set_annotation_crop\":", crop, StringComparison.Ordinal);
+            Assert.True(verify > 0 && crop > verify && next > crop);
+            Assert.Contains("ReadCrop(cropped, a).Verified", src.Substring(crop, next - crop));
+            Assert.Contains("ViewCropRules.Evaluate(r)", src);
+            Assert.Contains("BuiltInParameter.VIEWER_CROP_REGION", src);
+            Assert.Contains("CropShapeRect(view)", src);
+            // The owners of a crop are refused before a write: in the rehearsal and in Apply.
+            Assert.Equal(2, Regex.Matches(src, @"ViewCropRules\.Refusal\(CropPreflight\(doc, ").Count);
+        }
+
+        [Fact]
         public void Set_keynote_reports_write_failures_from_the_post_commit_read_alone()
         {
             // writes_failed was verifyFailed + failed.Count, which double-counted a refused

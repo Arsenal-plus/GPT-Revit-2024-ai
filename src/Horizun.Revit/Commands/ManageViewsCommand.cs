@@ -256,6 +256,8 @@ namespace Horizun.Revit.Commands
                 JObject detail = GraphicsDetail(doc, a.Action, a.Operation.ToLowerInvariant(), e)
                                  ?? ControlDetail(a.Action, a.Operation.ToLowerInvariant());
                 if (detail != null) row["graphics"] = detail;
+                if (string.Equals(a.Operation, "set_crop", StringComparison.OrdinalIgnoreCase) && e is View croppedView)
+                    row["crop"] = CropDetail(doc, a, croppedView);
                 if (IsRenumberOperation(a.Operation)) row["renumber"] = RenumberDetail(a.Action);
                 if (IsPerspectiveOperation(a.Operation)) row["perspective"] = PerspectiveDetail(a.Action);
                 if (IsSunStudyOperation(a.Operation)) row["sun"] = SunStudyDetail(a.Action);
@@ -514,6 +516,15 @@ namespace Horizun.Revit.Commands
                         if (cropBox[2].Value<double>() <= cropBox[0].Value<double>() ||
                             cropBox[3].Value<double>() <= cropBox[1].Value<double>())
                             throw new ArgumentException("box max must exceed box min on both axes");
+                        // A crop owned by a template, a scope box or a sketch is refused in
+                        // the rehearsal when the view already exists; a view made earlier in
+                        // this batch is checked again by Apply.
+                        if (string.IsNullOrWhiteSpace(a.Value<string>("view_key")) &&
+                            doc.GetElement(Rid.Make(a.Value<long>("view_id"))) is View preflightView)
+                        {
+                            string cropRefusal = ViewCropRules.Refusal(CropPreflight(doc, preflightView));
+                            if (cropRefusal != null) throw new ArgumentException(cropRefusal);
+                        }
                         break;
                     }
                     case "set_annotation_crop":
@@ -798,6 +809,9 @@ namespace Horizun.Revit.Commands
             if (op == "set_crop")
             {
                 View cropView = Resolve<View>(doc, a, "view_id", "view_key", aliases);
+                string cropRefusal = ViewCropRules.Refusal(CropPreflight(doc, cropView));
+                if (cropRefusal != null)
+                    throw new InvalidOperationException(cropRefusal + " The batch is rolling back.");
                 JArray b = (JArray)a["box"];
                 // The request's rectangle lives in the VIEW's right/up plane, anchored at
                 // the view origin - the frame a caller can actually reason about. The
@@ -887,6 +901,188 @@ namespace Horizun.Revit.Commands
         {
             XYZ model = view.Origin.Add(view.RightDirection.Multiply(viewX)).Add(view.UpDirection.Multiply(viewY));
             return crop.Transform.Inverse.OfPoint(model);
+        }
+
+        /// <summary>
+        /// Who owns this view's crop, read before a write. Each read is guarded: a fact
+        /// that does not read is left at its "nothing in the way" value only where the
+        /// write itself would then fail loudly (template/scope box), never silently.
+        /// </summary>
+        private static CropPreflightFacts CropPreflight(Document doc, View view)
+        {
+            var f = new CropPreflightFacts { ViewId = Rid.Value(view.Id) };
+            try { f.ViewName = view.Name; } catch { }
+            f.IsTemplate = view.IsTemplate;
+            if (f.IsTemplate) return f;
+            try
+            {
+                if (view.ViewTemplateId != null && view.ViewTemplateId != ElementId.InvalidElementId &&
+                    doc.GetElement(view.ViewTemplateId) is View template)
+                {
+                    f.TemplateId = Rid.Value(template.Id);
+                    f.TemplateName = template.Name;
+                    var cropParams = new[] { BuiltInParameter.VIEWER_CROP_REGION, BuiltInParameter.VIEWER_VOLUME_OF_INTEREST_CROP };
+                    var controllable = new HashSet<long>(template.GetTemplateParameterIds().Select(id => Rid.Value(id)));
+                    var notControlled = new HashSet<long>(template.GetNonControlledTemplateParameterIds().Select(id => Rid.Value(id)));
+                    f.TemplateControlsCrop = cropParams.Any(p => controllable.Contains((long)p) && !notControlled.Contains((long)p));
+                }
+            }
+            catch { }
+            try
+            {
+                ElementId scope = view.get_Parameter(BuiltInParameter.VIEWER_VOLUME_OF_INTEREST_CROP)?.AsElementId();
+                if (scope != null && scope != ElementId.InvalidElementId)
+                {
+                    f.ScopeBoxId = Rid.Value(scope);
+                    try { f.ScopeBoxName = doc.GetElement(scope)?.Name; } catch { }
+                }
+            }
+            catch { }
+            try { f.NonRectangularShape = view.GetCropRegionShapeManager()?.ShapeSet; } catch { }
+            return f;
+        }
+
+        /// <summary>The request's rectangle, view-plane feet, as [minX, minY, maxX, maxY].</summary>
+        private static double[] RequestedCrop(Applied a)
+        {
+            JArray b = (JArray)a.Action["box"];
+            double x0 = b[0].Value<double>() * a.Scale, y0 = b[1].Value<double>() * a.Scale;
+            double x1 = b[2].Value<double>() * a.Scale, y1 = b[3].Value<double>() * a.Scale;
+            return new[] { Math.Min(x0, x1), Math.Min(y0, y1), Math.Max(x0, x1), Math.Max(y0, y1) };
+        }
+
+        /// <summary>
+        /// The crop region Revit DRAWS, projected on the view's right/up plane from its
+        /// origin - the same frame the request speaks - as [minX, minY, maxX, maxY] in
+        /// feet. Null when there is no shape or it does not read.
+        /// </summary>
+        private static double[] CropShapeRect(View view)
+        {
+            try
+            {
+                ViewCropRegionShapeManager manager = view.GetCropRegionShapeManager();
+                if (manager == null) return null;
+                double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+                int n = 0;
+                foreach (CurveLoop loop in manager.GetCropShape())
+                    foreach (Curve curve in loop)
+                        foreach (XYZ p in curve.Tessellate())
+                        {
+                            XYZ d = p.Subtract(view.Origin);
+                            double x = d.DotProduct(view.RightDirection), y = d.DotProduct(view.UpDirection);
+                            minX = Math.Min(minX, x); minY = Math.Min(minY, y);
+                            maxX = Math.Max(maxX, x); maxY = Math.Max(maxY, y);
+                            n++;
+                        }
+                return n == 0 ? null : new[] { minX, minY, maxX, maxY };
+            }
+            catch { return null; }
+        }
+
+        // The mm tolerance rather than 1e-6 ft: Revit is free to snap a crop to its own
+        // internal grid, and the caller's claim is "this rectangle", not "these doubles".
+        private const double CropToleranceFeet = 1.0 / 304.8;
+
+        /// <summary>Every fact the set_crop verdict rests on, read off the view as it is now.</summary>
+        private static CropVerdict ReadCrop(View view, Applied a)
+        {
+            var r = new CropReadback();
+            try { r.CropBoxActive = view.CropBoxActive; } catch { }
+            try
+            {
+                Parameter p = view.get_Parameter(BuiltInParameter.VIEWER_CROP_REGION);
+                if (p != null && p.HasValue) r.CropParameter = p.AsInteger();
+            }
+            catch { }
+            double[] want = RequestedCrop(a);
+            try
+            {
+                BoundingBoxXYZ crop = view.CropBox;
+                if (crop != null)
+                {
+                    XYZ localA = CropLocal(view, crop, want[0], want[1]);
+                    XYZ localB = CropLocal(view, crop, want[2], want[3]);
+                    r.BoxMatches = ViewCropRules.RectangleMatches(
+                        new[] { Math.Min(localA.X, localB.X), Math.Min(localA.Y, localB.Y), Math.Max(localA.X, localB.X), Math.Max(localA.Y, localB.Y) },
+                        new[] { crop.Min.X, crop.Min.Y, crop.Max.X, crop.Max.Y }, CropToleranceFeet);
+                }
+            }
+            catch { }
+            double[] shape = CropShapeRect(view);
+            if (shape != null) r.ShapeMatches = ViewCropRules.RectangleMatches(want, shape, CropToleranceFeet);
+            return ViewCropRules.Evaluate(r);
+        }
+
+        /// <summary>
+        /// What a set_crop left on the model and on paper: the verdict's facts, where the
+        /// crop sits in MODEL coordinates (so a caller can see which part of the model it
+        /// frames), and every viewport that shows the view, sized against the crop.
+        /// </summary>
+        private static JObject CropDetail(Document doc, Applied a, View view)
+        {
+            CropVerdict verdict = ReadCrop(view, a);
+            var o = new JObject
+            {
+                ["verified"] = verdict.Verified,
+                ["failures"] = new JArray(verdict.Failures),
+                ["notes"] = new JArray(verdict.Notes)
+            };
+            try { o["crop_box_active"] = view.CropBoxActive; } catch { o["crop_box_active"] = JValue.CreateNull(); }
+            try { o["crop_box_visible"] = view.CropBoxVisible; } catch { o["crop_box_visible"] = JValue.CreateNull(); }
+            double[] shape = CropShapeRect(view);
+            if (shape != null)
+            {
+                o["shape_view_plane_internal_feet"] = new JArray(shape);
+                try
+                {
+                    var corners = new JArray();
+                    foreach (double[] c in new[] { new[] { shape[0], shape[1] }, new[] { shape[2], shape[3] } })
+                    {
+                        XYZ m = view.Origin.Add(view.RightDirection.Multiply(c[0])).Add(view.UpDirection.Multiply(c[1]));
+                        corners.Add(new JArray(m.X, m.Y, m.Z));
+                    }
+                    o["shape_model_corners_internal_feet"] = corners;
+                }
+                catch { }
+            }
+            int scale = 0;
+            try { scale = view.Scale; } catch { }
+            bool? annotationCrop = null;
+            try
+            {
+                Parameter ann = view.get_Parameter(BuiltInParameter.VIEWER_ANNOTATION_CROP_ACTIVE);
+                if (ann != null && ann.HasValue) annotationCrop = ann.AsInteger() == 1;
+            }
+            catch { }
+            var viewports = new JArray();
+            try
+            {
+                foreach (Viewport vp in new FilteredElementCollector(doc).OfClass(typeof(Viewport)).Cast<Viewport>()
+                             .Where(v => v.ViewId == view.Id))
+                {
+                    var row = new JObject { ["viewport_id"] = Rid.Value(vp.Id), ["sheet_id"] = Rid.Value(vp.SheetId) };
+                    try
+                    {
+                        Outline outline = vp.GetBoxOutline();
+                        double w = (outline.MaximumPoint.X - outline.MinimumPoint.X) * 304.8;
+                        double h = (outline.MaximumPoint.Y - outline.MinimumPoint.Y) * 304.8;
+                        row["viewport_mm"] = new JArray(Math.Round(w, 1), Math.Round(h, 1));
+                        if (shape != null && scale > 0)
+                        {
+                            double cw = (shape[2] - shape[0]) * 304.8 / scale, ch = (shape[3] - shape[1]) * 304.8 / scale;
+                            row["crop_at_scale_mm"] = new JArray(Math.Round(cw, 1), Math.Round(ch, 1));
+                            string finding = ViewCropRules.ViewportFinding(cw, ch, w, h, annotationCrop, 2.0);
+                            if (finding != null) row["finding"] = finding;
+                        }
+                    }
+                    catch (Exception ex) { row["unreadable"] = ex.Message; }
+                    viewports.Add(row);
+                }
+            }
+            catch { }
+            o["annotation_crop_active"] = annotationCrop.HasValue ? (JToken)annotationCrop.Value : JValue.CreateNull();
+            o["viewports"] = viewports;
+            return o;
         }
 
         /// <summary>The four planes set_view_range can move, in the request's field-prefix spelling.</summary>
@@ -1094,24 +1290,10 @@ namespace Horizun.Revit.Commands
                     return true;
                 }
                 case "set_crop":
-                {
-                    if (!(e is View cropped) || !cropped.CropBoxActive) return false;
-                    JArray b = (JArray)a.Action["box"];
-                    BoundingBoxXYZ crop;
-                    try { crop = cropped.CropBox; } catch { return false; }
-                    XYZ localA = CropLocal(cropped, crop, b[0].Value<double>() * a.Scale,
-                                           b[1].Value<double>() * a.Scale);
-                    XYZ localB = CropLocal(cropped, crop, b[2].Value<double>() * a.Scale,
-                                           b[3].Value<double>() * a.Scale);
-                    // The mm tolerance rather than 1e-6 ft: Revit is free to snap a crop
-                    // to its own internal grid, and the caller's claim is "this rectangle",
-                    // not "these exact doubles".
-                    const double cropTolerance = 1.0 / 304.8;
-                    return Math.Abs(crop.Min.X - Math.Min(localA.X, localB.X)) <= cropTolerance &&
-                           Math.Abs(crop.Min.Y - Math.Min(localA.Y, localB.Y)) <= cropTolerance &&
-                           Math.Abs(crop.Max.X - Math.Max(localA.X, localB.X)) <= cropTolerance &&
-                           Math.Abs(crop.Max.Y - Math.Max(localA.Y, localB.Y)) <= cropTolerance;
-                }
+                    // Active flag, "Crop View" parameter, CropBox AND the drawn crop
+                    // shape: a box stored on a crop that does not govern the view is not
+                    // a cropped view (ViewCropRules).
+                    return e is View cropped && ReadCrop(cropped, a).Verified;
                 case "set_annotation_crop":
                 {
                     Parameter ann = (e as View)?.get_Parameter(BuiltInParameter.VIEWER_ANNOTATION_CROP_ACTIVE);

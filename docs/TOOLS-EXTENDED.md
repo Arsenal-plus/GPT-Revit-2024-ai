@@ -2631,6 +2631,24 @@ no sample (a curtain wall, a ceiling, an element without location) is `unlocatab
 counted as unassigned. A floor whose top face lies below its room's base (a structural slab
 under a finish floor) is unassigned.
 
+## horizun_manage_views: `set_crop` (what makes a crop real)
+
+`set_crop` writes the rectangle `box` (view plane, the call's units) and turns the crop
+on. Its verdict no longer rests on the stored CropBox alone, which Revit keeps whether or
+not it governs the view (reported: `verified: true` while the placed view still looked
+uncropped). It now needs, before the commit and again after it: `CropBoxActive` true, the
+"Crop View" parameter (`VIEWER_CROP_REGION`) on, read independently, the CropBox equal to
+the request within 1 mm, and the crop SHAPE Revit draws (`GetCropShape`, projected on the
+view plane) spanning the request. An unreadable shape is a note in `crop.notes`, not a
+pass of its own. Refused by name before anything is written: a view template that controls
+the crop (clear it with `set_template_controls` or remove the template), a scope box
+driving it, and a sketched (non-rectangular) crop, over which the API ignores a crop box.
+The row's `crop` block reports the facts, the crop's corners in model coordinates, and every
+viewport showing the view with its size on the sheet against the crop at the view's scale;
+a viewport larger than its crop is a named finding (`viewport_larger_than_crop`, usually
+grids, levels or tags outside the crop while the annotation crop is off -
+`set_annotation_crop`), reported without changing the verdict.
+
 ## horizun_manage_views: `renumber_sheets` (a register-wide map)
 
 `renumber_sheets` renumbers many sheets at once from a map `old number -> new
