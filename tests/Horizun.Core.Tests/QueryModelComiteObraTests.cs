@@ -34,6 +34,20 @@ namespace Horizun.Core.Tests
             Assert.Equal((double)g["plan_angle_degrees"], (double)reversed["plan_angle_degrees"], 6);
         }
 
+        [Theory]
+        [InlineData(-0.0)]
+        [InlineData(0.0)]
+        [InlineData(-1e-12)]
+        public void A_grid_along_X_reads_zero_degrees_never_negative_zero(double dy)
+        {
+            // Measured live on CO-Mirador-redes: grid A printed plan_angle_degrees -0.0.
+            JObject g = DatumGeometryRules.Grid(new[] { 0.0, 5.0, 0.0 }, new[] { 10.0, 5.0 + dy, 0.0 }, false, null, 1, "feet");
+            double angle = (double)g["plan_angle_degrees"];
+            Assert.Equal(0.0, angle);
+            Assert.False(double.IsNegative(angle));
+            Assert.DoesNotContain("-0", g["plan_angle_degrees"].ToString(Newtonsoft.Json.Formatting.None));
+        }
+
         [Fact]
         public void A_curved_grid_lists_its_points_and_claims_no_straight_direction()
         {

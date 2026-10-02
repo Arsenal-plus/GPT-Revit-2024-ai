@@ -62,7 +62,10 @@ namespace Horizun.Revit.Core
                 double deg = Math.Atan2(dy, dx) * 180.0 / Math.PI;
                 if (deg < 0) deg += 180.0;
                 if (deg >= 180.0 - 1e-9) deg -= 180.0;
-                o["plan_angle_degrees"] = Math.Round(deg, 4);
+                deg = Math.Round(deg, 4);
+                // MEASURED live: a grid drawn along +X read "-0.0" (Atan2 of a -0 dy).
+                if (deg == 0) deg = 0.0;
+                o["plan_angle_degrees"] = deg;
                 o["length"] = Math.Round(Math.Sqrt(dx * dx + dy * dy) * scale, 3);
             }
             if (curved && points != null && points.Count > 2) o["points"] = new JArray(points.Select(p => (JToken)P(p, scale)));
