@@ -1,24 +1,33 @@
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
-// AN EXPORT IS A DELIVERY OF OUTPUT, NOT A WRITE.
+// AN EXPORT IS A DELIVERY OF OUTPUT, NOT A WRITE - AND THE REPLY MUST SAY WHICH.
 //
-// MEASURED (Comité de obra, 2026-10-01, Revit 2026.4): horizun_export format=nwc on a
-// structural model came back with model_changes.modified = 11 - eleven rebar elements
-// that Revit's Navisworks exporter regenerated and COMMITTED while it wrote the file.
-// The tool is documented as output only; the document was left dirty by a call that
-// never asked to change it. The IFC exporter does the same on purpose (export marks)
-// and refuses to run without an open transaction, which the handler used to commit.
+// REPORTED (Comité de obra, 2026-10-01, Revit 2026.4, v2.1.5): horizun_export
+// format=nwc on a structural model came back with model_changes.modified = 11, eleven
+// rebar elements, and the run concluded the export had modified the model.
 //
-// So the exporters that are known to write run inside a TransactionGroup that is
-// ROLLED BACK after the file is on disk. Whatever the exporter committed is taken
-// back; the file it wrote stays. The reply says what the exporter changed (counted
-// before the rollback) and what was left after it (counted after, against the model)
-// - and if the group could not be opened or the rollback did not take, it says the
-// model was LEFT MODIFIED instead of letting model_changes be the only witness.
+// MEASURED LIVE the same evening, on fresh copies of the same model:
+//   - Revit's Navisworks exporter DOES write while it exports: one transaction,
+//     "Navisworks23", adding 12 elements and modifying 12;
+//   - with v2.1.5 (no isolation) and with the rolled-back group below alike, the
+//     document afterwards reads Document.IsModified = false, and the eleven rebar
+//     re-read byte-identical (bounding box, lengths, count, spacing);
+//   - and in both, DocumentChanged still lists those eleven rebar as modified: the
+//     event that takes the change back does not name them. The "11" was a residue of
+//     the bridge's event accounting, not a change to the model.
 //
-// Revit-free: the Revit half opens the group and counts; this decides what the
-// counts mean and how loudly to say it.
+// So two things happen here. The exporters known to write (NWC; IFC, which needs an
+// open transaction for its export marks) run inside a TransactionGroup that is rolled
+// back once the file is on disk - a belt for an exporter that might not clean up
+// after itself. And the WITNESS for "did this call change the model" is Revit's own
+// modified flag, read before and after: clean before and clean after is PROOF of no
+// change, whatever the events left behind; clean before and dirty after is proof of
+// one. A document that already had unsaved changes cannot testify through the flag,
+// and is reported as unverified rather than called clean or modified.
+//
+// Revit-free: the Revit half opens the group, counts and reads the flag; this decides
+// what the readings mean and how loudly to say it.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -32,12 +41,13 @@ namespace Horizun.Revit.Core
         public const string NoModelChange = "no_model_change";
         public const string RolledBack = "exporter_changes_rolled_back";
         public const string RollbackFailed = "rollback_failed_model_modified";
+        public const string Unverified = "rolled_back_unverified";
         public const string UnavailableModified = "isolation_unavailable_model_modified";
         public const string UnavailableUnchanged = "isolation_unavailable_no_change";
 
         /// <summary>
         /// The formats whose Revit exporter is known to commit to the document: NWC
-        /// (regeneration - measured on rebar) and IFC (export marks, and a hard
+        /// (measured: transaction "Navisworks23") and IFC (export marks, and a hard
         /// requirement for an open transaction). The others export from a document
         /// that is not modifiable and have never been measured writing.
         /// </summary>
@@ -45,7 +55,7 @@ namespace Horizun.Revit.Core
             string.Equals(format, "nwc", StringComparison.Ordinal) ||
             string.Equals(format, "ifc", StringComparison.Ordinal);
 
-        /// <summary>The counts the Revit half measured.</summary>
+        /// <summary>The readings the Revit half took.</summary>
         public sealed class Facts
         {
             /// <summary>The group was opened around the export.</summary>
@@ -56,105 +66,143 @@ namespace Horizun.Revit.Core
             public string RollbackStatus;
             /// <summary>The rollback threw; null when it did not.</summary>
             public string RollbackError;
-            /// <summary>What the exporter committed, before the rollback.</summary>
+            /// <summary>Document.IsModified before the export and after the rollback; null when unreadable.</summary>
+            public bool? ModifiedBefore, ModifiedAfter;
+            /// <summary>What the exporter committed, by DocumentChanged, before the rollback.</summary>
             public int Added, Modified, Deleted;
-            /// <summary>What is still changed after the rollback, measured against the model.</summary>
+            /// <summary>What DocumentChanged still lists after the rollback, settled against the model.</summary>
             public int ResidualAdded, ResidualModified, ResidualDeleted;
             public List<string> Transactions = new List<string>();
             /// <summary>A few of the changed elements, described while they still existed.</summary>
             public JArray Sample = new JArray();
+            /// <summary>A few of the residual ids.</summary>
+            public JArray ResidualSample = new JArray();
         }
+
+        private static int Exporter(Facts f) => f.Added + f.Modified + f.Deleted;
+        private static int Residual(Facts f) => f.ResidualAdded + f.ResidualModified + f.ResidualDeleted;
+
+        /// <summary>Revit's own flag proves the call left the document as it found it.</summary>
+        public static bool ProvenUnchanged(Facts f) => f.ModifiedBefore == false && f.ModifiedAfter == false;
+
+        /// <summary>Revit's own flag proves the call changed the document.</summary>
+        public static bool ProvenChanged(Facts f) => f.ModifiedBefore == false && f.ModifiedAfter == true;
 
         public static string Status(Facts f)
         {
-            int residual = f.ResidualAdded + f.ResidualModified + f.ResidualDeleted;
-            int exporter = f.Added + f.Modified + f.Deleted;
-            if (!f.GroupStarted) return residual > 0 || exporter > 0 ? UnavailableModified : UnavailableUnchanged;
-            // What the model answers after the rollback wins over what the rollback said.
-            if (residual > 0) return RollbackFailed;
-            if (exporter == 0) return NoModelChange;
-            if (f.RollbackError != null || !string.Equals(f.RollbackStatus, "RolledBack", StringComparison.Ordinal))
-                return RollbackFailed;
-            return RolledBack;
+            if (ProvenUnchanged(f))
+                return f.GroupStarted && Exporter(f) > 0 ? RolledBack : f.GroupStarted ? NoModelChange : UnavailableUnchanged;
+            if (ProvenChanged(f)) return f.GroupStarted ? RollbackFailed : UnavailableModified;
+            // The flag cannot testify (unsaved work before the call, or unreadable): only
+            // the events are left, and they are known to over-report.
+            if (Exporter(f) == 0 && Residual(f) == 0) return f.GroupStarted ? NoModelChange : UnavailableUnchanged;
+            return Unverified;
         }
 
-        /// <summary>True when the call leaves the document changed (or cannot prove it did not).</summary>
-        public static bool ModelLeftModified(Facts f)
+        /// <summary>true / false when proven; null when it cannot be told.</summary>
+        public static bool? ModelLeftModified(Facts f)
         {
-            string s = Status(f);
-            return s == RollbackFailed || s == UnavailableModified;
+            if (ProvenChanged(f)) return true;
+            if (ProvenUnchanged(f)) return false;
+            return Exporter(f) == 0 && Residual(f) == 0 ? (bool?)false : null;
         }
 
         public static JObject Report(string format, Facts f)
         {
             string status = Status(f);
+            bool? left = ModelLeftModified(f);
             var o = new JObject
             {
                 ["status"] = status,
                 ["format"] = format,
                 ["isolated"] = f.GroupStarted,
-                ["model_left_modified"] = ModelLeftModified(f),
+                ["model_left_modified"] = left.HasValue ? (JToken)left.Value : JValue.CreateNull(),
+                ["proof"] = ProvenUnchanged(f) || ProvenChanged(f) ? "Document.IsModified before and after" : "none: Document.IsModified " +
+                            (f.ModifiedBefore == true ? "was already true before the export" : "could not be read") + ", so only change events remain",
+                ["is_modified_before"] = f.ModifiedBefore.HasValue ? (JToken)f.ModifiedBefore.Value : JValue.CreateNull(),
+                ["is_modified_after"] = f.ModifiedAfter.HasValue ? (JToken)f.ModifiedAfter.Value : JValue.CreateNull(),
                 ["exporter_changes"] = new JObject
                 {
                     ["added"] = f.Added, ["modified"] = f.Modified, ["deleted"] = f.Deleted,
                     ["transactions"] = new JArray(f.Transactions.Distinct(StringComparer.Ordinal)),
                     ["sample"] = f.Sample ?? new JArray()
                 },
-                ["after_rollback"] = new JObject
+                ["event_residue"] = new JObject
                 {
-                    ["added"] = f.ResidualAdded, ["modified"] = f.ResidualModified, ["deleted"] = f.ResidualDeleted
+                    ["added"] = f.ResidualAdded, ["modified"] = f.ResidualModified, ["deleted"] = f.ResidualDeleted,
+                    ["sample"] = f.ResidualSample ?? new JArray(),
+                    ["means"] = "ids Revit's DocumentChanged still lists after the rollback. Measured on NWC: eleven rebar " +
+                                "listed here re-read byte-identical with Document.IsModified false - the event that undoes " +
+                                "the change does not name them. Not evidence of a change on its own."
                 }
             };
             if (f.RollbackStatus != null) o["rollback_status"] = f.RollbackStatus;
             if (f.RollbackError != null) o["rollback_error"] = f.RollbackError;
             if (f.UnavailableReason != null) o["unavailable_reason"] = f.UnavailableReason;
-            o["means"] = Means(status, f);
+            o["means"] = Means(status);
             return o;
+        }
+
+        /// <summary>
+        /// model_changes as this call may state it: zero, with the proof, when Revit's
+        /// flag proves the document unchanged; null (let the event tally stand) otherwise.
+        /// </summary>
+        public static JObject ProvenModelChanges(Facts f)
+        {
+            if (!ProvenUnchanged(f)) return null;
+            return new JObject
+            {
+                ["added"] = 0, ["modified"] = 0, ["deleted"] = 0, ["documents"] = new JArray(),
+                ["proven_unchanged"] = true,
+                ["events_listed"] = new JObject { ["added"] = f.ResidualAdded, ["modified"] = f.ResidualModified, ["deleted"] = f.ResidualDeleted },
+                ["source"] = "Document.IsModified was false before this export and false after it, so the document is as it was. " +
+                             "events_listed is what Revit's DocumentChanged still named (see model_isolation.event_residue)."
+            };
         }
 
         /// <summary>The sentence that goes first in the reply, or null when nothing needs saying.</summary>
         public static string Headline(string format, Facts f)
         {
-            string status = Status(f);
-            int exporter = f.Added + f.Modified + f.Deleted;
-            switch (status)
+            string fmt = format.ToUpperInvariant();
+            switch (Status(f))
             {
-                case RolledBack:
-                    return "The " + format.ToUpperInvariant() + " exporter changed " + exporter + " element(s) of the model " +
-                           "while writing the file; those changes were rolled back and the model is as it was " +
-                           "(see model_isolation).";
                 case RollbackFailed:
-                    return "THE MODEL WAS LEFT MODIFIED: the " + format.ToUpperInvariant() + " exporter changed " + exporter +
-                           " element(s) and the rollback did not take them all back (" +
-                           (f.ResidualAdded + f.ResidualModified + f.ResidualDeleted) + " still changed). The file was written; " +
+                    return "THE MODEL WAS LEFT MODIFIED: the document was clean before this " + fmt + " export and Revit reports " +
+                           "unsaved changes after it, although the exporter's changes were rolled back. The file was written; " +
                            "do not save the model before reviewing model_isolation.";
                 case UnavailableModified:
-                    return "THE MODEL WAS LEFT MODIFIED: the export could not be isolated (" + (f.UnavailableReason ?? "unknown reason") +
-                           ") and the " + format.ToUpperInvariant() + " exporter changed " + exporter + " element(s). " +
-                           "The file was written; do not save the model before reviewing model_isolation.";
+                    return "THE MODEL WAS LEFT MODIFIED: the " + fmt + " export could not be isolated (" + (f.UnavailableReason ?? "unknown reason") +
+                           ") and Revit reports unsaved changes after it on a document that was clean before. The file was written; " +
+                           "do not save the model before reviewing model_isolation.";
+                case Unverified:
+                    return "The " + fmt + " exporter wrote " + Exporter(f) + " element(s) while exporting and they were rolled back, but " +
+                           "the document " + (f.ModifiedBefore == true ? "already had unsaved changes" : "did not report its modified state") +
+                           ", so Revit cannot confirm it is exactly as before; change events still list " + Residual(f) +
+                           " element(s) (see model_isolation.event_residue).";
                 default:
                     return null;
             }
         }
 
-        private static string Means(string status, Facts f)
+        private static string Means(string status)
         {
             switch (status)
             {
                 case NoModelChange:
-                    return "The export ran inside a transaction group that was rolled back, and the exporter changed nothing.";
+                    return "The export ran inside a transaction group that was rolled back, and nothing was changed.";
                 case RolledBack:
-                    return "Revit's exporter committed changes to the document while writing the file (counted in " +
-                           "exporter_changes, before the rollback). The export ran inside a transaction group that was rolled " +
-                           "back after the file was on disk, so the model is as it was before the call; the file is unaffected.";
+                    return "Revit's exporter wrote to the document while exporting (exporter_changes). The export ran inside a " +
+                           "transaction group rolled back after the file was on disk, and Document.IsModified - false before, false " +
+                           "after - proves the model is as it was. The file is unaffected.";
                 case RollbackFailed:
-                    return "The export ran inside a transaction group, but after its rollback the model still differs " +
-                           "(after_rollback) or the rollback did not report RolledBack. Treat the document as modified by this call.";
+                    return "Document.IsModified was false before the export and is true after the rollback: the document was changed by this call.";
+                case Unverified:
+                    return "The exporter's changes were rolled back, but Document.IsModified cannot testify (it was already true, or " +
+                           "unreadable). The events are all that is left, and they are known to list elements the rollback restored.";
                 case UnavailableModified:
-                    return "The export could not be isolated in a transaction group, and the exporter changed the document. " +
-                           "Treat it as modified by this call.";
+                    return "The export could not be isolated, and Document.IsModified turned true: the document was changed by this call.";
                 default:
-                    return "The export could not be isolated in a transaction group; the exporter was observed and changed nothing.";
+                    return "The export could not be isolated in a transaction group; Document.IsModified shows no change.";
             }
         }
     }

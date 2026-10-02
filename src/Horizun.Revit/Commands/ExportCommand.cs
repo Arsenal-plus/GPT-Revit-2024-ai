@@ -434,12 +434,16 @@ namespace Horizun.Revit.Commands
                 }
             }
             catch (Exception ex) { exportFailure = ex; }
-            JObject isolationReport = null; string isolationHeadline = null;
+            JObject isolationReport = null, provenChanges = null; string isolationHeadline = null;
             if (isolation != null)
             {
                 ExportIsolationRules.Facts isolationFacts = isolation.End();
                 isolationReport = ExportIsolationRules.Report(format, isolationFacts);
                 isolationHeadline = ExportIsolationRules.Headline(format, isolationFacts);
+                // MEASURED: DocumentChanged keeps listing eleven rebar the rollback restored.
+                // When Revit's own flag proves the document unchanged, the reply says so
+                // instead of letting the dispatcher stamp that residue as model_changes.
+                provenChanges = ExportIsolationRules.ProvenModelChanges(isolationFacts);
             }
             if (exportFailure != null)
             {
@@ -631,6 +635,7 @@ namespace Horizun.Revit.Commands
             if (isolationReport != null)
             {
                 exportResult["model_isolation"] = isolationReport;
+                if (provenChanges != null) exportResult["model_changes"] = provenChanges;
                 if (isolationHeadline != null)
                 {
                     // First key: a finding at the bottom of a long payload is not read.

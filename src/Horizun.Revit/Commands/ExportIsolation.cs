@@ -28,6 +28,8 @@ namespace Horizun.Revit.Commands
         public static ExportIsolation Begin(UIApplication app, Document doc, string format)
         {
             var iso = new ExportIsolation { _doc = doc };
+            // The witness: Revit's own modified flag, before anything runs.
+            try { iso._facts.ModifiedBefore = doc.IsModified; } catch { iso._facts.ModifiedBefore = null; }
             try { iso._watch = new ChangeWatch(app?.Application); } catch { iso._watch = null; }
             try
             {
@@ -85,10 +87,13 @@ namespace Horizun.Revit.Commands
                 {
                     _facts.ResidualAdded = mine.Added.Count; _facts.ResidualModified = mine.Modified.Count;
                     _facts.ResidualDeleted = mine.Deleted.Count;
+                    foreach (long id in mine.Added.Take(SampleSize)) _facts.ResidualSample.Add(Describe(id, "added"));
+                    foreach (long id in mine.Modified.Take(SampleSize - _facts.ResidualSample.Count)) _facts.ResidualSample.Add(Describe(id, "modified"));
                 }
             }
             catch { }
             finally { try { _watch?.Dispose(); } catch { } }
+            try { _facts.ModifiedAfter = _doc.IsModified; } catch { _facts.ModifiedAfter = null; }
             return _facts;
         }
 
@@ -105,7 +110,7 @@ namespace Horizun.Revit.Commands
             try
             {
                 Element e = Rid.CanRepresent(id) ? _doc.GetElement(Rid.Make(id)) : null;
-                if (e != null) { row["category"] = e.Category?.Name; row["class"] = e.GetType().Name; }
+                if (e != null) { row["category"] = e.Category?.Name; row["class"] = e.GetType().Name; row["name"] = e.Name; }
             }
             catch { }
             return row;
