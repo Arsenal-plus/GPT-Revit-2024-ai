@@ -36,6 +36,7 @@ namespace Horizun.Revit.Commands
             ["include_links"] = "takeoff",
             ["categories"] = "takeoff",
             ["rows_file"] = "takeoff",
+            ["group_by"] = "takeoff (group_by='room')",
             ["category"] = "volume, takeoff, carbon",
             ["phase"] = "room_finishes, takeoff with group_by='room'",
             ["level"] = "room_finishes",

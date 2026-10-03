@@ -105,7 +105,8 @@ namespace Horizun.Revit.Commands
                 if (request[takeoffOnly] != null)
                     return CommandResult.Fail("'" + takeoffOnly + "' is not read in mode 'volume': it would be " +
                                               "silently ignored, and you would read the volume reconciliation as though your " +
-                                              "quantities had been measured. Pass the mode that reads it (takeoff, room_finishes, carbon), or drop the key. Nothing was measured.");
+                                              "quantities had been measured. It is read by: " + ModesReadingKey[takeoffOnly] +
+                                              ". Use that mode, or drop the key. Nothing was measured.");
 
             // ---- Resolve the element set. ----
             var elements = new List<Element>();
