@@ -134,6 +134,11 @@ namespace Horizun.Revit.Core
         {
             if (watch == null) return;
             if (result == null || !result.Success) return;
+            // A command that PROVED the document unchanged (Document.IsModified false before
+            // and after - horizun_export, Core/ExportIsolationRules.cs) has already stated
+            // model_changes. The event residue it measured is not a write: it is neither
+            // recorded as this document's last write nor spatially checked.
+            if (ProvenUnchanged(result)) return;
             watch.Settle();
             foreach (ChangeWatch.DocChanges d in watch.Documents) ChangeLedger.Record(tool, d);
             StampChanges(watch, result);
@@ -298,6 +303,12 @@ namespace Horizun.Revit.Core
                 double[] box = BBoxCache.Snapshot(e);
                 if (box != null) BBoxCache.Put(doc, Rid.Value(e.Id), box);
             }
+        }
+
+        private static bool ProvenUnchanged(CommandResult result)
+        {
+            try { return ((result.Data as JObject)?["model_changes"] as JObject)?.Value<bool?>("proven_unchanged") == true; }
+            catch { return false; }
         }
 
         private static JObject GetData(CommandResult result) =>

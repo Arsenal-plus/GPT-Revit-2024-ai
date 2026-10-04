@@ -271,6 +271,14 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRouteRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ExportPresetRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ExportFormatRules.cs" />
+    <!-- Comité de obra 2026-10-01: an export never writes (the NWC exporter committed 11
+         rebar), a clash names every pair it could not intersect, datums carry a box,
+         a query reads only the models it names, and compact values say their unit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExportIsolationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ClashNoSolidLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DatumGeometryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QuerySourceFilterRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CompactUnitRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\EnergyReadinessRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\HeadroomRules.cs" />
 

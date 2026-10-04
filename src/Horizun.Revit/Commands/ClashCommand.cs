@@ -184,7 +184,7 @@ namespace Horizun.Revit.Commands
                     ["result"] = "inconclusive",
                     ["elements_a"] = sideA.Count,
                     ["elements_b"] = sideB.Count,
-                    ["coverage"] = Coverage(sources, linksSkipped, new JArray(), ledgerA, ledgerB, pairs),
+                    ["coverage"] = Coverage(sources, linksSkipped, new JArray(), ledgerA, ledgerB, pairs, new ClashNoSolidLedger()),
                     ["visibility_coverage"] = visibility,
                     ["headline"] = $"One side is empty (A={sideA.Count}, B={sideB.Count}) — nothing could clash. " +
                                    "This is NOT a clean result: it means the categories matched no geometry in the " +
@@ -200,6 +200,9 @@ namespace Horizun.Revit.Commands
             var geometryFailures = new JArray();
             int bboxHits = 0, solidTests = 0;
             var solidCache = new Dictionary<string, List<Solid>>();
+            // Every pair skipped for want of a solid, by element - see Core/ClashNoSolidLedger.cs.
+            var noSolid = new ClashNoSolidLedger();
+            var geometryCensus = new Dictionary<string, string>(StringComparer.Ordinal);
 
             foreach (var a in sideA)
             {
@@ -226,6 +229,7 @@ namespace Horizun.Revit.Commands
                         // Nothing was intersected here. Falling through silently made this
                         // indistinguishable from a pair that was tested and found clean.
                         pairs.MarkNoSolids();
+                        noSolid.Add(NoSolidFacts(a, sa, options, geometryCensus), NoSolidFacts(b, sb, options, geometryCensus));
                         continue;
                     }
 
@@ -274,6 +278,9 @@ namespace Horizun.Revit.Commands
 
                     clashes.Add(new JObject
                     {
+                        // The row's position in THIS list, the index response_mode=summary,
+                        // plan_penetrations and record_findings use: a row is citable in every mode.
+                        ["clash_index"] = clashes.Count,
                         ["a"] = Describe(a),
                         ["b"] = Describe(b),
                         ["intersection_volume_m3"] = Math.Round(Guard.ToM3(vol), 6),
@@ -328,7 +335,7 @@ namespace Horizun.Revit.Commands
                 ["pairs_tested"] = pairs.Tested,
                 ["pairs_deduplicated"] = pairs.Duplicates,
                 ["truncated"] = clashes.Count >= maxResults,
-                ["coverage"] = Coverage(sources, linksSkipped, geometryFailures, ledgerA, ledgerB, pairs),
+                ["coverage"] = Coverage(sources, linksSkipped, geometryFailures, ledgerA, ledgerB, pairs, noSolid),
                 ["visibility_coverage"] = visibility,
                 ["clashes"] = clashes,
                 ["headline"] = Headline(clashes.Count, partial, linksSkipped.Count, geometryFailures.Count,
@@ -414,7 +421,7 @@ namespace Horizun.Revit.Commands
             int dropped = (a.Candidates - a.Included) + (b.Candidates - b.Included);
             if (dropped > 0) gaps.Add(dropped + " element(s) never entered the check");
             if (pairs.Unresolved > 0) gaps.Add(pairs.Unresolved + " pair(s) unresolved");
-            if (pairs.SkippedNoSolids > 0) gaps.Add(pairs.SkippedNoSolids + " pair(s) with no usable solid");
+            if (pairs.SkippedNoSolids > 0) gaps.Add(pairs.SkippedNoSolids + " pair(s) with no usable solid, named in coverage.pairs_without_solid");
             if (failures > 0 && gaps.Count == 0) gaps.Add(failures + " geometry failure(s)");
             string why = gaps.Count == 0 ? "" : " (" + string.Join(", ", gaps) + ")";
 
@@ -428,13 +435,16 @@ namespace Horizun.Revit.Commands
         }
 
         private static JObject Coverage(List<Src> sources, JArray skipped, JArray failures,
-                                        SideLedger a, SideLedger b, PairLedger pairs)
+                                        SideLedger a, SideLedger b, PairLedger pairs, ClashNoSolidLedger noSolid)
         {
             return new JObject
             {
                 ["models_checked"] = new JArray(sources.Select(s => (JToken)s.Name)),
                 ["links_not_checked"] = skipped,
                 ["unresolved_pairs"] = failures,
+                // The pairs counted in pairs.skipped_no_solids, named: which elements had no
+                // solid, how many pairs each cost and what geometry they held instead.
+                ["pairs_without_solid"] = noSolid.ToJson(),
                 ["side_a"] = Side(a),
                 ["side_b"] = Side(b),
                 ["pairs"] = new JObject
@@ -955,6 +965,56 @@ namespace Horizun.Revit.Commands
 
             cache[key] = acc;
             return acc;
+        }
+
+        /// <summary>
+        /// One side of a pair skipped for want of a solid, described once per element: its
+        /// identity and - when it has no solid - what its geometry held instead, so the
+        /// reply can say "3 mesh(es)" rather than leave the reader to reopen the family.
+        /// </summary>
+        private static ClashNoSolidLedger.ElementFacts NoSolidFacts(Item it, List<Solid> solids, Options opt,
+                                                                    Dictionary<string, string> census)
+        {
+            string key = PairLedger.ElementKey(it.Source, it.InstanceId, it.El.Id.ToString());
+            bool hasSolid = solids != null && solids.Count > 0;
+            string geometry = null;
+            if (!hasSolid && !census.TryGetValue(key, out geometry))
+            {
+                try
+                {
+                    var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+                    GeometryElement ge = it.El.get_Geometry(opt);
+                    if (ge != null) CensusOf(ge, counts);
+                    geometry = counts.Count == 0 ? "no geometry"
+                        : string.Join(", ", counts.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Value + " " + kv.Key));
+                }
+                catch (Exception ex) { geometry = "geometry unreadable: " + ex.Message; }
+                census[key] = geometry;
+            }
+            return new ClashNoSolidLedger.ElementFacts
+            {
+                Key = key, ElementId = it.El.Id.ToString(), SourceModel = it.Source,
+                Category = SafeCat(it.El), Name = SafeName(it.El), HasSolid = hasSolid, Geometry = geometry
+            };
+        }
+
+        private static void CensusOf(GeometryObject go, Dictionary<string, int> counts)
+        {
+            if (go is GeometryInstance gi)
+            {
+                GeometryElement g = gi.GetInstanceGeometry();
+                if (g != null) foreach (GeometryObject o in g) CensusOf(o, counts);
+                return;
+            }
+            if (go is GeometryElement ge) { foreach (GeometryObject o in ge) CensusOf(o, counts); return; }
+            string kind;
+            if (go is Solid s) kind = s.Volume > 1e-9 && s.Faces.Size > 0 ? "solid(s)" : "empty solid(s)";
+            else if (go is Mesh) kind = "mesh(es)";
+            else if (go is Curve) kind = "curve(s)";
+            else if (go is PolyLine) kind = "polyline(s)";
+            else if (go is Point) kind = "point(s)";
+            else kind = go?.GetType().Name ?? "null";
+            counts[kind] = counts.TryGetValue(kind, out int n) ? n + 1 : 1;
         }
 
         private static void Harvest(GeometryObject go, List<Solid> acc)

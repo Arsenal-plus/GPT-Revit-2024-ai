@@ -347,6 +347,11 @@ namespace Horizun.Revit.Commands
             var before = Snapshot(folder, format, output, pdfPaths);
             bool apiAccepted = false;
             JObject pdfApplied = null;
+            // An export is output, not a write: the exporters that commit to the document
+            // (NWC regenerates - measured on rebar; IFC writes export marks) run inside a
+            // group that is rolled back once the file is on disk. Core/ExportIsolationRules.cs.
+            ExportIsolation isolation = ExportIsolationRules.Isolates(format) ? ExportIsolation.Begin(app, doc, format) : null;
+            Exception exportFailure = null;
             try
             {
                 switch (format)
@@ -380,8 +385,9 @@ namespace Horizun.Revit.Commands
                         // MEASURED on run 15: Revit's IFC exporter WRITES to the
                         // document (export marks) and throws 'Modifying is forbidden'
                         // without an open transaction. The transaction is the API's
-                        // requirement, not a model edit of ours; it commits whatever
-                        // bookkeeping the exporter insists on.
+                        // requirement, not a model edit of ours: it commits inside the
+                        // export's isolation group, which is rolled back below, so the
+                        // bookkeeping lasts exactly as long as the exporter needs it.
                         using (var ifcTx = new Transaction(doc, "Horizun: export IFC"))
                         {
                             ifcTx.Start();
@@ -427,10 +433,28 @@ namespace Horizun.Revit.Commands
                         schedule.Export(folder, System.IO.Path.GetFileName(output), new ViewScheduleExportOptions()); apiAccepted = true; break;
                 }
             }
-            catch (Exception ex) { return CommandResult.FailWithDetail("Revit export failed: " + ex.Message,
-                new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
-                    ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) }); }
+            catch (Exception ex) { exportFailure = ex; }
+            JObject isolationReport = null, provenChanges = null; string isolationHeadline = null;
+            if (isolation != null)
+            {
+                ExportIsolationRules.Facts isolationFacts = isolation.End();
+                isolationReport = ExportIsolationRules.Report(format, isolationFacts);
+                isolationHeadline = ExportIsolationRules.Headline(format, isolationFacts);
+                // MEASURED: DocumentChanged keeps listing eleven rebar the rollback restored.
+                // When Revit's own flag proves the document unchanged, the reply says so
+                // instead of letting the dispatcher stamp that residue as model_changes.
+                provenChanges = ExportIsolationRules.ProvenModelChanges(isolationFacts);
+            }
+            if (exportFailure != null)
+            {
+                var failure = new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
+                    ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) };
+                if (isolationReport != null) failure["model_isolation"] = isolationReport;
+                return CommandResult.FailWithDetail("Revit export failed: " + exportFailure.Message +
+                    (isolationHeadline != null ? " " + isolationHeadline : ""), failure);
+            }
 
+            JObject WithIsolation(JObject detail) { if (isolationReport != null) detail["model_isolation"] = isolationReport; return detail; }
             var after = Snapshot(folder, format, output, pdfPaths);
             (List<string> produced, List<string> unmeasured) = ExportFileDiff.Diff(before, after);
             if (produced.Count == 0)
@@ -439,9 +463,9 @@ namespace Horizun.Revit.Commands
                     (unmeasured.Count > 0 ? ". " + unmeasured.Count + " matching file(s) existed before this call and could " +
                         "not be read then, so a change could not be proven either way: " + string.Join(", ", unmeasured) + "." : ".") +
                     " Success is not claimed.",
-                    new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
+                    WithIsolation(new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
                         ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}),
-                        ["unmeasured_files"]=new JArray(unmeasured) });
+                        ["unmeasured_files"]=new JArray(unmeasured) }));
             // Non-PDF formats produce exactly one file per call (dwg/image/nwc(view) take
             // exactly one view_id, ifc/nwc(model)/schedule_csv take none, fbx combines every
             // 3D view_id into ONE .fbx) - so, unlike PDF's per-view pdfPaths, the expected
@@ -462,10 +486,10 @@ namespace Horizun.Revit.Commands
                             ? " Every unexpected file is named as a companion of this drawing: Revit writes the loaded RVT links a view shows (and a sheet's views) as separate xref files. Re-run with dwg_xrefs='bound' for one self-contained file, or 'linked' to keep the companions and have them verified."
                             : "") +
                         " Success is not claimed.",
-                        new JObject { ["external_files_may_exist"] = true, ["rollback_available"] = false,
+                        WithIsolation(new JObject { ["external_files_may_exist"] = true, ["rollback_available"] = false,
                             ["planned_files"] = new JArray(new[] { output }), ["produced_files"] = new JArray(produced),
                             ["missing_files"] = new JArray(missing), ["unexpected_files"] = new JArray(extra),
-                            ["unmeasured_files"] = new JArray(unmeasured) });
+                            ["unmeasured_files"] = new JArray(unmeasured) }));
             }
 
             var files = new JArray();
@@ -608,6 +632,18 @@ namespace Horizun.Revit.Commands
                 }
             }
             if (gateDecision.Requested) exportResult["prevention"] = gateDecision.Prevention;
+            if (isolationReport != null)
+            {
+                exportResult["model_isolation"] = isolationReport;
+                if (provenChanges != null) exportResult["model_changes"] = provenChanges;
+                if (isolationHeadline != null)
+                {
+                    // First key: a finding at the bottom of a long payload is not read.
+                    var first = new JObject { ["attention"] = isolationHeadline };
+                    foreach (JProperty p in exportResult.Properties()) first.Add(p.Name, p.Value);
+                    exportResult = first;
+                }
+            }
             return CommandResult.Ok(exportResult);
         }
 

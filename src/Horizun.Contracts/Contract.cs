@@ -1150,7 +1150,7 @@ namespace Horizun.Contracts
                     "(with optional sum_parameters) and receive aggregated groups computed server-side over the " +
                     "whole matched set in ONE call - no rows, no paging, and every sum reports how many elements " +
                     "actually contributed to it. response_mode=summary returns whole-set counts without rows; " +
-                    "response_mode=compact presets lean fields and raw parameters while retaining source identity and coverage.",
+                    "response_mode=compact presets lean fields and compact parameters (numbers in display units, named in parameter_units) while retaining source identity and coverage. source_models / link_instance_ids read only the models named.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -1171,7 +1171,7 @@ namespace Horizun.Contracts
         ""summary""
       ],
       ""default"": ""full"",
-      ""description"": ""summary accumulates whole-set counts without row JSON or pagination (MEP detail uses the detailed collector); cannot combine with cursor, group_by, row projections or include_bounding_box. compact presets lean fields and raw parameters; explicit projections override its defaults. Coverage findings remain in every mode.""
+      ""description"": ""summary accumulates whole-set counts without row JSON or pagination (MEP detail uses the detailed collector); cannot combine with cursor, group_by, row projections or include_bounding_box. compact presets lean fields and compact parameters (measurable numbers in display units, named in parameter_units); explicit projections override its defaults. Coverage findings remain in every mode.""
     },
     ""cache_mode"": {
       ""type"": ""string"",
@@ -1298,6 +1298,18 @@ namespace Horizun.Contracts
       ""type"": ""boolean"",
       ""default"": true
     },
+    ""source_models"": {
+      ""type"": ""array"",
+      ""items"": { ""type"": ""string"" },
+      ""minItems"": 1,
+      ""description"": ""Read ONLY these documents: exact titles as rows report source_model (case-insensitive), or \""host\"" for the active document. Other documents are never collected. A name matching no loaded source refuses with the available ones. Union with link_instance_ids.""
+    },
+    ""link_instance_ids"": {
+      ""type"": ""array"",
+      ""items"": { ""type"": ""integer"" },
+      ""minItems"": 1,
+      ""description"": ""Read ONLY these link placements (RevitLinkInstance ids, as rows report link_instance_id) - the way to pick one of two placements of the same file. Union with source_models; the host is read only if source_models names it.""
+    },
     ""return_parameters"": {
       ""type"": ""array"",
       ""items"": {
@@ -1307,7 +1319,8 @@ namespace Horizun.Contracts
     },
     ""include_bounding_box"": {
       ""type"": ""boolean"",
-      ""default"": false
+      ""default"": false,
+      ""description"": ""Attach each row's model bounding box in host coordinates (coordinate_units). Grids and levels have no model box in Revit, so their rows also carry a datum block: a grid's start/end, plan angle and length (its bounding_box is the box of its curve, bounding_box_source=grid_curve); a level's elevation (no box - a level is a plane). Comparable across links.""
     },
     ""include_cad_provenance"": {
       ""type"": ""boolean"",
@@ -1372,7 +1385,7 @@ namespace Horizun.Contracts
         ""compact""
       ],
       ""default"": ""full"",
-      ""description"": ""compact returns each readable parameter as name:raw-value instead of the five-field object (~5x smaller per parameter). Parameters that were absent or unreadable move to a per-row parameter_issues object rather than disappearing - compact is a diet, not an amnesty.""
+      ""description"": ""compact returns each readable parameter as name:value instead of the five-field object (~5x smaller per parameter); a measurable number is converted to the host document's display unit and the reply names each parameter's unit once in parameter_units (converted=false means Revit's raw internal value). Parameters that were absent or unreadable move to a per-row parameter_issues object rather than disappearing - compact is a diet, not an amnesty.""
     },
     ""return_fields"": {
       ""type"": ""array"",
