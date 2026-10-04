@@ -3,6 +3,27 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased — 2026-10-03
+
+Defects found in the "Control 4D/5D con agentes" course rehearsal.
+
+- **Type bindings are confirmed, not failed.** `horizun_bind_shared_param` with
+  `binding_kind=Type` committed and read back correctly, then answered
+  `not_bound` / `failed` because it called `SetAllowVaryBetweenGroups`, which Revit
+  rejects for a type parameter. Varying between groups is an instance notion: for a
+  Type binding `varies_across_groups.state` is now `not_applicable`, the call is
+  skipped and the outcome is `confirmed`. Instance bindings are unchanged.
+- **Takeoffs too large for the conversation.** `horizun_quantities mode=takeoff`
+  accepts `categories: [...]` (one takeoff over several categories, each element
+  once) and `rows_file: true`, which writes the complete reply - every row,
+  ignoring `top` - to `<data root>/takeoffs/` and returns its path, row count,
+  size and SHA-256. Pass `rows_file.path` as `horizun_budget_compare
+  model_rows_path`. The location is the bridge's own, so no extra permission is
+  needed; a failed write is reported, never thrown.
+- **Element ids across Revit years.** `horizun_execute_python` scripts get
+  `horizun.id_value(id)`, which reads `.Value` (2024+) or `.IntegerValue` (2023);
+  Revit 2026 removed `IntegerValue`. The tool description says so.
+
 ## Unreleased — Comité de obra fixes (2026-10-01)
 
 Five defects reported by a live run of the «Comité de obra» exercise in Revit 2026.4 on 2026-10-01. Built for 2023–2027, unit-tested offline, and **measured live the same evening in Revit 2026.4** on fresh copies of the exercise models, through a development session of this build (`0c6a558`, clean tree) with the installed add-in set aside and restored afterwards. Tool contract: new optional arguments on `horizun_query_model` (`source_models`, `link_instance_ids`) and new reply fields; nothing removed.
@@ -12,6 +33,7 @@ Five defects reported by a live run of the «Comité de obra» exercise in Revit
 - **`horizun_query_model`:** grids and levels carry a `datum` block in host coordinates (grid line, plan angle, length; level elevation), and a grid's `bounding_box` is the box of its curve (live: 49 grids across host and link, none null; grid 1 at X −12 282 mm in the MEP model and −9 202 mm in the structural link — the survey-point offset the run found by hand). `source_models` / `link_instance_ids` read only the named documents (live: 600 of 731 rows from the link alone; a misspelt title refuses with the available sources). `compact` converts measurable numbers to the host's display units and names them in `parameter_units` (live: column volume 0.556639 m³ where it returned 19.66 ft³). **Behaviour change:** callers that converted compact values themselves must stop; `parameter_format=full` still returns `raw`.
 
 Not fixed, observed live once: linking `LNK-Mirador-redes.rvt` (39 MB) into the architecture copy through `horizun_manage_links add` kept Revit busy (about ten cores, no dialog) for 35 minutes until the session's own Revit was terminated. Revit's journal places the stall inside Revit, before the bridge's code after the commit: the linked file loaded, the active perspective view `From Parking Area` began generating its graphics, and the next entry - `FullUpdateGraphicCacheUpdater::updateAll()` for the link, then `Transaction Successful` - never came; in the course run at 17:13 the same link, host and view reached it in 0.8 s. Not reproduced in four further runs (v2.1.5 and this build, perspective view active, with and without the NWC and IFC exports that preceded the stall): the MEP link loaded in 4-6 s every time. Not attributed to the bridge; `horizun_manage_links` and the failure handler are unchanged on this branch and the bridge's timeout reply was the documented one.
+
 ## v2.1.5 — 2026-09-30
 
 Patch release over 2.1.4 (tool contract: new optional fields and one new operation; nothing removed; still 123 tools). It fixes the 18 defects found by an end-to-end dry run on 2026-09-30: seven course flows on copies of the Autodesk sample models in Revit 2026. Every item was built and unit-tested offline, then **replayed live in Revit 2026 on 2026-09-30** on fresh copies of the same Autodesk samples, through the installed build. The live replay found three more defects, fixed in this release:
