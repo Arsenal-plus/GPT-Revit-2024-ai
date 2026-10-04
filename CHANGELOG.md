@@ -3,9 +3,11 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## Unreleased — 2026-10-03
+## v2.1.6 — 2026-10-03
 
-Defects found in the "Control 4D/5D con agentes" course rehearsal.
+Patch release over 2.1.5 (tool contract: new optional arguments and reply fields; nothing removed; still 123 tools). It gathers the defects found by two live exercises on copies of the exercise and Autodesk sample models in Revit 2026: the «Comité de obra» run of 2026-10-01 and the «Control 4D/5D con agentes» course rehearsal of 2026-10-03. Each fix was unit-tested offline and replayed live in Revit 2026 on its own branch; the 2023–2027 release gate runs on this tag.
+
+### Course rehearsal «Control 4D/5D con agentes» (2026-10-03)
 
 - **Type bindings are confirmed, not failed.** `horizun_bind_shared_param` with
   `binding_kind=Type` committed and read back correctly, then answered
@@ -24,7 +26,7 @@ Defects found in the "Control 4D/5D con agentes" course rehearsal.
   `horizun.id_value(id)`, which reads `.Value` (2024+) or `.IntegerValue` (2023);
   Revit 2026 removed `IntegerValue`. The tool description says so.
 
-## Unreleased — Comité de obra fixes (2026-10-01)
+### Comité de obra fixes (2026-10-01)
 
 Five defects reported by a live run of the «Comité de obra» exercise in Revit 2026.4 on 2026-10-01. Built for 2023–2027, unit-tested offline, and **measured live the same evening in Revit 2026.4** on fresh copies of the exercise models, through a development session of this build (`0c6a558`, clean tree) with the installed add-in set aside and restored afterwards. Tool contract: new optional arguments on `horizun_query_model` (`source_models`, `link_instance_ids`) and new reply fields; nothing removed.
 
