@@ -33,7 +33,8 @@ namespace Horizun.Revit.Core
             app.ControlledApplication.DocumentSynchronizedWithCentral -= Synchronized;
             app.ViewActivated -= ViewActivated;
         }
-        static void Changed(object s, Autodesk.Revit.DB.Events.DocumentChangedEventArgs e) => Cache.Invalidate();
+        static void Changed(object s, Autodesk.Revit.DB.Events.DocumentChangedEventArgs e)
+        { Cache.Invalidate(); ModelStateFingerprint.Changed(e.GetDocument()); }
         static void Opened(object s, Autodesk.Revit.DB.Events.DocumentOpenedEventArgs e) => Cache.Invalidate();
         static void Closing(object s, Autodesk.Revit.DB.Events.DocumentClosingEventArgs e) => Cache.Invalidate();
         static void Saved(object s, Autodesk.Revit.DB.Events.DocumentSavedEventArgs e) => Cache.Invalidate();

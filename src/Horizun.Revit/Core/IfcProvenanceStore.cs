@@ -43,6 +43,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.ExtensibleStorage;
 using Newtonsoft.Json.Linq;
@@ -168,6 +169,15 @@ namespace Horizun.Revit.Core
                 lastError = ex.Message;
                 return false;
             }
+        }
+
+        public static bool Matches(Element element, IfcProvenance expected)
+        {
+            var actual = Read(element);
+            if (actual == null || expected == null) return false;
+            JObject stored = actual.ToJson();
+            return expected.ToJson().Properties().All(p =>
+                string.Equals((string)p.Value ?? "", (string)stored[p.Name] ?? "", StringComparison.Ordinal));
         }
 
         /// <summary>The record on an element, or null when it carries none.</summary>

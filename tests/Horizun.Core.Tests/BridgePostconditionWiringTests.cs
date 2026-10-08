@@ -111,7 +111,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("ControlledApplication.Language", ribbon);
             Assert.Contains("data.Application.Application.Language", ribbon);
             Assert.Contains("app.Application.Language", request);
-            Assert.Contains("Horizun — Python permission", ribbon);
+            Assert.Contains("GPT-Revit-2024-ai — Python permission", ribbon);
             Assert.Contains("Enable Python until I disable it", ribbon);
             Assert.Contains("Activar Python hasta que yo lo desactive", ribbon);
             Assert.Contains("return value.IndexOf(\"Spanish\"", ribbon);

@@ -89,6 +89,10 @@ namespace Horizun.Revit.Commands
                         ". Nothing was committed.",
                         new JObject { ["state"] = "refused", ["plan"] = edit.Plan, ["rehearsal"] = rehearsal },
                         FallbackSignal.NotAllowed("rehearsal_failed", false), null);
+                // Revit can notify cache invalidation during the provisional edit and
+                // rollback itself. Bind the restored state, after confirmed rollback,
+                // so the rehearsal cannot invalidate its own approval token.
+                if (edit.Before.ContainsKey("model_state")) edit.Before["model_state"] = ModelStateFingerprint.Read(doc);
                 DocumentGate.RecordResolvedPlan(resolved);
                 var result = new JObject
                 {
@@ -148,6 +152,7 @@ namespace Horizun.Revit.Commands
             }
 
             PostconditionCheck committed = edit.Verify(doc);
+            CapabilityRegistry.Record(app, edit.Tool, edit.Operation, committed.AllVerified);
             var done = new JObject
             {
                 ["dry_run"] = false,
@@ -178,6 +183,7 @@ namespace Horizun.Revit.Commands
         {
             verified = false; rolledBack = false;
             PostconditionCheck check = null; string error = null; string rollback;
+            using (var state = new ModelStateFingerprint.RehearsalScope(doc))
             using (var tx = new Transaction(doc, txName + " (rehearsal)"))
             {
                 try
@@ -193,6 +199,7 @@ namespace Horizun.Revit.Commands
                 {
                     Guard.RollbackResult r = Guard.RollBack(tx);
                     rollback = r.StatusName; rolledBack = r.Confirmed;
+                    state.RollbackConfirmed = rolledBack;
                 }
                 catch (Exception ex) { rollback = "exception: " + ex.Message; rolledBack = false; }
             }

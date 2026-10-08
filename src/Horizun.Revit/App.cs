@@ -254,6 +254,7 @@ namespace Horizun.Revit
             d.Register(new ManageGroupsCommand());
             d.Register(new ManageWorksetsCommand());
             d.Register(new ManageParametersCommand());
+            d.Register(new Revit2024Command());
             d.Register(new QueryClassificationCommand());
             d.Register(new ListSchedulesCommand());
             d.Register(new GetScheduleDataCommand());

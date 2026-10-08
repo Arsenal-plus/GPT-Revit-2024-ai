@@ -3,6 +3,32 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v2.2.0 — 2026-10-08
+
+Arsenal-Plus Revit 2024 RTM update, compiled against the installed API build
+**24.0.4.427** without upgrading Revit. The catalog now contains 124 tools.
+
+- Added `horizun_revit2024` with 21 operations for Toposolids, analytical geometry
+  and loads, Fabrication, electrical placement and complex family placement.
+  Added an operation capability registry and an inventory of the installed API.
+- Fixed project/shared elevations, localized family reference parameters,
+  ambiguous parameter writes and explicit 64-bit parameter identifiers.
+- Fixed physical/thermal-only material updates, asset duplication and RTM asset
+  naming, with explicit units, appearance edits and postcommit verification.
+- Verify CAD/IFC provenance after commit and report metadata failures accurately.
+  Bind approvals to model changes, preserve atomic-plan dispatch and make new
+  operation approval hashes independent of JSON object property order.
+- Removed quadratic response-scrubbing overhead without relaxing content checks.
+
+Prepublication validation: 5,851 core tests and 1,054 server tests passed; 36 live
+scenarios passed in both Russian and English on Revit 24.0.4.427. Real MCP
+preview, apply and idempotent replay passed, including the installed pair.
+Three Fabrication operations remain **unverified live** because no Fabrication
+configuration/services are installed. These results do not claim every Revit
+UI action or input is covered. See [the RTM report](docs/REVIT-2024-RTM.md) for
+scope, reproducible commands and prepublication binary fingerprints; a final
+build from a clean Git commit requires its own loading receipt.
+
 ## v2.1.6 — 2026-10-03
 
 Patch release over 2.1.5 (tool contract: new optional arguments and reply fields; nothing removed; still 123 tools). It gathers the defects found by two live exercises on copies of the exercise and Autodesk sample models in Revit 2026: the «Comité de obra» run of 2026-10-01 and the «Control 4D/5D con agentes» course rehearsal of 2026-10-03. Each fix was unit-tested offline and replayed live in Revit 2026 on its own branch; the 2023–2027 release gate runs on this tag.

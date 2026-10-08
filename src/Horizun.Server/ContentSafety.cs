@@ -342,7 +342,12 @@ namespace Horizun.Server
         internal static void Scrub(JToken token, Report report, bool isData)
         {
             if (token == null || report == null) return;
-            string rootPath = token.Path;
+            // JToken.Path finds an array index by scanning preceding siblings.
+            // Computing it for every value made a large ordinary reply quadratic.
+            // Resolve the tiny, fixed allowlist once; diagnostics still use exact paths.
+            JToken[] bridgeAuthored = isData && report.Tool != null && BridgeAuthoredPaths.TryGetValue(report.Tool, out string[] trustedPaths)
+                ? trustedPaths.Select(path => token.SelectToken(path, errorWhenNoMatch: false)).Where(t => t != null).ToArray()
+                : Array.Empty<JToken>();
             var stack = new Stack<JToken>();
             stack.Push(token);
             while (stack.Count > 0)
@@ -385,7 +390,7 @@ namespace Horizun.Server
                             v.Value = clean;
                             report.Neutralized(replaced, v.Path);
                         }
-                        if (isData && report.IsBridgeAuthored(RelativeTo(rootPath, v.Path))) break;
+                        if (bridgeAuthored.Any(trusted => ReferenceEquals(trusted, v))) break;
                         string pattern = SuspectedInstruction(clean);
                         if (pattern != null) report.Flag(pattern, v.Path);
                         break;

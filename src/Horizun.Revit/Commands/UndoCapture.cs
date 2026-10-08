@@ -69,7 +69,7 @@ namespace Horizun.Revit.Commands
                 if (p.Definition is InternalDefinition d && d.BuiltInParameter != BuiltInParameter.INVALID)
                     return "builtin:" + d.BuiltInParameter;
                 if (p.IsShared) return "guid:" + p.GUID.ToString();
-                return "name:" + p.Definition.Name;
+                return ParameterResolver.Identity(p);
             }
             catch { return null; }
         }
@@ -80,7 +80,8 @@ namespace Horizun.Revit.Commands
             if (key.StartsWith("builtin:", StringComparison.Ordinal) &&
                 Enum.TryParse(key.Substring(8), out BuiltInParameter bip)) return e.get_Parameter(bip);
             if (key.StartsWith("guid:", StringComparison.Ordinal) && Guid.TryParse(key.Substring(5), out Guid g)) return e.get_Parameter(g);
-            if (key.StartsWith("name:", StringComparison.Ordinal)) return e.LookupParameter(key.Substring(5));
+            if (key.StartsWith("id:", StringComparison.OrdinalIgnoreCase)) return ParameterResolver.ForWrite(e, key);
+            if (key.StartsWith("name:", StringComparison.Ordinal)) return ParameterResolver.ForWrite(e, key.Substring(5));
             return null;
         }
 

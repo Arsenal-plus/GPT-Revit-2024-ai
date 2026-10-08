@@ -15,6 +15,18 @@ namespace Horizun.Revit.Commands
 {
     internal static class ParameterResolver
     {
+        // Writes stay on the explicitly named element. Implicitly falling back to its
+        // type would change every instance. The resolved id can be kept in a plan.
+        public static Parameter ForWrite(Element element, string spec)
+        {
+            string scope, error;
+            Parameter p = Resolve(element, null, spec, out scope, out error);
+            if (error != null) throw new ArgumentException(error);
+            return p;
+        }
+
+        public static string Identity(Parameter p) => "id:" + Rid.Value(p.Id).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
         /// <summary>
         /// The parameter `spec` names on `element` or its `type` (null when neither has
         /// it). `scope` is "instance" or "type"; `error` is set - and null returned - when
@@ -46,6 +58,17 @@ namespace Horizun.Revit.Commands
             Parameter p;
             switch (step.Kind)
             {
+                case ParameterSpecKind.Id:
+                {
+                    long id;
+                    if (!long.TryParse(step.Token.Substring(3), System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out id) || !Rid.CanRepresent(id))
+                        return ParameterProbeResult<Parameter>.Failed("Invalid parameter id: " + step.Token);
+                    p = null;
+                    foreach (Parameter candidate in on.Parameters)
+                        if (Rid.Value(candidate.Id) == id) { p = candidate; break; }
+                    break;
+                }
                 case ParameterSpecKind.BuiltIn:
                 {
                     BuiltInParameter bip;

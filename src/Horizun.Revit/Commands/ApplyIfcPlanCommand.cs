@@ -397,7 +397,13 @@ namespace Horizun.Revit.Commands
                     provenanceWritten += written;
                     provenanceRefused += refused;
                     row["provenance_written"] = written;
-                    if (refused > 0) row["provenance_refused"] = refused;
+                    if (refused > 0)
+                    {
+                        row["provenance_refused"] = refused;
+                        row["state"] = "applied_without_provenance";
+                        failedStages++;
+                        stageChildren.Add(CompositeChild.Of(false, null));
+                    }
                 }
 
                 stageResults.Add(row);
@@ -758,6 +764,7 @@ namespace Horizun.Revit.Commands
             refused = 0;
             string planFingerprint = binding.Value<string>("plan_fingerprint");
             string stamp = DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+            var pending = new Dictionary<long, IfcProvenance>();
 
             using (var transaction = new Transaction(doc, "Horizun: record IFC provenance"))
             {
@@ -812,8 +819,7 @@ namespace Horizun.Revit.Commands
                     if (IfcProvenanceStore.Write(element, record, out lastError))
                     {
                         written++;
-                        if (!string.IsNullOrWhiteSpace(record.GlobalId))
-                            builtByGlobalId[record.GlobalId] = id;
+                        pending[id] = record;
                         report.Add(new JObject
                         {
                             ["element_id"] = id,
@@ -836,7 +842,23 @@ namespace Horizun.Revit.Commands
                     }
                 }
 
-                try { transaction.Commit(); }
+                try
+                {
+                    Guard.Commit(transaction, "IFC provenance metadata");
+                    foreach (var pair in pending)
+                    {
+                        IfcProvenance actual = IfcProvenanceStore.Read(doc.GetElement(Rid.Make(pair.Key)));
+                        bool matches = IfcProvenanceStore.Matches(doc.GetElement(Rid.Make(pair.Key)), pair.Value);
+                        var receipt = report.OfType<JObject>().Last(x => x.Value<long?>("element_id") == pair.Key);
+                        receipt["written"] = matches; receipt["host_verified"] = matches;
+                        if (!matches)
+                        {
+                            written--; refused++;
+                            report.Add(new JObject { ["element_id"] = pair.Key, ["error"] = "IFC provenance did not match after commit." });
+                        }
+                        else if (!string.IsNullOrWhiteSpace(actual.GlobalId)) builtByGlobalId[actual.GlobalId] = pair.Key;
+                    }
+                }
                 catch (Exception ex)
                 {
                     refused += written;

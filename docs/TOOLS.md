@@ -4,9 +4,12 @@ Every tool Horizun Revit MCP exposes, what it does, and where it refuses.
 The [README](../README.md) has the short version; this page is the complete
 surface.
 
-This surface is **123 tools** <!--inventory:tools--> - **45** <!--inventory:reads--> of them
-read-only - dispatching **457 distinct suboperations and modes** <!--inventory:operations--> across
-**1598 enumerated argument values** <!--inventory:enumerated_variants-->.
+This surface is **124 tools** <!--inventory:tools--> - **45** <!--inventory:reads--> of them
+read-only - dispatching **478 distinct suboperations and modes** <!--inventory:operations--> across
+**1628 enumerated argument values** <!--inventory:enumerated_variants-->.
+
+The Revit 2024 RTM implementation and measured scope of version 2.2.0 are
+documented in [REVIT-2024-RTM.md](REVIT-2024-RTM.md).
 
 Those numbers are GENERATED, never typed by hand. `scripts/generate-inventory.ps1`
 asks the built server for `tools/list` - the same call a client makes - and writes
@@ -42,6 +45,7 @@ and it is labelled as such everywhere it appears.
 
 | Tool | What it does |
 | --- | --- |
+| `horizun_revit2024` | 21 operations for catalogs, Toposolids, analytical members/panels and loads, Fabrication, wires/circuit paths/panel slots, and curve-based/adaptive families. Writes rehearse with rollback and verify requested properties after commit. Fabrication requires an installed configuration and project services; see the RTM report for the actual live-tested scope. |
 | `horizun_health` | Is the bridge alive, and WHICH Revit is on the other end — year, build, our own version and commit, and the document active right now (an explicit null when none is). |
 | `get_document_info` | The open document, its counts and identity. |
 | `horizun_open_document` | Open a model, refusing a file saved in another Revit version (opening upgrades it irreversibly) and refusing a workshared central unless asked twice. |

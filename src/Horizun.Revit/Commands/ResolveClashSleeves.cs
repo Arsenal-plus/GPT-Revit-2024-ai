@@ -481,7 +481,7 @@ namespace Horizun.Revit.Commands
                             if (!CreateOpeningOrSleeve(doc, p, sleeveSymbol, out string failReason)) why = "Nothing created for finding " + p.FindingId + ": " + failReason;
                             else if (!string.IsNullOrEmpty(approvalParam))
                             {
-                                Parameter par = doc.GetElement(Rid.Make(p.CreatedId))?.LookupParameter(approvalParam);
+                                Parameter par = ParameterResolver.ForWrite(doc.GetElement(Rid.Make(p.CreatedId)), approvalParam);
                                 string markWhy = par == null ? "the created " + p.Kind + " has no parameter named '" + approvalParam + "'"
                                                : par.IsReadOnly ? "'" + approvalParam + "' is read-only on the created " + p.Kind
                                                : par.StorageType != StorageType.String ? "'" + approvalParam + "' is not a text parameter"
@@ -559,7 +559,7 @@ namespace Horizun.Revit.Commands
                         ok &= RecordClearance(doc, p, clearance, el, sleeveIds, solidOptions, postconditions);
                         if (!string.IsNullOrEmpty(approvalParam))
                         {
-                            string found = el?.LookupParameter(approvalParam)?.AsString();
+                            string found = ParameterResolver.ForWrite(el, approvalParam)?.AsString();
                             bool marked = found == approvalValue;
                             postconditions.Record("approval:" + p.FindingId, approvalValue, found, marked);
                             ok &= marked;

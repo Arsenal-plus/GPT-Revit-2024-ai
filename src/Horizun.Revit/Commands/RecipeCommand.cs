@@ -170,10 +170,8 @@ namespace Horizun.Revit.Commands
                 ApplicationOutcome.StampRehearsal(result, Verifications.Length, 0, 0, 0);
                 DocumentGate.RecordResolvedPlan(RecipePlan(gate, app, outcome));
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, true,
-                    "the token binds the recipe BY CONTENT (its SHA-256) and the intended counts of this plan - a " +
-                    "recipe file that changed, or a model whose plan now touches different numbers of elements, " +
-                    "refuses as stale. It does not bind per-element identity: the recipe re-resolves its own " +
-                    "targets at apply, and says what it found.");
+                    "the token binds the recipe SHA-256, intended counts, and every element's unique id and version. " +
+                    "Any intervening model edit requires a new preview, including replacing an element without changing the count.");
                 return CommandResult.Ok(result);
             }
 
@@ -249,7 +247,8 @@ namespace Horizun.Revit.Commands
                 DocumentKey = gate.Fingerprint,
                 RevitVersion = version,
                 DocumentFingerprint = gate.Identity?.FingerprintDigest(),
-                ContextFingerprint = "recipe_sha=" + (outcome.RecipeSha256 ?? "<none>") + ";" + counts
+                ContextFingerprint = "recipe_sha=" + (outcome.RecipeSha256 ?? "<none>") + ";" + counts +
+                    ";document_state=" + outcome.DocumentStateFingerprint
             };
         }
 

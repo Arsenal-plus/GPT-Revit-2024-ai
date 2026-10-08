@@ -48,6 +48,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using Autodesk.Revit.DB;
@@ -64,6 +65,7 @@ namespace Horizun.Revit.Core
         public JToken Verified;
         public string RecipeSha256;
         public bool DryRun;
+        public string DocumentStateFingerprint;
 
         /// <summary>
         /// Everything the recipe printed. These ports carry their originals' diagnostics —
@@ -170,6 +172,10 @@ namespace Horizun.Revit.Core
             object argsPy = ToPython(args);
 
             var outcome = new RecipeOutcome { DryRun = dryRun, RecipeSha256 = Sha256(path) };
+            // Legacy recipes select dependencies themselves. Conservatively bind all
+            // element identities AND committed versions until each exposes its target set.
+            // Swapping a wall for another with the same count must invalidate approval.
+            outcome.DocumentStateFingerprint = ModelStateFingerprint.Read(doc);
 
             try
             {

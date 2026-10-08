@@ -55,7 +55,7 @@ namespace Horizun.Core.Tests
             int open = src.IndexOf('{', start);
             int close = src.IndexOf("};", open, StringComparison.Ordinal);
             return new HashSet<string>(
-                Regex.Matches(src.Substring(open, close - open), "\"(horizun_[a-z_]+)\"")
+                Regex.Matches(src.Substring(open, close - open), "\"(horizun_[a-z0-9_]+)\"")
                      .Cast<Match>().Select(m => m.Groups[1].Value), StringComparer.Ordinal);
         }
 
@@ -82,7 +82,8 @@ namespace Horizun.Core.Tests
             Assert.Empty(enforced.Except(advertised));
             // Sheet packing participates so a multi-sheet assignment is atomic.
             Assert.Contains("horizun_pack_sheets", enforced);
-            Assert.Equal(22, enforced.Count);
+            Assert.Contains("horizun_revit2024", enforced);
+            Assert.Equal(23, enforced.Count);
         }
 
         // ---- The claims the description makes, one by one ------------------------

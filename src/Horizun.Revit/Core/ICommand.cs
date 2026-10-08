@@ -12,6 +12,9 @@ using Autodesk.Revit.UI;
 
 namespace Horizun.Revit.Core
 {
+    /// <summary>Consumes and checks the atomic plan's private __expected_plan_fingerprint before writing.</summary>
+    internal interface IExpectedPlanFingerprintCommand { }
+
     /// <summary>One named, UI-thread Revit operation exposed over the MCP.</summary>
     public interface ICommand
     {

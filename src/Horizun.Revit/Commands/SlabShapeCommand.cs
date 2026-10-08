@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Horizun Revit MCP - slab shape editing on floors and roofs.
+// Horizun Revit MCP - slab shape editing on floors, roofs and Revit 2024+ Toposolids.
 //
 // THE API MOVED TWICE, measured from each year's RevitAPI.xml:
 //   2023       Floor/RoofBase.SlabShapeEditor (property); DrawPoint, DrawSplitLine.
@@ -27,7 +27,7 @@ namespace Horizun.Revit.Commands
     public sealed class SlabShapeCommand : ICommand
     {
         public string Name => "horizun_slab_shape";
-        public string Description => "Read and edit a floor or roof's slab shape (points, split lines, vertex/crease offsets, reset), re-reading every vertex elevation.";
+        public string Description => "Read and edit a floor, roof or Revit 2024+ Toposolid slab shape (points, split lines, vertex/crease offsets, reset), re-reading every vertex elevation.";
 
         private const double Tol = ArchitecturalEditRules.PositionToleranceFeet;
         private const double XyTol = 1.0 / 304.8;
@@ -45,6 +45,7 @@ namespace Horizun.Revit.Commands
 #else
             if (e is Floor f) return f.GetSlabShapeEditor();
             if (e is RoofBase r) return r.GetSlabShapeEditor();
+            if (e is Toposolid t) return t.GetSlabShapeEditor();
 #endif
             return null;
         }
@@ -75,7 +76,7 @@ namespace Horizun.Revit.Commands
             Element slab = ModelEditRunner.Need<Element>(doc, r, "element_id");
             if (Editor(slab) == null)
                 throw new UnsupportedCapability("element_id " + Rid.Value(slab.Id) + " is a " + slab.GetType().Name +
-                    "; horizun_slab_shape edits floors and roofs.", FallbackSignal.ReasonUnsupportedKind);
+                    "; horizun_slab_shape edits floors, roofs and (2024+) toposolids.", FallbackSignal.ReasonUnsupportedKind);
             long id = Rid.Value(slab.Id);
             double top = Top(slab);
             var edit = new ArchModelEdit();
@@ -248,9 +249,12 @@ namespace Horizun.Revit.Commands
         private static double Top(Element slab)
         {
             double level = 0;
-            try { if (slab.Document.GetElement(slab.LevelId) is Level l) level = l.Elevation; } catch { }
+            if (slab.Document.GetElement(slab.LevelId) is Level l) level = l.ProjectElevation;
             Parameter off = slab.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM)
                             ?? slab.get_Parameter(BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM);
+#if !REVIT2023
+            if (slab is Toposolid) off = slab.get_Parameter(BuiltInParameter.TOPOSOLID_HEIGHTABOVELEVEL_PARAM);
+#endif
             return level + (off?.AsDouble() ?? 0);
         }
 

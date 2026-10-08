@@ -2,25 +2,25 @@
   "schema": "horizun.inventory/1",
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary; enumerated values walked from the full input schemas of horizun://contract/tools served by the same binary",
-  "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "08aaee619bbd2e0615c41a1adfef97b0c1df1c585fba88260d71099b02d65413",
-  "generated_from_contract_hash": "8c90d39bda0eaec89960fa93",
+  "generated_from_server_exe": "<Local>\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe",
+  "generated_from_server_sha": "c658119c81647148e20da1a90edac5c4331d1661ba28675683e1ddded26fd23c",
+  "generated_from_contract_hash": "ffa79adb4e9bb4e4c6050158",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "e4f16a5517a5e0d64b01b3ee788c21ea9450eb85",
-  "code_candidate_version": "2.1.6",
+  "code_candidate_commit": "ec7b6b86f2f102fdfd4e47fbb76ecc6a50f6e528-dirty",
+  "code_candidate_version": "2.2.0",
   "code_candidate_stamp_source": "product_version",
-  "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "e4f16a5517a5e0d64b01b3ee788c21ea9450eb85",
+  "source_tree_clean_at_generation": false,
+  "source_tree_head_at_generation": "ec7b6b86f2f102fdfd4e47fbb76ecc6a50f6e528",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 123,
+    "tools": 124,
     "reads": 45,
-    "writes": 78,
+    "writes": 79,
     "destructive": 20,
-    "operations": 457,
-    "enumerated_variants": 1598
+    "operations": 478,
+    "enumerated_variants": 1628
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -58,6 +58,44 @@
       "operations": 0,
       "enumerated_variants": 0,
       "operation_detail": []
+    },
+    {
+      "tool": "horizun_revit2024",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 21,
+      "enumerated_variants": 29,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "catalog",
+            "appearance_read",
+            "site_create",
+            "site_subdivide",
+            "site_convert",
+            "analytical_member_create",
+            "analytical_member_edit",
+            "analytical_panel_create",
+            "analytical_panel_edit",
+            "analytical_associate",
+            "analytical_point_load",
+            "analytical_line_load",
+            "analytical_area_load",
+            "fabrication_load_service",
+            "fabrication_create",
+            "fabrication_convert",
+            "wire_create",
+            "circuit_set_path",
+            "panel_move_slot",
+            "family_curve",
+            "family_adaptive"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_save_document",
@@ -1167,7 +1205,7 @@
       "destructive": true,
       "open_world": false,
       "operations": 3,
-      "enumerated_variants": 41,
+      "enumerated_variants": 42,
       "operation_detail": [
         {
           "property": "kind",

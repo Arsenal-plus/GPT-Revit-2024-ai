@@ -22,12 +22,9 @@
 //
 //   IDENTITY - class, category, and the identity parameters a schedule reads.
 //
-// WHAT IS NOT HERE. The contents of a rendering asset - its textures, its bitmap
-// paths, its procedural parameters - are edited through the Visual Materials API
-// (AssetEditScope), which is a different and much larger surface, and one whose
-// failure modes are silent. This command duplicates and assigns assets; it does
-// not claim to author them, and the reply says so rather than leaving a caller to
-// assume the texture changed.
+// Existing rendering properties can be edited through AppearanceAssetEditScope,
+// including paths into existing connected texture assets. New shader graphs are
+// not authored here. Every requested property is re-read after commit.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -61,7 +58,9 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("actions must contain 1..200 entries.");
 
             string error;
-            List<Plan> plans = PlanAll(doc, raw, out error);
+            List<Plan> plans;
+            try { plans = PlanAll(doc, raw, out error); }
+            catch (Exception ex) { return CommandResult.Fail("Material preflight failed: " + ex.Message + ". Nothing was written."); }
             if (plans == null) return CommandResult.Fail(error + " Nothing was written.");
 
             string hash = DocumentGate.PlanHash(request, "actions");
@@ -70,10 +69,33 @@ namespace Horizun.Revit.Commands
 
             if (dry)
             {
+                string rehearsalRollbackStatus = null;
+                using (var rehearsal = new Transaction(doc, "Horizun: rehearse materials"))
+                {
+                    string problem = null;
+                    try
+                    {
+                        if (rehearsal.Start() != TransactionStatus.Started) throw new InvalidOperationException("Cannot start rehearsal.");
+                        foreach (Plan p in plans) Apply(doc, p);
+                        doc.Regenerate();
+                        foreach (Plan p in plans)
+                            if (!Verify(doc, p, out problem)) throw new InvalidOperationException(p.Key + ": " + problem);
+                    }
+                    catch (Exception ex) { problem = ex.Message; }
+                    Guard.RollbackResult? rollback = null;
+                    try { if (rehearsal.GetStatus() == TransactionStatus.Started) rollback = Guard.RollBack(rehearsal); }
+                    catch (Exception ex) { problem = (problem ?? "") + " Rollback: " + ex.Message; }
+                    rehearsalRollbackStatus = rollback.HasValue ? rollback.Value.StatusName : "Unknown";
+                    if (problem != null || !rollback.HasValue || !rollback.Value.Confirmed)
+                        return CommandResult.FailWithDetail("Material rehearsal failed: " + (problem ?? "rollback not confirmed"),
+                            new JObject { ["state"] = rollback.HasValue && rollback.Value.Confirmed ? "rolled_back" : "uncertain" });
+                }
                 DocumentGate.RecordResolvedPlan(resolved);
                 var preview = new JObject
                 {
                     ["dry_run"] = true,
+                    ["rehearsal_verified"] = true,
+                    ["rollback_status"] = rehearsalRollbackStatus,
                     ["valid"] = plans.Count,
                     ["plan"] = new JArray(plans.Select(p => p.Json())),
                     ["shared_appearance_warning"] = SharedAssetWarning(doc, plans)
@@ -220,6 +242,11 @@ namespace Horizun.Revit.Commands
                 { error = "actions[" + i + "].operation must be create, duplicate or update."; return null; }
 
                 var plan = new Plan { Index = i, Key = key, Operation = op, Input = a };
+                foreach (string assetField in new[] { "structural", "thermal" })
+                    if (a[assetField] != null && (!(a[assetField] is JObject fields) || !fields.Properties().Any()))
+                    { error = assetField + " must be a nonempty object."; return null; }
+                if (a["appearance_properties"] != null && !(a["appearance_properties"] is JArray))
+                { error = "appearance_properties must be an array."; return null; }
 
                 if (op == "create" || op == "duplicate")
                 {
@@ -278,7 +305,7 @@ namespace Horizun.Revit.Commands
                 if (op == "update" && !Changes(a))
                 {
                     error = "actions[" + i + "] changes nothing: pass at least one of name, colour, patterns, " +
-                            "transparency, shininess, smoothness, class, category or appearance_asset_id.";
+                            "transparency, shininess, smoothness, class, category, structural, thermal or appearance_asset_id.";
                     return null;
                 }
 
@@ -293,7 +320,7 @@ namespace Horizun.Revit.Commands
                      {
                          "name", "color", "surface_pattern_color", "cut_pattern_color",
                          "surface_pattern", "cut_pattern", "transparency", "shininess", "smoothness",
-                         "material_class", "material_category", "appearance_asset_id"
+                         "material_class", "material_category", "appearance_asset_id", "structural", "thermal", "appearance_properties"
                      })
                 if (a[field] != null) return true;
             return false;
@@ -438,6 +465,8 @@ namespace Horizun.Revit.Commands
                 material.AppearanceAssetId = asset.Id;
                 p.AppliedAssetId = asset.Id;
             }
+            AppearanceProperties.Apply(doc, material, p.Input["appearance_properties"] as JArray, duplicateShared);
+            if (p.Input["appearance_properties"] != null) p.AppliedAssetId = material.AppearanceAssetId;
         }
 
         private static string UniqueAssetName(Document doc, string wanted)
@@ -569,6 +598,10 @@ namespace Horizun.Revit.Commands
             if (badThermal != null)
             { why = "thermal field '" + badThermal.Field + "': " + badThermal.Reason; return false; }
 
+            if (!MaterialAssets.VerifyWrites(doc, material, p.Input["structural"] as JObject,
+                p.Input["thermal"] as JObject, out why)) return false;
+            if (!AppearanceProperties.Verify(doc, material, p.Input["appearance_properties"] as JArray, out why)) return false;
+
             return true;
         }
 
@@ -617,21 +650,35 @@ namespace Horizun.Revit.Commands
 
         private static string Snapshot(Document doc, Material m)
         {
-            try
+            return new JObject
             {
-                Color c = m.Color;
-                return string.Join("|", new[]
-                {
-                    m.Name,
-                    c != null && c.IsValid ? c.Red + "," + c.Green + "," + c.Blue : "novalue",
-                    m.Transparency.ToString(),
-                    m.Shininess.ToString(),
-                    m.MaterialClass ?? "",
-                    m.MaterialCategory ?? "",
-                    Rid.Value(m.AppearanceAssetId).ToString()
-                });
-            }
-            catch { return "<unreadable>"; }
+                ["identity"] = m.UniqueId, ["version"] = m.VersionGuid.ToString(),
+                ["name"] = m.Name, ["color"] = ColorSnapshot(m.Color),
+                ["transparency"] = m.Transparency, ["shininess"] = m.Shininess, ["smoothness"] = m.Smoothness,
+                ["class"] = m.MaterialClass, ["category"] = m.MaterialCategory,
+                ["surface_foreground"] = Rid.Value(m.SurfaceForegroundPatternId),
+                ["surface_background"] = Rid.Value(m.SurfaceBackgroundPatternId),
+                ["cut_foreground"] = Rid.Value(m.CutForegroundPatternId),
+                ["cut_background"] = Rid.Value(m.CutBackgroundPatternId),
+                ["surface_foreground_color"] = ColorSnapshot(m.SurfaceForegroundPatternColor),
+                ["surface_background_color"] = ColorSnapshot(m.SurfaceBackgroundPatternColor),
+                ["cut_foreground_color"] = ColorSnapshot(m.CutForegroundPatternColor),
+                ["cut_background_color"] = ColorSnapshot(m.CutBackgroundPatternColor),
+                ["physical"] = MaterialAssets.Read(doc, m),
+                ["dependencies"] = new JArray(new[] { m.AppearanceAssetId, m.StructuralAssetId, m.ThermalAssetId,
+                    m.SurfaceForegroundPatternId, m.SurfaceBackgroundPatternId, m.CutForegroundPatternId, m.CutBackgroundPatternId }
+                    .Select(id => AssetSnapshot(doc, id))),
+                ["appearance_users"] = new JArray(new FilteredElementCollector(doc).OfClass(typeof(Material)).Cast<Material>()
+                    .Where(x => x.AppearanceAssetId == m.AppearanceAssetId).Select(x => x.UniqueId).OrderBy(x => x, StringComparer.Ordinal))
+            }.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        private static string ColorSnapshot(Color c) => c == null || !c.IsValid ? null : c.Red + "," + c.Green + "," + c.Blue;
+
+        private static string AssetSnapshot(Document doc, ElementId id)
+        {
+            Element e = doc.GetElement(id);
+            return e == null ? "absent:" + Rid.Value(id) : e.UniqueId + ":" + e.VersionGuid;
         }
 
         private static ResolvedPlan Resolved(GateResult gate, UIApplication app, List<Plan> plans)
@@ -650,7 +697,8 @@ namespace Horizun.Revit.Commands
                     ["operation"] = p.Operation,
                     ["source"] = p.Source == null ? "<new>" : SafeUniqueId(p.Source),
                     ["before"] = p.Before ?? "<new>",
-                    ["new_name"] = p.NewName ?? ""
+                    ["new_name"] = p.NewName ?? "",
+                    ["requested_asset"] = p.Asset == null ? "<none>" : AssetSnapshot(gate.Document, p.Asset.Id)
                 };
                 resolved.Elements.Add(new PlannedElement
                 {
@@ -707,9 +755,8 @@ namespace Horizun.Revit.Commands
                 row["appearance_asset_duplicated"] = AssetDuplicated;
                 row["applied_appearance_asset_id"] = AppliedAssetId == null
                     ? (JToken)JValue.CreateNull() : Rid.Value(AppliedAssetId);
-                row["means"] = "every value above was re-read from the material after the commit. The CONTENTS " +
-                               "of a rendering asset - its textures and procedural parameters - are not edited " +
-                               "by this command and are not reported as though they were.";
+                row["means"] = "Requested graphics, physical/thermal values and supported appearance properties were re-read after commit. " +
+                               "Only explicitly requested appearance_properties are edited; unrelated rendering properties are not claimed.";
                 return row;
             }
         }

@@ -47,6 +47,7 @@
     <!-- Dry-run defects 9, 10, 11, 16: level sources, one parameter resolver, units on sums, view-count scopes. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\LevelResolutionRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ParameterResolutionRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Revit2024InputRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SumUnitRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ViewCountScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BoundedReadCache.cs" />

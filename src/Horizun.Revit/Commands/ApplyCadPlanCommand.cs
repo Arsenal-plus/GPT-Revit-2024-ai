@@ -480,8 +480,23 @@ namespace Horizun.Revit.Commands
                     }
 
                     if (!dryRun && data?["rows"] is JArray rows)
+                    {
+                        int provenanceStart = provenanceRows.Count;
                         WriteProvenance(doc, rows, action, candidateByStageBatch, set, facts,
                                         expectedPlan, provenanceRows);
+                        int total = provenanceRows.Count - provenanceStart;
+                        int metadataVerified = provenanceRows.Skip(provenanceStart).Count(x => (bool?)x["written"] == true);
+                        var metadata = new JObject();
+                        ApplicationOutcome.StampApplied(metadata, ApplicationOutcome.Committed, total, metadataVerified, metadataVerified, 0, total - metadataVerified, 0);
+                        stageChildren.Add(CompositeChild.Of(true, metadata));
+                        if (metadataVerified != total)
+                        {
+                            row["state"] = "applied_without_provenance";
+                            failedStages++;
+                            stopped = true;
+                            stoppedBecause = "Created elements remain, but their CAD provenance was not verified. Repair the listed ids before retrying creation.";
+                        }
+                    }
 
                     // AND THEN THE PARAMETERS, in their own transaction.
                     //
@@ -945,9 +960,14 @@ namespace Horizun.Revit.Commands
             List<JObject> candidates;
             if (!candidateIndex.TryGetValue(key, out candidates)) candidates = new List<JObject>();
 
+            int firstRow = provenanceRows.Count;
+            var expected = new Dictionary<long, CadProvenance>();
+            string commitError = null;
+            try
+            {
             using (var t = new Transaction(doc, "Horizun: record CAD provenance"))
             {
-                t.Start();
+                if (t.Start() != TransactionStatus.Started) throw new InvalidOperationException("Could not start metadata transaction.");
                 for (int i = 0; i < rows.Count; i++)
                 {
                     var row = rows[i] as JObject;
@@ -1044,7 +1064,10 @@ namespace Horizun.Revit.Commands
                     foreach (Element sibling in siblings)
                     {
                         string siblingWhy;
-                        bool siblingOk = CadProvenanceStore.Write(sibling, p, out siblingWhy);
+                        CadProvenance siblingRecord = p.Clone();
+                        siblingRecord.BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(sibling));
+                        expected[Rid.Value(sibling.Id)] = siblingRecord;
+                        bool siblingOk = CadProvenanceStore.Write(sibling, siblingRecord, out siblingWhy);
                         provenanceRows.Add(new JObject
                         {
                             ["element_id"] = Rid.Value(sibling.Id),
@@ -1052,7 +1075,8 @@ namespace Horizun.Revit.Commands
                             ["candidate_id"] = p.CandidateId,
                             ["semantic_id"] = p.SemanticId,
                             ["rule_id"] = p.RuleId,
-                            ["written"] = siblingOk,
+                            ["staged"] = siblingOk,
+                            ["written"] = false,
                             ["made_alongside"] = id,
                             ["means"] = siblingOk
                                 ? "one row asked for one thing and Revit made several; this is one of the " +
@@ -1064,6 +1088,7 @@ namespace Horizun.Revit.Commands
                     }
 
                     string why;
+                    expected[id] = p.Clone();
                     bool ok = CadProvenanceStore.Write(created, p, out why);
                     provenanceRows.Add(new JObject
                     {
@@ -1072,7 +1097,8 @@ namespace Horizun.Revit.Commands
                         ["candidate_id"] = p.CandidateId,
                         ["semantic_id"] = p.SemanticId,
                         ["rule_id"] = p.RuleId,
-                        ["written"] = ok,
+                        ["staged"] = ok,
+                        ["written"] = false,
                         ["means"] = ok
                             ? "this element remembers which CAD entity and which rule produced it"
                             : "the provenance entity did not land, so this element is created but ANONYMOUS " +
@@ -1080,7 +1106,22 @@ namespace Horizun.Revit.Commands
                               (string.IsNullOrWhiteSpace(why) ? "(nothing)" : why)
                     });
                 }
-                t.Commit();
+                Guard.Commit(t, "CAD provenance metadata transaction");
+            }
+            }
+            catch (Exception ex) { commitError = ex.Message; }
+            foreach (JObject report in provenanceRows.Skip(firstRow).OfType<JObject>())
+            {
+                long id = report.Value<long>("element_id");
+                string problem = commitError;
+                CadProvenance wanted;
+                bool verified = commitError == null && report.Value<bool?>("staged") == true &&
+                    expected.TryGetValue(id, out wanted) &&
+                    CadProvenanceStore.Matches(doc.GetElement(Rid.Make(id)), wanted, out problem);
+                report["written"] = verified;
+                report["host_verified"] = verified;
+                if (!verified && problem != null)
+                    report["means"] = "Geometry was created in an earlier transaction and remains. Metadata was not verified: " + problem;
             }
         }
 
