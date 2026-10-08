@@ -21,6 +21,15 @@
           "IronPython": "[3.4.0, 3.5.0)"
         }
       },
+      "Microsoft.NETFramework.ReferenceAssemblies": {
+        "type": "Direct",
+        "requested": "[1.0.3, )",
+        "resolved": "1.0.3",
+        "contentHash": "vUc9Npcs14QsyOD01tnv/m8sQUnGTGOw1BCmKcv77LBJY7OxhJ+zJF7UD/sCL3lYNFuqmQEVlkfS4Quif6FyYg==",
+        "dependencies": {
+          "Microsoft.NETFramework.ReferenceAssemblies.net48": "1.0.3"
+        }
+      },
       "Newtonsoft.Json": {
         "type": "Direct",
         "requested": "[13.0.3, )",
@@ -46,6 +55,11 @@
         "type": "Transitive",
         "resolved": "6.0.0",
         "contentHash": "GI4jcoi6eC9ZhNOQylIBaWOQjyGaR8T6N3tC1u8p3EXfndLCVNNWa+Zp+ocjvvS3kNBN09Zma2HXL0ezO0dRfw=="
+      },
+      "Microsoft.NETFramework.ReferenceAssemblies.net48": {
+        "type": "Transitive",
+        "resolved": "1.0.3",
+        "contentHash": "zMk4D+9zyiEWByyQ7oPImPN/Jhpj166Ky0Nlla4eXlNL8hI/BtSJsgR8Inldd4NNpIAH3oh8yym0W2DrhXdSLQ=="
       },
       "System.Buffers": {
         "type": "Transitive",
