@@ -1,3 +1,4 @@
+// Modified by Arsenal-Plus: display branding for GPT-Revit-2024-ai (2026-10-08).
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
@@ -41,8 +42,8 @@ namespace Horizun.Revit
 {
     internal static class Ribbon
     {
-        internal const string TabName = "Horizun Hub";
-        internal const string PanelName = "Horizun RVT MCP";
+        internal const string TabName = "GPT-Revit-2024-ai";
+        internal const string PanelName = "Arsenal-Plus MCP";
         internal const string HubUrl = "https://horizunhub.com";
 
         /// <summary>
@@ -193,7 +194,7 @@ namespace Horizun.Revit
                 string discovery = Path.Combine(Discovery.Dir(), Discovery.FileName(year));
                 bool published = File.Exists(discovery);
 
-                var td = new TaskDialog("Horizun RVT MCP")
+                var td = new TaskDialog("GPT-Revit-2024-ai")
                 {
                     MainInstruction = published
                         ? RibbonText.T(es, "El asistente puede conectarse a este Revit.", "The assistant can connect to this Revit.")
@@ -289,7 +290,7 @@ namespace Horizun.Revit
         internal static Result Enable(
             ref string message, string currentRefusal, string requestReason, bool spanish)
         {
-            string title = spanish ? "Horizun — permiso Python" : "Horizun — Python permission";
+            string title = spanish ? "GPT-Revit-2024-ai — permiso Python" : "GPT-Revit-2024-ai — Python permission";
             var dialog = new TaskDialog(title)
             {
                 MainInstruction = spanish ? "Python está OFF." : "Python is OFF.",
@@ -371,7 +372,7 @@ namespace Horizun.Revit
 
         private static Result Disable(ref string message, bool spanish)
         {
-            string title = spanish ? "Horizun — permiso Python" : "Horizun — Python permission";
+            string title = spanish ? "GPT-Revit-2024-ai — permiso Python" : "GPT-Revit-2024-ai — Python permission";
             var dialog = new TaskDialog(title)
             {
                 MainInstruction = spanish ? "Python está ON." : "Python is ON.",
@@ -426,7 +427,7 @@ namespace Horizun.Revit
             {
                 bool es = RibbonText.IsSpanish(data);
                 string current = BridgeSettings.PermissionProfile;
-                string title = RibbonText.T(es, "Horizun — ¿Qué puede hacer el asistente?", "Horizun — What may the assistant do?");
+                string title = RibbonText.T(es, "GPT-Revit-2024-ai — ¿Qué puede hacer el asistente?", "GPT-Revit-2024-ai — What may the assistant do?");
                 var dialog = new TaskDialog(title)
                 {
                     MainInstruction = RibbonText.T(es, "Ahora: ", "Now: ") + RibbonText.ModeName(es, current),
@@ -459,7 +460,7 @@ namespace Horizun.Revit
 
                 if (profile == "full_write")
                 {
-                    var confirm = new TaskDialog(RibbonText.T(es, "Horizun — confirmar", "Horizun — confirm"))
+                    var confirm = new TaskDialog(RibbonText.T(es, "GPT-Revit-2024-ai — confirmar", "GPT-Revit-2024-ai — confirm"))
                     {
                         MainInstruction = RibbonText.T(es,
                             "Este nivel deja al asistente crear archivos y abrir, cerrar o guardar documentos.",
@@ -508,7 +509,7 @@ namespace Horizun.Revit
             try
             {
                 bool es = RibbonText.IsSpanish(data);
-                string title = RibbonText.T(es, "Horizun — ¿Qué ha hecho el asistente?", "Horizun — What has the assistant done?");
+                string title = RibbonText.T(es, "GPT-Revit-2024-ai — ¿Qué ha hecho el asistente?", "GPT-Revit-2024-ai — What has the assistant done?");
                 string directory = ReceiptLedger.DefaultDirectory();
                 if (!Directory.Exists(directory))
                 {
@@ -575,7 +576,7 @@ namespace Horizun.Revit
             {
                 bool es = RibbonText.IsSpanish(data);
                 bool pausing = !BridgeSettings.McpPaused;
-                string title = "Horizun — " + (pausing ? RibbonText.T(es, "pausar el asistente", "pause the assistant") : RibbonText.T(es, "reanudar el asistente", "resume the assistant"));
+                string title = "GPT-Revit-2024-ai — " + (pausing ? RibbonText.T(es, "pausar el asistente", "pause the assistant") : RibbonText.T(es, "reanudar el asistente", "resume the assistant"));
                 var dialog = new TaskDialog(title)
                 {
                     MainInstruction = pausing
@@ -623,7 +624,7 @@ namespace Horizun.Revit
             {
                 bool es = RibbonText.IsSpanish(data);
                 bool enabling = !BridgeSettings.ForceReadOnlyOnWorkshared;
-                var dialog = new TaskDialog(RibbonText.T(es, "Horizun — modelos compartidos", "Horizun — shared models"))
+                var dialog = new TaskDialog(RibbonText.T(es, "GPT-Revit-2024-ai — modelos compartidos", "GPT-Revit-2024-ai — shared models"))
                 {
                     MainInstruction = enabling
                         ? RibbonText.T(es, "Los modelos compartidos quedarán protegidos: el asistente solo podrá consultarlos.", "Shared models will be protected: the assistant will only be able to look at them.")

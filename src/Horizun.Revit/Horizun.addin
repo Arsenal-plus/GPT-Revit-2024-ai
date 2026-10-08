@@ -4,13 +4,14 @@
   %APPDATA%\Autodesk\Revit\Addins\<year>\ ; the assembly lives in the Horizun\
   subfolder next to it. Uses a stable, Horizun-owned AddInId.
 -->
+<!-- Modified by Arsenal-Plus: display branding, 2026-10-08. -->
 <RevitAddIns>
   <AddIn Type="Application">
-    <Name>Horizun MCP</Name>
+    <Name>GPT-Revit-2024-ai</Name>
     <Assembly>Horizun\Horizun.Revit.dll</Assembly>
     <AddInId>b8e5a2f0-3c1d-4e6a-9f2b-7a4c8d1e5f30</AddInId>
     <FullClassName>Horizun.Revit.App</FullClassName>
     <VendorId>HRZN</VendorId>
-    <VendorDescription>Horizun Group</VendorDescription>
+    <VendorDescription>Arsenal-Plus; based on Horizun Revit MCP by Horizun Group</VendorDescription>
   </AddIn>
 </RevitAddIns>

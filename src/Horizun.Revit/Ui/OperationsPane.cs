@@ -1,3 +1,4 @@
+// Modified by Arsenal-Plus: display branding for GPT-Revit-2024-ai (2026-10-08).
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP - the operations pane. Original Horizun code.
 //
@@ -53,7 +54,7 @@ namespace Horizun.Revit.Ui
 
         public static DockablePaneId PaneId => new DockablePaneId(Guid);
 
-        public const string Title = "Horizun · operations";
+        public const string Title = "GPT-Revit-2024-ai · operations";
     }
 
     public sealed class OperationsPane : Page, IDockablePaneProvider

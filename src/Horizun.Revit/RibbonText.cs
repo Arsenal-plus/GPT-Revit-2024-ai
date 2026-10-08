@@ -1,3 +1,4 @@
+// Modified by Arsenal-Plus: display branding for GPT-Revit-2024-ai (2026-10-08).
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
@@ -132,7 +133,7 @@ namespace Horizun.Revit
             "only reads them. You see the current state of each before changing anything.");
 
         // Advanced options window ------------------------------------------------
-        internal static string AdvancedWindowTitle(bool es) => T(es, "Horizun — Opciones avanzadas", "Horizun — Advanced options");
+        internal static string AdvancedWindowTitle(bool es) => T(es, "GPT-Revit-2024-ai — Opciones avanzadas", "GPT-Revit-2024-ai — Advanced options");
         internal static string AdvancedWindowSubtitle(bool es) => T(es,
             "Estos ajustes se cambian solo desde este Revit. El asistente no puede modificarlos por su cuenta.",
             "These settings change only from this Revit. The assistant cannot alter them on its own.");
@@ -211,7 +212,7 @@ namespace Horizun.Revit
             var headerText = new StackPanel();
             headerText.Children.Add(new TextBlock
             {
-                Text = "Horizun Hub", Foreground = Brush("#93C5FD"), FontSize = 12, FontWeight = FontWeights.SemiBold,
+                Text = "GPT-Revit-2024-ai · Arsenal-Plus", Foreground = Brush("#93C5FD"), FontSize = 12, FontWeight = FontWeights.SemiBold,
                 Margin = new Thickness(0, 0, 0, 2)
             });
             headerText.Children.Add(new TextBlock

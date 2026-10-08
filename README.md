@@ -1,3 +1,26 @@
+# GPT-Revit-2024-ai — Arsenal-Plus
+
+Форк Horizun Revit MCP для работы с Autodesk Revit 2024 через GPT-6 Astra в Codex.
+Имя вкладки и надстройки в исходниках: **GPT-Revit-2024-ai**.
+
+Основа: [HorizunGroup/horizun-revit-mcp](https://github.com/HorizunGroup/horizun-revit-mcp), Apache-2.0.
+Автор исходного моста — Horizun Group; изменения оформления — Arsenal-Plus.
+
+Изменения форка: название вкладки Revit, панели MCP, окон настроек/статуса,
+панели операций и отображаемое имя в манифесте надстройки.
+Имена сборок, пространства имён, AddInId и инструменты `horizun_*` сохранены для совместимости.
+Ссылка Horizun Hub ведёт на сайт исходного проекта и сохраняет его название.
+
+**Сборка:** изменения интерфейса требуют сборки из этих исходников с .NET SDK,
+указанным в `global.json`, и Revit API 2024. Пока отдельный выпуск Arsenal-Plus
+не опубликован, установщик upstream ниже устанавливает оригинальный Horizun,
+а не переименованную сборку. Уже установленная версия автоматически не меняется.
+
+Ниже сохранена документация исходного проекта; её ссылки на releases и инструкции
+быстрой установки относятся к HorizunGroup. Лицензия и уведомления об авторстве
+сохранены в LICENSE и NOTICE.
+
+---
 # Horizun Revit MCP — model, document, coordinate and deliver in Revit
 
 **Made in Colombia 🇨🇴 by Horizun Group.**
