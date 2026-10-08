@@ -53,7 +53,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public class DeleteCommand : ICommand
+    public class DeleteCommand : ICommand, IExpectedPlanFingerprintCommand
     {
         public string Name => "horizun_delete_verified";
 

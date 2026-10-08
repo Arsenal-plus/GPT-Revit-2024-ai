@@ -95,6 +95,8 @@ namespace Horizun.Revit.Core
 
         public static readonly IReadOnlyList<WriteVerification> Rows = new List<WriteVerification>
         {
+            Row("horizun_revit2024", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
+                F(C + "Revit2024Command.cs", C + "Revit2024Site.cs", C + "Revit2024Analytical.cs", C + "Revit2024Fabrication.cs", C + "Revit2024Placement.cs", C + "VerifiedModelEdit.cs")),
             // ---- document session ---------------------------------------------------------
             Row("horizun_open_document", VerificationMechanism.SessionStateReread, E("confirmed_active"), F(C + "OpenDocumentCommand.cs")),
             Row("horizun_save_document", VerificationMechanism.SessionStateReread, E("outcome"), F(C + "SaveDocumentCommand.cs")),

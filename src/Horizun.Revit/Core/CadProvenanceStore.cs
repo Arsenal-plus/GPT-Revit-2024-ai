@@ -244,6 +244,26 @@ namespace Horizun.Revit.Core
         /// about the element, not an error - and a NEWER schema version is
         /// reported rather than misread.
         /// </summary>
+        public static bool Matches(Element element, CadProvenance expected, out string problem)
+        {
+            CadProvenance actual = Read(element, out problem);
+            if (actual == null || expected == null) { problem = problem ?? "Provenance is absent."; return false; }
+            var wanted = expected.Clone();
+            wanted.SourceEntities = Capped(wanted.SourceEntities);
+            JObject left = actual.ToJson(), right = wanted.ToJson();
+            NormalizeBlanks(left); NormalizeBlanks(right);
+            bool ok = JToken.DeepEquals(left, right) && Math.Abs(actual.Confidence - expected.Confidence) < 1e-12;
+            if (!ok) problem = "Stored provenance differs at: " + string.Join(", ", right.Properties()
+                .Where(p => !JToken.DeepEquals(left[p.Name], p.Value)).Select(p => p.Name));
+            return ok;
+        }
+
+        private static void NormalizeBlanks(JObject token)
+        {
+            foreach (JValue value in token.DescendantsAndSelf().OfType<JValue>().ToList())
+                if (value.Type == JTokenType.String && string.IsNullOrWhiteSpace((string)value)) value.Replace(JValue.CreateNull());
+        }
+
         public static CadProvenance Read(Element element, out string problem)
         {
             problem = null;

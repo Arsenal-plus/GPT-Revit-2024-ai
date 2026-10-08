@@ -145,7 +145,7 @@ namespace Horizun.Revit.Commands
             if (assoc != null)
                 for (int i = 0; i < assoc.Count; i++)
                 {
-                    Parameter prm = d.GetElement(assoc[i].Key)?.LookupParameter(assoc[i].Value);
+                    Parameter prm = ParameterResolver.ForWrite(d.GetElement(assoc[i].Key), assoc[i].Value);
                     if (prm == null) c.Unreadable("associate[" + i + "]", Rid.Value(id), "the element or its parameter no longer reads");
                     else c.Compare("associate[" + i + "]", Rid.Value(id), Rid.Value(prm.GetAssociatedGlobalParameter()));
                 }
@@ -170,10 +170,12 @@ namespace Horizun.Revit.Commands
                 {
                     long eid = a.Value<long?>("element_id") ?? -1; string pn = a.Value<string>("parameter");
                     Element e = Rid.CanRepresent(eid) ? doc.GetElement(Rid.Make(eid)) : null;
-                    Parameter prm = e?.LookupParameter(pn ?? "");
+                    Parameter prm;
+                    try { prm = ParameterResolver.ForWrite(e, pn); }
+                    catch (ArgumentException ex) { error = "associate: " + ex.Message; return null; }
                     if (prm == null) { error = "associate: element " + eid + " has no parameter '" + pn + "'."; return null; }
                     if (!prm.CanBeAssociatedWithGlobalParameter(g.Id)) { error = "associate: '" + pn + "' of element " + eid + " cannot take '" + g.Name + "' (type or storage mismatch)."; return null; }
-                    assoc.Add(new KeyValuePair<ElementId, string>(e.Id, pn));
+                    assoc.Add(new KeyValuePair<ElementId, string>(e.Id, ParameterResolver.Identity(prm)));
                 }
             if (want == null && formula == null && assoc.Count == 0) { error = "global_set changes nothing: pass value, formula and/or associate."; return null; }
             var req = new List<string>();
@@ -189,18 +191,25 @@ namespace Horizun.Revit.Commands
                     var gp = (GlobalParameter)d.GetElement(id);
                     if (formula != null) gp.SetFormula(formula);
                     if (want != null) gp.SetValue(want);
-                    foreach (var a in assoc) d.GetElement(a.Key).LookupParameter(a.Value).AssociateWithGlobalParameter(id);
+                    foreach (var a in assoc) ParameterResolver.ForWrite(d.GetElement(a.Key), a.Value).AssociateWithGlobalParameter(id);
                 },
                 Verify = (d, def, s) => VerifyGlobal(d, id, req, spec, want, formula, assoc),
                 Report = (d, def, s) =>
                 {
                     JObject o = d.GetElement(id) is GlobalParameter gp ? GlobalJson(d, gp) : new JObject();
                     o["associated_values"] = new JArray(assoc.Select(a => new JObject
-                    { ["element_id"] = Rid.Value(a.Key), ["parameter"] = a.Value, ["value"] = d.GetElement(a.Key)?.LookupParameter(a.Value)?.AsValueString() }));
+                    { ["element_id"] = Rid.Value(a.Key), ["parameter"] = a.Value, ["value"] = ParameterResolver.ForWrite(d.GetElement(a.Key), a.Value)?.AsValueString() }));
                     return o;
                 }
             };
             p.Before["global"] = g.Name + "|" + g.GetFormula() + "|" + ValueJson(doc, spec, g.GetValue()).ToString(Newtonsoft.Json.Formatting.None);
+            for (int i = 0; i < assoc.Count; i++)
+            {
+                Element e = doc.GetElement(assoc[i].Key);
+                Parameter prm = ParameterResolver.ForWrite(e, assoc[i].Value);
+                p.Before["association:" + i] = e.UniqueId + "|" + assoc[i].Value + "|" +
+                    Rid.Value(prm.GetAssociatedGlobalParameter()) + "|" + prm.AsValueString();
+            }
             p.Preview = new JObject { ["before"] = GlobalJson(doc, g), ["value"] = value, ["formula"] = formula, ["associate"] = assoc.Count };
             return p;
         }

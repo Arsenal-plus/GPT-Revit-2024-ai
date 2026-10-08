@@ -288,7 +288,7 @@ namespace Horizun.Revit.Commands
             {
                 t.Start();
                 linked = doc.Link(path, options, view, out created);
-                t.Commit();
+                Guard.Commit(t, "link CAD drawing");
             }
             if (!linked || created == ElementId.InvalidElementId)
                 return CommandResult.Fail(
@@ -562,7 +562,7 @@ namespace Horizun.Revit.Commands
             {
                 t.Start();
                 outcome = type.LoadFrom(target);
-                t.Commit();
+                Guard.Commit(t, "repoint CAD link");
             }
 
             JObject after;

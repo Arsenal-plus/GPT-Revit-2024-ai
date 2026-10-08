@@ -441,7 +441,7 @@ namespace Horizun.Revit.Commands
                         p.SeparatorView = boundaryView; p.Level = boundaryLevel;
                         p.Chains = Chains(item["profile"] as JArray, scale);
                         if (p.Chains.Count < 1) throw new ArgumentException("area_boundary needs at least one chain of curves");
-                        RequireHorizontalChains(p.Chains, "area_boundary");
+                        RequireHorizontalChains(p.Chains, "area_boundary", p.Level.ProjectElevation);
                         break;
                     }
                     // A sprinkler is a family_instance restricted to OST_Sprinklers: same
@@ -809,7 +809,7 @@ namespace Horizun.Revit.Commands
                             throw new ArgumentException(
                                 "shaft_zero_extent: base_level_id and top_level_id are the same level, so the " +
                                 "shaft would have no height and cut nothing.");
-                        if (p.TopLevel.Elevation <= p.BaseLevel.Elevation)
+                        if (p.TopLevel.ProjectElevation <= p.BaseLevel.ProjectElevation)
                             throw new ArgumentException(
                                 "shaft_inverted: top level '" + Safe(() => p.TopLevel.Name) + "' sits at or below base " +
                                 "level '" + Safe(() => p.BaseLevel.Name) + "'. A shaft runs upward.");
@@ -883,7 +883,7 @@ namespace Horizun.Revit.Commands
                         p.Chains = Chains(item["profile"] as JArray, scale);
                         if (p.Chains.Count < 1)
                             throw new ArgumentException("room_separator needs at least one chain of curves");
-                        RequireHorizontalChains(p.Chains, "room_separator");
+                        RequireHorizontalChains(p.Chains, "room_separator", p.Level.ProjectElevation);
                         break;
                     }
                     case "slab_opening":
@@ -1349,7 +1349,7 @@ namespace Horizun.Revit.Commands
                 case "area_boundary":
                 {
                     var boundaryView = (ViewPlan)p.SeparatorView;
-                    Plane boundaryPlane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, p.Level.Elevation));
+                    Plane boundaryPlane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, p.Level.ProjectElevation));
                     SketchPlane boundarySketch = SketchPlane.Create(doc, boundaryPlane);
                     ModelCurve firstBoundary = null;
                     int boundaryCount = 0;
@@ -1963,7 +1963,7 @@ namespace Horizun.Revit.Commands
                     var view = (ViewPlan)p.SeparatorView;
 
                     Plane plane = Plane.CreateByNormalAndOrigin(
-                        XYZ.BasisZ, new XYZ(0, 0, p.Level.Elevation));
+                        XYZ.BasisZ, new XYZ(0, 0, p.Level.ProjectElevation));
                     SketchPlane sketch = SketchPlane.Create(doc, plane);
 
                     var curves = new CurveArray();
@@ -2262,7 +2262,7 @@ namespace Horizun.Revit.Commands
                     Level on = null;
                     try { on = doc.GetElement(slab.LevelId) as Level; } catch { }
                     if (on == null) continue;
-                    if (on.Elevation < bottom.Elevation - 1e-6 || on.Elevation > top.Elevation + 1e-6) continue;
+                    if (on.ProjectElevation < bottom.ProjectElevation - 1e-6 || on.ProjectElevation > top.ProjectElevation + 1e-6) continue;
                     if (!CadHostResolver.Covers(slab, inside)) continue;
 
                     Parameter flag = null;
@@ -2483,12 +2483,14 @@ namespace Horizun.Revit.Commands
         /// not a separator anybody meant, and Revit takes the sketch plane from a
         /// level - so a chain that is not flat would be silently flattened onto it.
         /// </summary>
-        private static void RequireHorizontalChains(IEnumerable<List<Curve>> chains, string kind)
+        private static void RequireHorizontalChains(IEnumerable<List<Curve>> chains, string kind, double levelZ)
         {
             double? commonZ = null;
             foreach (List<Curve> chain in chains)
             {
                 double z = chain[0].GetEndPoint(0).Z;
+                if (Math.Abs(z - levelZ) > 1e-7)
+                    throw new ArgumentException(kind + " profile Z must match the level's project elevation in internal/project coordinates; shared elevation is a display datum.");
                 if (chain.Any(c => Math.Abs(c.GetEndPoint(0).Z - z) > 1e-7 || Math.Abs(c.GetEndPoint(1).Z - z) > 1e-7))
                     throw new ArgumentException(kind + " profile chains must be horizontal and coplanar");
                 if (commonZ != null && Math.Abs(z - commonZ.Value) > 1e-7)

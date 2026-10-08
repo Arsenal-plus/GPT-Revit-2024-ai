@@ -26,7 +26,7 @@ using System.Collections.Generic;
 
 namespace Horizun.Revit.Core
 {
-    public enum ParameterSpecKind { BuiltIn, Guid, Name }
+    public enum ParameterSpecKind { BuiltIn, Guid, Name, Id }
 
     /// <summary>One read to try: which element, how to look, and whether an empty value counts.</summary>
     public sealed class ParameterProbe
@@ -94,6 +94,8 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static ParameterSpecKind KindOf(string spec, Func<string, bool> isBuiltIn)
         {
+            if (spec != null && spec.StartsWith("id:", StringComparison.OrdinalIgnoreCase))
+                return ParameterSpecKind.Id;
             if (isBuiltIn != null && isBuiltIn(spec)) return ParameterSpecKind.BuiltIn;
             Guid guid;
             if (Guid.TryParse(spec, out guid)) return ParameterSpecKind.Guid;

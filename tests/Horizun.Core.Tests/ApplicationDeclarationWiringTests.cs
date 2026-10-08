@@ -529,11 +529,12 @@ namespace Horizun.Core.Tests
         {
             string src = PlanSource();
             int compare = src.IndexOf("PlanReferences.CompareBinding", StringComparison.Ordinal);
-            int childExecute = src.IndexOf("CommandResult result = _resolve", compare, StringComparison.Ordinal);
+            int childExecute = src.IndexOf("CommandResult result = childCommand.Execute", compare, StringComparison.Ordinal);
 
             Assert.True(compare > 0, "the apply-time reference binding comparison is missing");
             Assert.True(childExecute > compare, "the consumer runs before its reference binding is checked");
             Assert.Contains("reference_binding_changed; the consumer was not executed", src);
+            Assert.Contains("childCommand is IExpectedPlanFingerprintCommand", src);
         }
 
         [Fact]

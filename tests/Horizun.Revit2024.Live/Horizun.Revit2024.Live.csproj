@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework><LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings><Nullable>disable</Nullable>
+    <AssemblyName>Horizun.Revit2024.Live</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="RevitAPI"><HintPath>C:\Program Files\Autodesk\Revit 2024\RevitAPI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="RevitAPIUI"><HintPath>C:\Program Files\Autodesk\Revit 2024\RevitAPIUI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Horizun.Revit"><HintPath>..\..\src\Horizun.Revit\bin\Release\Horizun.Revit.dll</HintPath><Private>false</Private></Reference>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>

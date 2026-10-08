@@ -29,7 +29,7 @@ namespace Horizun.Revit.Commands
             // typed pin - could not be composed into a plan until this line. A test
             // holds this list to be a superset of every tool the correction registry
             // names, so the next recipe cannot dead-end the same way.
-            "horizun_manage_links"
+            "horizun_manage_links", "horizun_revit2024"
         };
 
         public ExecutePlanCommand(Func<string, ICommand> resolve) { _resolve = resolve; }
@@ -296,10 +296,13 @@ namespace Horizun.Revit.Commands
                                 }
                             }
                             child = ChildArguments(child, gate, false);
+                            ICommand childCommand = _resolve(action.Value<string>("tool"));
                             string expectedChildPlan;
-                            if (expectedChildPlans.TryGetValue(i, out expectedChildPlan))
+                            // Only commands declaring support consume this private fingerprint.
+                            // Keep dispatcher metadata out of other tools' closed inputs.
+                            if (childCommand is IExpectedPlanFingerprintCommand && expectedChildPlans.TryGetValue(i, out expectedChildPlan))
                                 child["__expected_plan_fingerprint"] = expectedChildPlan;
-                            CommandResult result = _resolve(action.Value<string>("tool")).Execute(app, child.ToString(Formatting.None));
+                            CommandResult result = childCommand.Execute(app, child.ToString(Formatting.None));
 
                             // THE CHECK THIS WHOLE CHANGE EXISTS FOR. Success means the child
                             // ANSWERED. Only a declared full application means the model carries
@@ -462,7 +465,7 @@ namespace Horizun.Revit.Commands
         {
             JObject child = source == null ? new JObject() : (JObject)source.DeepClone();
             child["target_document"] = gate.Identity.Path ?? gate.Identity.Title;
-            child["target_document_title"] = gate.Identity.Title;
+            child.Remove("target_document_title"); // canonical guard above; do not inject undeclared child arguments
             child["dry_run"] = dryRun;
             child.Remove("confirmation_token"); child.Remove("idempotency_key");
             return child;

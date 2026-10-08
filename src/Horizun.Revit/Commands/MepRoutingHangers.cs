@@ -128,7 +128,7 @@ namespace Horizun.Revit.Commands
                 { error = "hanger_type_id " + typeId + " (" + symbol.FamilyName + ") is placed " + placement + "; hangers places level-based families only - a work-plane- or face-based family cannot be raised to the run's height here. Use a level-based generic model or accessory type."; return null; }
                 string rodName = (request.Value<string>("rod_length_parameter") ?? "").Trim();
                 if (rodName.Length == 0) rodName = null;
-                if (rodName != null && symbol.LookupParameter(rodName) != null)
+                if (rodName != null && ParameterResolver.ForWrite(symbol, rodName) != null)
                 { error = "rod_length_parameter '" + rodName + "' is a TYPE parameter of " + symbol.Name + ": one value per type cannot carry a per-station rod length."; return null; }
 
                 List<MEPCurve> targets = Targets(doc, request, out error);
@@ -286,7 +286,7 @@ namespace Horizun.Revit.Commands
                     if (Math.Abs(turn) > 1e-9) ElementTransformUtils.RotateElement(doc, fi.Id, Line.CreateBound(s.Point, s.Point + XYZ.BasisZ), turn);
                     if (_rodName != null)
                     {
-                        Parameter rod = fi.LookupParameter(_rodName);
+                        Parameter rod = ParameterResolver.ForWrite(fi, _rodName);
                         if (rod == null) throw new InvalidOperationException("the hanger family has no instance parameter named '" + _rodName + "'");
                         // A Number or Angle parameter would take the feet value and still re-read equal: only a Length is a rod.
                         if (rod.IsReadOnly || rod.StorageType != StorageType.Double || !IsLength(rod))
@@ -326,7 +326,7 @@ namespace Horizun.Revit.Commands
                     check.Record("rotation:" + s.Key, Deg(s.Angle), Deg(lp.Rotation), Math.Abs(diff) <= RotationTolRad);
                     if (_rodName != null)
                     {
-                        Parameter rod = fi.LookupParameter(_rodName);
+                        Parameter rod = ParameterResolver.ForWrite(fi, _rodName);
                         if (rod == null || !rod.HasValue || !IsLength(rod)) check.Unreadable("rod:" + s.Key, Mm(s.RodFeet), "'" + _rodName + "' did not re-read as a Length");
                         else check.Record("rod:" + s.Key, Mm(s.RodFeet), Mm(rod.AsDouble()), Math.Abs(rod.AsDouble() - s.RodFeet) <= PositionTolFeet);
                     }

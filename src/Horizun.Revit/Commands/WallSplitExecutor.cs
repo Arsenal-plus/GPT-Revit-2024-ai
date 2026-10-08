@@ -1202,8 +1202,8 @@ namespace Horizun.Revit.Commands
                 string key = "origin_group_param:" + options.OriginGroupParam;
                 try
                 {
-                    Parameter from = source.LookupParameter(options.OriginGroupParam);
-                    Parameter to = target.LookupParameter(options.OriginGroupParam);
+                    Parameter from = ParameterResolver.ForWrite(source, options.OriginGroupParam);
+                    Parameter to = ParameterResolver.ForWrite(target, options.OriginGroupParam);
 
                     if (from == null || to == null) skipped.Add(key + " (absent on " +
                         (from == null ? "the source wall" : "the layer wall") + ")");

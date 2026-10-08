@@ -291,7 +291,7 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void Event_subscriptions_are_limited_to_interference_and_read_cache_invalidation()
+        public void Event_subscriptions_are_limited_to_interference_and_model_state_invalidation()
         {
             string dir = Path.Combine(Root().FullName, "src", "Horizun.Revit");
             var offenders = new List<string>();
@@ -304,7 +304,8 @@ namespace Horizun.Core.Tests
                     var detached = Regex.Matches(text, @"\.(\w+)\s*-=").Cast<Match>().Select(m => m.Groups[1].Value).OrderBy(x => x).ToArray();
                     Assert.Equal(new[] { "DocumentChanged", "DocumentClosing", "DocumentOpened", "DocumentSaved", "DocumentSavedAs", "DocumentSynchronizedWithCentral", "ViewActivated" }.OrderBy(x => x), attached);
                     Assert.Equal(attached, detached);
-                    Assert.Equal(7, Regex.Matches(text, @"=> Cache\.Invalidate\(\);").Count);
+                    Assert.Equal(6, Regex.Matches(text, @"=> Cache\.Invalidate\(\);").Count);
+                    Assert.Matches(@"static void Changed\([^)]*\)\s*\{\s*Cache\.Invalidate\(\);\s*ModelStateFingerprint\.Changed\(e\.GetDocument\(\)\);\s*\}", text);
                     continue;
                 }
                 if (file.EndsWith("ChangeWatch.cs", StringComparison.Ordinal))

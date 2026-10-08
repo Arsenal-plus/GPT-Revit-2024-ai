@@ -122,6 +122,7 @@ namespace Horizun.Revit.Core
             if (string.IsNullOrWhiteSpace(wanted)) return null;
 
             string actual = Safe(() => active?.Title);
+            if (DocIdentity.SamePath(wanted, Safe(() => active?.PathName))) return null;
             if (TitlesMatch(wanted, actual)) return null;
 
             return CommandResult.Fail(

@@ -270,6 +270,7 @@ namespace Horizun.Contracts
             Row("horizun_execute_plan", "model"),
             Row("horizun_copy_between_documents", "model"),
             Row("horizun_manage_materials", "model"),
+            Row("horizun_revit2024", "model", "structure", "mep", "family"),
             Row("horizun_manage_styles", "model", "documentation"),
             Row("horizun_manage_units", "model", "coordination"),
             Row("horizun_ungroup_and_mark", "model"),
@@ -558,10 +559,51 @@ namespace Horizun.Contracts
                             ["description"] = "true adds verification_catalog: per writing tool, its mechanism and residual_gap_count " +
                                 "from WriteVerificationCatalog, plus where the full text (mechanisms, evidence fields, known gaps) lives. " +
                                 "Default false keeps health small."
+                        },
+                        ["include_capabilities"] = new JObject
+                        {
+                            ["type"] = "boolean", ["default"] = false,
+                            ["description"] = "Operation inventory for the loaded build, dependency declarations and observed verification. Compiled support is separate from live evidence."
                         }
                     },
                     ["additionalProperties"] = false
                 }
+            },
+            new CommandContract
+            {
+                Name = "horizun_revit2024",
+                Command = "horizun_revit2024",
+                Description = "Revit 2024 public API extensions. catalog lists types, levels and configured Fabrication services; appearance_read lists rendering asset property paths. Writes rehearse, roll back, require confirmation, commit and re-read. site_create uses boundary loops, site_subdivide creates a subdivision on host_id, site_convert converts a legacy surface without explicitly deleting it. Analytical operations create/edit curves and contours, associate physical elements, or add hosted loads with explicit force/moment units and load_case_id. Fabrication requires the project's configured database; creation anchors its first connector at point, conversion replaces the selected design elements atomically. wire_create creates an unconnected schematic wire; circuit_set_path edits the actual circuit path; panel_move_slot moves a circuit cell. family_curve and family_adaptive use the corresponding native placement APIs. Coordinates are project/internal coordinates in the selected length units. Any model edit after preview invalidates confirmation. Revit 2024 RTM APIs; no Revit update required.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""catalog"", ""appearance_read"", ""site_create"", ""site_subdivide"", ""site_convert"", ""analytical_member_create"", ""analytical_member_edit"", ""analytical_panel_create"", ""analytical_panel_edit"", ""analytical_associate"", ""analytical_point_load"", ""analytical_line_load"", ""analytical_area_load"", ""fabrication_load_service"", ""fabrication_create"", ""fabrication_convert"", ""wire_create"", ""circuit_set_path"", ""panel_move_slot"", ""family_curve"", ""family_adaptive""] },
+    ""target_document"": { ""type"": ""string"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""confirmation_token"": { ""type"": ""string"" },
+    ""idempotency_key"": { ""type"": ""string"" },
+    ""transaction_name"": { ""type"": ""string"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""element_id"": { ""type"": ""integer"" }, ""host_id"": { ""type"": ""integer"" },
+    ""physical_element_id"": { ""type"": ""integer"" }, ""material_id"": { ""type"": ""integer"" },
+    ""type_id"": { ""type"": ""integer"" }, ""level_id"": { ""type"": ""integer"" }, ""view_id"": { ""type"": ""integer"" },
+    ""load_case_id"": { ""type"": ""integer"" },
+    ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
+    ""point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+    ""points"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 10000, ""description"": ""Curve: two points for a line, three for an arc (start,end,on-arc). Panel/adaptive/wire/path: ordered points."", ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } },
+    ""loops"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""description"": ""Closed polygon boundaries: one outer loop and optional holes; each loop is an array of XYZ points."", ""items"": { ""type"": ""array"", ""minItems"": 3, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } } },
+    ""force"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+    ""moment"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+    ""force_unit"": { ""type"": ""string"", ""description"": ""Explicit UnitTypeId property name or ForgeTypeId; internal also accepted. Force for point, linear force for line, area force for area loads."" },
+    ""moment_unit"": { ""type"": ""string"", ""description"": ""Moment units for point loads or linear-moment units for line loads. Required with moment."" },
+    ""service_id"": { ""type"": ""integer"" }, ""palette_index"": { ""type"": ""integer"", ""minimum"": 0 },
+    ""button_index"": { ""type"": ""integer"", ""minimum"": 0 }, ""condition_index"": { ""type"": ""integer"", ""minimum"": 0 },
+    ""wiring_type"": { ""type"": ""string"", ""enum"": [""Chamfer"", ""Arc""], ""default"": ""Chamfer"" },
+    ""structural_type"": { ""type"": ""string"", ""enum"": [""NonStructural"", ""Beam"", ""Brace""], ""default"": ""NonStructural"" },
+    ""row"": { ""type"": ""integer"", ""minimum"": 0 }, ""column"": { ""type"": ""integer"", ""minimum"": 0 },
+    ""to_row"": { ""type"": ""integer"", ""minimum"": 0 }, ""to_column"": { ""type"": ""integer"", ""minimum"": 0 }
+  }, ""additionalProperties"": false
+}")
             },
             new CommandContract
             {
@@ -1542,7 +1584,7 @@ namespace Horizun.Contracts
                 Name = "horizun_slab_shape",
                 Command = "horizun_slab_shape",
                 Description =
-                    "Floor/roof shape editing: read (vertices, creases), add_point, add_split_line, modify_subelement " +
+                    "Floor/roof/Toposolid (Revit 2024+) shape editing: read (vertices, creases), add_point, add_split_line, modify_subelement " +
                     "(vertex points or one crease by start/end) and reset_shape (erases the shape points). Every " +
                     "touched vertex elevation is re-read after commit; a disagreement rolls back.",
                 InputSchema = JObject.Parse(@"{
@@ -3835,7 +3877,7 @@ namespace Horizun.Contracts
           ""horizun_split_floor_loops"", ""horizun_split_multilayer_walls"", ""horizun_split_multilayer_slabs"",
           ""horizun_ungroup_and_mark"", ""horizun_regroup_by_param"", ""horizun_copy_slab_elevations"",
           ""horizun_embed_floors_in_toposolid"", ""horizun_grade_toposolid_around_floors"", ""horizun_rectangularize_walls"",
-          ""horizun_manage_links"", ""horizun_pack_sheets""
+          ""horizun_manage_links"", ""horizun_pack_sheets"", ""horizun_revit2024""
         ] },
         ""arguments"": { ""type"": ""object"", ""description"": ""Arguments for the typed tool. target_document, dry_run, confirmation_token and idempotency_key are controlled by the plan."" }
       }, ""additionalProperties"": false
@@ -5334,8 +5376,9 @@ namespace Horizun.Contracts
         ""material_class"": { ""type"": ""string"" }, ""material_category"": { ""type"": ""string"" },
         ""appearance_asset_id"": { ""type"": ""integer"" },
         ""share_appearance_asset"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Point at the asset instead of a copy of it. Off by default: sharing means a later edit of that asset changes every material using it."" },
-        ""structural"": { ""type"": ""object"", ""description"": ""Physical properties. When the material has NO structural asset, one is CREATED - but only if this object carries a 'class' (Concrete, Metal, Wood, Plastic, Generic, Gas, Liquid), because the class decides which fields exist at all and choosing it for you would produce a material whose properties nobody picked; without it the call is refused with that sentence. Optional 'name' names the new property set. Fields, written and RE-READ per field: density, minimum_yield_stress, minimum_tensile_strength, concrete_compression, young_modulus, poisson_ratio, shear_modulus, thermal_expansion_coefficient. Values are in REVIT'S INTERNAL UNITS and are not converted - density is mass per cubic foot, moduli are force per square foot - because a conversion invented here produces a number nobody can trace back to the model. A name outside that list is reported as unknown_field and NOT written. The three vector properties take one number and are written to all three axes (isotropic); writing one axis would leave a material isotropic in name and orthotropic in its numbers."" },
-        ""thermal"": { ""type"": ""object"", ""description"": ""Thermal properties. When the material has NO thermal asset, one is CREATED if this object carries a 'material_type' (Solid, Liquid, Gas); without it the call is refused rather than guessing. Fields, written and re-read per field: thermal_conductivity, specific_heat, density, emissivity, permeability, porosity, reflectivity. Same unit rule, same unknown_field rule."" },
+        ""structural"": { ""type"": ""object"", ""description"": ""Physical properties: density, minimum_yield_stress, minimum_tensile_strength, concrete_compression, young_modulus, poisson_ratio, shear_modulus, thermal_expansion_coefficient. Numeric fields accept a raw number in Revit internal units or {value: 2400, unit: 'KilogramsPerCubicMeter'} using a UnitTypeId property name or ForgeTypeId. Dimensional compatibility is checked. Dimensionless values use raw numbers or unit='internal'. Vector properties set all three axes (isotropic). Creating an absent asset requires class (Concrete, Metal, Wood, Plastic, Generic, Gas, Liquid); optional name. Existing class/name cannot be changed here. Every requested value is read again after commit."" },
+        ""thermal"": { ""type"": ""object"", ""description"": ""Thermal properties: thermal_conductivity, specific_heat, density, emissivity, permeability, porosity, reflectivity. Same numeric/explicit-unit rule as structural. Creation requires material_type (Solid, Liquid, Gas); optional name. Unknown or unsupported fields cause rollback."" },
+        ""appearance_properties"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""description"": ""Edit existing rendering properties with AppearanceAssetEditScope. Use horizun_revit2024 appearance_read to discover paths and types. Slash paths traverse existing connected assets, including bitmap paths. Numbers use the rendering schema's native units. Shared assets require duplicate_shared_assets=true."", ""items"": { ""type"": ""object"", ""required"": [""path"", ""value""], ""properties"": { ""path"": { ""type"": ""string"" }, ""value"": { ""description"": ""String, boolean, integer, number or four-component numeric array, matching the property type."" } }, ""additionalProperties"": false } },
         ""duplicate_shared_assets"": { ""type"": ""boolean"", ""default"": false, ""description"": ""A structural or thermal property set is an ELEMENT, and several materials commonly point at the same one - Autodesk's own templates ship concrete assets shared by a dozen. Editing it changes every one of them. With this false (the default) an edit that would reach another material is REFUSED and the other materials are named; with it true, this material gets its own copy first and the others are untouched. Nothing here silently edits a material you did not name."" }
       }, ""additionalProperties"": false } }
   },
@@ -6793,7 +6836,7 @@ namespace Horizun.Contracts
                 "horizun_connect_mep",
                 "horizun_mep_routing",
                 "horizun_structural_connections",
-                "horizun_manage_materials",
+                "horizun_manage_materials", "horizun_revit2024",
                 "horizun_manage_styles", "horizun_manage_units", "horizun_electrical",
                 "horizun_copy_between_documents",
                 "horizun_execute_plan",

@@ -201,9 +201,10 @@ namespace Horizun.Revit.Commands
                                     ReferencePlane referencePlane = family.FamilyCreate.NewReferencePlane(referencePlan.BubbleEnd,
                                         referencePlan.FreeEnd, referencePlan.CutVector, familyView);
                                     if (!string.IsNullOrWhiteSpace(referencePlan.Name)) referencePlane.Name = referencePlan.Name;
-                                    Parameter referenceKind = referencePlane.LookupParameter("Is Reference");
-                                    if (referenceKind != null && !referenceKind.IsReadOnly)
-                                        referenceKind.Set((int)FamilyInstanceReferenceType.StrongReference);
+                                    Parameter referenceKind = referencePlane.get_Parameter(BuiltInParameter.ELEM_REFERENCE_NAME);
+                                    if (referenceKind == null || referenceKind.IsReadOnly ||
+                                        !referenceKind.Set((int)FamilyInstanceReferenceType.StrongReference))
+                                        throw new InvalidOperationException("Revit refused the strong reference plane type.");
                                     referencePlanes[referencePlan.Key] = referencePlane;
                                     createdReferencePlanes.Add(new JObject { ["key"] = referencePlan.Key, ["element_id"] = Rid.Value(referencePlane.Id) });
                                 }
@@ -1334,6 +1335,11 @@ namespace Horizun.Revit.Commands
                     throw new InvalidOperationException("reference plane '" + requested.Key + "' name did not re-read as requested");
                 if (referencePlane.GetReference() == null)
                     throw new InvalidOperationException("reference plane '" + requested.Key + "' did not expose a stable Reference");
+                if (referencePlane.get_Parameter(BuiltInParameter.ELEM_REFERENCE_NAME)?.AsInteger() !=
+                    (int)FamilyInstanceReferenceType.StrongReference ||
+                    !referencePlane.BubbleEnd.IsAlmostEqualTo(requested.BubbleEnd) ||
+                    !referencePlane.FreeEnd.IsAlmostEqualTo(requested.FreeEnd))
+                    throw new InvalidOperationException("reference plane '" + requested.Key + "' type or endpoints did not match");
                 verifiedPlanes[requested.Key] = referencePlane;
                 row["name"] = referencePlane.Name; row["verified"] = true;
             }

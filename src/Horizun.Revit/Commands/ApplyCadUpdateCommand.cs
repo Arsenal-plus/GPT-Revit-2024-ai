@@ -571,6 +571,10 @@ namespace Horizun.Revit.Commands
             var stamps = new JArray();
             var restamps = new JArray();
             int written = 0, anonymous = 0, restamped = 0, migrated = 0, restampFailed = 0;
+            var pendingProvenance = new Dictionary<long, CadProvenance>();
+            string metadataError = null;
+            try
+            {
             using (var t = new Transaction(doc, "Horizun: record CAD update provenance"))
             {
                 t.Start();
@@ -604,6 +608,7 @@ namespace Horizun.Revit.Commands
                         stamps.Add(new JObject
                         {
                             ["element_id"] = pair.ElementId, ["key"] = pair.Key, ["written"] = false,
+                            ["metadata_required"] = false,
                             ["means"] = "a re-created instance whose original carried no CAD provenance: none is written"
                         });
                         continue;
@@ -638,6 +643,7 @@ namespace Horizun.Revit.Commands
 
                     string why;
                     bool ok = CadProvenanceStore.Write(e, p, out why);
+                    pendingProvenance[Rid.Value(e.Id)] = p.Clone();
                     if (ok) written++; else anonymous++;
                     stamps.Add(new JObject
                     {
@@ -741,6 +747,7 @@ namespace Horizun.Revit.Commands
 
                     string why;
                     bool ok = CadProvenanceStore.Write(e, p, out why);
+                    pendingProvenance[Rid.Value(e.Id)] = p.Clone();
                     if (ok)
                     {
                         restamped++;
@@ -805,6 +812,7 @@ namespace Horizun.Revit.Commands
                             restamps.Add(new JObject
                             {
                                 ["element_id"] = id, ["reason"] = "host_reshaped_left_displaced", ["written"] = false,
+                                ["metadata_required"] = false,
                                 ["host_id"] = hostId, ["was_built_at_mm"] = was,
                                 ["means"] = "its host no longer carries the point it was built at: it was carried off it " +
                                             "before this update. Its record is kept so the next plan re-homes it."
@@ -816,6 +824,7 @@ namespace Horizun.Revit.Commands
                         p.WrittenUtc = DateTime.UtcNow.ToString("o");
                         string why;
                         bool ok = CadProvenanceStore.Write(fi, p, out why);
+                        pendingProvenance[id] = p.Clone();
                         if (ok) restamped++; else restampFailed++;
                         restamps.Add(new JObject
                         {
@@ -829,7 +838,31 @@ namespace Horizun.Revit.Commands
                         });
                     }
                 }
-                t.Commit();
+                Guard.Commit(t, "CAD update provenance metadata");
+            }
+            }
+            catch (Exception ex) { metadataError = ex.Message; }
+            foreach (JObject receipt in stamps.Concat(restamps).OfType<JObject>())
+            {
+                if (receipt.Value<bool?>("written") != true) continue;
+                long id = receipt.Value<long>("element_id");
+                string problem = metadataError;
+                CadProvenance wanted;
+                bool ok = metadataError == null && pendingProvenance.TryGetValue(id, out wanted) &&
+                    CadProvenanceStore.Matches(doc.GetElement(Rid.Make(id)), wanted, out problem);
+                receipt["written"] = ok; receipt["host_verified"] = ok;
+                if (!ok) receipt["means"] = "Geometry changes remain; metadata not verified: " + problem;
+            }
+            written = stamps.Count(x => (bool?)x["written"] == true);
+            anonymous = stamps.Count(x => (bool?)x["written"] != true && (bool?)x["metadata_required"] != false);
+            restamped = restamps.Count(x => (bool?)x["written"] == true);
+            restampFailed = restamps.Count(x => (bool?)x["written"] != true && (bool?)x["metadata_required"] != false);
+            migrated = restamps.Count(x => (bool?)x["written"] == true && (string)x["was_version"] == "v1" &&
+                (string)x["reason"] == CadPlacementRules.RestampMigrated);
+            if (metadataError != null || anonymous + restampFailed > 0)
+            {
+                failures++;
+                actionChildren.Add(CompositeChild.Of(false, null));
             }
 
             JArray fittingsAfterResize = FittingsAfterResize(doc, actions);

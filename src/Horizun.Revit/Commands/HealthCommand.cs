@@ -45,10 +45,12 @@ namespace Horizun.Revit.Commands
             // is to answer, and a bad JSON blob here just keeps the reply at its small
             // default shape instead of adding the optional catalog block.
             bool includeVerificationCatalog = false;
+            bool includeCapabilities = false;
             try
             {
                 JObject request = string.IsNullOrWhiteSpace(paramsJson) ? null : JObject.Parse(paramsJson);
                 includeVerificationCatalog = request?.Value<bool?>("include_verification_catalog") ?? false;
+                includeCapabilities = request?.Value<bool?>("include_capabilities") ?? false;
             }
             catch { /* keep the default */ }
 
@@ -112,6 +114,7 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(new
             {
                 status = "healthy",
+                capabilities = includeCapabilities ? CapabilityRegistry.Read(app) : null,
                 // The two questions every support conversation starts with, answered before
                 // they are asked: which build of ours is running, and where is its log.
                 horizun_version = Build.Version,

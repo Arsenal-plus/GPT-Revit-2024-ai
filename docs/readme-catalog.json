@@ -1,6 +1,15 @@
 {
   "groups": [
     {
+      "en": "Revit 2024 extensions",
+      "es": "Extensiones de Revit 2024",
+      "tools": [[
+        "horizun_revit2024",
+        "Inspect capabilities and perform verified Toposolid, analytical/load, Fabrication, electrical and complex family placement operations. Fabrication requires a configured database and services.",
+        "Consultar capacidades y ejecutar operaciones verificadas de Toposolid, modelo analítico/cargas, Fabrication, electricidad y colocación de familias. Fabrication requiere una base de datos y servicios configurados."
+      ]]
+    },
+    {
       "en": "Connection, documents and background jobs",
       "es": "Conexión, documentos y trabajos en segundo plano",
       "tools": [

@@ -324,6 +324,8 @@ namespace Horizun.Revit.Core
             {
                 try
                 {
+                    asset = asset.Copy();
+                    asset.Name += " " + Guid.NewGuid().ToString("N");
                     PropertySetElement copy = PropertySetElement.Create(doc, asset);
                     material.StructuralAssetId = copy.Id;
                     set = copy;
@@ -347,11 +349,20 @@ namespace Horizun.Revit.Core
             }
 
             foreach (JProperty field in fields.Properties())
-                outcomes.Add(SetStructuralField(asset, field));
+                if (field.Name == "class" || field.Name == "name")
+                    outcomes.Add(MetadataField(field, field.Name == "class" ? asset.StructuralAssetClass.ToString() : asset.Name));
+                else outcomes.Add(SetStructuralField(asset, field));
 
             // WRITTEN BACK AS A WHOLE, because StructuralAsset is a value object: changing
             // the instance in hand does nothing until the property set takes it.
-            try { set.SetStructuralAsset(asset); }
+            try
+            {
+                // RTM rejects the incoming name while this same property set uses it.
+                // Release it inside the caller's transaction. The setter restores the
+                // original name and retains the id; any refusal rolls everything back.
+                set.Name = "Horizun pending " + Guid.NewGuid().ToString("N");
+                set.SetStructuralAsset(asset);
+            }
             catch (Exception ex)
             {
                 refusal = "the edited structural asset was refused by Revit (" + ex.Message + "). Nothing " +
@@ -442,6 +453,8 @@ namespace Horizun.Revit.Core
             {
                 try
                 {
+                    asset = asset.Copy();
+                    asset.Name += " " + Guid.NewGuid().ToString("N");
                     PropertySetElement copy = PropertySetElement.Create(doc, asset);
                     material.ThermalAssetId = copy.Id;
                     set = copy;
@@ -463,9 +476,15 @@ namespace Horizun.Revit.Core
             }
 
             foreach (JProperty field in fields.Properties())
-                outcomes.Add(SetThermalField(asset, field));
+                if (field.Name == "material_type" || field.Name == "name")
+                    outcomes.Add(MetadataField(field, field.Name == "material_type" ? asset.ThermalMaterialType.ToString() : asset.Name));
+                else outcomes.Add(SetThermalField(asset, field));
 
-            try { set.SetThermalAsset(asset); }
+            try
+            {
+                set.Name = "Horizun pending " + Guid.NewGuid().ToString("N");
+                set.SetThermalAsset(asset);
+            }
             catch (Exception ex)
             {
                 refusal = "the edited thermal asset was refused by Revit (" + ex.Message + ").";
@@ -489,10 +508,11 @@ namespace Horizun.Revit.Core
         {
             var outcome = new AssetFieldOutcome { Field = field.Name };
             double value;
-            if (!TryNumber(field.Value, out value))
+            string unitError;
+            if (!TryNumber(field.Value, field.Name, out value, out unitError))
             {
                 outcome.State = Refused;
-                outcome.Reason = "this field takes a number and received " + field.Value.Type + ".";
+                outcome.Reason = unitError;
                 return outcome;
             }
 
@@ -537,10 +557,11 @@ namespace Horizun.Revit.Core
         {
             var outcome = new AssetFieldOutcome { Field = field.Name };
             double value;
-            if (!TryNumber(field.Value, out value))
+            string unitError;
+            if (!TryNumber(field.Value, field.Name, out value, out unitError))
             {
                 outcome.State = Refused;
-                outcome.Reason = "this field takes a number and received " + field.Value.Type + ".";
+                outcome.Reason = unitError;
                 return outcome;
             }
 
@@ -624,16 +645,97 @@ namespace Horizun.Revit.Core
         /// </summary>
         private static XYZ Uniform(double value) => new XYZ(value, value, value);
 
-        private static bool TryNumber(JToken token, out double value)
+        private static AssetFieldOutcome MetadataField(JProperty field, string actual)
         {
-            value = 0;
-            if (token == null) return false;
-            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+            bool matches = string.Equals((string)field.Value, actual, StringComparison.OrdinalIgnoreCase);
+            return new AssetFieldOutcome { Field = field.Name, Was = actual, Now = actual,
+                State = matches ? Unchanged : Refused,
+                Reason = matches ? null : "Asset metadata differs. Changing an existing asset's name or class/type is not supported by this operation." };
+        }
+
+        public static bool TryNumber(JToken token, string field, out double value, out string error)
+        {
+            value = 0; error = null;
+            try
             {
-                value = token.Value<double>();
+                JObject quantity = token as JObject;
+                JToken number = quantity == null ? token : quantity["value"];
+                if (number == null || (number.Type != JTokenType.Integer && number.Type != JTokenType.Float))
+                    throw new ArgumentException("Expected a finite number or {value, unit}.");
+                value = number.Value<double>();
+                if (double.IsNaN(value) || double.IsInfinity(value)) throw new ArgumentException("Expected a finite number.");
+                if (quantity != null)
+                {
+                    string unit = quantity.Value<string>("unit");
+                    if (string.IsNullOrWhiteSpace(unit)) throw new ArgumentException("Quantity requires unit (ForgeTypeId, UnitTypeId property name, or internal).");
+                    if (!string.Equals(unit, "internal", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ForgeTypeId spec = SpecFor(field);
+                        var property = typeof(UnitTypeId).GetProperties().FirstOrDefault(p =>
+                            string.Equals(p.Name, unit, StringComparison.OrdinalIgnoreCase));
+                        ForgeTypeId unitId = property == null ? new ForgeTypeId(unit) : (ForgeTypeId)property.GetValue(null);
+                        if (spec == null || !UnitUtils.IsValidUnit(spec, unitId))
+                            throw new ArgumentException("Unit '" + unit + "' is not valid for " + field + ".");
+                        value = UnitUtils.ConvertToInternalUnits(value, unitId);
+                        if (double.IsNaN(value) || double.IsInfinity(value)) throw new ArgumentException("Quantity overflows Revit internal units.");
+                    }
+                }
                 return true;
             }
-            return false;
+            catch (Exception ex) { error = field + ": " + ex.Message; return false; }
+        }
+
+        private static ForgeTypeId SpecFor(string field)
+        {
+            switch (field)
+            {
+                case "density": return SpecTypeId.MassDensity;
+                case "young_modulus": case "shear_modulus": case "minimum_yield_stress":
+                case "minimum_tensile_strength": case "concrete_compression": return SpecTypeId.Stress;
+                case "thermal_expansion_coefficient": return SpecTypeId.ThermalExpansionCoefficient;
+                case "thermal_conductivity": return SpecTypeId.ThermalConductivity;
+                case "specific_heat": return SpecTypeId.SpecificHeat;
+                default: return null; // dimensionless values accept only explicit internal units
+            }
+        }
+
+        // Called again after commit; setter outcomes are not evidence of persistence.
+        public static bool VerifyWrites(Document doc, Material material, JObject structural, JObject thermal, out string error)
+        {
+            error = null;
+            StructuralAsset s = structural == null ? null : SetOf(doc, material.StructuralAssetId)?.GetStructuralAsset();
+            ThermalAsset t = thermal == null ? null : SetOf(doc, material.ThermalAssetId)?.GetThermalAsset();
+            foreach (var pair in new[] { new { Fields = structural, Structural = true }, new { Fields = thermal, Structural = false } })
+            {
+                if (pair.Fields == null) continue;
+                if ((pair.Structural && s == null) || (!pair.Structural && t == null))
+                { error = "The requested physical asset could not be re-read."; return false; }
+                foreach (JProperty field in pair.Fields.Properties())
+                {
+                    if (field.Name == "name" || field.Name == "class" || field.Name == "material_type")
+                    {
+                        string actual = field.Name == "name" ? (pair.Structural ? s.Name : t.Name) :
+                            pair.Structural ? s.StructuralAssetClass.ToString() : t.ThermalMaterialType.ToString();
+                        if (!string.Equals((string)field.Value, actual, StringComparison.OrdinalIgnoreCase))
+                        { error = field.Name + " did not persist."; return false; }
+                        continue;
+                    }
+                    double wanted, actualNumber;
+                    if (!TryNumber(field.Value, field.Name, out wanted, out error)) return false;
+                    string actualText = pair.Structural ? ReadStructuralField(s, field.Name) : ReadThermalField(t, field.Name);
+                    if (!double.TryParse(actualText, NumberStyles.Float, CultureInfo.InvariantCulture, out actualNumber) ||
+                        Math.Abs(wanted - actualNumber) > 1e-9 * Math.Max(1, Math.Abs(wanted)))
+                    { error = field.Name + " did not persist as requested."; return false; }
+                    if (pair.Structural && new[] { "young_modulus", "shear_modulus", "poisson_ratio", "thermal_expansion_coefficient" }.Contains(field.Name))
+                    {
+                        XYZ v = field.Name == "young_modulus" ? s.YoungModulus : field.Name == "shear_modulus" ? s.ShearModulus :
+                            field.Name == "poisson_ratio" ? s.PoissonRatio : s.ThermalExpansionCoefficient;
+                        if (v == null || new[] { v.Y, v.Z }.Any(x => Math.Abs(x - wanted) > 1e-9 * Math.Max(1, Math.Abs(wanted))))
+                        { error = field.Name + " axes did not persist as requested."; return false; }
+                    }
+                }
+            }
+            return true;
         }
 
         private static JToken Safe(Func<string> read)
@@ -661,7 +763,7 @@ namespace Horizun.Revit.Core
 
         private static string Text(Func<double> read)
         {
-            try { return read().ToString("0.######", CultureInfo.InvariantCulture); }
+            try { return read().ToString("R", CultureInfo.InvariantCulture); }
             catch { return null; }
         }
     }

@@ -1,0 +1,250 @@
+{
+  "baseline_commit": "ec7b6b86f2f102fdfd4e47fbb76ecc6a50f6e528",
+  "date": "2026-10-08",
+  "product_version": "2.2.0",
+  "source_status_at_measurement": "local_prepublication_validation; final clean main build requires a separate receipt",
+  "target": {
+    "year": "2024",
+    "file_version": "24.0.4.427",
+    "version_build": "24.0.4.427",
+    "product_build_timestamp": "20230308_1635(x64)",
+    "update_revit": false,
+    "api_sha256_unchanged": true
+  },
+  "stages": [
+    {
+      "status": "implemented_and_tested",
+      "scope": "Audit defects and regressions",
+      "id": 1
+    },
+    {
+      "documented_api_members": 33217,
+      "status": "implemented",
+      "scope": "Operation capability registry and exact installed API inventory",
+      "id": 2
+    },
+    {
+      "status": "implemented_and_tested",
+      "scope": "Transaction, stale-plan, postcommit and retry guarantees for changed handlers",
+      "id": 3
+    },
+    {
+      "status": "implemented_and_tested",
+      "scope": "Unambiguous parameters and explicit units",
+      "id": 4
+    },
+    {
+      "status": "passed_with_explicit_dependency_exclusion",
+      "scope": "Automated and live tests on installed RTM, isolated fixtures",
+      "id": 5
+    },
+    {
+      "status": "implemented_fabrication_live_acceptance_pending",
+      "scope": "Toposolid, analytical editing/loads, fabrication, electrical, appearance and complex family placement",
+      "id": 6,
+      "pending": "Three Fabrication operations require an installed configuration and compatible project services."
+    }
+  ],
+  "tests": {
+    "core_passed": 5851,
+    "server_passed": 1054,
+    "total_passed": 6905,
+    "failed": 0,
+    "skipped": 0,
+    "test_runtime": "Microsoft.NETCore.App 8.0.31",
+    "installed_server_runtime": "Microsoft.NETCore.App 8.0.30",
+    "live": [
+      {
+        "failed": 0,
+        "artifact": "live-rtm-rus-08",
+        "language": "RUS",
+        "unavailable_dependency": 1,
+        "passed": 36
+      },
+      {
+        "failed": 0,
+        "unavailable_dependency": 1,
+        "language": "ENU",
+        "loaded_installed_addin": true,
+        "artifact": "live-installed-rtm-enu-09",
+        "passed": 36
+      }
+    ],
+    "cases": [
+      {
+        "name": "structural_asset_api_probe",
+        "state": "passed"
+      },
+      {
+        "name": "element_id_64_bit",
+        "state": "passed"
+      },
+      {
+        "name": "read_document_full_path_and_wrong_path",
+        "state": "passed"
+      },
+      {
+        "name": "materials_create_physical_thermal",
+        "state": "passed"
+      },
+      {
+        "name": "materials_physical_only_update",
+        "state": "passed"
+      },
+      {
+        "name": "materials_wrong_dimension_rolls_back",
+        "state": "passed"
+      },
+      {
+        "name": "materials_stale_smoothness",
+        "state": "passed"
+      },
+      {
+        "name": "materials_shared_asset_duplicate",
+        "state": "passed"
+      },
+      {
+        "name": "materials_appearance_edit",
+        "state": "passed"
+      },
+      {
+        "name": "global_parameter_builtin_association",
+        "state": "passed"
+      },
+      {
+        "name": "duplicate_parameter_name_and_explicit_id",
+        "state": "passed"
+      },
+      {
+        "name": "cad_provenance_postcommit_and_rollback",
+        "state": "passed"
+      },
+      {
+        "name": "ifc_provenance_postcommit_and_rollback",
+        "state": "passed"
+      },
+      {
+        "name": "room_separator_shared_datum",
+        "state": "passed"
+      },
+      {
+        "name": "site_boundary_with_hole",
+        "state": "passed"
+      },
+      {
+        "name": "site_subdivision",
+        "state": "passed"
+      },
+      {
+        "name": "toposolid_slab_shape_shared_datum",
+        "state": "passed"
+      },
+      {
+        "name": "site_convert_legacy",
+        "state": "passed"
+      },
+      {
+        "name": "analytical_member_create",
+        "state": "passed"
+      },
+      {
+        "name": "analytical_member_edit",
+        "state": "passed"
+      },
+      {
+        "name": "atomic_plan_revit2024",
+        "state": "passed"
+      },
+      {
+        "name": "analytical_panel_create",
+        "state": "passed"
+      },
+      {
+        "name": "analytical_panel_edit",
+        "state": "passed"
+      },
+      {
+        "name": "analytical_association",
+        "state": "passed"
+      },
+      {
+        "name": "analytical_point_load",
+        "state": "passed"
+      },
+      {
+        "name": "analytical_line_load",
+        "state": "passed"
+      },
+      {
+        "name": "analytical_area_load",
+        "state": "passed"
+      },
+      {
+        "name": "stale_plan_same_count_replacement",
+        "state": "passed"
+      },
+      {
+        "name": "wire_create",
+        "state": "passed"
+      },
+      {
+        "name": "family_reference_plane_localized",
+        "state": "passed"
+      },
+      {
+        "name": "family_adaptive",
+        "state": "passed"
+      },
+      {
+        "name": "family_curve",
+        "state": "passed"
+      },
+      {
+        "name": "fabrication_dependency_diagnostic",
+        "state": "unavailable_dependency"
+      },
+      {
+        "name": "imperial_template_material_units",
+        "state": "passed"
+      },
+      {
+        "name": "electrical_fixture",
+        "state": "passed"
+      },
+      {
+        "name": "circuit_set_path",
+        "state": "passed"
+      },
+      {
+        "name": "panel_move_slot",
+        "state": "passed"
+      }
+    ]
+  },
+  "installation": {
+    "status": "installed_and_live_verified",
+    "health": "healthy",
+    "addin_version": "2.2.0",
+    "server_version": "2.2.0",
+    "contract_hash": "ffa79adb4e9bb4e4c6050158",
+    "addin_sha256": "6b45b3ee8e79b1427c4a86725c440aaf739ab4d2a92a202da677ad396cc0134b",
+    "server_dll_sha256": "a6a00d02ccd1e983b6ee6aceea102133ad98a06eaa1215d46eea33647aed9ea5",
+    "codex_restart_required_to_refresh_tools": true,
+    "deferred_registration": "waiting_for_client_exit",
+    "backup": "before-install-220"
+  },
+  "mcp": {
+    "health": "passed",
+    "catalog": "passed",
+    "preview": "passed",
+    "apply": "verified_applied",
+    "replay": "same_element_id_command_not_executed"
+  },
+  "limitations": [
+    "No Fabrication configuration is installed; load_service, create and convert have compiled but not completed successful live execution.",
+    "Live scenarios are representative and do not prove every tool, input, family, project or Revit ribbon action.",
+    "Historical upstream release evidence does not validate these changed binaries."
+  ],
+  "evidence_root": "../audit-revit-2024",
+  "verification_policy": "Compiled, live tested, unavailable dependency and unavailable API are distinct."
+}
