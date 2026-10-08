@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     Horizun Revit plugin. Original Horizun code — no third-party GPL, no derived
@@ -154,6 +154,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Arsenal-Plus: pin the Revit 2024 targeting references even without a local developer pack. -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" Condition="'$(RevitYear)' == '2024'" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="PdfPig" Version="0.1.13" />
     <!-- The scripting escape hatch. IronPython is Apache-2.0 (a separate project);
