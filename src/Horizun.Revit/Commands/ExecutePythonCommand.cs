@@ -478,6 +478,12 @@ namespace Horizun.Revit.Commands
             {
                 var warnings = new JArray();
                 foreach (JToken advisory in typedAlternatives) warnings.Add(advisory);
+                if (code.Contains("json.load") && !code.Contains("encoding=") && !code.Contains("encoding =") && !code.Contains("read_json("))
+                    warnings.Add("JSON input has no explicit encoding. Use read_json(path), which reads UTF-8 with or without BOM; do not depend on the Windows ANSI code page.");
+                if (code.Contains("BoundaryRect") && !code.Contains("IsRectBoundary"))
+                    warnings.Add("Opening.BoundaryRect is null for non-rectangular openings. Test IsRectBoundary; use BoundaryCurves for other shapes.");
+                if (code.Contains("GetBoundarySegments"))
+                    warnings.Add("Unplaced or unenclosed spatial elements may have no boundaries. Report that condition explicitly. horizun_model_snapshot provides a typed alternative.");
 
                 if (readOnly && readOnlyViolations.Count > 0)
                     warnings.Add(
@@ -653,7 +659,7 @@ namespace Horizun.Revit.Commands
                     ["max_output_chars"] = outputLimit,
                     // The dispatcher runs the script itself; a second async hop would
                     // queue it forever.
-                    ["helpers_version"] = 1
+                    ["helpers_version"] = 2
                 };
 
                 Job asyncJob = null;
@@ -1164,7 +1170,7 @@ namespace Horizun.Revit.Commands
             response["read_only_check"] = readOnlyCheck;
             response["host_observations"] = PythonHostObservations.CreatedIds(doc, rendered.Value);
             response["execution_sha256"] = request["execution_sha256"];
-            response["runtime"] = new JObject { ["python"] = typeof(IronPython.Hosting.Python).Assembly.GetName().Version.ToString(), ["clr"] = Environment.Version.ToString(), ["helpers_version"] = 1 };
+            response["runtime"] = new JObject { ["python"] = typeof(IronPython.Hosting.Python).Assembly.GetName().Version.ToString(), ["clr"] = Environment.Version.ToString(), ["helpers_version"] = 2 };
             response["output_truncated"] = rendered.Kind == "too_large";
             response["output_original_chars"] = rendered.OriginalChars;
             response["output_full_path"] = rendered.FullOutputPath;
@@ -1212,7 +1218,7 @@ namespace Horizun.Revit.Commands
                     ["decoded_as"] = Encoding,
                     ["newlines_normalized"] = NewlinesNormalized,
                     ["includes"] = new JArray(Includes.Select(i => new JObject { ["path"] = i["path"], ["sha256"] = i["sha256"] })),
-                    ["helpers_version"] = 1,
+                    ["helpers_version"] = 2,
                     ["read_from_disk_by_this_call"] = ReadNow,
                     ["note"] = "Source is frozen before durable admission. Same key with different source " +
                         "is refused with both hashes; queued work executes its admitted snapshot. " +

@@ -19,6 +19,8 @@ namespace Horizun.Revit.Commands
             Document doc = gate.Document;
             var categoryIds = new HashSet<ElementId>();
             JObject before; double margin;
+            ElementId capturedViewId = view.Id;
+            ViewOrientation3D originalOrientation = null;
             try
             {
                 if (request["calibrate_world_to_pixel"] != null && request["calibrate_world_to_pixel"].Type != JTokenType.Boolean) throw new ArgumentException("calibrate_world_to_pixel must be boolean.");
@@ -42,6 +44,7 @@ namespace Horizun.Revit.Commands
                 if (request.Value<bool?>("hide_annotations") == true)
                     foreach (Category category in doc.Settings.Categories)
                         if (category.CategoryType == CategoryType.Annotation && view.CanCategoryBeHidden(category.Id)) categoryIds.Add(category.Id);
+                originalOrientation = (view as View3D)?.GetOrientation();
                 before = ViewState(view, categoryIds);
             }
             catch (Exception ex) { return CommandResult.Fail("Invalid capture options: " + ex.Message); }
@@ -83,7 +86,22 @@ namespace Horizun.Revit.Commands
                 }
             }
             bool restored = false;
-            try { restored = rollback == "RolledBack" && JToken.DeepEquals(before, ViewState(view, categoryIds)); }
+            JArray differences = new JArray();
+            try
+            {
+                view = doc.GetElement(capturedViewId) as View ?? throw new InvalidOperationException("Captured view no longer exists.");
+                // Temporary orientation is UI state, not a saved transaction property.
+                if (originalOrientation != null && view is View3D restored3D)
+                {
+                    var current = restored3D.GetOrientation();
+                    if (!current.EyePosition.IsAlmostEqualTo(originalOrientation.EyePosition) ||
+                        !current.UpDirection.IsAlmostEqualTo(originalOrientation.UpDirection) ||
+                        !current.ForwardDirection.IsAlmostEqualTo(originalOrientation.ForwardDirection))
+                        restored3D.SetOrientation(originalOrientation);
+                }
+                differences = StateComparison.Differences(before, ViewState(view, categoryIds));
+                restored = rollback == "RolledBack" && differences.Count == 0;
+            }
             catch (Exception ex) { error = (error ?? "") + " Readback: " + ex.Message; }
             if (error != null || !restored || captured == null || !captured.Success)
                 return CommandResult.FailWithDetail(error ?? captured?.Error ?? "View restoration was not verified.", new JObject
@@ -92,6 +110,9 @@ namespace Horizun.Revit.Commands
                     ["rollback_status"] = rollback,
                     ["view_restored"] = restored,
                     ["changes_applied"] = restored ? (JToken)false : null,
+                    ["state_differences"] = differences,
+                    ["linear_tolerance_feet"] = 1e-6,
+                    ["direction_tolerance"] = 1e-9,
                     ["capture_data"] = captured?.Data == null ? null : JToken.FromObject(captured.Data)
                 });
             var result = JObject.FromObject(captured.Data);

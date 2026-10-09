@@ -48,6 +48,9 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\LevelResolutionRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ParameterResolutionRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Revit2024InputRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\StateComparison.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WorkflowJournal.cs" Link="WorkflowJournal.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WorkflowRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SumUnitRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ViewCountScopeRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BoundedReadCache.cs" />

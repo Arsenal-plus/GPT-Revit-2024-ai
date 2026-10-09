@@ -95,6 +95,8 @@ namespace Horizun.Revit.Core
 
         public static readonly IReadOnlyList<WriteVerification> Rows = new List<WriteVerification>
         {
+            Row("horizun_run_workflow", VerificationMechanism.DelegatedChildDeclaration, E("steps", "workflow", "application"), F(C + "RunWorkflowCommand.cs"),
+                "A workflow is not a cross-document transaction. Completed steps remain if a later step fails; no automatic replay or rollback across files is claimed."),
             Row("horizun_revit2024", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
                 F(C + "Revit2024Command.cs", C + "Revit2024Site.cs", C + "Revit2024Analytical.cs", C + "Revit2024Fabrication.cs", C + "Revit2024Placement.cs", C + "VerifiedModelEdit.cs")),
             // ---- document session ---------------------------------------------------------
