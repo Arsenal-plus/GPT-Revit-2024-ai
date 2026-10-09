@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP â€” original Horizun code.
 //
 // horizun_family_apply â€” the whole homologation of ONE .rfa, in ONE transaction.
@@ -147,11 +147,14 @@ namespace Horizun.Revit.Commands
                                           ex.Message + ". Nothing was written.");
             }
             if (!isFamily)
-                return CommandResult.Fail(
+                return CommandResult.FailWithDetail(
                     "The active document '" + (SafeTitle(doc) ?? "(title unreadable)") + "' is NOT a family document. " +
                     "This handler drives FamilyManager, which only exists in a .rfa. Nothing was written. A project " +
                     "model has no FamilyManager: the parameters you mean live on the element or the type there â€” use " +
-                    "horizun_write_params_verified.");
+                    "horizun_write_params_verified.", new JObject { ["code"] = "family_document_required",
+                        ["category"] = "precondition", ["stage"] = "document_gate", ["write_started"] = false,
+                        ["changes_applied"] = false, ["recovery"] = new JObject { ["action"] = "open_target_family",
+                            ["automatic"] = false, ["reason"] = "The family must be explicitly identified." } });
 
             var wantVersion = request.Value<string>("expected_revit_version");
             if (!string.IsNullOrWhiteSpace(wantVersion))

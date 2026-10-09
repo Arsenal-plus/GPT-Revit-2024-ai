@@ -17,7 +17,7 @@ namespace Horizun.Revit2024.Live
 {
     // Loaded by a temporary manifest only. Runs only in an explicitly launched test
     // process, never attaches to a user's existing Revit session or document.
-    public sealed class AuditApp : IExternalApplication
+    public sealed partial class AuditApp : IExternalApplication
     {
         private UIApplication ui;
         private Document doc;
@@ -79,6 +79,7 @@ namespace Horizun.Revit2024.Live
                 Require(ui.Application.Documents.Cast<Document>().Count() == 0, "Refusing a session with existing documents.");
                 CreateFixture(ui.Application.Language.ToString().StartsWith("Russian") ? "Default_M_RUS.rte" : "Default_M_ENU.rte", "metric");
                 Suite();
+                ReliabilitySuite();
                 Case("imperial_template_material_units", () =>
                 {
                     CreateFixture("Default_I_ENU.rte", "imperial");

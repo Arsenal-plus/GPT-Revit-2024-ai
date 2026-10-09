@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The Revit add-in entry point. On startup we build the dispatcher, register the
@@ -51,7 +51,7 @@ namespace Horizun.Revit
                 // fully working bridge and one fewer window.
                 try
                 {
-                    try { Horizun.Revit.Ui.OperationsPane.Spanish = RibbonText.IsSpanish(app.ControlledApplication.Language); } catch { }
+                    try { Horizun.Revit.Ui.OperationsPane.Spanish = RibbonText.IsSpanish(app.ControlledApplication.Language); Horizun.Revit.Ui.OperationsPane.Russian = app.ControlledApplication.Language == Autodesk.Revit.ApplicationServices.LanguageType.Russian; } catch { }
                     app.RegisterDockablePane(
                         Horizun.Revit.Ui.OperationsPaneIdentity.PaneId,
                         Horizun.Revit.Ui.OperationsPaneIdentity.Title,
@@ -171,6 +171,7 @@ namespace Horizun.Revit
         private static void RegisterCommands(Dispatcher d)
         {
             d.Register(new GetDocumentInfoCommand());
+            d.Register(new ModelSnapshotCommand());
             d.Register(new RequestPythonAccessCommand());
             d.Register(new ExecutePythonCommand());
             d.Register(new ModelScanCommand());
@@ -272,6 +273,7 @@ namespace Horizun.Revit
             d.Register(new GradeToposolidCommand());
             d.Register(new RectangularizeWallsCommand());
             // Registered last because it resolves and composes the typed commands above.
+            d.Register(new RunWorkflowCommand(d.ResolveCommand));
             d.Register(new ExecutePlanCommand(d.ResolveCommand));
             // The correction cycle: rehearses and applies audit findings THROUGH the
             // typed commands above, so it resolves them the same way the plan does.

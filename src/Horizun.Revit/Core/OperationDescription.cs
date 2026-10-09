@@ -21,6 +21,8 @@ namespace Horizun.Revit.Core
 {
     internal static class OperationDescription
     {
+        public const string Verified = "verified_completed";
+        public const string Waiting = "waiting", RolledBack = "rolled_back", Unverified = "unverified", Partial = "partial", Recovered = "recovered";
         public const string Changed = "changed", Rehearsal = "rehearsal", Read = "read", Failed = "failed", NoChange = "no_change";
 
         /// <summary>The outcome the ledger wrote. Older lines used `success`; both are honoured.</summary>
@@ -33,7 +35,21 @@ namespace Horizun.Revit.Core
 
         public static string Kind(JObject r)
         {
-            if (!Succeeded(r)) return Failed;
+            if (!Succeeded(r))
+            {
+                JObject d = r["diagnostic"] as JObject;
+                if (d?.Value<string>("category") == "precondition" && d.Value<bool?>("write_started") == false) return Waiting;
+                if (d?.Value<string>("rollback_status") == "RolledBack" && d.Value<bool?>("view_restored") != false) return RolledBack;
+                if (d?.Value<bool?>("view_restored") == false || d?.Value<string>("category") == "verification") return Unverified;
+                if (d?["application"]?.Value<string>("state") == "partial") return Partial;
+                return Failed;
+            }
+            if (r["application"]?.Value<string>("state") == "partial") return Partial;
+            if (r["application"]?.Value<string>("state") == "rolled_back") return RolledBack;
+            if (r["application"]?.Value<string>("state") == "uncertain") return Unverified;
+            if (r["workflow"]?.Value<string>("state") == "verified_completed")
+                return r["workflow"]?.Value<bool?>("recovered") == true ? Recovered : Verified;
+            if (r["workflow"]?.Value<bool?>("recovered") == true) return Recovered;
             if (r.Value<bool?>("dry_run") == true) return Rehearsal;
             JObject changes = r["model_changes"] as JObject;
             if (changes != null && (Int(changes, "added") + Int(changes, "modified") + Int(changes, "deleted")) > 0) return Changed;
@@ -43,10 +59,31 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>The words in the State column.</summary>
-        public static string KindLabel(string kind, bool es)
+        public static string KindLabel(string kind, bool es, bool ru = false)
         {
+            if (ru)
+                switch (kind)
+                {
+                    case Verified: return "Выполнено и проверено";
+                    case Changed: return "Модель изменена";
+                    case Rehearsal: return "Предварительная проверка";
+                    case Waiting: return "Нужна подготовка";
+                    case RolledBack: return "Откат подтверждён";
+                    case Unverified: return "Не подтверждено";
+                    case Partial: return "Выполнено частично";
+                    case Recovered: return "Восстановлено и выполнено";
+                    case Failed: return "Ошибка";
+                    case NoChange: return "Без изменений";
+                    default: return "Чтение";
+                }
             switch (kind)
             {
+                case Verified: return es ? "Verificado" : "Completed and verified";
+                case Waiting: return es ? "Requiere preparación" : "Needs preparation";
+                case RolledBack: return es ? "Revertido" : "Rolled back";
+                case Unverified: return es ? "Sin verificar" : "Not verified";
+                case Partial: return es ? "Aplicado parcialmente" : "Partially applied";
+                case Recovered: return es ? "Recuperado y aplicado" : "Recovered and applied";
                 case Changed: return es ? "Cambió el modelo" : "Changed model";
                 case Rehearsal: return es ? "Ensayo" : "Rehearsal";
                 case Failed: return es ? "Falló" : "Failed";
@@ -56,8 +93,20 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>One sentence: what was done, and what came of it.</summary>
-        public static string Sentence(JObject r, bool es)
+        public static string Sentence(JObject r, bool es, bool ru = false)
         {
+            if (ru)
+            {
+                string label = r.Value<string>("purpose");
+                if (string.IsNullOrWhiteSpace(label)) label = RussianTool(r.Value<string>("tool"));
+                string reason = r.Value<string>("error");
+                string description = label + " — " + KindLabel(Kind(r), false, true) + (string.IsNullOrWhiteSpace(reason) ? "" : ": " + reason.Replace('\r', ' ').Replace('\n', ' '));
+                if (r["model_changes"] is JObject counts && Kind(r) == Changed)
+                    description += string.Format(CultureInfo.InvariantCulture, ": добавлено {0}, изменено {1}, удалено {2}", Int(counts, "added"), Int(counts, "modified"), Int(counts, "deleted"));
+                if (r["spatial_check"] is JObject check && Int(check, "errors") + Int(check, "warnings") > 0)
+                    description += string.Format(CultureInfo.InvariantCulture, " · ⚠ Проверка размещения: ошибок {0}, предупреждений {1}", Int(check, "errors"), Int(check, "warnings"));
+                return description;
+            }
             string tool = r.Value<string>("tool") ?? "";
             string what = r.Value<string>("purpose");
             if (string.IsNullOrWhiteSpace(what)) what = ToolPhrase(tool, es);
@@ -69,13 +118,21 @@ namespace Horizun.Revit.Core
             string outcome;
             switch (kind)
             {
+                case Waiting:
+                case RolledBack:
+                case Unverified:
+                case Partial:
                 case Failed:
                     string err = (r.Value<string>("error") ?? "").Replace('\n', ' ').Trim();
-                    if (err.Length > 140) err = err.Substring(0, 140) + "…";
-                    outcome = (es ? "no se hizo: " : "not done: ") + (err.Length == 0 ? (es ? "sin detalle" : "no detail") : err);
+                    if (err.Length > 600) err = err.Substring(0, 600) + "…";
+                    outcome = (kind == Failed ? (es ? "no se hizo: " : "not done: ") : KindLabel(kind, es) + ": ") + (err.Length == 0 ? (es ? "sin detalle" : "no detail") : err);
                     break;
                 case Rehearsal:
                     outcome = es ? "ensayo: se revisó sin escribir nada" : "rehearsal: checked, nothing written";
+                    break;
+                case Verified:
+                case Recovered:
+                    outcome = es ? "todos los pasos verificados" : "all steps verified";
                     break;
                 case Changed:
                     JObject c = r["model_changes"] as JObject;
@@ -104,9 +161,28 @@ namespace Horizun.Revit.Core
         public static bool ShownByDefault(JObject r)
         {
             string k = Kind(r);
-            return k == Changed || k == Failed;
+            return k == Changed || k == Failed || k == Waiting || k == RolledBack || k == Unverified || k == Partial || k == Recovered || k == Verified;
         }
 
+        private static string RussianTool(string tool)
+        {
+            switch (tool)
+            {
+                case "horizun_run_workflow": return "Последовательность действий";
+                case "horizun_model_snapshot": return "Снимок данных модели";
+                case "horizun_create_elements": return "Создание элементов";
+                case "horizun_create_family": return "Создание семейства";
+                case "horizun_family_apply": return "Редактирование семейства";
+                case "horizun_capture_view": return "Снимок вида";
+                case "horizun_execute_python": return "Сценарий Python";
+                case "horizun_write_params_verified": return "Запись параметров";
+                case "horizun_document_session": return "Работа с документом";
+                case "horizun_manage_parameters": return "Управление параметрами";
+                case "horizun_transform_elements": return "Перемещение и поворот";
+                case "horizun_manage_materials": return "Материалы";
+                default: return ToolPhrase(tool, false);
+            }
+        }
         public static string ToolPhrase(string tool, bool es)
         {
             if (Phrases.TryGetValue(tool ?? "", out string[] p)) return es ? p[0] : p[1];
@@ -126,7 +202,7 @@ namespace Horizun.Revit.Core
 
         private static readonly HashSet<string> ReadOnlyTools = new HashSet<string>(StringComparer.Ordinal)
         {
-            "horizun_health", "horizun_query_model", "horizun_list_elements", "horizun_model_scan", "horizun_quantities",
+            "horizun_model_snapshot", "horizun_health", "horizun_query_model", "horizun_list_elements", "horizun_model_scan", "horizun_quantities",
             "horizun_query_structure", "horizun_query_planimetry", "horizun_query_cad", "horizun_query_dimensions",
             "horizun_query_detail_2d", "horizun_file_info", "horizun_clash", "horizun_audit_model", "horizun_audit_planimetry",
             "horizun_audit_reinforcement", "horizun_audit_cad_model", "horizun_audit_access", "horizun_get_schedule_data",

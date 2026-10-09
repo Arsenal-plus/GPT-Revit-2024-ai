@@ -4,9 +4,9 @@ Every tool Horizun Revit MCP exposes, what it does, and where it refuses.
 The [README](../README.md) has the short version; this page is the complete
 surface.
 
-This surface is **124 tools** <!--inventory:tools--> - **45** <!--inventory:reads--> of them
+This surface is **126 tools** <!--inventory:tools--> - **46** <!--inventory:reads--> of them
 read-only - dispatching **478 distinct suboperations and modes** <!--inventory:operations--> across
-**1628 enumerated argument values** <!--inventory:enumerated_variants-->.
+**1638 enumerated argument values** <!--inventory:enumerated_variants-->.
 
 The Revit 2024 RTM implementation and measured scope of version 2.2.0 are
 documented in [REVIT-2024-RTM.md](REVIT-2024-RTM.md).

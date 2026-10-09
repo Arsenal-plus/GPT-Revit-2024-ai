@@ -61,7 +61,32 @@ namespace Horizun.Revit.Ui
     {
         /// <summary>Revit's own UI language, set at start-up (App.OnStartup). Words follow it.</summary>
         public static bool Spanish { get; set; }
-        private static string T(string es, string en) => Spanish ? es : en;
+        public static bool Russian { get; set; }
+        private static string T(string es, string en)
+        {
+            if (!Russian) return Spanish ? es : en;
+            switch (en)
+            {
+                case "When": return "Время";
+                case "Result": return "Результат";
+                case "What was done": return "Действие";
+                case "Document": return "Документ";
+                case "Refresh": return "Обновить";
+                case "Also show reads and rehearsals": return "Показывать чтения и предварительные проверки";
+                case "Cancel what has not started": return "Отменить ожидающие команды";
+                case "Queued": return "В очереди";
+                case "Running": return "Выполняется";
+                case "Done": return "Завершено";
+                case "Failed": return "Ошибка";
+                case "Cancelled": return "Отменено";
+                case "Tool: ": return "Инструмент: ";
+                case "Queued: ": return "В очереди: ";
+                case "changed the model: ": return "изменений модели: ";
+                case "failed: ": return "ошибок: ";
+                case " reads/rehearsals hidden": return " чтений/проверок скрыто";
+                default: return en;
+            }
+        }
         private readonly CheckBox _showAll = new CheckBox();
         private readonly ListView _rows = new ListView();
         private readonly TextBlock _summary = new TextBlock();
@@ -116,7 +141,7 @@ namespace Horizun.Revit.Ui
             // What a person needs from a row: when, whether it changed their model, and
             // WHAT it did - in words. The tool id and the raw receipt are in the detail.
             columns.Columns.Add(Column(T("Hora", "When"), "When", 70));
-            columns.Columns.Add(Column(T("Resultado", "Result"), "State", 110));
+            columns.Columns.Add(Column(T("Resultado", "Result"), "State", 185));
             columns.Columns.Add(Column(T("Qué se hizo", "What was done"), "Tool", 420));
             columns.Columns.Add(Column(T("Documento", "Document"), "DocumentTitle", 150));
             _rows.View = columns;
@@ -498,10 +523,10 @@ namespace Horizun.Revit.Ui
                         Id = "receipt:" + file.Name + ":" + line.GetHashCode().ToString(CultureInfo.InvariantCulture),
                         WhenUtc = when,
                         When = when.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture),
-                        State = OperationDescription.KindLabel(kind, Spanish),
+                        State = OperationDescription.KindLabel(kind, Spanish, Russian),
                         Kind = kind,
                         Prominent = OperationDescription.ShownByDefault(receipt),
-                        Tool = OperationDescription.Sentence(receipt, Spanish),
+                        Tool = OperationDescription.Sentence(receipt, Spanish, Russian),
                         Changed = ChangedCount(receipt),
                         DocumentTitle = DocumentOf(receipt),
                         Raw = receipt
@@ -512,7 +537,7 @@ namespace Horizun.Revit.Ui
 
         private static string DocumentOf(JObject receipt)
         {
-            string d = receipt.Value<string>("document") ?? receipt.Value<string>("document_title") ?? "";
+            string d = receipt.Value<string>("document") ?? receipt.Value<string>("document_title") ?? receipt.Value<string>("target_document") ?? "";
             int bracket = d.IndexOf(" [", StringComparison.Ordinal);
             return bracket > 0 ? d.Substring(0, bracket) : d;
         }

@@ -74,6 +74,16 @@ __hz_stdout, __hz_stderr = __hz_sys.stdout, __hz_sys.stderr
 __hz_sys.stdout = __hz_buf
 __hz_sys.stderr = __hz_buf
 
+def read_json(path, encoding='utf-8-sig'):
+    '''Read JSON with an explicit encoding; malformed bytes remain an error.'''
+    import json
+    with __hz_io.open(path, 'r', encoding=encoding) as stream:
+        return json.load(stream)
+
+def optional_items(value):
+    '''Use only for an API collection documented as optional; None stays observable to the caller.'''
+    return [] if value is None else value
+
 def checkpoint(label, done=None, total=None):
     '''Record one step: checkpoint('model 40 of 300', 40, 300).
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -559,12 +559,25 @@ namespace Horizun.Revit.Commands
             if (p.Kind == "level") Numeric("elevation", p.Elevation, () => ((Level)e).ProjectElevation);
             if (p.Kind == "wall_opening")
             {
+                Exact("opening_host_id", Rid.Value(p.OpeningHost.Id), () => Rid.Value(((Opening)e).Host.Id));
                 Exact("opening_corners", true, () =>
                 {
-                    var corners = ((Opening)e).BoundaryRect;
-                    return corners.Count == 2 &&
-                        ((corners[0].DistanceTo(p.Start) <= GeometryInput.Tolerance && corners[1].DistanceTo(p.End) <= GeometryInput.Tolerance) ||
-                         (corners[1].DistanceTo(p.Start) <= GeometryInput.Tolerance && corners[0].DistanceTo(p.End) <= GeometryInput.Tolerance));
+                    var opening = (Opening)e;
+                    var corners = opening.IsRectBoundary ? opening.BoundaryRect : null;
+                    if (corners == null || corners.Count != 2 || opening.Host == null) return false;
+                    // Revit projects the requested points onto the wall. Compare the opening
+                    // along its host and vertically, not the irrelevant wall-normal coordinate.
+                    if ((opening.Host.Location as LocationCurve)?.Curve is Line axis)
+                    {
+                        XYZ origin = axis.GetEndPoint(0), direction = axis.Direction;
+                        double Along(XYZ point) => (point - origin).DotProduct(direction);
+                        return Math.Abs(Math.Min(Along(corners[0]), Along(corners[1])) - Math.Min(Along(p.Start), Along(p.End))) <= GeometryInput.Tolerance &&
+                               Math.Abs(Math.Max(Along(corners[0]), Along(corners[1])) - Math.Max(Along(p.Start), Along(p.End))) <= GeometryInput.Tolerance &&
+                               Math.Abs(Math.Min(corners[0].Z, corners[1].Z) - Math.Min(p.Start.Z, p.End.Z)) <= GeometryInput.Tolerance &&
+                               Math.Abs(Math.Max(corners[0].Z, corners[1].Z) - Math.Max(p.Start.Z, p.End.Z)) <= GeometryInput.Tolerance;
+                    }
+                    return (corners[0].DistanceTo(p.Start) <= GeometryInput.Tolerance && corners[1].DistanceTo(p.End) <= GeometryInput.Tolerance) ||
+                           (corners[1].DistanceTo(p.Start) <= GeometryInput.Tolerance && corners[0].DistanceTo(p.End) <= GeometryInput.Tolerance);
                 });
             }
             // A WALL IS CHECKED AS A LINE, NOT AS TWO POINTS.

@@ -65,6 +65,16 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void RussianDescriptionRetainsCountsAndSpatialFindings()
+        {
+            var r = R("{outcome:'ok',tool:'horizun_create_elements',model_changes:{added:3},spatial_check:{errors:1,warnings:2}}");
+            string sentence = OperationDescription.Sentence(r, false, true);
+            Assert.Contains("добавлено 3", sentence);
+            Assert.Contains("ошибок 1", sentence);
+            Assert.Contains("предупреждений 2", sentence);
+        }
+
+        [Fact]
         public void The_receipt_keeps_only_short_human_fields_of_the_request()
         {
             var reply = R("{\"model_changes\":{\"added\":1,\"modified\":0,\"deleted\":0},\"spatial_check\":{\"status\":\"conflicts\",\"errors\":1,\"warnings\":0,\"findings\":[{\"x\":1}]},\"attention\":\"Spatial check: 1 error\"}");
