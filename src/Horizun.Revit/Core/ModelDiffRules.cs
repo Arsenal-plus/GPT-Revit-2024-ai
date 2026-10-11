@@ -342,16 +342,19 @@ namespace Horizun.Revit.Core
             r.Overlap = smaller == 0 ? 1.0 : (double)r.Shared / smaller;
             r.RecreatedSuspected = smaller >= o.RecreatedMinElements && r.Overlap < o.RecreatedOverlap;
 
-            if (o.HeuristicMatch)
+            if (o.HeuristicMatch && deleted.Count != 0 && added.Count != 0)
             {
-                foreach (var pair in Pair(deleted, added, o.MatchToleranceFeet))
+                var pairs = Pair(deleted, added, o.MatchToleranceFeet);
+                foreach (var pair in pairs)
                 {
                     r.InferredPairs++;
-                    deleted.Remove(pair.Key);
-                    added.Remove(pair.Value);
                     DiffRow row = Changed(pair.Key, pair.Value, o, true);
                     if (row == null) r.Unchanged++; else r.Rows.Add(row);
                 }
+                var pairedDeleted = new HashSet<DiffElement>(pairs.Select(p => p.Key));
+                var pairedAdded = new HashSet<DiffElement>(pairs.Select(p => p.Value));
+                deleted.RemoveAll(pairedDeleted.Contains);
+                added.RemoveAll(pairedAdded.Contains);
             }
 
             foreach (DiffElement d in deleted) r.Rows.Add(Whole(Deleted, d));
@@ -495,6 +498,18 @@ namespace Horizun.Revit.Core
             return string.Join(",", v.Select(x => Math.Round(x * 304.8, 1).ToString("0.#", CultureInfo.InvariantCulture))) + " mm";
         }
 
+        private readonly struct PairCandidate
+        {
+            public readonly DiffElement Element;
+            public readonly double[] Point;
+
+            public PairCandidate(DiffElement element)
+            {
+                Element = element;
+                Point = Anchor(element);
+            }
+        }
+
         /// <summary>
         /// Greedy nearest pairing of deleted with added records sharing category, family
         /// and type, within the tolerance. Deterministic: candidates are visited in
@@ -504,24 +519,25 @@ namespace Horizun.Revit.Core
         {
             var pairs = new List<KeyValuePair<DiffElement, DiffElement>>();
             var pool = added.OrderBy(x => x.UniqueId, StringComparer.Ordinal)
-                            .GroupBy(x => Key(x)).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+                            .GroupBy(x => Key(x)).ToDictionary(g => g.Key,
+                                g => g.Select(x => new PairCandidate(x)).ToList(), StringComparer.Ordinal);
             foreach (DiffElement d in deleted.OrderBy(x => x.UniqueId, StringComparer.Ordinal))
             {
-                List<DiffElement> candidates;
+                List<PairCandidate> candidates;
                 if (!pool.TryGetValue(Key(d), out candidates) || candidates.Count == 0) continue;
                 double[] p = Anchor(d);
                 if (p == null) continue;
-                DiffElement best = null; double bestDist = double.MaxValue;
-                foreach (DiffElement c in candidates)
+                int best = -1; double bestDist = double.MaxValue;
+                for (int i = 0; i < candidates.Count; i++)
                 {
-                    double[] q = Anchor(c);
+                    double[] q = candidates[i].Point;
                     if (q == null) continue;
                     double dist = Dist(p, 0, q, 0);
-                    if (dist <= toleranceFeet && dist < bestDist) { best = c; bestDist = dist; }
+                    if (dist <= toleranceFeet && dist < bestDist) { best = i; bestDist = dist; }
                 }
-                if (best == null) continue;
-                candidates.Remove(best);
-                pairs.Add(new KeyValuePair<DiffElement, DiffElement>(d, best));
+                if (best < 0) continue;
+                pairs.Add(new KeyValuePair<DiffElement, DiffElement>(d, candidates[best].Element));
+                candidates.RemoveAt(best);
             }
             return pairs;
         }
