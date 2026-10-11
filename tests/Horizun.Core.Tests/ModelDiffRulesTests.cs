@@ -8,15 +8,21 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Horizun.Core.Tests
 {
     public class ModelDiffRulesTests
     {
+        private readonly ITestOutputHelper output;
+
+        public ModelDiffRulesTests(ITestOutputHelper output) { this.output = output; }
+
         private static DiffElement El(string uid, double x, string type = "T1", string cat = "Walls",
                                       string bic = "OST_Walls", params string[] kv)
         {
@@ -180,6 +186,26 @@ namespace Horizun.Core.Tests
                 Assert.Equal(expected.Select(p => p.Key), actual.Select(p => p.Key));
                 Assert.Equal(expected.Select(p => p.Value), actual.Select(p => p.Value));
             }
+        }
+
+        [Theory]
+        [InlineData(256)]
+        [InlineData(1024)]
+        public void Pairing_allocates_per_element_not_per_candidate_comparison(int count)
+        {
+            var deleted = Enumerable.Range(0, count).Select(i => El("d" + i, i)).ToList();
+            var added = Enumerable.Range(0, count).Select(i => El("a" + i, i + count * 2)).ToList();
+            ModelDiffRules.Pair(deleted.Take(2).ToList(), added.Take(2).ToList(), 0.1);
+            var timer = Stopwatch.StartNew();
+            long start = GC.GetAllocatedBytesForCurrentThread();
+            var pairs = ModelDiffRules.Pair(deleted, added, 0.1);
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - start;
+            timer.Stop();
+            output.WriteLine("{0} x {0} candidates: {1} bytes allocated; {2:F2} ms",
+                count, allocated, timer.Elapsed.TotalMilliseconds);
+            Assert.Empty(pairs);
+            // A generous linear budget catches per-comparison anchor arrays without a timing gate.
+            Assert.True(allocated < count * 1024L, "Pairing allocated " + allocated + " bytes for " + count + " elements.");
         }
 
         private static DiffElement PairingElement(Random random, int index)
