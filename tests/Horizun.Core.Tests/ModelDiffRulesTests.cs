@@ -6,6 +6,7 @@
 // type changes, the re-created-model flag and the heuristic pairing that only
 // ever produces rows marked inferred.
 // -----------------------------------------------------------------------------
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Horizun.Revit.Core;
@@ -145,6 +146,118 @@ namespace Horizun.Core.Tests
             var pairs = ModelDiffRules.Pair(deleted, added, 0.2);
             var pair = Assert.Single(pairs);
             Assert.Equal("a1", pair.Value.UniqueId);
+        }
+
+        [Fact]
+        public void Pairing_breaks_distance_ties_by_ordinal_identity_without_reordering_inputs()
+        {
+            var deleted = new List<DiffElement> { El("d2", 0), El("d1", 0) };
+            var added = new List<DiffElement> { El("a2", -1), El("a1", 1) };
+            var pairs = ModelDiffRules.Pair(deleted, added, 1);
+            Assert.Equal(new[] { "d1:a1", "d2:a2" },
+                pairs.Select(p => p.Key.UniqueId + ":" + p.Value.UniqueId));
+            Assert.Equal(new[] { "d2", "d1" }, deleted.Select(e => e.UniqueId));
+            Assert.Equal(new[] { "a2", "a1" }, added.Select(e => e.UniqueId));
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(0.5)]
+        [InlineData(5)]
+        [InlineData(-1)]
+        [InlineData(double.NaN)]
+        [InlineData(double.PositiveInfinity)]
+        public void Pairing_matches_reference_scan_for_mixed_anchors_and_duplicate_identities(double tolerance)
+        {
+            var random = new Random(731);
+            for (int iteration = 0; iteration < 12; iteration++)
+            {
+                var deleted = Enumerable.Range(0, 70).Select(i => PairingElement(random, i)).ToList();
+                var added = Enumerable.Range(0, 90).Select(i => PairingElement(random, i)).ToList();
+                added.Add(added[0]);
+                var expected = ReferencePairs(deleted, added, tolerance);
+                var actual = ModelDiffRules.Pair(deleted, added, tolerance);
+                Assert.Equal(expected.Select(p => p.Key), actual.Select(p => p.Key));
+                Assert.Equal(expected.Select(p => p.Value), actual.Select(p => p.Value));
+            }
+        }
+
+        private static DiffElement PairingElement(Random random, int index)
+        {
+            double x = random.Next(-3, 4), y = random.Next(-3, 4), z = random.Next(-3, 4);
+            var e = new DiffElement
+            {
+                UniqueId = index % 13 == 0 ? null : "id-" + index % 17,
+                Category = index % 3 == 0 ? null : "Walls",
+                Family = index % 4 == 0 ? "" : "F",
+                Type = index % 2 == 0 ? "T" : "t"
+            };
+            switch (random.Next(7))
+            {
+                case 0: e.Location = new[] { x, y, z }; break;
+                case 1: e.Location = new[] { x - 1, y, z, x + 1, y, z }; break;
+                case 2: e.BoundingBox = new[] { x - 1, y - 2, z - 3, x + 1, y + 2, z + 3 }; break;
+                case 3: e.Location = new[] { x, y, z, 100 }; break;
+                case 4: e.Location = new[] { double.NaN, y, z }; break;
+                case 5: e.Location = new[] { double.PositiveInfinity, y, z }; break;
+            }
+            return e;
+        }
+
+        // Deliberately retain the exhaustive scan as an independent regression oracle.
+        private static List<KeyValuePair<DiffElement, DiffElement>> ReferencePairs(
+            List<DiffElement> deleted, List<DiffElement> added, double tolerance)
+        {
+            var pairs = new List<KeyValuePair<DiffElement, DiffElement>>();
+            var remaining = added.OrderBy(e => e.UniqueId, StringComparer.Ordinal).ToList();
+            foreach (var d in deleted.OrderBy(e => e.UniqueId, StringComparer.Ordinal))
+            {
+                var p = ModelDiffRules.Anchor(d);
+                if (p == null) continue;
+                DiffElement best = null;
+                double bestDistance = double.MaxValue;
+                foreach (var c in remaining)
+                {
+                    if ((d.Category ?? "") != (c.Category ?? "") ||
+                        (d.Family ?? "") != (c.Family ?? "") || (d.Type ?? "") != (c.Type ?? "")) continue;
+                    var q = ModelDiffRules.Anchor(c);
+                    if (q == null) continue;
+                    double dx = p[0] - q[0], dy = p[1] - q[1], dz = p[2] - q[2];
+                    double distance = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+                    if (distance <= tolerance && distance < bestDistance)
+                    {
+                        best = c;
+                        bestDistance = distance;
+                    }
+                }
+                if (best == null) continue;
+                remaining.Remove(best);
+                pairs.Add(new KeyValuePair<DiffElement, DiffElement>(d, best));
+            }
+            return pairs;
+        }
+
+        [Fact]
+        public void Heuristic_comparison_keeps_unmatched_rows_and_snapshot_contents()
+        {
+            var before = Snap("before", El("old1", 0), El("old2", 10), El("gone", 20), El("shared", 30));
+            var after = Snap("after", El("new1", 0), El("new2", 10), El("added", 50), El("shared", 30));
+            var originalBefore = JObject.FromObject(before);
+            var originalAfter = JObject.FromObject(after);
+            var result = ModelDiffRules.Compare(before, after, new DiffOptions { HeuristicMatch = true });
+            Assert.Equal(2, result.InferredPairs);
+            Assert.Equal(1, result.Shared);
+            Assert.Equal(1, result.Unchanged);
+            Assert.Equal(new[] { "added:added", "deleted:gone", "modified:new1", "modified:new2" },
+                result.Rows.Select(r => r.State + ":" + r.UniqueId));
+            Assert.All(result.Rows.Where(r => r.Inferred), r =>
+            {
+                Assert.Equal("unique_id", Assert.Single(r.Changes).Field);
+                Assert.Equal(r.BeforeUniqueId, r.Changes[0].Before);
+                Assert.Equal(r.UniqueId, r.Changes[0].After);
+            });
+            Assert.True(JToken.DeepEquals(originalBefore, JObject.FromObject(before)));
+            Assert.True(JToken.DeepEquals(originalAfter, JObject.FromObject(after)));
         }
 
         [Fact]
