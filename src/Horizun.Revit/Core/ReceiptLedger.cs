@@ -47,7 +47,7 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static JObject Build(string tool, bool success, string error, JObject replyData,
                                     long waitedMs, long totalMs, string correlationId, DateTime utcNow,
-                                    JObject request = null)
+                                    JObject request = null, JObject failureDetail = null)
         {
             var receipt = new JObject
             {
@@ -75,6 +75,10 @@ namespace Horizun.Revit.Core
                 Copy(receipt, "document_fingerprint", replyData["document_fingerprint"]);
                 Copy(receipt, "transaction_status", replyData["transaction_status"]);
                 Copy(receipt, "dry_run", replyData["dry_run"]);
+                Copy(receipt, "workflow", replyData["workflow"]);
+                Copy(receipt, "application", replyData["application"]);
+                Copy(receipt, "trace_path", replyData["trace_path"]);
+                Copy(receipt, "workflow_id", replyData["workflow_id"]);
                 JToken planResolved = replyData["plan_resolved"];
                 if (planResolved != null)
                 {
@@ -90,11 +94,31 @@ namespace Horizun.Revit.Core
                     receipt["spatial_check"] = new JObject { ["status"] = sc["status"]?.DeepClone(), ["errors"] = sc["errors"]?.DeepClone(), ["warnings"] = sc["warnings"]?.DeepClone() };
                 Copy(receipt, "attention", Short(replyData["attention"], 300));
             }
+            if (!success && failureDetail != null)
+            {
+                var diagnostic = new JObject();
+                foreach (string field in new[] { "code", "category", "stage", "rollback_status", "transaction_status",
+                    "view_restored", "changes_applied", "write_started", "recovery", "state_differences",
+                    "application", "failed_action", "reason", "expected_document", "active_document",
+                    "workflow_id", "completed_steps", "phase", "index", "verification", "trace_path" })
+                    Copy(diagnostic, field, failureDetail[field]);
+                if (failureDetail["steps"] is JArray steps)
+                    diagnostic["steps"] = new JArray(steps.OfType<JObject>().Take(60).Select(step =>
+                    {
+                        var item = new JObject();
+                        foreach (string field in new[] { "step", "tool", "phase", "success", "verified" }) Copy(item, field, step[field]);
+                        Copy(item, "error", Short(step["error"], 1000));
+                        return item;
+                    }));
+                if (diagnostic.Count > 0) receipt["diagnostic"] = diagnostic;
+            }
             if (request != null)
             {
                 // Only the declared, short, human fields of the request - never the payload.
                 Copy(receipt, "request_operation", Short(request["operation"], 60));
                 Copy(receipt, "purpose", Short(request["purpose"], 200));
+                Copy(receipt, "target_document", Short(request["target_document"], 1024));
+                Copy(receipt, "workflow_id", Short(request["workflow_id"], 100));
             }
             return receipt;
         }

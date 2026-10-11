@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
 // The check every mutating command makes before it touches anything.
@@ -210,7 +210,15 @@ namespace Horizun.Revit.Core
                               "on the active document and will NOT switch for you: activating a document changes " +
                               "what the user is looking at, and guessing which one they meant is the mistake this " +
                               "check exists to prevent. Activate the right document in Revit, then call again. " +
-                              "Nothing was changed.");
+                              "Nothing was changed.", "active_document_mismatch", new JObject
+                              {
+                                  ["action"] = "activate_document",
+                                  ["file_path"] = Safe(() => resolved.PathName),
+                                  ["expected_version"] = revitYear,
+                                  ["expected_document"] = target,
+                                  ["active_document"] = Safe(() => active.Title),
+                                  ["safe_to_repeat_after_recovery"] = true
+                              });
 
             return new GateResult { Document = active, Identity = activeIdentity };
         }
@@ -361,8 +369,12 @@ namespace Horizun.Revit.Core
         public static string PlanHash(JObject request, params string[] scopeFields)
             => ConfirmationStore.PlanHash(request, scopeFields);
 
-        private static GateResult Refuse(string message) =>
-            new GateResult { Refusal = CommandResult.Fail(message) };
+        private static GateResult Refuse(string message, string code = "document_precondition", JObject recovery = null) =>
+            new GateResult { Refusal = CommandResult.FailWithDetail(message, new JObject
+            {
+                ["code"] = code, ["category"] = "precondition", ["stage"] = "document_gate",
+                ["write_started"] = false, ["changes_applied"] = false, ["recovery"] = recovery
+            }) };
 
         private static string Describe(List<DocIdentity> ids)
         {

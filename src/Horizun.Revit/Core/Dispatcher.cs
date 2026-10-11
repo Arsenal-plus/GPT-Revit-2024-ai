@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The UI-thread bridge and command registry.
@@ -387,7 +387,7 @@ namespace Horizun.Revit.Core
                     result.Data as Newtonsoft.Json.Linq.JObject,
                     waitedMs, clock.ElapsedMilliseconds,
                     req.Ticket.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    DateTime.UtcNow, ReceiptRequest(paramsJson));
+                    DateTime.UtcNow, ReceiptRequest(paramsJson), result.Detail);
                 ReceiptLedger.Append(ReceiptLedger.DefaultDirectory(), receipt,
                                      Settings.RawValue, DateTime.UtcNow);
             }
@@ -766,7 +766,7 @@ namespace Horizun.Revit.Core
             // the pre-call active document would make a successful open/close change its
             // own retry identity and defeat replay after a lost response.
             if (contract != null &&
-                (contract.Name == "horizun_open_document" || contract.Effect == ToolEffect.DocumentSession))
+                (contract.Name == "horizun_open_document" || contract.Name == "horizun_run_workflow" || contract.Effect == ToolEffect.DocumentSession))
                 return "(document-session-target-is-in-arguments)";
 
             try

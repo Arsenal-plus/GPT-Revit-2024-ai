@@ -8,6 +8,9 @@
 воспроизводимые испытания. [Изменения, результаты и ограничения](docs/REVIT-2024-RTM.md).
 Исторические отчёты upstream ниже не являются подтверждением этой сборки.
 
+Ветка 2.3.0: [надёжное выполнение задач и устранение повторяющихся Failed](docs/RELIABLE-WORKFLOWS.md).
+Автоматические проверки пройдены; живые испытания и установка этой версии ещё ожидаются.
+
 Основа: [HorizunGroup/horizun-revit-mcp](https://github.com/HorizunGroup/horizun-revit-mcp), Apache-2.0.
 Автор исходного моста — Horizun Group; изменения оформления — Arsenal-Plus.
 
@@ -31,7 +34,7 @@
 **Made in Colombia 🇨🇴 by Horizun Group.**
 
 Horizun Revit MCP is a free, open-source Windows MCP server and Revit add-in for
-**Autodesk Revit 2023–2027**. Its complete catalog contains **124 tools** <!--inventory:tools-->
+**Autodesk Revit 2023–2027**. Its complete catalog contains **126 tools** <!--inventory:tools-->
 with **478 named suboperations and dispatch modes** <!--inventory:operations-->
 for architectural and structural modeling, MEP, parametric families, drawings,
 CAD-to-BIM, model audits, quantities, Excel, Power BI and exports.
@@ -57,7 +60,7 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 
 | Surface | What is available | Inspect it |
 |---|---|---|
-| MCP entry points | **124 tools** <!--inventory:tools-->, including **45 read-only** <!--inventory:reads--> and **79 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
+| MCP entry points | **126 tools** <!--inventory:tools-->, including **46 read-only** <!--inventory:reads--> and **80 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
 | Internal actions | **478 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
 | Revit coverage | 2023, 2024, 2025, 2026 and 2027 | Five matching add-ins and versioned live reports |
 | New model content | 26 element kinds; parametric RFA authoring; structural and MEP planning | [Creation and family reference](docs/FAMILY-AUTHORING.md) |
@@ -271,6 +274,8 @@ The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations
 
 | Tool | Capability |
 |---|---|
+| `horizun_run_workflow` | Prepare explicit documents and execute bounded dependent typed steps with per-step verification, durable replay protection and partial-result evidence. |
+| `horizun_model_snapshot` | Read element geometry, openings and room boundaries as structured JSON with explicit missing-data states and 64-bit IDs. |
 | `horizun_revit2024` | Inspect capabilities and perform verified Toposolid, analytical/load, Fabrication, electrical and complex family placement operations. Fabrication requires a configured database and services. |
 
 ### Connection, documents and background jobs
@@ -534,7 +539,7 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 
 Other typed options include the seven `horizun_export.format` values:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. The schema inventory
-also records **1628 enumerated argument occurrences** <!--inventory:enumerated_variants-->
+also records **1638 enumerated argument occurrences** <!--inventory:enumerated_variants-->
 across all properties and paths; that figure includes configuration choices and
 repeated paths, so it is not used as a tool count.
 

@@ -143,7 +143,7 @@ namespace Horizun.Revit.Core
             foreach (ChangeWatch.DocChanges d in watch.Documents) ChangeLedger.Record(tool, d);
             StampChanges(watch, result);
             if (!Enabled) return;
-            if (tool == "horizun_verify_changes") return;
+            if (tool == "horizun_verify_changes" || tool == "horizun_run_workflow") return; // Workflow children were checked in their own document scopes.
             if (DataOnlyTools.Contains(tool)) { DataOnlyFallback(tool, watch, result); return; }
             try
             {

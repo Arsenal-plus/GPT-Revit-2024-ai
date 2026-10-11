@@ -3,7 +3,14 @@
     {
       "en": "Revit 2024 extensions",
       "es": "Extensiones de Revit 2024",
-      "tools": [[
+      "tools": [
+        ["horizun_run_workflow",
+         "Prepare explicit documents and execute bounded dependent typed steps with per-step verification, durable replay protection and partial-result evidence.",
+         "Preparar documentos explícitos y ejecutar pasos tipados dependientes con verificación por paso, protección contra repetición y evidencia de resultados parciales."],
+        ["horizun_model_snapshot",
+         "Read element geometry, openings and room boundaries as structured JSON with explicit missing-data states and 64-bit IDs.",
+         "Leer geometría, huecos y límites de habitaciones como JSON con estados explícitos de datos ausentes e identificadores de 64 bits."],
+        [
         "horizun_revit2024",
         "Inspect capabilities and perform verified Toposolid, analytical/load, Fabrication, electrical and complex family placement operations. Fabrication requires a configured database and services.",
         "Consultar capacidades y ejecutar operaciones verificadas de Toposolid, modelo analítico/cargas, Fabrication, electricidad y colocación de familias. Fabrication requiere una base de datos y servicios configurados."

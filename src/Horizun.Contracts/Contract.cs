@@ -242,6 +242,7 @@ namespace Horizun.Contracts
             Row("get_document_info", "read"),
             Row("horizun_navigate", "read"),
             Row("horizun_list_elements", "read"),
+            Row("horizun_model_snapshot", "read", "audit"),
             Row("horizun_query_model", "read", "mep"),
             Row("horizun_model_scan", "read", "audit"),
             Row("horizun_file_info", "read", "coordination"),
@@ -268,6 +269,7 @@ namespace Horizun.Contracts
             Row("horizun_write_params_verified", "model"),
             Row("horizun_delete_verified", "model", "documentation"),
             Row("horizun_execute_plan", "model"),
+            Row("horizun_run_workflow", "model", "family", "administration"),
             Row("horizun_copy_between_documents", "model"),
             Row("horizun_manage_materials", "model"),
             Row("horizun_revit2024", "model", "structure", "mep", "family"),
@@ -568,6 +570,18 @@ namespace Horizun.Contracts
                     },
                     ["additionalProperties"] = false
                 }
+            },
+            new CommandContract
+            {
+                Name = "horizun_model_snapshot", Command = "horizun_model_snapshot",
+                Description = "Read a bounded snapshot of explicit elements, positions, opening geometry and spatial-element boundaries. Units are mm from internal origin; IDs remain 64-bit. Null geometry and missing elements are reported explicitly. Returns structured JSON; no Python, file export or model mutation.",
+                InputSchema = JObject.Parse(@"{""type"":""object"",""required"":[""target_document"",""element_ids""],""properties"":{""target_document"":{""type"":""string""},""element_ids"":{""type"":""array"",""minItems"":1,""maxItems"":2000,""items"":{""type"":""integer"",""minimum"":1}},""include_room_boundaries"":{""type"":""boolean"",""default"":true}},""additionalProperties"":false}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_run_workflow", Command = "horizun_run_workflow",
+                Description = "Execute 1..20 explicit dependent steps on one Revit UI turn, preparing each named document and verifying each child result. Preview binds the exact steps and all open-document state; it does not rehearse future steps. Apply requires that token and idempotency_key, previews each typed write immediately before applying it and stops at the first unverified result. Cross-document/file effects are NOT atomic; completed steps are preserved and reported. Never retries completed writes. document_session supports open only, without upgrades. Prefer this for a known multi-step task involving project/family activation.",
+                InputSchema = JObject.Parse(@"{""type"":""object"",""required"":[""target_document"",""steps""],""properties"":{""target_document"":{""type"":""string""},""steps"":{""type"":""array"",""minItems"":1,""maxItems"":20,""items"":{""type"":""object"",""required"":[""key"",""tool"",""arguments""],""properties"":{""key"":{""type"":""string"",""minLength"":1},""tool"":{""type"":""string"",""enum"":[""horizun_execute_plan"",""horizun_create_elements"",""horizun_create_family"",""horizun_family_apply"",""horizun_write_params_verified"",""horizun_manage_materials"",""horizun_transform_elements"",""horizun_capture_view"",""horizun_model_snapshot"",""horizun_document_session""]},""arguments"":{""type"":""object"",""description"":""Child arguments, excluding dry_run, confirmation_token and idempotency_key. Explicit target_document may select another document; otherwise the workflow root is used. Existing execute_plan result references are supported.""}},""additionalProperties"":false}},""dry_run"":{""type"":""boolean"",""default"":true},""confirmation_token"":{""type"":""string""},""idempotency_key"":{""type"":""string""},""purpose"":{""type"":""string""}},""additionalProperties"":false}")
             },
             new CommandContract
             {
@@ -6860,7 +6874,7 @@ namespace Horizun.Contracts
                 // mutation gate and honours dry_run (default true), so this is its effect.
                 // Found by WriteVerificationCatalogTests, which derives "writes" from the
                 // source (DocumentGate.ForMutation) instead of trusting this list.
-                "horizun_cad_connect"
+                "horizun_cad_connect", "horizun_run_workflow"
             };
             // Writes something outside the model that is still there after the call: a PNG,
             // a workbook. full_write is the rung that authorizes these.
@@ -6908,7 +6922,7 @@ namespace Horizun.Contracts
             // family rebuild replaces geometry, a push replaces a dataset.
             var destructive = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_delete_verified", "horizun_execute_plan", "horizun_execute_python", "horizun_document_session",
+                "horizun_delete_verified", "horizun_execute_plan", "horizun_execute_python", "horizun_document_session", "horizun_run_workflow",
                 "horizun_export", "horizun_deliver_ifc", "horizun_create_family", "horizun_power_bi_push",
                 // overwrite_policy=replace replaces a workbook (backed up first) and a
                 // non-dry-run push lands rows in a dataset. Same reasons as export and

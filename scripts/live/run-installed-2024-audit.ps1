@@ -91,6 +91,7 @@ try {
                             $replayed = Get-Content -LiteralPath $replayPath -Raw | ConvertFrom-Json
                             if ($replayed.result.result.element_id -ne $applied.result.result.element_id) { throw 'Replay returned a different element.' }
                         }
+                        if ($report.state -eq 'passed') { & (Join-Path $PSScriptRoot 'probe-reliability-2024.ps1') -Server $ProbeServer -RunRoot $run }
                         Write-Output 'Fresh MCP server: health, catalog and eligible write/replay checks completed over stdio/pipe.'
                     } catch { $probeError = $_.Exception.Message; Write-Output $probeError }
                     finally { 'done' | Set-Content -LiteralPath (Join-Path $run 'mcp-complete') }

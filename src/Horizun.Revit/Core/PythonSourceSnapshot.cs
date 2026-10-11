@@ -14,7 +14,7 @@ namespace Horizun.Revit.Core
         public JArray Includes = new JArray();
         public string Sha256 => Code == null ? null : RequestFingerprint.Sha256Hex(Code);
         public string ExecutionSha256 => Code == null ? null : RequestFingerprint.Sha256Hex(new JObject
-        { ["main"] = Sha256, ["includes"] = Includes, ["helpers_version"] = 1 }.ToString(Newtonsoft.Json.Formatting.None));
+        { ["main"] = Sha256, ["includes"] = Includes, ["helpers_version"] = 2 }.ToString(Newtonsoft.Json.Formatting.None));
 
         public static PythonSourceSnapshot Resolve(JObject request)
         {
@@ -117,7 +117,7 @@ namespace Horizun.Revit.Core
             frozen["source_read_at_admission"] = ReadNow;
             frozen["source_sha256"] = Sha256;
             frozen["execution_sha256"] = ExecutionSha256;
-            frozen["helpers_version"] = 1;
+            frozen["helpers_version"] = 2;
             return frozen;
         }
 

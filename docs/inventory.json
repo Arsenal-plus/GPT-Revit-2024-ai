@@ -2,25 +2,25 @@
   "schema": "horizun.inventory/1",
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary; enumerated values walked from the full input schemas of horizun://contract/tools served by the same binary",
-  "generated_from_server_exe": "<Local>\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe",
-  "generated_from_server_sha": "c658119c81647148e20da1a90edac5c4331d1661ba28675683e1ddded26fd23c",
-  "generated_from_contract_hash": "ffa79adb4e9bb4e4c6050158",
+  "generated_from_server_exe": "..\\audit-revit-2024\\reliability-server\\horizun-mcp.exe",
+  "generated_from_server_sha": "8085ac48c91e42223156683106881157befe0078c0555ca19f04a5b0b2d22486",
+  "generated_from_contract_hash": "336d2f6d79f1be16b0646394",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "ec7b6b86f2f102fdfd4e47fbb76ecc6a50f6e528-dirty",
-  "code_candidate_version": "2.2.0",
+  "code_candidate_commit": "2ac8227778a0bdec6c8fcb25db129e5080754f27",
+  "code_candidate_version": "2.3.0",
   "code_candidate_stamp_source": "product_version",
-  "source_tree_clean_at_generation": false,
-  "source_tree_head_at_generation": "ec7b6b86f2f102fdfd4e47fbb76ecc6a50f6e528",
+  "source_tree_clean_at_generation": true,
+  "source_tree_head_at_generation": "2ac8227778a0bdec6c8fcb25db129e5080754f27",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 124,
-    "reads": 45,
-    "writes": 79,
-    "destructive": 20,
+    "tools": 126,
+    "reads": 46,
+    "writes": 80,
+    "destructive": 21,
     "operations": 478,
-    "enumerated_variants": 1628
+    "enumerated_variants": 1638
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -57,6 +57,24 @@
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 0,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_model_snapshot",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 0,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_run_workflow",
+      "read_only": false,
+      "destructive": true,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 10,
       "operation_detail": []
     },
     {

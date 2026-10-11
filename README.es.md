@@ -4,7 +4,7 @@
 
 Horizun Revit MCP es un servidor MCP y add-in de Windows gratuito y de código
 abierto para **Autodesk Revit 2023–2027**. Su catálogo completo contiene
-**124 herramientas** <!--inventory:tools--> con **478 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+**126 herramientas** <!--inventory:tools--> con **478 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 para modelado arquitectónico y estructural, MEP, familias paramétricas, planos,
 CAD a BIM, auditoría, cantidades, Excel, Power BI y exportación.
 
@@ -30,7 +30,7 @@ el runtime del servidor y los add-ins.
 
 | Superficie | Qué ofrece | Dónde comprobarlo |
 |---|---|---|
-| Entradas MCP | **124 herramientas** <!--inventory:tools-->, incluidas **45 de solo lectura** <!--inventory:reads--> y **79 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
+| Entradas MCP | **126 herramientas** <!--inventory:tools-->, incluidas **46 de solo lectura** <!--inventory:reads--> y **80 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
 | Acciones internas | **478 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
 | Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
 | Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
@@ -253,6 +253,8 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 
 | Herramienta | Capacidad |
 |---|---|
+| `horizun_run_workflow` | Preparar documentos explícitos y ejecutar pasos tipados dependientes con verificación por paso, protección contra repetición y evidencia de resultados parciales. |
+| `horizun_model_snapshot` | Leer geometría, huecos y límites de habitaciones como JSON con estados explícitos de datos ausentes e identificadores de 64 bits. |
 | `horizun_revit2024` | Consultar capacidades y ejecutar operaciones verificadas de Toposolid, modelo analítico/cargas, Fabrication, electricidad y colocación de familias. Fabrication requiere una base de datos y servicios configurados. |
 
 ### Conexión, documentos y trabajos en segundo plano
@@ -517,7 +519,7 @@ herramientas MCP adicionales de primer nivel.
 
 Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
-registra **1628 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+registra **1638 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
 entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
 por lo que esa cifra no se utiliza como número de herramientas.
 

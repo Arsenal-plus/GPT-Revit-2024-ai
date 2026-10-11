@@ -3,6 +3,27 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v2.3.0 — in validation (2026-10-09)
+
+- Add a bounded typed workflow with explicit document preparation, per-step
+  verification, durable replay protection and a flushed step journal.
+- Add structured model snapshots with nullable room/opening boundaries, 64-bit
+  IDs, explicit availability and bounded geometry payloads.
+- Restore temporary 3D camera orientation explicitly and compare geometric
+  snapshots with numeric tolerances and field-level differences.
+- Verify rectangular wall openings in host coordinates. Preserve Revit's default
+  connector primary selection when omitted; assign an explicit primary after
+  all connectors have been created.
+- Preserve structured failure diagnostics and distinguish preparation, rollback,
+  unverified and partial results in the Russian operations panel.
+- Add UTF-8 JSON and optional-collection Python helpers, with a new helper
+  fingerprint version. Update the advertised catalog to 126 tools.
+
+Validation so far: 5,867 core tests and 1,054 server tests passed; add-in and live
+harness build against installed Revit 24.0.4.427 with zero build warnings/errors.
+The 11 added live scenarios and real MCP workflow replay checks are **pending**.
+This entry is not evidence of a deployed or live-accepted release.
+
 ## v2.2.0 — 2026-10-08
 
 Arsenal-Plus Revit 2024 RTM update, compiled against the installed API build

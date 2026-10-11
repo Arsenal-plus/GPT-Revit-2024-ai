@@ -39,6 +39,7 @@ namespace Horizun.Server
 
         /// <summary>The guidance as it was before the head existed, word for word.</summary>
         private static readonly string Body =
+            "RELIABLE TASKS: use horizun_run_workflow for an explicit sequence that switches project/family documents. Its intent preview is not a construction rehearsal; children are rehearsed immediately before each write. Read workflow/steps/application and trace_path. A partial or uncertain result requires inspection before a new plan; retry the identical idempotency_key only to retrieve the recorded result. Never change the key to force a repeated write. Workflow activation accepts explicit file paths and never upgrades files. Use horizun_model_snapshot for element geometry, openings and room boundaries; check complete and each availability status. Python read_json(path) decodes UTF-8 with optional BOM; optional_items(value) handles nullable API collections, but unavailable data is not zero.\n\n" +
             "Horizun Revit MCP - the bridge between this client and a running Autodesk Revit.\n\n" +
                             "The contract: a command never reports work it did not verify. Every typed write is re-read " +
                             "from the model after the commit, so a silent rollback surfaces as an error rather " +

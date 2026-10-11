@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - declarative, typed creation of loadable RFA families.
 // -----------------------------------------------------------------------------
 using System;
@@ -318,6 +318,13 @@ namespace Horizun.Revit.Commands
                             createdConnectors.Add(new JObject { ["key"] = connectorPlan.Key, ["kind"] = connectorPlan.Kind, ["element_id"] = Rid.Value(connector.Id) });
                         }
 
+                        // Assign the explicit primary only after all connectors have been created.
+                        family.Regenerate();
+                        foreach (ConnectorPlan primary in plan.Connectors.Where(c => c.Primary == true))
+                        {
+                            JObject row = createdConnectors.OfType<JObject>().Single(c => c.Value<string>("key") == primary.Key);
+                            ((ConnectorElement)family.GetElement(Rid.Make(row.Value<long>("element_id")))).AssignAsPrimary();
+                        }
                         foreach (ParameterPlan p in plan.Parameters.Where(x => x.FormulaSpecified))
                             fm.SetFormula(parameters[p.Name], p.Formula);
                         family.Regenerate();
@@ -835,14 +842,14 @@ namespace Horizun.Revit.Commands
                 {
                     Key = key, HostFormKey = host, Kind = kind, FaceNormal = faceNormal,
                     SystemType = systemType, Profile = profileName,
-                    Primary = row.Value<bool?>("primary") == true, DiameterParameter = diameter,
+                    Primary = row.Value<bool?>("primary"), DiameterParameter = diameter,
                     WidthParameter = width, HeightParameter = height
                 });
                 connectorIndex++;
             }
             if (request["connectors"] != null && (!(request["connectors"] is JArray connectorArray) || connectorArray.Count != plan.Connectors.Count))
                 throw new ArgumentException("every connectors entry must be an object");
-            if (plan.Connectors.Count(x => x.Primary) > 1)
+            if (plan.Connectors.Count(x => x.Primary == true) > 1)
                 throw new ArgumentException("only one connector can be primary in a family");
 
             var referenceKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -1223,7 +1230,6 @@ namespace Horizun.Revit.Commands
             }
             else if (plan.Kind == "conduit") connector = ConnectorElement.CreateConduitConnector(family, face);
             else connector = ConnectorElement.CreateCableTrayConnector(family, face);
-            if (plan.Primary) connector.AssignAsPrimary();
             Associate(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER), plan.DiameterParameter, parameters);
             Associate(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_WIDTH), plan.WidthParameter, parameters);
             Associate(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_HEIGHT), plan.HeightParameter, parameters);
@@ -1315,7 +1321,7 @@ namespace Horizun.Revit.Commands
                 long id = row.Value<long>("element_id");
                 if (!(family.GetElement(Rid.Make(id)) is ConnectorElement connector)) throw new InvalidOperationException("created connector " + id + " was not re-read as ConnectorElement");
                 ConnectorPlan requested = connectorPlans[row.Value<string>("key")];
-                if (connector.IsPrimary != requested.Primary)
+                if (requested.Primary.HasValue && connector.IsPrimary != requested.Primary.Value)
                     throw new InvalidOperationException("connector '" + requested.Key + "' primary state did not re-read as requested");
                 VerifyAssociation(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_DIAMETER), requested.DiameterParameter, "connector '" + requested.Key + "' diameter");
                 VerifyAssociation(fm, connector.get_Parameter(BuiltInParameter.CONNECTOR_WIDTH), requested.WidthParameter, "connector '" + requested.Key + "' width");
@@ -2243,7 +2249,7 @@ namespace Horizun.Revit.Commands
         private sealed class ConnectorPlan
         {
             public string Key, HostFormKey, Kind, SystemType, Profile, DiameterParameter, WidthParameter, HeightParameter;
-            public XYZ FaceNormal; public bool Primary;
+            public XYZ FaceNormal; public bool? Primary;
         }
         private sealed class ReferencePlanePlan
         {
