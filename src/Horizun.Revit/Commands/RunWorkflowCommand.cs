@@ -122,10 +122,7 @@ namespace Horizun.Revit.Commands
                         SpatialAfterWrite.Attach(tool, changes, result);
                     }
                     JObject data = AsObject(result.Data);
-                    bool verified = result.Success && (read
-                        ? (tool == "horizun_model_snapshot" ? data.Value<bool?>("complete") == true : data.Value<bool?>("captured") == true && data.Value<bool?>("view_restored") != false)
-                        : tool == "horizun_document_session" ? data.Value<bool?>("active_document_verified") == true
-                        : ApplicationOutcome.IsFullyApplied(ApplicationOutcome.Read(data)));
+                    bool verified = result.Success && WorkflowRules.VerifiedStep(tool, data);
                     trace.Add(new JObject { ["step"] = key, ["phase"] = "execute", ["tool"] = tool,
                         ["success"] = result.Success, ["verified"] = verified, ["data"] = data,
                         ["detail"] = result.Detail, ["error"] = result.Error });

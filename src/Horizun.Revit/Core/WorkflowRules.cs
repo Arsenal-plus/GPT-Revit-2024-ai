@@ -13,6 +13,47 @@ namespace Horizun.Revit.Core
             "horizun_write_params_verified", "horizun_manage_materials", "horizun_transform_elements",
             "horizun_capture_view", "horizun_model_snapshot", "horizun_document_session"
         };
+        // Shared by execution and the aggregate outcome reader: no success by status alone.
+        public static bool VerifiedStep(string tool, JObject data)
+        {
+            if (data == null || !Tools.Contains(tool ?? "")) return false;
+            if (tool == "horizun_model_snapshot") return JToken.DeepEquals(data["complete"], new JValue(true));
+            if (tool == "horizun_capture_view") return JToken.DeepEquals(data["captured"], new JValue(true)) &&
+                JToken.DeepEquals(data["view_restored"], new JValue(true));
+            if (tool == "horizun_document_session") return (string)data["operation"] == "open" &&
+                JToken.DeepEquals(data["active_document_verified"], new JValue(true));
+            // A workflow cannot be a child; reject recursive aggregate declarations.
+            if ((string)(data["application"] as JObject)?["transaction_status"] == "per_step") return false;
+            return ApplicationOutcome.IsFullyApplied(ApplicationOutcome.Read(data));
+        }
+
+        public static bool CorroboratesCompletion(JObject payload, long requested)
+        {
+            if (requested < 1 || requested > 20 ||
+                !JToken.DeepEquals(payload["atomic"], new JValue(false))) return false;
+            var workflow = payload["workflow"] as JObject;
+            var steps = payload["steps"] as JArray;
+            var results = payload["results"] as JObject;
+            if (workflow == null || steps == null || results == null ||
+                !JToken.DeepEquals(workflow["state"], new JValue("verified_completed")) ||
+                !JToken.DeepEquals(workflow["completed_steps"], new JValue(requested)) ||
+                results.Count != requested) return false;
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var token in steps)
+            {
+                if (!(token is JObject step)) return false;
+                if (!JToken.DeepEquals(step["phase"], new JValue("execute"))) continue;
+                string key = (step["step"] as JValue)?.Value as string;
+                string tool = (step["tool"] as JValue)?.Value as string;
+                if (string.IsNullOrEmpty(key) || !keys.Add(key) ||
+                    !JToken.DeepEquals(step["success"], new JValue(true)) ||
+                    !JToken.DeepEquals(step["verified"], new JValue(true)) ||
+                    !JToken.DeepEquals(step["data"], results[key]) ||
+                    !VerifiedStep(tool, step["data"] as JObject)) return false;
+            }
+            return keys.Count == requested;
+        }
+
         public static string Validate(JObject r)
         {
             if (r == null || string.IsNullOrWhiteSpace(r.Value<string>("target_document"))) return "target_document is required.";
