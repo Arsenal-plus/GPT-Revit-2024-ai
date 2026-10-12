@@ -345,7 +345,7 @@ namespace Horizun.Revit.Core
             // Rehearsed mints the executable confirmation. Every one must be corroborated.
             bool opensGate = IsFullyApplied(declared) || IsValidRehearsal(declared);
             if (!opensGate) return declared;
-            return Corroborated(block, declared) ? declared : ApplicationState.Uncertain;
+            return Corroborated(payload, block, declared) ? declared : ApplicationState.Uncertain;
         }
 
         /// <summary>
@@ -367,7 +367,7 @@ namespace Horizun.Revit.Core
         /// would refuse real results, which is the failure mode opposite to this one and
         /// just as bad.
         /// </summary>
-        private static bool Corroborated(JObject block, ApplicationState declared)
+        private static bool Corroborated(JObject payload, JObject block, ApplicationState declared)
         {
             // A `fully_applied` that disagrees with its own state is a block assembled by
             // something that was not this file.
@@ -396,6 +396,15 @@ namespace Horizun.Revit.Core
                        applied == 0 && verified == 0 && unresolved == 0 && failed == 0 && unknown == 0;
             }
 
+            // A workflow has separate child commits, reads and document activations.
+            // Keep the ordinary transaction vocabulary strict; accept the aggregate only
+            // when every executed child and its corresponding result corroborate it.
+            if (status == "per_step")
+            {
+                if (declared != ApplicationState.VerifiedApplied ||
+                    !WorkflowRules.CorroboratesCompletion(payload, requested)) return false;
+                status = Committed; // arithmetic only; the wire retains per_step and atomic=false
+            }
             ApplicationState recomputed = Applied(status, (int)requested, (int)applied, (int)verified,
                                                   (int)unresolved, (int)failed, (int)unknown);
             return recomputed == declared;
