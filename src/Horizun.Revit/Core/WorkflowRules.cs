@@ -20,10 +20,10 @@ namespace Horizun.Revit.Core
             if (tool == "horizun_model_snapshot") return JToken.DeepEquals(data["complete"], new JValue(true));
             if (tool == "horizun_capture_view") return JToken.DeepEquals(data["captured"], new JValue(true)) &&
                 JToken.DeepEquals(data["view_restored"], new JValue(true));
-            if (tool == "horizun_document_session") return (string)data["operation"] == "open" &&
+            if (tool == "horizun_document_session") return JToken.DeepEquals(data["operation"], new JValue("open")) &&
                 JToken.DeepEquals(data["active_document_verified"], new JValue(true));
             // A workflow cannot be a child; reject recursive aggregate declarations.
-            if ((string)(data["application"] as JObject)?["transaction_status"] == "per_step") return false;
+            if (JToken.DeepEquals((data["application"] as JObject)?["transaction_status"], new JValue("per_step"))) return false;
             return ApplicationOutcome.IsFullyApplied(ApplicationOutcome.Read(data));
         }
 

@@ -89,6 +89,17 @@ namespace Horizun.Core.Tests
             Assert.Equal(ApplicationState.Uncertain, ApplicationOutcome.Read(payload));
         }
 
+        [Theory]
+        [InlineData("horizun_document_session", "operation")]
+        [InlineData("horizun_create_elements", "application")]
+        public void Malformed_child_evidence_returns_uncertain_without_throwing(string tool, string field)
+        {
+            var payload = Completed(tool);
+            payload["steps"][0]["data"][field] = new JArray("unexpected");
+            payload["results"]["one"] = payload["steps"][0]["data"].DeepClone();
+            Assert.Equal(ApplicationState.Uncertain, ApplicationOutcome.Read(payload));
+        }
+
         [Fact]
         public void Aggregate_counters_still_require_complete_verification()
         {
