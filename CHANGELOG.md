@@ -3,7 +3,7 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v2.3.0 — in validation (2026-10-09)
+## v2.3.0 — 2026-10-12
 
 - Add a bounded typed workflow with explicit document preparation, per-step
   verification, durable replay protection and a flushed step journal.
@@ -19,10 +19,15 @@ assumed. Dates are the day the work landed.
 - Add UTF-8 JSON and optional-collection Python helpers, with a new helper
   fingerprint version. Update the advertised catalog to 126 tools.
 
-Validation so far: 5,867 core tests and 1,054 server tests passed; add-in and live
-harness build against installed Revit 24.0.4.427 with zero build warnings/errors.
-The 11 added live scenarios and real MCP workflow replay checks are **pending**.
-This entry is not evidence of a deployed or live-accepted release.
+- Corroborate workflow completion against each child result, including read and
+  activation evidence. Reject malformed or contradictory aggregate declarations.
+
+Validation: 5,897 core tests and 1,054 server tests passed. On installed Revit
+24.0.4.427, both RUS and ENU runs passed 47 live scenarios (including the 11 new
+reliability cases), with no failed cases and one unavailable Fabrication dependency.
+Real MCP workflow apply/replay and partial-stop/replay checks passed in both runs.
+See [the evidence and limitations](docs/REVIT-2024-RELIABILITY-VALIDATION.md).
+Installation acceptance is recorded separately after deploying the merged build.
 
 ## v2.2.0 — 2026-10-08
 
